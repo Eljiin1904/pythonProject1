@@ -1,0 +1,121 @@
+<html>
+<head>
+<title>uri.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+uri.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+:mod:`websockets.uri` parses WebSocket URIs. 
+ 
+See `section 3 of RFC 6455`_. 
+ 
+.. _section 3 of RFC 6455: http://tools.ietf.org/html/rfc6455#section-3 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">urllib.parse</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">NamedTuple</span><span class="s2">, </span><span class="s1">Optional</span><span class="s2">, </span><span class="s1">Tuple</span>
+
+<span class="s2">from </span><span class="s1">.exceptions </span><span class="s2">import </span><span class="s1">InvalidURI</span>
+
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;parse_uri&quot;</span><span class="s2">, </span><span class="s3">&quot;WebSocketURI&quot;</span><span class="s1">]</span>
+
+
+<span class="s4"># Consider converting to a dataclass when dropping support for Python &lt; 3.7.</span>
+
+
+<span class="s2">class </span><span class="s1">WebSocketURI(NamedTuple):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    WebSocket URI. 
+ 
+    :param bool secure: secure flag 
+    :param str host: lower-case host 
+    :param int port: port, always set even if it's the default 
+    :param str resource_name: path and optional query 
+    :param str user_info: ``(username, password)`` tuple when the URI contains 
+      `User Information`_, else ``None``. 
+ 
+    .. _User Information: https://tools.ietf.org/html/rfc3986#section-3.2.1 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">secure: bool</span>
+    <span class="s1">host: str</span>
+    <span class="s1">port: int</span>
+    <span class="s1">resource_name: str</span>
+    <span class="s1">user_info: Optional[Tuple[str</span><span class="s2">, </span><span class="s1">str]]</span>
+
+
+<span class="s4"># Work around https://bugs.python.org/issue19931</span>
+
+<span class="s1">WebSocketURI.secure.__doc__ = </span><span class="s3">&quot;&quot;</span>
+<span class="s1">WebSocketURI.host.__doc__ = </span><span class="s3">&quot;&quot;</span>
+<span class="s1">WebSocketURI.port.__doc__ = </span><span class="s3">&quot;&quot;</span>
+<span class="s1">WebSocketURI.resource_name.__doc__ = </span><span class="s3">&quot;&quot;</span>
+<span class="s1">WebSocketURI.user_info.__doc__ = </span><span class="s3">&quot;&quot;</span>
+
+
+<span class="s4"># All characters from the gen-delims and sub-delims sets in RFC 3987.</span>
+<span class="s1">DELIMS = </span><span class="s3">&quot;:/?#[]@!$&amp;'()*+,;=&quot;</span>
+
+
+<span class="s2">def </span><span class="s1">parse_uri(uri: str) -&gt; WebSocketURI:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Parse and validate a WebSocket URI. 
+ 
+    :raises ValueError: if ``uri`` isn't a valid WebSocket URI. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">parsed = urllib.parse.urlparse(uri)</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">assert </span><span class="s1">parsed.scheme </span><span class="s2">in </span><span class="s1">[</span><span class="s3">&quot;ws&quot;</span><span class="s2">, </span><span class="s3">&quot;wss&quot;</span><span class="s1">]</span>
+        <span class="s2">assert </span><span class="s1">parsed.params == </span><span class="s3">&quot;&quot;</span>
+        <span class="s2">assert </span><span class="s1">parsed.fragment == </span><span class="s3">&quot;&quot;</span>
+        <span class="s2">assert </span><span class="s1">parsed.hostname </span><span class="s2">is not None</span>
+    <span class="s2">except </span><span class="s1">AssertionError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidURI(uri) </span><span class="s2">from </span><span class="s1">exc</span>
+
+    <span class="s1">secure = parsed.scheme == </span><span class="s3">&quot;wss&quot;</span>
+    <span class="s1">host = parsed.hostname</span>
+    <span class="s1">port = parsed.port </span><span class="s2">or </span><span class="s1">(</span><span class="s5">443 </span><span class="s2">if </span><span class="s1">secure </span><span class="s2">else </span><span class="s5">80</span><span class="s1">)</span>
+    <span class="s1">resource_name = parsed.path </span><span class="s2">or </span><span class="s3">&quot;/&quot;</span>
+    <span class="s2">if </span><span class="s1">parsed.query:</span>
+        <span class="s1">resource_name += </span><span class="s3">&quot;?&quot; </span><span class="s1">+ parsed.query</span>
+    <span class="s1">user_info = </span><span class="s2">None</span>
+    <span class="s2">if </span><span class="s1">parsed.username </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s4"># urllib.parse.urlparse accepts URLs with a username but without a</span>
+        <span class="s4"># password. This doesn't make sense for HTTP Basic Auth credentials.</span>
+        <span class="s2">if </span><span class="s1">parsed.password </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">InvalidURI(uri)</span>
+        <span class="s1">user_info = (parsed.username</span><span class="s2">, </span><span class="s1">parsed.password)</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">uri.encode(</span><span class="s3">&quot;ascii&quot;</span><span class="s1">)</span>
+    <span class="s2">except </span><span class="s1">UnicodeEncodeError:</span>
+        <span class="s4"># Input contains non-ASCII characters.</span>
+        <span class="s4"># It must be an IRI. Convert it to a URI.</span>
+        <span class="s1">host = host.encode(</span><span class="s3">&quot;idna&quot;</span><span class="s1">).decode()</span>
+        <span class="s1">resource_name = urllib.parse.quote(resource_name</span><span class="s2">, </span><span class="s1">safe=DELIMS)</span>
+        <span class="s2">if </span><span class="s1">user_info </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">user_info = (</span>
+                <span class="s1">urllib.parse.quote(user_info[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">safe=DELIMS)</span><span class="s2">,</span>
+                <span class="s1">urllib.parse.quote(user_info[</span><span class="s5">1</span><span class="s1">]</span><span class="s2">, </span><span class="s1">safe=DELIMS)</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">WebSocketURI(secure</span><span class="s2">, </span><span class="s1">host</span><span class="s2">, </span><span class="s1">port</span><span class="s2">, </span><span class="s1">resource_name</span><span class="s2">, </span><span class="s1">user_info)</span>
+</pre>
+</body>
+</html>

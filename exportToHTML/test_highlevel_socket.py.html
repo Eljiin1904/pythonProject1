@@ -1,0 +1,289 @@
+<html>
+<head>
+<title>test_highlevel_socket.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_highlevel_socket.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">socket </span><span class="s0">as </span><span class="s1">stdlib_socket</span>
+<span class="s0">import </span><span class="s1">errno</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">..testing </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">check_half_closeable_stream</span><span class="s0">,</span>
+    <span class="s1">wait_all_tasks_blocked</span><span class="s0">,</span>
+    <span class="s1">assert_checkpoints</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">.._highlevel_socket </span><span class="s0">import </span><span class="s1">*</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">socket </span><span class="s0">as </span><span class="s1">tsocket</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SocketStream_basics():</span>
+    <span class="s2"># stdlib socket bad (even if connected)</span>
+    <span class="s1">a</span><span class="s0">, </span><span class="s1">b = stdlib_socket.socketpair()</span>
+    <span class="s0">with </span><span class="s1">a</span><span class="s0">, </span><span class="s1">b:</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+            <span class="s1">SocketStream(a)</span>
+
+    <span class="s2"># DGRAM socket bad</span>
+    <span class="s0">with </span><span class="s1">tsocket.socket(type=tsocket.SOCK_DGRAM) </span><span class="s0">as </span><span class="s1">sock:</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+            <span class="s1">SocketStream(sock)</span>
+
+    <span class="s1">a</span><span class="s0">, </span><span class="s1">b = tsocket.socketpair()</span>
+    <span class="s0">with </span><span class="s1">a</span><span class="s0">, </span><span class="s1">b:</span>
+        <span class="s1">s = SocketStream(a)</span>
+        <span class="s0">assert </span><span class="s1">s.socket </span><span class="s0">is </span><span class="s1">a</span>
+
+    <span class="s2"># Use a real, connected socket to test socket options, because</span>
+    <span class="s2"># socketpair() might give us a unix socket that doesn't support any of</span>
+    <span class="s2"># these options</span>
+    <span class="s0">with </span><span class="s1">tsocket.socket() </span><span class="s0">as </span><span class="s1">listen_sock:</span>
+        <span class="s0">await </span><span class="s1">listen_sock.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+        <span class="s1">listen_sock.listen(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">tsocket.socket() </span><span class="s0">as </span><span class="s1">client_sock:</span>
+            <span class="s0">await </span><span class="s1">client_sock.connect(listen_sock.getsockname())</span>
+
+            <span class="s1">s = SocketStream(client_sock)</span>
+
+            <span class="s2"># TCP_NODELAY enabled by default</span>
+            <span class="s0">assert </span><span class="s1">s.getsockopt(tsocket.IPPROTO_TCP</span><span class="s0">, </span><span class="s1">tsocket.TCP_NODELAY)</span>
+            <span class="s2"># We can disable it though</span>
+            <span class="s1">s.setsockopt(tsocket.IPPROTO_TCP</span><span class="s0">, </span><span class="s1">tsocket.TCP_NODELAY</span><span class="s0">, False</span><span class="s1">)</span>
+            <span class="s0">assert not </span><span class="s1">s.getsockopt(tsocket.IPPROTO_TCP</span><span class="s0">, </span><span class="s1">tsocket.TCP_NODELAY)</span>
+
+            <span class="s1">b = s.getsockopt(tsocket.IPPROTO_TCP</span><span class="s0">, </span><span class="s1">tsocket.TCP_NODELAY</span><span class="s0">, </span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s0">assert </span><span class="s1">isinstance(b</span><span class="s0">, </span><span class="s1">bytes)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SocketStream_send_all():</span>
+    <span class="s1">BIG = </span><span class="s4">10000000</span>
+
+    <span class="s1">a_sock</span><span class="s0">, </span><span class="s1">b_sock = tsocket.socketpair()</span>
+    <span class="s0">with </span><span class="s1">a_sock</span><span class="s0">, </span><span class="s1">b_sock:</span>
+        <span class="s1">a = SocketStream(a_sock)</span>
+        <span class="s1">b = SocketStream(b_sock)</span>
+
+        <span class="s2"># Check a send_all that has to be split into multiple parts (on most</span>
+        <span class="s2"># platforms... on Windows every send() either succeeds or fails as a</span>
+        <span class="s2"># whole)</span>
+        <span class="s0">async def </span><span class="s1">sender():</span>
+            <span class="s1">data = bytearray(BIG)</span>
+            <span class="s0">await </span><span class="s1">a.send_all(data)</span>
+            <span class="s2"># send_all uses memoryviews internally, which temporarily &quot;lock&quot;</span>
+            <span class="s2"># the object they view. If it doesn't clean them up properly, then</span>
+            <span class="s2"># some bytearray operations might raise an error afterwards, which</span>
+            <span class="s2"># would be a pretty weird and annoying side-effect to spring on</span>
+            <span class="s2"># users. So test that this doesn't happen, by forcing the</span>
+            <span class="s2"># bytearray's underlying buffer to be realloc'ed:</span>
+            <span class="s1">data += bytes(BIG)</span>
+            <span class="s2"># (Note: the above line of code doesn't do a very good job at</span>
+            <span class="s2"># testing anything, because:</span>
+            <span class="s2"># - on CPython, the refcount GC generally cleans up memoryviews</span>
+            <span class="s2">#   for us even if we're sloppy.</span>
+            <span class="s2"># - on PyPy3, at least as of 5.7.0, the memoryview code and the</span>
+            <span class="s2">#   bytearray code conspire so that resizing never fails – if</span>
+            <span class="s2">#   resizing forces the bytearray's internal buffer to move, then</span>
+            <span class="s2">#   all memoryview references are automagically updated (!!).</span>
+            <span class="s2">#   See:</span>
+            <span class="s2">#   https://gist.github.com/njsmith/0ffd38ec05ad8e34004f34a7dc492227</span>
+            <span class="s2"># But I'm leaving the test here in hopes that if this ever changes</span>
+            <span class="s2"># and we break our implementation of send_all, then we'll get some</span>
+            <span class="s2"># early warning...)</span>
+
+        <span class="s0">async def </span><span class="s1">receiver():</span>
+            <span class="s2"># Make sure the sender fills up the kernel buffers and blocks</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">nbytes = </span><span class="s4">0</span>
+            <span class="s0">while </span><span class="s1">nbytes &lt; BIG:</span>
+                <span class="s1">nbytes += len(</span><span class="s0">await </span><span class="s1">b.receive_some(BIG))</span>
+            <span class="s0">assert </span><span class="s1">nbytes == BIG</span>
+
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(sender)</span>
+            <span class="s1">nursery.start_soon(receiver)</span>
+
+        <span class="s2"># We know that we received BIG bytes of NULs so far. Make sure that</span>
+        <span class="s2"># was all the data in there.</span>
+        <span class="s0">await </span><span class="s1">a.send_all(</span><span class="s5">b&quot;e&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">b.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;e&quot;</span>
+        <span class="s0">await </span><span class="s1">a.send_eof()</span>
+        <span class="s0">assert await </span><span class="s1">b.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+
+
+<span class="s0">async def </span><span class="s1">fill_stream(s):</span>
+    <span class="s0">async def </span><span class="s1">sender():</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;x&quot; </span><span class="s1">* </span><span class="s4">10000</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">waiter(nursery):</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.cancel_scope.cancel()</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(sender)</span>
+        <span class="s1">nursery.start_soon(waiter</span><span class="s0">, </span><span class="s1">nursery)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SocketStream_generic():</span>
+    <span class="s0">async def </span><span class="s1">stream_maker():</span>
+        <span class="s1">left</span><span class="s0">, </span><span class="s1">right = tsocket.socketpair()</span>
+        <span class="s0">return </span><span class="s1">SocketStream(left)</span><span class="s0">, </span><span class="s1">SocketStream(right)</span>
+
+    <span class="s0">async def </span><span class="s1">clogged_stream_maker():</span>
+        <span class="s1">left</span><span class="s0">, </span><span class="s1">right = </span><span class="s0">await </span><span class="s1">stream_maker()</span>
+        <span class="s0">await </span><span class="s1">fill_stream(left)</span>
+        <span class="s0">await </span><span class="s1">fill_stream(right)</span>
+        <span class="s0">return </span><span class="s1">left</span><span class="s0">, </span><span class="s1">right</span>
+
+    <span class="s0">await </span><span class="s1">check_half_closeable_stream(stream_maker</span><span class="s0">, </span><span class="s1">clogged_stream_maker)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SocketListener():</span>
+    <span class="s2"># Not a Trio socket</span>
+    <span class="s0">with </span><span class="s1">stdlib_socket.socket() </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s1">s.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+        <span class="s1">s.listen(</span><span class="s4">10</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+            <span class="s1">SocketListener(s)</span>
+
+    <span class="s2"># Not a SOCK_STREAM</span>
+    <span class="s0">with </span><span class="s1">tsocket.socket(type=tsocket.SOCK_DGRAM) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">s.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s1">SocketListener(s)</span>
+        <span class="s1">excinfo.match(</span><span class="s3">r&quot;.*SOCK_STREAM&quot;</span><span class="s1">)</span>
+
+    <span class="s2"># Didn't call .listen()</span>
+    <span class="s2"># macOS has no way to check for this, so skip testing it there.</span>
+    <span class="s0">if </span><span class="s1">sys.platform != </span><span class="s3">&quot;darwin&quot;</span><span class="s1">:</span>
+        <span class="s0">with </span><span class="s1">tsocket.socket() </span><span class="s0">as </span><span class="s1">s:</span>
+            <span class="s0">await </span><span class="s1">s.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+            <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+                <span class="s1">SocketListener(s)</span>
+            <span class="s1">excinfo.match(</span><span class="s3">r&quot;.*listen&quot;</span><span class="s1">)</span>
+
+    <span class="s1">listen_sock = tsocket.socket()</span>
+    <span class="s0">await </span><span class="s1">listen_sock.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+    <span class="s1">listen_sock.listen(</span><span class="s4">10</span><span class="s1">)</span>
+    <span class="s1">listener = SocketListener(listen_sock)</span>
+
+    <span class="s0">assert </span><span class="s1">listener.socket </span><span class="s0">is </span><span class="s1">listen_sock</span>
+
+    <span class="s1">client_sock = tsocket.socket()</span>
+    <span class="s0">await </span><span class="s1">client_sock.connect(listen_sock.getsockname())</span>
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s1">server_stream = </span><span class="s0">await </span><span class="s1">listener.accept()</span>
+    <span class="s0">assert </span><span class="s1">isinstance(server_stream</span><span class="s0">, </span><span class="s1">SocketStream)</span>
+    <span class="s0">assert </span><span class="s1">server_stream.socket.getsockname() == listen_sock.getsockname()</span>
+    <span class="s0">assert </span><span class="s1">server_stream.socket.getpeername() == client_sock.getsockname()</span>
+
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">await </span><span class="s1">listener.aclose()</span>
+
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">await </span><span class="s1">listener.aclose()</span>
+
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(_core.ClosedResourceError):</span>
+            <span class="s0">await </span><span class="s1">listener.accept()</span>
+
+    <span class="s1">client_sock.close()</span>
+    <span class="s0">await </span><span class="s1">server_stream.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SocketListener_socket_closed_underfoot():</span>
+    <span class="s1">listen_sock = tsocket.socket()</span>
+    <span class="s0">await </span><span class="s1">listen_sock.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+    <span class="s1">listen_sock.listen(</span><span class="s4">10</span><span class="s1">)</span>
+    <span class="s1">listener = SocketListener(listen_sock)</span>
+
+    <span class="s2"># Close the socket, not the listener</span>
+    <span class="s1">listen_sock.close()</span>
+
+    <span class="s2"># SocketListener gives correct error</span>
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(_core.ClosedResourceError):</span>
+            <span class="s0">await </span><span class="s1">listener.accept()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SocketListener_accept_errors():</span>
+    <span class="s0">class </span><span class="s1">FakeSocket(tsocket.SocketType):</span>
+        <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">events):</span>
+            <span class="s1">self._events = iter(events)</span>
+
+        <span class="s1">type = tsocket.SOCK_STREAM</span>
+
+        <span class="s2"># Fool the check for SO_ACCEPTCONN in SocketListener.__init__</span>
+        <span class="s0">def </span><span class="s1">getsockopt(self</span><span class="s0">, </span><span class="s1">level</span><span class="s0">, </span><span class="s1">opt):</span>
+            <span class="s0">return True</span>
+
+        <span class="s0">def </span><span class="s1">setsockopt(self</span><span class="s0">, </span><span class="s1">level</span><span class="s0">, </span><span class="s1">opt</span><span class="s0">, </span><span class="s1">value):</span>
+            <span class="s0">pass</span>
+
+        <span class="s0">async def </span><span class="s1">accept(self):</span>
+            <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+            <span class="s1">event = next(self._events)</span>
+            <span class="s0">if </span><span class="s1">isinstance(event</span><span class="s0">, </span><span class="s1">BaseException):</span>
+                <span class="s0">raise </span><span class="s1">event</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">event</span><span class="s0">, None</span>
+
+    <span class="s1">fake_server_sock = FakeSocket([])</span>
+
+    <span class="s1">fake_listen_sock = FakeSocket(</span>
+        <span class="s1">[</span>
+            <span class="s1">OSError(errno.ECONNABORTED</span><span class="s0">, </span><span class="s3">&quot;Connection aborted&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">OSError(errno.EPERM</span><span class="s0">, </span><span class="s3">&quot;Permission denied&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">OSError(errno.EPROTO</span><span class="s0">, </span><span class="s3">&quot;Bad protocol&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">fake_server_sock</span><span class="s0">,</span>
+            <span class="s1">OSError(errno.EMFILE</span><span class="s0">, </span><span class="s3">&quot;Out of file descriptors&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">OSError(errno.EFAULT</span><span class="s0">, </span><span class="s3">&quot;attempt to write to read-only memory&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">OSError(errno.ENOBUFS</span><span class="s0">, </span><span class="s3">&quot;out of buffers&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">fake_server_sock</span><span class="s0">,</span>
+        <span class="s1">]</span>
+    <span class="s1">)</span>
+
+    <span class="s1">l = SocketListener(fake_listen_sock)</span>
+
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s1">s = </span><span class="s0">await </span><span class="s1">l.accept()</span>
+        <span class="s0">assert </span><span class="s1">s.socket </span><span class="s0">is </span><span class="s1">fake_server_sock</span>
+
+    <span class="s0">for </span><span class="s1">code </span><span class="s0">in </span><span class="s1">[errno.EMFILE</span><span class="s0">, </span><span class="s1">errno.EFAULT</span><span class="s0">, </span><span class="s1">errno.ENOBUFS]:</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">with </span><span class="s1">pytest.raises(OSError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+                <span class="s0">await </span><span class="s1">l.accept()</span>
+            <span class="s0">assert </span><span class="s1">excinfo.value.errno == code</span>
+
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s1">s = </span><span class="s0">await </span><span class="s1">l.accept()</span>
+        <span class="s0">assert </span><span class="s1">s.socket </span><span class="s0">is </span><span class="s1">fake_server_sock</span>
+
+
+<span class="s0">async def </span><span class="s1">test_socket_stream_works_when_peer_has_already_closed():</span>
+    <span class="s1">sock_a</span><span class="s0">, </span><span class="s1">sock_b = tsocket.socketpair()</span>
+    <span class="s0">with </span><span class="s1">sock_a</span><span class="s0">, </span><span class="s1">sock_b:</span>
+        <span class="s0">await </span><span class="s1">sock_b.send(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s1">sock_b.close()</span>
+        <span class="s1">stream = SocketStream(sock_a)</span>
+        <span class="s0">assert await </span><span class="s1">stream.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;x&quot;</span>
+        <span class="s0">assert await </span><span class="s1">stream.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+</pre>
+</body>
+</html>

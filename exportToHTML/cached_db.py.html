@@ -1,0 +1,86 @@
+<html>
+<head>
+<title>cached_db.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cached_db.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Cached, database-backed sessions. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">django.conf </span><span class="s2">import </span><span class="s1">settings</span>
+<span class="s2">from </span><span class="s1">django.contrib.sessions.backends.db </span><span class="s2">import </span><span class="s1">SessionStore </span><span class="s2">as </span><span class="s1">DBStore</span>
+<span class="s2">from </span><span class="s1">django.core.cache </span><span class="s2">import </span><span class="s1">caches</span>
+
+<span class="s1">KEY_PREFIX = </span><span class="s3">&quot;django.contrib.sessions.cached_db&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">SessionStore(DBStore):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Implement cached, database backed sessions. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">cache_key_prefix = KEY_PREFIX</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">session_key=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">self._cache = caches[settings.SESSION_CACHE_ALIAS]</span>
+        <span class="s1">super().__init__(session_key)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">cache_key(self):</span>
+        <span class="s2">return </span><span class="s1">self.cache_key_prefix + self._get_or_create_session_key()</span>
+
+    <span class="s2">def </span><span class="s1">load(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">data = self._cache.get(self.cache_key)</span>
+        <span class="s2">except </span><span class="s1">Exception:</span>
+            <span class="s4"># Some backends (e.g. memcache) raise an exception on invalid</span>
+            <span class="s4"># cache keys. If this happens, reset the session. See #17810.</span>
+            <span class="s1">data = </span><span class="s2">None</span>
+
+        <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">s = self._get_session_from_db()</span>
+            <span class="s2">if </span><span class="s1">s:</span>
+                <span class="s1">data = self.decode(s.session_data)</span>
+                <span class="s1">self._cache.set(self.cache_key</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">self.get_expiry_age(expiry=s.expire_date))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">data = {}</span>
+        <span class="s2">return </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">exists(self</span><span class="s2">, </span><span class="s1">session_key):</span>
+        <span class="s2">return </span><span class="s1">session_key </span><span class="s2">and </span><span class="s1">(self.cache_key_prefix + session_key) </span><span class="s2">in </span><span class="s1">self._cache </span><span class="s2">or </span><span class="s1">super().exists(session_key)</span>
+
+    <span class="s2">def </span><span class="s1">save(self</span><span class="s2">, </span><span class="s1">must_create=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s1">super().save(must_create)</span>
+        <span class="s1">self._cache.set(self.cache_key</span><span class="s2">, </span><span class="s1">self._session</span><span class="s2">, </span><span class="s1">self.get_expiry_age())</span>
+
+    <span class="s2">def </span><span class="s1">delete(self</span><span class="s2">, </span><span class="s1">session_key=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">super().delete(session_key)</span>
+        <span class="s2">if </span><span class="s1">session_key </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">self.session_key </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">return</span>
+            <span class="s1">session_key = self.session_key</span>
+        <span class="s1">self._cache.delete(self.cache_key_prefix + session_key)</span>
+
+    <span class="s2">def </span><span class="s1">flush(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Remove the current session data from the database and regenerate the 
+        key. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.clear()</span>
+        <span class="s1">self.delete(self.session_key)</span>
+        <span class="s1">self._session_key = </span><span class="s2">None</span>
+</pre>
+</body>
+</html>

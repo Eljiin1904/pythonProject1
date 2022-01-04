@@ -1,0 +1,694 @@
+<html>
+<head>
+<title>frame_protocol.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+.s6 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+frame_protocol.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+wsproto/frame_protocol 
+~~~~~~~~~~~~~~~~~~~~~~ 
+ 
+WebSocket frame protocol implementation. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">struct</span>
+<span class="s2">from </span><span class="s1">codecs </span><span class="s2">import </span><span class="s1">getincrementaldecoder</span><span class="s2">, </span><span class="s1">IncrementalDecoder</span>
+<span class="s2">from </span><span class="s1">enum </span><span class="s2">import </span><span class="s1">IntEnum</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">Generator</span><span class="s2">, </span><span class="s1">List</span><span class="s2">, </span><span class="s1">NamedTuple</span><span class="s2">, </span><span class="s1">Optional</span><span class="s2">, </span><span class="s1">Tuple</span><span class="s2">, </span><span class="s1">TYPE_CHECKING</span><span class="s2">, </span><span class="s1">Union</span>
+
+<span class="s2">if </span><span class="s1">TYPE_CHECKING:</span>
+    <span class="s2">from </span><span class="s1">.extensions </span><span class="s2">import </span><span class="s1">Extension  </span><span class="s3"># pragma: no cover</span>
+
+
+<span class="s1">_XOR_TABLE = [bytes(a ^ b </span><span class="s2">for </span><span class="s1">a </span><span class="s2">in </span><span class="s1">range(</span><span class="s4">256</span><span class="s1">)) </span><span class="s2">for </span><span class="s1">b </span><span class="s2">in </span><span class="s1">range(</span><span class="s4">256</span><span class="s1">)]</span>
+
+
+<span class="s2">class </span><span class="s1">XorMaskerSimple:</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">masking_key: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self._masking_key = masking_key</span>
+
+    <span class="s2">def </span><span class="s1">process(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">data:</span>
+            <span class="s1">data_array = bytearray(data)</span>
+            <span class="s1">a</span><span class="s2">, </span><span class="s1">b</span><span class="s2">, </span><span class="s1">c</span><span class="s2">, </span><span class="s1">d = (_XOR_TABLE[n] </span><span class="s2">for </span><span class="s1">n </span><span class="s2">in </span><span class="s1">self._masking_key)</span>
+            <span class="s1">data_array[::</span><span class="s4">4</span><span class="s1">] = data_array[::</span><span class="s4">4</span><span class="s1">].translate(a)</span>
+            <span class="s1">data_array[</span><span class="s4">1</span><span class="s1">::</span><span class="s4">4</span><span class="s1">] = data_array[</span><span class="s4">1</span><span class="s1">::</span><span class="s4">4</span><span class="s1">].translate(b)</span>
+            <span class="s1">data_array[</span><span class="s4">2</span><span class="s1">::</span><span class="s4">4</span><span class="s1">] = data_array[</span><span class="s4">2</span><span class="s1">::</span><span class="s4">4</span><span class="s1">].translate(c)</span>
+            <span class="s1">data_array[</span><span class="s4">3</span><span class="s1">::</span><span class="s4">4</span><span class="s1">] = data_array[</span><span class="s4">3</span><span class="s1">::</span><span class="s4">4</span><span class="s1">].translate(d)</span>
+
+            <span class="s3"># Rotate the masking key so that the next usage continues</span>
+            <span class="s3"># with the next key element, rather than restarting.</span>
+            <span class="s1">key_rotation = len(data) % </span><span class="s4">4</span>
+            <span class="s1">self._masking_key = (</span>
+                <span class="s1">self._masking_key[key_rotation:] + self._masking_key[:key_rotation]</span>
+            <span class="s1">)</span>
+
+            <span class="s2">return </span><span class="s1">bytes(data_array)</span>
+        <span class="s2">return </span><span class="s1">data</span>
+
+
+<span class="s2">class </span><span class="s1">XorMaskerNull:</span>
+    <span class="s2">def </span><span class="s1">process(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">data</span>
+
+
+<span class="s3"># RFC6455, Section 5.2 - Base Framing Protocol</span>
+
+<span class="s3"># Payload length constants</span>
+<span class="s1">PAYLOAD_LENGTH_TWO_BYTE = </span><span class="s4">126</span>
+<span class="s1">PAYLOAD_LENGTH_EIGHT_BYTE = </span><span class="s4">127</span>
+<span class="s1">MAX_PAYLOAD_NORMAL = </span><span class="s4">125</span>
+<span class="s1">MAX_PAYLOAD_TWO_BYTE = </span><span class="s4">2 </span><span class="s1">** </span><span class="s4">16 </span><span class="s1">- </span><span class="s4">1</span>
+<span class="s1">MAX_PAYLOAD_EIGHT_BYTE = </span><span class="s4">2 </span><span class="s1">** </span><span class="s4">64 </span><span class="s1">- </span><span class="s4">1</span>
+<span class="s1">MAX_FRAME_PAYLOAD = MAX_PAYLOAD_EIGHT_BYTE</span>
+
+<span class="s3"># MASK and PAYLOAD LEN are packed into a byte</span>
+<span class="s1">MASK_MASK = </span><span class="s4">0x80</span>
+<span class="s1">PAYLOAD_LEN_MASK = </span><span class="s4">0x7F</span>
+
+<span class="s3"># FIN, RSV[123] and OPCODE are packed into a single byte</span>
+<span class="s1">FIN_MASK = </span><span class="s4">0x80</span>
+<span class="s1">RSV1_MASK = </span><span class="s4">0x40</span>
+<span class="s1">RSV2_MASK = </span><span class="s4">0x20</span>
+<span class="s1">RSV3_MASK = </span><span class="s4">0x10</span>
+<span class="s1">OPCODE_MASK = </span><span class="s4">0x0F</span>
+
+
+<span class="s2">class </span><span class="s1">Opcode(IntEnum):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    RFC 6455, Section 5.2 - Base Framing Protocol 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">#: Continuation frame</span>
+    <span class="s1">CONTINUATION = </span><span class="s4">0x0</span>
+
+    <span class="s3">#: Text message</span>
+    <span class="s1">TEXT = </span><span class="s4">0x1</span>
+
+    <span class="s3">#: Binary message</span>
+    <span class="s1">BINARY = </span><span class="s4">0x2</span>
+
+    <span class="s3">#: Close frame</span>
+    <span class="s1">CLOSE = </span><span class="s4">0x8</span>
+
+    <span class="s3">#: Ping frame</span>
+    <span class="s1">PING = </span><span class="s4">0x9</span>
+
+    <span class="s3">#: Pong frame</span>
+    <span class="s1">PONG = </span><span class="s4">0xA</span>
+
+    <span class="s2">def </span><span class="s1">iscontrol(self) -&gt; bool:</span>
+        <span class="s2">return </span><span class="s1">bool(self &amp; </span><span class="s4">0x08</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">CloseReason(IntEnum):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    RFC 6455, Section 7.4.1 - Defined Status Codes 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">#: indicates a normal closure, meaning that the purpose for</span>
+    <span class="s3">#: which the connection was established has been fulfilled.</span>
+    <span class="s1">NORMAL_CLOSURE = </span><span class="s4">1000</span>
+
+    <span class="s3">#: indicates that an endpoint is &quot;going away&quot;, such as a server</span>
+    <span class="s3">#: going down or a browser having navigated away from a page.</span>
+    <span class="s1">GOING_AWAY = </span><span class="s4">1001</span>
+
+    <span class="s3">#: indicates that an endpoint is terminating the connection due</span>
+    <span class="s3">#: to a protocol error.</span>
+    <span class="s1">PROTOCOL_ERROR = </span><span class="s4">1002</span>
+
+    <span class="s3">#: indicates that an endpoint is terminating the connection</span>
+    <span class="s3">#: because it has received a type of data it cannot accept (e.g., an</span>
+    <span class="s3">#: endpoint that understands only text data MAY send this if it</span>
+    <span class="s3">#: receives a binary message).</span>
+    <span class="s1">UNSUPPORTED_DATA = </span><span class="s4">1003</span>
+
+    <span class="s3">#: Reserved.  The specific meaning might be defined in the future.</span>
+    <span class="s3"># DON'T DEFINE THIS: RESERVED_1004 = 1004</span>
+
+    <span class="s3">#: is a reserved value and MUST NOT be set as a status code in a</span>
+    <span class="s3">#: Close control frame by an endpoint.  It is designated for use in</span>
+    <span class="s3">#: applications expecting a status code to indicate that no status</span>
+    <span class="s3">#: code was actually present.</span>
+    <span class="s1">NO_STATUS_RCVD = </span><span class="s4">1005</span>
+
+    <span class="s3">#: is a reserved value and MUST NOT be set as a status code in a</span>
+    <span class="s3">#: Close control frame by an endpoint.  It is designated for use in</span>
+    <span class="s3">#: applications expecting a status code to indicate that the</span>
+    <span class="s3">#: connection was closed abnormally, e.g., without sending or</span>
+    <span class="s3">#: receiving a Close control frame.</span>
+    <span class="s1">ABNORMAL_CLOSURE = </span><span class="s4">1006</span>
+
+    <span class="s3">#: indicates that an endpoint is terminating the connection</span>
+    <span class="s3">#: because it has received data within a message that was not</span>
+    <span class="s3">#: consistent with the type of the message (e.g., non-UTF-8 [RFC3629]</span>
+    <span class="s3">#: data within a text message).</span>
+    <span class="s1">INVALID_FRAME_PAYLOAD_DATA = </span><span class="s4">1007</span>
+
+    <span class="s3">#: indicates that an endpoint is terminating the connection</span>
+    <span class="s3">#: because it has received a message that violates its policy.  This</span>
+    <span class="s3">#: is a generic status code that can be returned when there is no</span>
+    <span class="s3">#: other more suitable status code (e.g., 1003 or 1009) or if there</span>
+    <span class="s3">#: is a need to hide specific details about the policy.</span>
+    <span class="s1">POLICY_VIOLATION = </span><span class="s4">1008</span>
+
+    <span class="s3">#: indicates that an endpoint is terminating the connection</span>
+    <span class="s3">#: because it has received a message that is too big for it to</span>
+    <span class="s3">#: process.</span>
+    <span class="s1">MESSAGE_TOO_BIG = </span><span class="s4">1009</span>
+
+    <span class="s3">#: indicates that an endpoint (client) is terminating the</span>
+    <span class="s3">#: connection because it has expected the server to negotiate one or</span>
+    <span class="s3">#: more extension, but the server didn't return them in the response</span>
+    <span class="s3">#: message of the WebSocket handshake.  The list of extensions that</span>
+    <span class="s3">#: are needed SHOULD appear in the /reason/ part of the Close frame.</span>
+    <span class="s3">#: Note that this status code is not used by the server, because it</span>
+    <span class="s3">#: can fail the WebSocket handshake instead.</span>
+    <span class="s1">MANDATORY_EXT = </span><span class="s4">1010</span>
+
+    <span class="s3">#: indicates that a server is terminating the connection because</span>
+    <span class="s3">#: it encountered an unexpected condition that prevented it from</span>
+    <span class="s3">#: fulfilling the request.</span>
+    <span class="s1">INTERNAL_ERROR = </span><span class="s4">1011</span>
+
+    <span class="s3">#: Server/service is restarting</span>
+    <span class="s3">#: (not part of RFC6455)</span>
+    <span class="s1">SERVICE_RESTART = </span><span class="s4">1012</span>
+
+    <span class="s3">#: Temporary server condition forced blocking client's request</span>
+    <span class="s3">#: (not part of RFC6455)</span>
+    <span class="s1">TRY_AGAIN_LATER = </span><span class="s4">1013</span>
+
+    <span class="s3">#: is a reserved value and MUST NOT be set as a status code in a</span>
+    <span class="s3">#: Close control frame by an endpoint.  It is designated for use in</span>
+    <span class="s3">#: applications expecting a status code to indicate that the</span>
+    <span class="s3">#: connection was closed due to a failure to perform a TLS handshake</span>
+    <span class="s3">#: (e.g., the server certificate can't be verified).</span>
+    <span class="s1">TLS_HANDSHAKE_FAILED = </span><span class="s4">1015</span>
+
+
+<span class="s3"># RFC 6455, Section 7.4.1 - Defined Status Codes</span>
+<span class="s1">LOCAL_ONLY_CLOSE_REASONS = (</span>
+    <span class="s1">CloseReason.NO_STATUS_RCVD</span><span class="s2">,</span>
+    <span class="s1">CloseReason.ABNORMAL_CLOSURE</span><span class="s2">,</span>
+    <span class="s1">CloseReason.TLS_HANDSHAKE_FAILED</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s3"># RFC 6455, Section 7.4.2 - Status Code Ranges</span>
+<span class="s1">MIN_CLOSE_REASON = </span><span class="s4">1000</span>
+<span class="s1">MIN_PROTOCOL_CLOSE_REASON = </span><span class="s4">1000</span>
+<span class="s1">MAX_PROTOCOL_CLOSE_REASON = </span><span class="s4">2999</span>
+<span class="s1">MIN_LIBRARY_CLOSE_REASON = </span><span class="s4">3000</span>
+<span class="s1">MAX_LIBRARY_CLOSE_REASON = </span><span class="s4">3999</span>
+<span class="s1">MIN_PRIVATE_CLOSE_REASON = </span><span class="s4">4000</span>
+<span class="s1">MAX_PRIVATE_CLOSE_REASON = </span><span class="s4">4999</span>
+<span class="s1">MAX_CLOSE_REASON = </span><span class="s4">4999</span>
+
+
+<span class="s1">NULL_MASK = struct.pack(</span><span class="s5">&quot;!I&quot;</span><span class="s2">, </span><span class="s4">0</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">ParseFailed(Exception):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">msg: str</span><span class="s2">, </span><span class="s1">code: CloseReason = CloseReason.PROTOCOL_ERROR</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">super().__init__(msg)</span>
+        <span class="s1">self.code = code</span>
+
+
+<span class="s2">class </span><span class="s1">RsvBits(NamedTuple):</span>
+    <span class="s1">rsv1: bool</span>
+    <span class="s1">rsv2: bool</span>
+    <span class="s1">rsv3: bool</span>
+
+
+<span class="s2">class </span><span class="s1">Header(NamedTuple):</span>
+    <span class="s1">fin: bool</span>
+    <span class="s1">rsv: RsvBits</span>
+    <span class="s1">opcode: Opcode</span>
+    <span class="s1">payload_len: int</span>
+    <span class="s1">masking_key: Optional[bytes]</span>
+
+
+<span class="s2">class </span><span class="s1">Frame(NamedTuple):</span>
+    <span class="s1">opcode: Opcode</span>
+    <span class="s1">payload: Union[bytes</span><span class="s2">, </span><span class="s1">str</span><span class="s2">, </span><span class="s1">Tuple[int</span><span class="s2">, </span><span class="s1">str]]</span>
+    <span class="s1">frame_finished: bool</span>
+    <span class="s1">message_finished: bool</span>
+
+
+<span class="s2">def </span><span class="s1">_truncate_utf8(data: bytes</span><span class="s2">, </span><span class="s1">nbytes: int) -&gt; bytes:</span>
+    <span class="s2">if </span><span class="s1">len(data) &lt;= nbytes:</span>
+        <span class="s2">return </span><span class="s1">data</span>
+
+    <span class="s3"># Truncate</span>
+    <span class="s1">data = data[:nbytes]</span>
+    <span class="s3"># But we might have cut a codepoint in half, in which case we want to</span>
+    <span class="s3"># discard the partial character so the data is at least</span>
+    <span class="s3"># well-formed. This is a little inefficient since it processes the</span>
+    <span class="s3"># whole message twice when in theory we could just peek at the last</span>
+    <span class="s3"># few characters, but since this is only used for close messages (max</span>
+    <span class="s3"># length = 125 bytes) it really doesn't matter.</span>
+    <span class="s1">data = data.decode(</span><span class="s5">&quot;utf-8&quot;</span><span class="s2">, </span><span class="s1">errors=</span><span class="s5">&quot;ignore&quot;</span><span class="s1">).encode(</span><span class="s5">&quot;utf-8&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">data</span>
+
+
+<span class="s2">class </span><span class="s1">Buffer:</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">initial_bytes: Optional[bytes] = </span><span class="s2">None</span><span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.buffer = bytearray()</span>
+        <span class="s1">self.bytes_used = </span><span class="s4">0</span>
+        <span class="s2">if </span><span class="s1">initial_bytes:</span>
+            <span class="s1">self.feed(initial_bytes)</span>
+
+    <span class="s2">def </span><span class="s1">feed(self</span><span class="s2">, </span><span class="s1">new_bytes: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.buffer += new_bytes</span>
+
+    <span class="s2">def </span><span class="s1">consume_at_most(self</span><span class="s2">, </span><span class="s1">nbytes: int) -&gt; bytes:</span>
+        <span class="s2">if not </span><span class="s1">nbytes:</span>
+            <span class="s2">return </span><span class="s1">bytearray()</span>
+
+        <span class="s1">data = self.buffer[self.bytes_used : self.bytes_used + nbytes]</span>
+        <span class="s1">self.bytes_used += len(data)</span>
+        <span class="s2">return </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">consume_exactly(self</span><span class="s2">, </span><span class="s1">nbytes: int) -&gt; Optional[bytes]:</span>
+        <span class="s2">if </span><span class="s1">len(self.buffer) - self.bytes_used &lt; nbytes:</span>
+            <span class="s2">return None</span>
+
+        <span class="s2">return </span><span class="s1">self.consume_at_most(nbytes)</span>
+
+    <span class="s2">def </span><span class="s1">commit(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s3"># In CPython 3.4+, del[:n] is amortized O(n), *not* quadratic</span>
+        <span class="s2">del </span><span class="s1">self.buffer[: self.bytes_used]</span>
+        <span class="s1">self.bytes_used = </span><span class="s4">0</span>
+
+    <span class="s2">def </span><span class="s1">rollback(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.bytes_used = </span><span class="s4">0</span>
+
+    <span class="s2">def </span><span class="s1">__len__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">len(self.buffer)</span>
+
+
+<span class="s2">class </span><span class="s1">MessageDecoder:</span>
+    <span class="s2">def </span><span class="s1">__init__(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.opcode: Optional[Opcode] = </span><span class="s2">None</span>
+        <span class="s1">self.decoder: Optional[IncrementalDecoder] = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">process_frame(self</span><span class="s2">, </span><span class="s1">frame: Frame) -&gt; Frame:</span>
+        <span class="s2">assert not </span><span class="s1">frame.opcode.iscontrol()</span>
+
+        <span class="s2">if </span><span class="s1">self.opcode </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">frame.opcode </span><span class="s2">is </span><span class="s1">Opcode.CONTINUATION:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;unexpected CONTINUATION&quot;</span><span class="s1">)</span>
+            <span class="s1">self.opcode = frame.opcode</span>
+        <span class="s2">elif </span><span class="s1">frame.opcode </span><span class="s2">is not </span><span class="s1">Opcode.CONTINUATION:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;expected CONTINUATION, got %r&quot; </span><span class="s1">% frame.opcode)</span>
+
+        <span class="s2">if </span><span class="s1">frame.opcode </span><span class="s2">is </span><span class="s1">Opcode.TEXT:</span>
+            <span class="s1">self.decoder = getincrementaldecoder(</span><span class="s5">&quot;utf-8&quot;</span><span class="s1">)()</span>
+
+        <span class="s1">finished = frame.frame_finished </span><span class="s2">and </span><span class="s1">frame.message_finished</span>
+
+        <span class="s2">if </span><span class="s1">self.decoder </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">data = frame.payload</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">assert </span><span class="s1">isinstance(frame.payload</span><span class="s2">, </span><span class="s1">(bytes</span><span class="s2">, </span><span class="s1">bytearray))</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">data = self.decoder.decode(frame.payload</span><span class="s2">, </span><span class="s1">finished)</span>
+            <span class="s2">except </span><span class="s1">UnicodeDecodeError </span><span class="s2">as </span><span class="s1">exc:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(str(exc)</span><span class="s2">, </span><span class="s1">CloseReason.INVALID_FRAME_PAYLOAD_DATA)</span>
+
+        <span class="s1">frame = Frame(self.opcode</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">frame.frame_finished</span><span class="s2">, </span><span class="s1">finished)</span>
+
+        <span class="s2">if </span><span class="s1">finished:</span>
+            <span class="s1">self.opcode = </span><span class="s2">None</span>
+            <span class="s1">self.decoder = </span><span class="s2">None</span>
+
+        <span class="s2">return </span><span class="s1">frame</span>
+
+
+<span class="s2">class </span><span class="s1">FrameDecoder:</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">client: bool</span><span class="s2">, </span><span class="s1">extensions: Optional[List[</span><span class="s5">&quot;Extension&quot;</span><span class="s1">]] = </span><span class="s2">None</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.client = client</span>
+        <span class="s1">self.extensions = extensions </span><span class="s2">or </span><span class="s1">[]</span>
+
+        <span class="s1">self.buffer = Buffer()</span>
+
+        <span class="s1">self.header: Optional[Header] = </span><span class="s2">None</span>
+        <span class="s1">self.effective_opcode: Optional[Opcode] = </span><span class="s2">None</span>
+        <span class="s1">self.masker: Union[</span><span class="s2">None, </span><span class="s1">XorMaskerNull</span><span class="s2">, </span><span class="s1">XorMaskerSimple] = </span><span class="s2">None</span>
+        <span class="s1">self.payload_required = </span><span class="s4">0</span>
+        <span class="s1">self.payload_consumed = </span><span class="s4">0</span>
+
+    <span class="s2">def </span><span class="s1">receive_bytes(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.buffer.feed(data)</span>
+
+    <span class="s2">def </span><span class="s1">process_buffer(self) -&gt; Optional[Frame]:</span>
+        <span class="s2">if not </span><span class="s1">self.header:</span>
+            <span class="s2">if not </span><span class="s1">self.parse_header():</span>
+                <span class="s2">return None</span>
+        <span class="s3"># parse_header() sets these.</span>
+        <span class="s2">assert </span><span class="s1">self.header </span><span class="s2">is not None</span>
+        <span class="s2">assert </span><span class="s1">self.masker </span><span class="s2">is not None</span>
+        <span class="s2">assert </span><span class="s1">self.effective_opcode </span><span class="s2">is not None</span>
+
+        <span class="s2">if </span><span class="s1">len(self.buffer) &lt; self.payload_required:</span>
+            <span class="s2">return None</span>
+
+        <span class="s1">payload_remaining = self.header.payload_len - self.payload_consumed</span>
+        <span class="s1">payload = self.buffer.consume_at_most(payload_remaining)</span>
+        <span class="s2">if not </span><span class="s1">payload </span><span class="s2">and </span><span class="s1">self.header.payload_len &gt; </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s1">self.buffer.commit()</span>
+
+        <span class="s1">self.payload_consumed += len(payload)</span>
+        <span class="s1">finished = self.payload_consumed == self.header.payload_len</span>
+
+        <span class="s1">payload = self.masker.process(payload)</span>
+
+        <span class="s2">for </span><span class="s1">extension </span><span class="s2">in </span><span class="s1">self.extensions:</span>
+            <span class="s1">payload_ = extension.frame_inbound_payload_data(self</span><span class="s2">, </span><span class="s1">payload)</span>
+            <span class="s2">if </span><span class="s1">isinstance(payload_</span><span class="s2">, </span><span class="s1">CloseReason):</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;error in extension&quot;</span><span class="s2">, </span><span class="s1">payload_)</span>
+            <span class="s1">payload = payload_</span>
+
+        <span class="s2">if </span><span class="s1">finished:</span>
+            <span class="s1">final = bytearray()</span>
+            <span class="s2">for </span><span class="s1">extension </span><span class="s2">in </span><span class="s1">self.extensions:</span>
+                <span class="s1">result = extension.frame_inbound_complete(self</span><span class="s2">, </span><span class="s1">self.header.fin)</span>
+                <span class="s2">if </span><span class="s1">isinstance(result</span><span class="s2">, </span><span class="s1">CloseReason):</span>
+                    <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;error in extension&quot;</span><span class="s2">, </span><span class="s1">result)</span>
+                <span class="s2">if </span><span class="s1">result </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s1">final += result</span>
+            <span class="s1">payload += final</span>
+
+        <span class="s1">frame = Frame(self.effective_opcode</span><span class="s2">, </span><span class="s1">payload</span><span class="s2">, </span><span class="s1">finished</span><span class="s2">, </span><span class="s1">self.header.fin)</span>
+
+        <span class="s2">if </span><span class="s1">finished:</span>
+            <span class="s1">self.header = </span><span class="s2">None</span>
+            <span class="s1">self.effective_opcode = </span><span class="s2">None</span>
+            <span class="s1">self.masker = </span><span class="s2">None</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.effective_opcode = Opcode.CONTINUATION</span>
+
+        <span class="s2">return </span><span class="s1">frame</span>
+
+    <span class="s2">def </span><span class="s1">parse_header(self) -&gt; bool:</span>
+        <span class="s1">data = self.buffer.consume_exactly(</span><span class="s4">2</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self.buffer.rollback()</span>
+            <span class="s2">return False</span>
+
+        <span class="s1">fin = bool(data[</span><span class="s4">0</span><span class="s1">] &amp; FIN_MASK)</span>
+        <span class="s1">rsv = RsvBits(</span>
+            <span class="s1">bool(data[</span><span class="s4">0</span><span class="s1">] &amp; RSV1_MASK)</span><span class="s2">,</span>
+            <span class="s1">bool(data[</span><span class="s4">0</span><span class="s1">] &amp; RSV2_MASK)</span><span class="s2">,</span>
+            <span class="s1">bool(data[</span><span class="s4">0</span><span class="s1">] &amp; RSV3_MASK)</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s1">opcode = data[</span><span class="s4">0</span><span class="s1">] &amp; OPCODE_MASK</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">opcode = Opcode(opcode)</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">f&quot;Invalid opcode </span><span class="s2">{</span><span class="s1">opcode</span><span class="s2">:</span><span class="s5">#x</span><span class="s2">}</span><span class="s5">&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">opcode.iscontrol() </span><span class="s2">and not </span><span class="s1">fin:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;Invalid attempt to fragment control frame&quot;</span><span class="s1">)</span>
+
+        <span class="s1">has_mask = bool(data[</span><span class="s4">1</span><span class="s1">] &amp; MASK_MASK)</span>
+        <span class="s1">payload_len_short = data[</span><span class="s4">1</span><span class="s1">] &amp; PAYLOAD_LEN_MASK</span>
+        <span class="s1">payload_len = self.parse_extended_payload_length(opcode</span><span class="s2">, </span><span class="s1">payload_len_short)</span>
+        <span class="s2">if </span><span class="s1">payload_len </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self.buffer.rollback()</span>
+            <span class="s2">return False</span>
+
+        <span class="s1">self.extension_processing(opcode</span><span class="s2">, </span><span class="s1">rsv</span><span class="s2">, </span><span class="s1">payload_len)</span>
+
+        <span class="s2">if </span><span class="s1">has_mask </span><span class="s2">and </span><span class="s1">self.client:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;client received unexpected masked frame&quot;</span><span class="s1">)</span>
+        <span class="s2">if not </span><span class="s1">has_mask </span><span class="s2">and not </span><span class="s1">self.client:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;server received unexpected unmasked frame&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">has_mask:</span>
+            <span class="s1">masking_key = self.buffer.consume_exactly(</span><span class="s4">4</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">masking_key </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">self.buffer.rollback()</span>
+                <span class="s2">return False</span>
+            <span class="s1">self.masker = XorMaskerSimple(masking_key)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.masker = XorMaskerNull()</span>
+
+        <span class="s1">self.buffer.commit()</span>
+        <span class="s1">self.header = Header(fin</span><span class="s2">, </span><span class="s1">rsv</span><span class="s2">, </span><span class="s1">opcode</span><span class="s2">, </span><span class="s1">payload_len</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s1">self.effective_opcode = self.header.opcode</span>
+        <span class="s2">if </span><span class="s1">self.header.opcode.iscontrol():</span>
+            <span class="s1">self.payload_required = payload_len</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.payload_required = </span><span class="s4">0</span>
+        <span class="s1">self.payload_consumed = </span><span class="s4">0</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">parse_extended_payload_length(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">opcode: Opcode</span><span class="s2">, </span><span class="s1">payload_len: int</span>
+    <span class="s1">) -&gt; Optional[int]:</span>
+        <span class="s2">if </span><span class="s1">opcode.iscontrol() </span><span class="s2">and </span><span class="s1">payload_len &gt; MAX_PAYLOAD_NORMAL:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;Control frame with payload len &gt; 125&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">payload_len == PAYLOAD_LENGTH_TWO_BYTE:</span>
+            <span class="s1">data = self.buffer.consume_exactly(</span><span class="s4">2</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">return None</span>
+            <span class="s1">(payload_len</span><span class="s2">,</span><span class="s1">) = struct.unpack(</span><span class="s5">&quot;!H&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+            <span class="s2">if </span><span class="s1">payload_len &lt;= MAX_PAYLOAD_NORMAL:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span>
+                    <span class="s5">&quot;Payload length used 2 bytes when 1 would have sufficed&quot;</span>
+                <span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">payload_len == PAYLOAD_LENGTH_EIGHT_BYTE:</span>
+            <span class="s1">data = self.buffer.consume_exactly(</span><span class="s4">8</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">return None</span>
+            <span class="s1">(payload_len</span><span class="s2">,</span><span class="s1">) = struct.unpack(</span><span class="s5">&quot;!Q&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+            <span class="s2">if </span><span class="s1">payload_len &lt;= MAX_PAYLOAD_TWO_BYTE:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span>
+                    <span class="s5">&quot;Payload length used 8 bytes when 2 would have sufficed&quot;</span>
+                <span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">payload_len &gt;&gt; </span><span class="s4">63</span><span class="s1">:</span>
+                <span class="s3"># I'm not sure why this is illegal, but that's what the RFC</span>
+                <span class="s3"># says, so...</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;8-byte payload length with non-zero MSB&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">payload_len</span>
+
+    <span class="s2">def </span><span class="s1">extension_processing(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">opcode: Opcode</span><span class="s2">, </span><span class="s1">rsv: RsvBits</span><span class="s2">, </span><span class="s1">payload_len: int</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">rsv_used = [</span><span class="s2">False, False, False</span><span class="s1">]</span>
+        <span class="s2">for </span><span class="s1">extension </span><span class="s2">in </span><span class="s1">self.extensions:</span>
+            <span class="s1">result = extension.frame_inbound_header(self</span><span class="s2">, </span><span class="s1">opcode</span><span class="s2">, </span><span class="s1">rsv</span><span class="s2">, </span><span class="s1">payload_len)</span>
+            <span class="s2">if </span><span class="s1">isinstance(result</span><span class="s2">, </span><span class="s1">CloseReason):</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;error in extension&quot;</span><span class="s2">, </span><span class="s1">result)</span>
+            <span class="s2">for </span><span class="s1">bit</span><span class="s2">, </span><span class="s1">used </span><span class="s2">in </span><span class="s1">enumerate(result):</span>
+                <span class="s2">if </span><span class="s1">used:</span>
+                    <span class="s1">rsv_used[bit] = </span><span class="s2">True</span>
+        <span class="s2">for </span><span class="s1">expected</span><span class="s2">, </span><span class="s1">found </span><span class="s2">in </span><span class="s1">zip(rsv_used</span><span class="s2">, </span><span class="s1">rsv):</span>
+            <span class="s2">if </span><span class="s1">found </span><span class="s2">and not </span><span class="s1">expected:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;Reserved bit set unexpectedly&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">FrameProtocol:</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">client: bool</span><span class="s2">, </span><span class="s1">extensions: List[</span><span class="s5">&quot;Extension&quot;</span><span class="s1">]) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.client = client</span>
+        <span class="s1">self.extensions = [ext </span><span class="s2">for </span><span class="s1">ext </span><span class="s2">in </span><span class="s1">extensions </span><span class="s2">if </span><span class="s1">ext.enabled()]</span>
+
+        <span class="s3"># Global state</span>
+        <span class="s1">self._frame_decoder = FrameDecoder(self.client</span><span class="s2">, </span><span class="s1">self.extensions)</span>
+        <span class="s1">self._message_decoder = MessageDecoder()</span>
+        <span class="s1">self._parse_more = self._parse_more_gen()</span>
+
+        <span class="s1">self._outbound_opcode: Optional[Opcode] = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">_process_close(self</span><span class="s2">, </span><span class="s1">frame: Frame) -&gt; Frame:</span>
+        <span class="s1">data = frame.payload</span>
+        <span class="s2">assert </span><span class="s1">isinstance(data</span><span class="s2">, </span><span class="s1">(bytes</span><span class="s2">, </span><span class="s1">bytearray))</span>
+
+        <span class="s2">if not </span><span class="s1">data:</span>
+            <span class="s3"># &quot;If this Close control frame contains no status code, _The</span>
+            <span class="s3"># WebSocket Connection Close Code_ is considered to be 1005&quot;</span>
+            <span class="s1">data = (CloseReason.NO_STATUS_RCVD</span><span class="s2">, </span><span class="s5">&quot;&quot;</span><span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">len(data) == </span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;CLOSE with 1 byte payload&quot;</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">(code</span><span class="s2">,</span><span class="s1">) = struct.unpack(</span><span class="s5">&quot;!H&quot;</span><span class="s2">, </span><span class="s1">data[:</span><span class="s4">2</span><span class="s1">])</span>
+            <span class="s2">if </span><span class="s1">code &lt; MIN_CLOSE_REASON </span><span class="s2">or </span><span class="s1">code &gt; MAX_CLOSE_REASON:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;CLOSE with invalid code&quot;</span><span class="s1">)</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">code = CloseReason(code)</span>
+            <span class="s2">except </span><span class="s1">ValueError:</span>
+                <span class="s2">pass</span>
+            <span class="s2">if </span><span class="s1">code </span><span class="s2">in </span><span class="s1">LOCAL_ONLY_CLOSE_REASONS:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;remote CLOSE with local-only reason&quot;</span><span class="s1">)</span>
+            <span class="s2">if not </span><span class="s1">isinstance(code</span><span class="s2">, </span><span class="s1">CloseReason) </span><span class="s2">and </span><span class="s1">code &lt;= MAX_PROTOCOL_CLOSE_REASON:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span><span class="s5">&quot;CLOSE with unknown reserved code&quot;</span><span class="s1">)</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">reason = data[</span><span class="s4">2</span><span class="s1">:].decode(</span><span class="s5">&quot;utf-8&quot;</span><span class="s1">)</span>
+            <span class="s2">except </span><span class="s1">UnicodeDecodeError </span><span class="s2">as </span><span class="s1">exc:</span>
+                <span class="s2">raise </span><span class="s1">ParseFailed(</span>
+                    <span class="s5">&quot;Error decoding CLOSE reason: &quot; </span><span class="s1">+ str(exc)</span><span class="s2">,</span>
+                    <span class="s1">CloseReason.INVALID_FRAME_PAYLOAD_DATA</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s1">data = (code</span><span class="s2">, </span><span class="s1">reason)</span>
+
+        <span class="s2">return </span><span class="s1">Frame(frame.opcode</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">frame.frame_finished</span><span class="s2">, </span><span class="s1">frame.message_finished)</span>
+
+    <span class="s2">def </span><span class="s1">_parse_more_gen(self) -&gt; Generator[Optional[Frame]</span><span class="s2">, None, None</span><span class="s1">]:</span>
+        <span class="s3"># Consume as much as we can from self._buffer, yielding events, and</span>
+        <span class="s3"># then yield None when we need more data. Or raise ParseFailed.</span>
+
+        <span class="s3"># XX FIXME this should probably be refactored so that we never see</span>
+        <span class="s3"># disabled extensions in the first place...</span>
+        <span class="s1">self.extensions = [ext </span><span class="s2">for </span><span class="s1">ext </span><span class="s2">in </span><span class="s1">self.extensions </span><span class="s2">if </span><span class="s1">ext.enabled()]</span>
+        <span class="s1">closed = </span><span class="s2">False</span>
+
+        <span class="s2">while not </span><span class="s1">closed:</span>
+            <span class="s1">frame = self._frame_decoder.process_buffer()</span>
+
+            <span class="s2">if </span><span class="s1">frame </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s2">if not </span><span class="s1">frame.opcode.iscontrol():</span>
+                    <span class="s1">frame = self._message_decoder.process_frame(frame)</span>
+                <span class="s2">elif </span><span class="s1">frame.opcode == Opcode.CLOSE:</span>
+                    <span class="s1">frame = self._process_close(frame)</span>
+                    <span class="s1">closed = </span><span class="s2">True</span>
+
+            <span class="s2">yield </span><span class="s1">frame</span>
+
+    <span class="s2">def </span><span class="s1">receive_bytes(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self._frame_decoder.receive_bytes(data)</span>
+
+    <span class="s2">def </span><span class="s1">received_frames(self) -&gt; Generator[Frame</span><span class="s2">, None, None</span><span class="s1">]:</span>
+        <span class="s2">for </span><span class="s1">event </span><span class="s2">in </span><span class="s1">self._parse_more:</span>
+            <span class="s2">if </span><span class="s1">event </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">break</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">yield </span><span class="s1">event</span>
+
+    <span class="s2">def </span><span class="s1">close(self</span><span class="s2">, </span><span class="s1">code: Optional[int] = </span><span class="s2">None, </span><span class="s1">reason: Optional[str] = </span><span class="s2">None</span><span class="s1">) -&gt; bytes:</span>
+        <span class="s1">payload = bytearray()</span>
+        <span class="s2">if </span><span class="s1">code </span><span class="s2">is None and </span><span class="s1">reason </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;cannot specify a reason without a code&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">code </span><span class="s2">in </span><span class="s1">LOCAL_ONLY_CLOSE_REASONS:</span>
+            <span class="s1">code = CloseReason.NORMAL_CLOSURE</span>
+        <span class="s2">if </span><span class="s1">code </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">payload += bytearray(struct.pack(</span><span class="s5">&quot;!H&quot;</span><span class="s2">, </span><span class="s1">code))</span>
+            <span class="s2">if </span><span class="s1">reason </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">payload += _truncate_utf8(</span>
+                    <span class="s1">reason.encode(</span><span class="s5">&quot;utf-8&quot;</span><span class="s1">)</span><span class="s2">, </span><span class="s1">MAX_PAYLOAD_NORMAL - </span><span class="s4">2</span>
+                <span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">self._serialize_frame(Opcode.CLOSE</span><span class="s2">, </span><span class="s1">payload)</span>
+
+    <span class="s2">def </span><span class="s1">ping(self</span><span class="s2">, </span><span class="s1">payload: bytes = </span><span class="s6">b&quot;&quot;</span><span class="s1">) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">self._serialize_frame(Opcode.PING</span><span class="s2">, </span><span class="s1">payload)</span>
+
+    <span class="s2">def </span><span class="s1">pong(self</span><span class="s2">, </span><span class="s1">payload: bytes = </span><span class="s6">b&quot;&quot;</span><span class="s1">) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">self._serialize_frame(Opcode.PONG</span><span class="s2">, </span><span class="s1">payload)</span>
+
+    <span class="s2">def </span><span class="s1">send_data(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">payload: Union[bytes</span><span class="s2">, </span><span class="s1">bytearray</span><span class="s2">, </span><span class="s1">str] = </span><span class="s6">b&quot;&quot;</span><span class="s2">, </span><span class="s1">fin: bool = </span><span class="s2">True</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">isinstance(payload</span><span class="s2">, </span><span class="s1">(bytes</span><span class="s2">, </span><span class="s1">bytearray</span><span class="s2">, </span><span class="s1">memoryview)):</span>
+            <span class="s1">opcode = Opcode.BINARY</span>
+        <span class="s2">elif </span><span class="s1">isinstance(payload</span><span class="s2">, </span><span class="s1">str):</span>
+            <span class="s1">opcode = Opcode.TEXT</span>
+            <span class="s1">payload = payload.encode(</span><span class="s5">&quot;utf-8&quot;</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s5">&quot;Must provide bytes or text&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">self._outbound_opcode </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self._outbound_opcode = opcode</span>
+        <span class="s2">elif </span><span class="s1">self._outbound_opcode </span><span class="s2">is not </span><span class="s1">opcode:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;Data type mismatch inside message&quot;</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">opcode = Opcode.CONTINUATION</span>
+
+        <span class="s2">if </span><span class="s1">fin:</span>
+            <span class="s1">self._outbound_opcode = </span><span class="s2">None</span>
+
+        <span class="s2">return </span><span class="s1">self._serialize_frame(opcode</span><span class="s2">, </span><span class="s1">payload</span><span class="s2">, </span><span class="s1">fin)</span>
+
+    <span class="s2">def </span><span class="s1">_make_fin_rsv_opcode(self</span><span class="s2">, </span><span class="s1">fin: bool</span><span class="s2">, </span><span class="s1">rsv: RsvBits</span><span class="s2">, </span><span class="s1">opcode: Opcode) -&gt; int:</span>
+        <span class="s1">fin_bits = int(fin) &lt;&lt; </span><span class="s4">7</span>
+        <span class="s1">rsv_bits = (int(rsv.rsv1) &lt;&lt; </span><span class="s4">6</span><span class="s1">) + (int(rsv.rsv2) &lt;&lt; </span><span class="s4">5</span><span class="s1">) + (int(rsv.rsv3) &lt;&lt; </span><span class="s4">4</span><span class="s1">)</span>
+        <span class="s1">opcode_bits = int(opcode)</span>
+
+        <span class="s2">return </span><span class="s1">fin_bits | rsv_bits | opcode_bits</span>
+
+    <span class="s2">def </span><span class="s1">_serialize_frame(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">opcode: Opcode</span><span class="s2">, </span><span class="s1">payload: bytes = </span><span class="s6">b&quot;&quot;</span><span class="s2">, </span><span class="s1">fin: bool = </span><span class="s2">True</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s1">rsv = RsvBits(</span><span class="s2">False, False, False</span><span class="s1">)</span>
+        <span class="s2">for </span><span class="s1">extension </span><span class="s2">in </span><span class="s1">reversed(self.extensions):</span>
+            <span class="s1">rsv</span><span class="s2">, </span><span class="s1">payload = extension.frame_outbound(self</span><span class="s2">, </span><span class="s1">opcode</span><span class="s2">, </span><span class="s1">rsv</span><span class="s2">, </span><span class="s1">payload</span><span class="s2">, </span><span class="s1">fin)</span>
+
+        <span class="s1">fin_rsv_opcode = self._make_fin_rsv_opcode(fin</span><span class="s2">, </span><span class="s1">rsv</span><span class="s2">, </span><span class="s1">opcode)</span>
+
+        <span class="s1">payload_length = len(payload)</span>
+        <span class="s1">quad_payload = </span><span class="s2">False</span>
+        <span class="s2">if </span><span class="s1">payload_length &lt;= MAX_PAYLOAD_NORMAL:</span>
+            <span class="s1">first_payload = payload_length</span>
+            <span class="s1">second_payload = </span><span class="s2">None</span>
+        <span class="s2">elif </span><span class="s1">payload_length &lt;= MAX_PAYLOAD_TWO_BYTE:</span>
+            <span class="s1">first_payload = PAYLOAD_LENGTH_TWO_BYTE</span>
+            <span class="s1">second_payload = payload_length</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">first_payload = PAYLOAD_LENGTH_EIGHT_BYTE</span>
+            <span class="s1">second_payload = payload_length</span>
+            <span class="s1">quad_payload = </span><span class="s2">True</span>
+
+        <span class="s2">if </span><span class="s1">self.client:</span>
+            <span class="s1">first_payload |= </span><span class="s4">1 </span><span class="s1">&lt;&lt; </span><span class="s4">7</span>
+
+        <span class="s1">header = bytearray([fin_rsv_opcode</span><span class="s2">, </span><span class="s1">first_payload])</span>
+        <span class="s2">if </span><span class="s1">second_payload </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">opcode.iscontrol():</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s5">&quot;payload too long for control frame&quot;</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">quad_payload:</span>
+                <span class="s1">header += bytearray(struct.pack(</span><span class="s5">&quot;!Q&quot;</span><span class="s2">, </span><span class="s1">second_payload))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">header += bytearray(struct.pack(</span><span class="s5">&quot;!H&quot;</span><span class="s2">, </span><span class="s1">second_payload))</span>
+
+        <span class="s2">if </span><span class="s1">self.client:</span>
+            <span class="s3"># &quot;The masking key is a 32-bit value chosen at random by the</span>
+            <span class="s3"># client.  When preparing a masked frame, the client MUST pick a</span>
+            <span class="s3"># fresh masking key from the set of allowed 32-bit values.  The</span>
+            <span class="s3"># masking key needs to be unpredictable; thus, the masking key</span>
+            <span class="s3"># MUST be derived from a strong source of entropy, and the masking</span>
+            <span class="s3"># key for a given frame MUST NOT make it simple for a server/proxy</span>
+            <span class="s3"># to predict the masking key for a subsequent frame.  The</span>
+            <span class="s3"># unpredictability of the masking key is essential to prevent</span>
+            <span class="s3"># authors of malicious applications from selecting the bytes that</span>
+            <span class="s3"># appear on the wire.&quot;</span>
+            <span class="s3">#   -- https://tools.ietf.org/html/rfc6455#section-5.3</span>
+            <span class="s1">masking_key = os.urandom(</span><span class="s4">4</span><span class="s1">)</span>
+            <span class="s1">masker = XorMaskerSimple(masking_key)</span>
+            <span class="s2">return </span><span class="s1">header + masking_key + masker.process(payload)</span>
+
+        <span class="s2">return </span><span class="s1">header + payload</span>
+</pre>
+</body>
+</html>

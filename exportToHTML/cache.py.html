@@ -1,0 +1,115 @@
+<html>
+<head>
+<title>cache.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cache.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.core.cache </span><span class="s0">import </span><span class="s1">InvalidCacheBackendError</span><span class="s0">, </span><span class="s1">caches</span>
+<span class="s0">from </span><span class="s1">django.core.cache.utils </span><span class="s0">import </span><span class="s1">make_template_fragment_key</span>
+<span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">Library</span><span class="s0">, </span><span class="s1">Node</span><span class="s0">, </span><span class="s1">TemplateSyntaxError</span><span class="s0">, </span><span class="s1">VariableDoesNotExist</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+<span class="s1">register = Library()</span>
+
+
+<span class="s0">class </span><span class="s1">CacheNode(Node):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">nodelist</span><span class="s0">, </span><span class="s1">expire_time_var</span><span class="s0">, </span><span class="s1">fragment_name</span><span class="s0">, </span><span class="s1">vary_on</span><span class="s0">, </span><span class="s1">cache_name):</span>
+        <span class="s1">self.nodelist = nodelist</span>
+        <span class="s1">self.expire_time_var = expire_time_var</span>
+        <span class="s1">self.fragment_name = fragment_name</span>
+        <span class="s1">self.vary_on = vary_on</span>
+        <span class="s1">self.cache_name = cache_name</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">context):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">expire_time = self.expire_time_var.resolve(context)</span>
+        <span class="s0">except </span><span class="s1">VariableDoesNotExist:</span>
+            <span class="s0">raise </span><span class="s1">TemplateSyntaxError(</span><span class="s2">'&quot;cache&quot; tag got an unknown variable: %r' </span><span class="s1">% self.expire_time_var.var)</span>
+        <span class="s0">if </span><span class="s1">expire_time </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">expire_time = int(expire_time)</span>
+            <span class="s0">except </span><span class="s1">(ValueError</span><span class="s0">, </span><span class="s1">TypeError):</span>
+                <span class="s0">raise </span><span class="s1">TemplateSyntaxError(</span><span class="s2">'&quot;cache&quot; tag got a non-integer timeout value: %r' </span><span class="s1">% expire_time)</span>
+        <span class="s0">if </span><span class="s1">self.cache_name:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">cache_name = self.cache_name.resolve(context)</span>
+            <span class="s0">except </span><span class="s1">VariableDoesNotExist:</span>
+                <span class="s0">raise </span><span class="s1">TemplateSyntaxError(</span><span class="s2">'&quot;cache&quot; tag got an unknown variable: %r' </span><span class="s1">% self.cache_name.var)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">fragment_cache = caches[cache_name]</span>
+            <span class="s0">except </span><span class="s1">InvalidCacheBackendError:</span>
+                <span class="s0">raise </span><span class="s1">TemplateSyntaxError(</span><span class="s2">'Invalid cache name specified for cache tag: %r' </span><span class="s1">% cache_name)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">fragment_cache = caches[</span><span class="s2">'template_fragments'</span><span class="s1">]</span>
+            <span class="s0">except </span><span class="s1">InvalidCacheBackendError:</span>
+                <span class="s1">fragment_cache = caches[</span><span class="s2">'default'</span><span class="s1">]</span>
+
+        <span class="s1">vary_on = [var.resolve(context) </span><span class="s0">for </span><span class="s1">var </span><span class="s0">in </span><span class="s1">self.vary_on]</span>
+        <span class="s1">cache_key = make_template_fragment_key(self.fragment_name</span><span class="s0">, </span><span class="s1">vary_on)</span>
+        <span class="s1">value = fragment_cache.get(cache_key)</span>
+        <span class="s0">if </span><span class="s1">value </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">value = self.nodelist.render(context)</span>
+            <span class="s1">fragment_cache.set(cache_key</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">expire_time)</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s1">@register.tag(</span><span class="s2">'cache'</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">do_cache(parser</span><span class="s0">, </span><span class="s1">token):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    This will cache the contents of a template fragment for a given amount 
+    of time. 
+ 
+    Usage:: 
+ 
+        {% load cache %} 
+        {% cache [expire_time] [fragment_name] %} 
+            .. some expensive processing .. 
+        {% endcache %} 
+ 
+    This tag also supports varying by a list of arguments:: 
+ 
+        {% load cache %} 
+        {% cache [expire_time] [fragment_name] [var1] [var2] .. %} 
+            .. some expensive processing .. 
+        {% endcache %} 
+ 
+    Optionally the cache to use may be specified thus:: 
+ 
+        {% cache ....  using=&quot;cachename&quot; %} 
+ 
+    Each unique set of arguments will result in a unique cache entry. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">nodelist = parser.parse((</span><span class="s2">'endcache'</span><span class="s0">,</span><span class="s1">))</span>
+    <span class="s1">parser.delete_first_token()</span>
+    <span class="s1">tokens = token.split_contents()</span>
+    <span class="s0">if </span><span class="s1">len(tokens) &lt; </span><span class="s4">3</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">TemplateSyntaxError(</span><span class="s2">&quot;'%r' tag requires at least 2 arguments.&quot; </span><span class="s1">% tokens[</span><span class="s4">0</span><span class="s1">])</span>
+    <span class="s0">if </span><span class="s1">len(tokens) &gt; </span><span class="s4">3 </span><span class="s0">and </span><span class="s1">tokens[-</span><span class="s4">1</span><span class="s1">].startswith(</span><span class="s2">'using='</span><span class="s1">):</span>
+        <span class="s1">cache_name = parser.compile_filter(tokens[-</span><span class="s4">1</span><span class="s1">][len(</span><span class="s2">'using='</span><span class="s1">):])</span>
+        <span class="s1">tokens = tokens[:-</span><span class="s4">1</span><span class="s1">]</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">cache_name = </span><span class="s0">None</span>
+    <span class="s0">return </span><span class="s1">CacheNode(</span>
+        <span class="s1">nodelist</span><span class="s0">, </span><span class="s1">parser.compile_filter(tokens[</span><span class="s4">1</span><span class="s1">])</span><span class="s0">,</span>
+        <span class="s1">tokens[</span><span class="s4">2</span><span class="s1">]</span><span class="s0">,  </span><span class="s5"># fragment_name can't be a variable.</span>
+        <span class="s1">[parser.compile_filter(t) </span><span class="s0">for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">tokens[</span><span class="s4">3</span><span class="s1">:]]</span><span class="s0">,</span>
+        <span class="s1">cache_name</span><span class="s0">,</span>
+    <span class="s1">)</span>
+</pre>
+</body>
+</html>

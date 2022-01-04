@@ -1,0 +1,730 @@
+<html>
+<head>
+<title>ssh.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #a5c261;}
+.s5 { color: #6897bb;}
+.s6 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+ssh.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">binascii</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">re</span>
+<span class="s2">import </span><span class="s1">struct</span>
+<span class="s2">import </span><span class="s1">typing</span>
+<span class="s2">from </span><span class="s1">base64 </span><span class="s2">import </span><span class="s1">encodebytes </span><span class="s2">as </span><span class="s1">_base64_encode</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">UnsupportedAlgorithm</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.asymmetric </span><span class="s2">import </span><span class="s1">dsa</span><span class="s2">, </span><span class="s1">ec</span><span class="s2">, </span><span class="s1">ed25519</span><span class="s2">, </span><span class="s1">rsa</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.ciphers </span><span class="s2">import </span><span class="s1">Cipher</span><span class="s2">, </span><span class="s1">algorithms</span><span class="s2">, </span><span class="s1">modes</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.serialization </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">Encoding</span><span class="s2">,</span>
+    <span class="s1">NoEncryption</span><span class="s2">,</span>
+    <span class="s1">PrivateFormat</span><span class="s2">,</span>
+    <span class="s1">PublicFormat</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+<span class="s2">try</span><span class="s1">:</span>
+    <span class="s2">from </span><span class="s1">bcrypt </span><span class="s2">import </span><span class="s1">kdf </span><span class="s2">as </span><span class="s1">_bcrypt_kdf</span>
+
+    <span class="s1">_bcrypt_supported = </span><span class="s2">True</span>
+<span class="s2">except </span><span class="s1">ImportError:</span>
+    <span class="s1">_bcrypt_supported = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">_bcrypt_kdf(</span>
+        <span class="s1">password: bytes</span><span class="s2">,</span>
+        <span class="s1">salt: bytes</span><span class="s2">,</span>
+        <span class="s1">desired_key_bytes: int</span><span class="s2">,</span>
+        <span class="s1">rounds: int</span><span class="s2">,</span>
+        <span class="s1">ignore_few_rounds: bool = </span><span class="s2">False,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span><span class="s3">&quot;Need bcrypt module&quot;</span><span class="s1">)</span>
+
+
+<span class="s1">_SSH_ED25519 = </span><span class="s4">b&quot;ssh-ed25519&quot;</span>
+<span class="s1">_SSH_RSA = </span><span class="s4">b&quot;ssh-rsa&quot;</span>
+<span class="s1">_SSH_DSA = </span><span class="s4">b&quot;ssh-dss&quot;</span>
+<span class="s1">_ECDSA_NISTP256 = </span><span class="s4">b&quot;ecdsa-sha2-nistp256&quot;</span>
+<span class="s1">_ECDSA_NISTP384 = </span><span class="s4">b&quot;ecdsa-sha2-nistp384&quot;</span>
+<span class="s1">_ECDSA_NISTP521 = </span><span class="s4">b&quot;ecdsa-sha2-nistp521&quot;</span>
+<span class="s1">_CERT_SUFFIX = </span><span class="s4">b&quot;-cert-v01@openssh.com&quot;</span>
+
+<span class="s1">_SSH_PUBKEY_RC = re.compile(</span><span class="s4">br&quot;\A(\S+)[ \t]+(\S+)&quot;</span><span class="s1">)</span>
+<span class="s1">_SK_MAGIC = </span><span class="s4">b&quot;openssh-key-v1</span><span class="s2">\0</span><span class="s4">&quot;</span>
+<span class="s1">_SK_START = </span><span class="s4">b&quot;-----BEGIN OPENSSH PRIVATE KEY-----&quot;</span>
+<span class="s1">_SK_END = </span><span class="s4">b&quot;-----END OPENSSH PRIVATE KEY-----&quot;</span>
+<span class="s1">_BCRYPT = </span><span class="s4">b&quot;bcrypt&quot;</span>
+<span class="s1">_NONE = </span><span class="s4">b&quot;none&quot;</span>
+<span class="s1">_DEFAULT_CIPHER = </span><span class="s4">b&quot;aes256-ctr&quot;</span>
+<span class="s1">_DEFAULT_ROUNDS = </span><span class="s5">16</span>
+<span class="s1">_MAX_PASSWORD = </span><span class="s5">72</span>
+
+<span class="s0"># re is only way to work on bytes-like data</span>
+<span class="s1">_PEM_RC = re.compile(_SK_START + </span><span class="s4">b&quot;(.*?)&quot; </span><span class="s1">+ _SK_END</span><span class="s2">, </span><span class="s1">re.DOTALL)</span>
+
+<span class="s0"># padding for max blocksize</span>
+<span class="s1">_PADDING = memoryview(bytearray(range(</span><span class="s5">1</span><span class="s2">, </span><span class="s5">1 </span><span class="s1">+ </span><span class="s5">16</span><span class="s1">)))</span>
+
+<span class="s0"># ciphers that are actually used in key wrapping</span>
+<span class="s1">_SSH_CIPHERS = {</span>
+    <span class="s4">b&quot;aes256-ctr&quot;</span><span class="s1">: (algorithms.AES</span><span class="s2">, </span><span class="s5">32</span><span class="s2">, </span><span class="s1">modes.CTR</span><span class="s2">, </span><span class="s5">16</span><span class="s1">)</span><span class="s2">,</span>
+    <span class="s4">b&quot;aes256-cbc&quot;</span><span class="s1">: (algorithms.AES</span><span class="s2">, </span><span class="s5">32</span><span class="s2">, </span><span class="s1">modes.CBC</span><span class="s2">, </span><span class="s5">16</span><span class="s1">)</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s0"># map local curve name to key type</span>
+<span class="s1">_ECDSA_KEY_TYPE = {</span>
+    <span class="s3">&quot;secp256r1&quot;</span><span class="s1">: _ECDSA_NISTP256</span><span class="s2">,</span>
+    <span class="s3">&quot;secp384r1&quot;</span><span class="s1">: _ECDSA_NISTP384</span><span class="s2">,</span>
+    <span class="s3">&quot;secp521r1&quot;</span><span class="s1">: _ECDSA_NISTP521</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">_U32 = struct.Struct(</span><span class="s4">b&quot;&gt;I&quot;</span><span class="s1">)</span>
+<span class="s1">_U64 = struct.Struct(</span><span class="s4">b&quot;&gt;Q&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_ecdsa_key_type(public_key):</span>
+    <span class="s6">&quot;&quot;&quot;Return SSH key_type and curve_name for private key.&quot;&quot;&quot;</span>
+    <span class="s1">curve = public_key.curve</span>
+    <span class="s2">if </span><span class="s1">curve.name </span><span class="s2">not in </span><span class="s1">_ECDSA_KEY_TYPE:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s3">&quot;Unsupported curve for ssh private key: %r&quot; </span><span class="s1">% curve.name</span>
+        <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">_ECDSA_KEY_TYPE[curve.name]</span>
+
+
+<span class="s2">def </span><span class="s1">_ssh_pem_encode(data</span><span class="s2">, </span><span class="s1">prefix=_SK_START + </span><span class="s4">b&quot;</span><span class="s2">\n</span><span class="s4">&quot;</span><span class="s2">, </span><span class="s1">suffix=_SK_END + </span><span class="s4">b&quot;</span><span class="s2">\n</span><span class="s4">&quot;</span><span class="s1">):</span>
+    <span class="s2">return </span><span class="s4">b&quot;&quot;</span><span class="s1">.join([prefix</span><span class="s2">, </span><span class="s1">_base64_encode(data)</span><span class="s2">, </span><span class="s1">suffix])</span>
+
+
+<span class="s2">def </span><span class="s1">_check_block_size(data</span><span class="s2">, </span><span class="s1">block_len):</span>
+    <span class="s6">&quot;&quot;&quot;Require data to be full blocks&quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">data </span><span class="s2">or </span><span class="s1">len(data) % block_len != </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: missing padding&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_check_empty(data):</span>
+    <span class="s6">&quot;&quot;&quot;All data should have been parsed.&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">data:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: unparsed data&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_init_cipher(ciphername</span><span class="s2">, </span><span class="s1">password</span><span class="s2">, </span><span class="s1">salt</span><span class="s2">, </span><span class="s1">rounds</span><span class="s2">, </span><span class="s1">backend):</span>
+    <span class="s6">&quot;&quot;&quot;Generate key + iv and return cipher.&quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">password:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Key is password-protected.&quot;</span><span class="s1">)</span>
+
+    <span class="s1">algo</span><span class="s2">, </span><span class="s1">key_len</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">, </span><span class="s1">iv_len = _SSH_CIPHERS[ciphername]</span>
+    <span class="s1">seed = _bcrypt_kdf(password</span><span class="s2">, </span><span class="s1">salt</span><span class="s2">, </span><span class="s1">key_len + iv_len</span><span class="s2">, </span><span class="s1">rounds</span><span class="s2">, True</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">Cipher(algo(seed[:key_len])</span><span class="s2">, </span><span class="s1">mode(seed[key_len:])</span><span class="s2">, </span><span class="s1">backend)</span>
+
+
+<span class="s2">def </span><span class="s1">_get_u32(data):</span>
+    <span class="s6">&quot;&quot;&quot;Uint32&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">len(data) &lt; </span><span class="s5">4</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid data&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">_U32.unpack(data[:</span><span class="s5">4</span><span class="s1">])[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">data[</span><span class="s5">4</span><span class="s1">:]</span>
+
+
+<span class="s2">def </span><span class="s1">_get_u64(data):</span>
+    <span class="s6">&quot;&quot;&quot;Uint64&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">len(data) &lt; </span><span class="s5">8</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid data&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">_U64.unpack(data[:</span><span class="s5">8</span><span class="s1">])[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">data[</span><span class="s5">8</span><span class="s1">:]</span>
+
+
+<span class="s2">def </span><span class="s1">_get_sshstr(data):</span>
+    <span class="s6">&quot;&quot;&quot;Bytes with u32 length prefix&quot;&quot;&quot;</span>
+    <span class="s1">n</span><span class="s2">, </span><span class="s1">data = _get_u32(data)</span>
+    <span class="s2">if </span><span class="s1">n &gt; len(data):</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid data&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">data[:n]</span><span class="s2">, </span><span class="s1">data[n:]</span>
+
+
+<span class="s2">def </span><span class="s1">_get_mpint(data):</span>
+    <span class="s6">&quot;&quot;&quot;Big integer.&quot;&quot;&quot;</span>
+    <span class="s1">val</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s2">if </span><span class="s1">val </span><span class="s2">and </span><span class="s1">val[</span><span class="s5">0</span><span class="s1">] &gt; </span><span class="s5">0x7F</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid data&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">int.from_bytes(val</span><span class="s2">, </span><span class="s3">&quot;big&quot;</span><span class="s1">)</span><span class="s2">, </span><span class="s1">data</span>
+
+
+<span class="s2">def </span><span class="s1">_to_mpint(val):</span>
+    <span class="s6">&quot;&quot;&quot;Storage format for signed bigint.&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">val &lt; </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;negative mpint not allowed&quot;</span><span class="s1">)</span>
+    <span class="s2">if not </span><span class="s1">val:</span>
+        <span class="s2">return </span><span class="s4">b&quot;&quot;</span>
+    <span class="s1">nbytes = (val.bit_length() + </span><span class="s5">8</span><span class="s1">) // </span><span class="s5">8</span>
+    <span class="s2">return </span><span class="s1">utils.int_to_bytes(val</span><span class="s2">, </span><span class="s1">nbytes)</span>
+
+
+<span class="s2">class </span><span class="s1">_FragList(object):</span>
+    <span class="s6">&quot;&quot;&quot;Build recursive structure without data copy.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">init=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">self.flist = []</span>
+        <span class="s2">if </span><span class="s1">init:</span>
+            <span class="s1">self.flist.extend(init)</span>
+
+    <span class="s2">def </span><span class="s1">put_raw(self</span><span class="s2">, </span><span class="s1">val):</span>
+        <span class="s6">&quot;&quot;&quot;Add plain bytes&quot;&quot;&quot;</span>
+        <span class="s1">self.flist.append(val)</span>
+
+    <span class="s2">def </span><span class="s1">put_u32(self</span><span class="s2">, </span><span class="s1">val):</span>
+        <span class="s6">&quot;&quot;&quot;Big-endian uint32&quot;&quot;&quot;</span>
+        <span class="s1">self.flist.append(_U32.pack(val))</span>
+
+    <span class="s2">def </span><span class="s1">put_sshstr(self</span><span class="s2">, </span><span class="s1">val):</span>
+        <span class="s6">&quot;&quot;&quot;Bytes prefixed with u32 length&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">isinstance(val</span><span class="s2">, </span><span class="s1">(bytes</span><span class="s2">, </span><span class="s1">memoryview</span><span class="s2">, </span><span class="s1">bytearray)):</span>
+            <span class="s1">self.put_u32(len(val))</span>
+            <span class="s1">self.flist.append(val)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.put_u32(val.size())</span>
+            <span class="s1">self.flist.extend(val.flist)</span>
+
+    <span class="s2">def </span><span class="s1">put_mpint(self</span><span class="s2">, </span><span class="s1">val):</span>
+        <span class="s6">&quot;&quot;&quot;Big-endian bigint prefixed with u32 length&quot;&quot;&quot;</span>
+        <span class="s1">self.put_sshstr(_to_mpint(val))</span>
+
+    <span class="s2">def </span><span class="s1">size(self):</span>
+        <span class="s6">&quot;&quot;&quot;Current number of bytes&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">sum(map(len</span><span class="s2">, </span><span class="s1">self.flist))</span>
+
+    <span class="s2">def </span><span class="s1">render(self</span><span class="s2">, </span><span class="s1">dstbuf</span><span class="s2">, </span><span class="s1">pos=</span><span class="s5">0</span><span class="s1">):</span>
+        <span class="s6">&quot;&quot;&quot;Write into bytearray&quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">frag </span><span class="s2">in </span><span class="s1">self.flist:</span>
+            <span class="s1">flen = len(frag)</span>
+            <span class="s1">start</span><span class="s2">, </span><span class="s1">pos = pos</span><span class="s2">, </span><span class="s1">pos + flen</span>
+            <span class="s1">dstbuf[start:pos] = frag</span>
+        <span class="s2">return </span><span class="s1">pos</span>
+
+    <span class="s2">def </span><span class="s1">tobytes(self):</span>
+        <span class="s6">&quot;&quot;&quot;Return as bytes&quot;&quot;&quot;</span>
+        <span class="s1">buf = memoryview(bytearray(self.size()))</span>
+        <span class="s1">self.render(buf)</span>
+        <span class="s2">return </span><span class="s1">buf.tobytes()</span>
+
+
+<span class="s2">class </span><span class="s1">_SSHFormatRSA(object):</span>
+    <span class="s6">&quot;&quot;&quot;Format for RSA keys. 
+ 
+    Public: 
+        mpint e, n 
+    Private: 
+        mpint n, e, d, iqmp, p, q 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">get_public(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s6">&quot;&quot;&quot;RSA public fields&quot;&quot;&quot;</span>
+        <span class="s1">e</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">n</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s2">return </span><span class="s1">(e</span><span class="s2">, </span><span class="s1">n)</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_public(self</span><span class="s2">, </span><span class="s1">key_type</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make RSA public key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(e</span><span class="s2">, </span><span class="s1">n)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">public_numbers = rsa.RSAPublicNumbers(e</span><span class="s2">, </span><span class="s1">n)</span>
+        <span class="s1">public_key = public_numbers.public_key(backend)</span>
+        <span class="s2">return </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_private(self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">pubfields</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make RSA private key from data.&quot;&quot;&quot;</span>
+        <span class="s1">n</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">e</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">d</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">iqmp</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">p</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">q</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+
+        <span class="s2">if </span><span class="s1">(e</span><span class="s2">, </span><span class="s1">n) != pubfields:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: rsa field mismatch&quot;</span><span class="s1">)</span>
+        <span class="s1">dmp1 = rsa.rsa_crt_dmp1(d</span><span class="s2">, </span><span class="s1">p)</span>
+        <span class="s1">dmq1 = rsa.rsa_crt_dmq1(d</span><span class="s2">, </span><span class="s1">q)</span>
+        <span class="s1">public_numbers = rsa.RSAPublicNumbers(e</span><span class="s2">, </span><span class="s1">n)</span>
+        <span class="s1">private_numbers = rsa.RSAPrivateNumbers(</span>
+            <span class="s1">p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">d</span><span class="s2">, </span><span class="s1">dmp1</span><span class="s2">, </span><span class="s1">dmq1</span><span class="s2">, </span><span class="s1">iqmp</span><span class="s2">, </span><span class="s1">public_numbers</span>
+        <span class="s1">)</span>
+        <span class="s1">private_key = private_numbers.private_key(backend)</span>
+        <span class="s2">return </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">encode_public(self</span><span class="s2">, </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">f_pub):</span>
+        <span class="s6">&quot;&quot;&quot;Write RSA public key&quot;&quot;&quot;</span>
+        <span class="s1">pubn = public_key.public_numbers()</span>
+        <span class="s1">f_pub.put_mpint(pubn.e)</span>
+        <span class="s1">f_pub.put_mpint(pubn.n)</span>
+
+    <span class="s2">def </span><span class="s1">encode_private(self</span><span class="s2">, </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">f_priv):</span>
+        <span class="s6">&quot;&quot;&quot;Write RSA private key&quot;&quot;&quot;</span>
+        <span class="s1">private_numbers = private_key.private_numbers()</span>
+        <span class="s1">public_numbers = private_numbers.public_numbers</span>
+
+        <span class="s1">f_priv.put_mpint(public_numbers.n)</span>
+        <span class="s1">f_priv.put_mpint(public_numbers.e)</span>
+
+        <span class="s1">f_priv.put_mpint(private_numbers.d)</span>
+        <span class="s1">f_priv.put_mpint(private_numbers.iqmp)</span>
+        <span class="s1">f_priv.put_mpint(private_numbers.p)</span>
+        <span class="s1">f_priv.put_mpint(private_numbers.q)</span>
+
+
+<span class="s2">class </span><span class="s1">_SSHFormatDSA(object):</span>
+    <span class="s6">&quot;&quot;&quot;Format for DSA keys. 
+ 
+    Public: 
+        mpint p, q, g, y 
+    Private: 
+        mpint p, q, g, y, x 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">get_public(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s6">&quot;&quot;&quot;DSA public fields&quot;&quot;&quot;</span>
+        <span class="s1">p</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">q</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">g</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s1">y</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+        <span class="s2">return </span><span class="s1">(p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">g</span><span class="s2">, </span><span class="s1">y)</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_public(self</span><span class="s2">, </span><span class="s1">key_type</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make DSA public key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">g</span><span class="s2">, </span><span class="s1">y)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">parameter_numbers = dsa.DSAParameterNumbers(p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">g)</span>
+        <span class="s1">public_numbers = dsa.DSAPublicNumbers(y</span><span class="s2">, </span><span class="s1">parameter_numbers)</span>
+        <span class="s1">self._validate(public_numbers)</span>
+        <span class="s1">public_key = public_numbers.public_key(backend)</span>
+        <span class="s2">return </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_private(self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">pubfields</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make DSA private key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">g</span><span class="s2">, </span><span class="s1">y)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+
+        <span class="s2">if </span><span class="s1">(p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">g</span><span class="s2">, </span><span class="s1">y) != pubfields:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: dsa field mismatch&quot;</span><span class="s1">)</span>
+        <span class="s1">parameter_numbers = dsa.DSAParameterNumbers(p</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">g)</span>
+        <span class="s1">public_numbers = dsa.DSAPublicNumbers(y</span><span class="s2">, </span><span class="s1">parameter_numbers)</span>
+        <span class="s1">self._validate(public_numbers)</span>
+        <span class="s1">private_numbers = dsa.DSAPrivateNumbers(x</span><span class="s2">, </span><span class="s1">public_numbers)</span>
+        <span class="s1">private_key = private_numbers.private_key(backend)</span>
+        <span class="s2">return </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">encode_public(self</span><span class="s2">, </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">f_pub):</span>
+        <span class="s6">&quot;&quot;&quot;Write DSA public key&quot;&quot;&quot;</span>
+        <span class="s1">public_numbers = public_key.public_numbers()</span>
+        <span class="s1">parameter_numbers = public_numbers.parameter_numbers</span>
+        <span class="s1">self._validate(public_numbers)</span>
+
+        <span class="s1">f_pub.put_mpint(parameter_numbers.p)</span>
+        <span class="s1">f_pub.put_mpint(parameter_numbers.q)</span>
+        <span class="s1">f_pub.put_mpint(parameter_numbers.g)</span>
+        <span class="s1">f_pub.put_mpint(public_numbers.y)</span>
+
+    <span class="s2">def </span><span class="s1">encode_private(self</span><span class="s2">, </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">f_priv):</span>
+        <span class="s6">&quot;&quot;&quot;Write DSA private key&quot;&quot;&quot;</span>
+        <span class="s1">self.encode_public(private_key.public_key()</span><span class="s2">, </span><span class="s1">f_priv)</span>
+        <span class="s1">f_priv.put_mpint(private_key.private_numbers().x)</span>
+
+    <span class="s2">def </span><span class="s1">_validate(self</span><span class="s2">, </span><span class="s1">public_numbers):</span>
+        <span class="s1">parameter_numbers = public_numbers.parameter_numbers</span>
+        <span class="s2">if </span><span class="s1">parameter_numbers.p.bit_length() != </span><span class="s5">1024</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;SSH supports only 1024 bit DSA keys&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">_SSHFormatECDSA(object):</span>
+    <span class="s6">&quot;&quot;&quot;Format for ECDSA keys. 
+ 
+    Public: 
+        str curve 
+        bytes point 
+    Private: 
+        str curve 
+        bytes point 
+        mpint secret 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">ssh_curve_name</span><span class="s2">, </span><span class="s1">curve):</span>
+        <span class="s1">self.ssh_curve_name = ssh_curve_name</span>
+        <span class="s1">self.curve = curve</span>
+
+    <span class="s2">def </span><span class="s1">get_public(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s6">&quot;&quot;&quot;ECDSA public fields&quot;&quot;&quot;</span>
+        <span class="s1">curve</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">point</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s2">if </span><span class="s1">curve != self.ssh_curve_name:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Curve name mismatch&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">point[</span><span class="s5">0</span><span class="s1">] != </span><span class="s5">4</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s3">&quot;Need uncompressed point&quot;</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">(curve</span><span class="s2">, </span><span class="s1">point)</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_public(self</span><span class="s2">, </span><span class="s1">key_type</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make ECDSA public key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(curve_name</span><span class="s2">, </span><span class="s1">point)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">public_key = ec.EllipticCurvePublicKey.from_encoded_point(</span>
+            <span class="s1">self.curve</span><span class="s2">, </span><span class="s1">point.tobytes()</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_private(self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">pubfields</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make ECDSA private key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(curve_name</span><span class="s2">, </span><span class="s1">point)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">secret</span><span class="s2">, </span><span class="s1">data = _get_mpint(data)</span>
+
+        <span class="s2">if </span><span class="s1">(curve_name</span><span class="s2">, </span><span class="s1">point) != pubfields:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: ecdsa field mismatch&quot;</span><span class="s1">)</span>
+        <span class="s1">private_key = ec.derive_private_key(secret</span><span class="s2">, </span><span class="s1">self.curve</span><span class="s2">, </span><span class="s1">backend)</span>
+        <span class="s2">return </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">encode_public(self</span><span class="s2">, </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">f_pub):</span>
+        <span class="s6">&quot;&quot;&quot;Write ECDSA public key&quot;&quot;&quot;</span>
+        <span class="s1">point = public_key.public_bytes(</span>
+            <span class="s1">Encoding.X962</span><span class="s2">, </span><span class="s1">PublicFormat.UncompressedPoint</span>
+        <span class="s1">)</span>
+        <span class="s1">f_pub.put_sshstr(self.ssh_curve_name)</span>
+        <span class="s1">f_pub.put_sshstr(point)</span>
+
+    <span class="s2">def </span><span class="s1">encode_private(self</span><span class="s2">, </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">f_priv):</span>
+        <span class="s6">&quot;&quot;&quot;Write ECDSA private key&quot;&quot;&quot;</span>
+        <span class="s1">public_key = private_key.public_key()</span>
+        <span class="s1">private_numbers = private_key.private_numbers()</span>
+
+        <span class="s1">self.encode_public(public_key</span><span class="s2">, </span><span class="s1">f_priv)</span>
+        <span class="s1">f_priv.put_mpint(private_numbers.private_value)</span>
+
+
+<span class="s2">class </span><span class="s1">_SSHFormatEd25519(object):</span>
+    <span class="s6">&quot;&quot;&quot;Format for Ed25519 keys. 
+ 
+    Public: 
+        bytes point 
+    Private: 
+        bytes point 
+        bytes secret_and_point 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">get_public(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s6">&quot;&quot;&quot;Ed25519 public fields&quot;&quot;&quot;</span>
+        <span class="s1">point</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s2">return </span><span class="s1">(point</span><span class="s2">,</span><span class="s1">)</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_public(self</span><span class="s2">, </span><span class="s1">key_type</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make Ed25519 public key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(point</span><span class="s2">,</span><span class="s1">)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">public_key = ed25519.Ed25519PublicKey.from_public_bytes(</span>
+            <span class="s1">point.tobytes()</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">load_private(self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">pubfields</span><span class="s2">, </span><span class="s1">backend):</span>
+        <span class="s6">&quot;&quot;&quot;Make Ed25519 private key from data.&quot;&quot;&quot;</span>
+        <span class="s1">(point</span><span class="s2">,</span><span class="s1">)</span><span class="s2">, </span><span class="s1">data = self.get_public(data)</span>
+        <span class="s1">keypair</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+
+        <span class="s1">secret = keypair[:</span><span class="s5">32</span><span class="s1">]</span>
+        <span class="s1">point2 = keypair[</span><span class="s5">32</span><span class="s1">:]</span>
+        <span class="s2">if </span><span class="s1">point != point2 </span><span class="s2">or </span><span class="s1">(point</span><span class="s2">,</span><span class="s1">) != pubfields:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: ed25519 field mismatch&quot;</span><span class="s1">)</span>
+        <span class="s1">private_key = ed25519.Ed25519PrivateKey.from_private_bytes(secret)</span>
+        <span class="s2">return </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">encode_public(self</span><span class="s2">, </span><span class="s1">public_key</span><span class="s2">, </span><span class="s1">f_pub):</span>
+        <span class="s6">&quot;&quot;&quot;Write Ed25519 public key&quot;&quot;&quot;</span>
+        <span class="s1">raw_public_key = public_key.public_bytes(</span>
+            <span class="s1">Encoding.Raw</span><span class="s2">, </span><span class="s1">PublicFormat.Raw</span>
+        <span class="s1">)</span>
+        <span class="s1">f_pub.put_sshstr(raw_public_key)</span>
+
+    <span class="s2">def </span><span class="s1">encode_private(self</span><span class="s2">, </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">f_priv):</span>
+        <span class="s6">&quot;&quot;&quot;Write Ed25519 private key&quot;&quot;&quot;</span>
+        <span class="s1">public_key = private_key.public_key()</span>
+        <span class="s1">raw_private_key = private_key.private_bytes(</span>
+            <span class="s1">Encoding.Raw</span><span class="s2">, </span><span class="s1">PrivateFormat.Raw</span><span class="s2">, </span><span class="s1">NoEncryption()</span>
+        <span class="s1">)</span>
+        <span class="s1">raw_public_key = public_key.public_bytes(</span>
+            <span class="s1">Encoding.Raw</span><span class="s2">, </span><span class="s1">PublicFormat.Raw</span>
+        <span class="s1">)</span>
+        <span class="s1">f_keypair = _FragList([raw_private_key</span><span class="s2">, </span><span class="s1">raw_public_key])</span>
+
+        <span class="s1">self.encode_public(public_key</span><span class="s2">, </span><span class="s1">f_priv)</span>
+        <span class="s1">f_priv.put_sshstr(f_keypair)</span>
+
+
+<span class="s1">_KEY_FORMATS = {</span>
+    <span class="s1">_SSH_RSA: _SSHFormatRSA()</span><span class="s2">,</span>
+    <span class="s1">_SSH_DSA: _SSHFormatDSA()</span><span class="s2">,</span>
+    <span class="s1">_SSH_ED25519: _SSHFormatEd25519()</span><span class="s2">,</span>
+    <span class="s1">_ECDSA_NISTP256: _SSHFormatECDSA(</span><span class="s4">b&quot;nistp256&quot;</span><span class="s2">, </span><span class="s1">ec.SECP256R1())</span><span class="s2">,</span>
+    <span class="s1">_ECDSA_NISTP384: _SSHFormatECDSA(</span><span class="s4">b&quot;nistp384&quot;</span><span class="s2">, </span><span class="s1">ec.SECP384R1())</span><span class="s2">,</span>
+    <span class="s1">_ECDSA_NISTP521: _SSHFormatECDSA(</span><span class="s4">b&quot;nistp521&quot;</span><span class="s2">, </span><span class="s1">ec.SECP521R1())</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+
+<span class="s2">def </span><span class="s1">_lookup_kformat(key_type):</span>
+    <span class="s6">&quot;&quot;&quot;Return valid format or throw error&quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">isinstance(key_type</span><span class="s2">, </span><span class="s1">bytes):</span>
+        <span class="s1">key_type = memoryview(key_type).tobytes()</span>
+    <span class="s2">if </span><span class="s1">key_type </span><span class="s2">in </span><span class="s1">_KEY_FORMATS:</span>
+        <span class="s2">return </span><span class="s1">_KEY_FORMATS[key_type]</span>
+    <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span><span class="s3">&quot;Unsupported key type: %r&quot; </span><span class="s1">% key_type)</span>
+
+
+<span class="s1">_SSH_PRIVATE_KEY_TYPES = typing.Union[</span>
+    <span class="s1">ec.EllipticCurvePrivateKey</span><span class="s2">,</span>
+    <span class="s1">rsa.RSAPrivateKey</span><span class="s2">,</span>
+    <span class="s1">dsa.DSAPrivateKey</span><span class="s2">,</span>
+    <span class="s1">ed25519.Ed25519PrivateKey</span><span class="s2">,</span>
+<span class="s1">]</span>
+
+
+<span class="s2">def </span><span class="s1">load_ssh_private_key(</span>
+    <span class="s1">data: bytes</span><span class="s2">, </span><span class="s1">password: typing.Optional[bytes]</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; _SSH_PRIVATE_KEY_TYPES:</span>
+    <span class="s6">&quot;&quot;&quot;Load private key from OpenSSH custom encoding.&quot;&quot;&quot;</span>
+    <span class="s1">utils._check_byteslike(</span><span class="s3">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">if </span><span class="s1">password </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;password&quot;</span><span class="s2">, </span><span class="s1">password)</span>
+
+    <span class="s1">m = _PEM_RC.search(data)</span>
+    <span class="s2">if not </span><span class="s1">m:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Not OpenSSH private key format&quot;</span><span class="s1">)</span>
+    <span class="s1">p1 = m.start(</span><span class="s5">1</span><span class="s1">)</span>
+    <span class="s1">p2 = m.end(</span><span class="s5">1</span><span class="s1">)</span>
+    <span class="s1">data = binascii.a2b_base64(memoryview(data)[p1:p2])</span>
+    <span class="s2">if not </span><span class="s1">data.startswith(_SK_MAGIC):</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Not OpenSSH private key format&quot;</span><span class="s1">)</span>
+    <span class="s1">data = memoryview(data)[len(_SK_MAGIC) :]</span>
+
+    <span class="s0"># parse header</span>
+    <span class="s1">ciphername</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">kdfname</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">kdfoptions</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">nkeys</span><span class="s2">, </span><span class="s1">data = _get_u32(data)</span>
+    <span class="s2">if </span><span class="s1">nkeys != </span><span class="s5">1</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Only one key supported&quot;</span><span class="s1">)</span>
+
+    <span class="s0"># load public key data</span>
+    <span class="s1">pubdata</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">pub_key_type</span><span class="s2">, </span><span class="s1">pubdata = _get_sshstr(pubdata)</span>
+    <span class="s1">kformat = _lookup_kformat(pub_key_type)</span>
+    <span class="s1">pubfields</span><span class="s2">, </span><span class="s1">pubdata = kformat.get_public(pubdata)</span>
+    <span class="s1">_check_empty(pubdata)</span>
+
+    <span class="s0"># load secret data</span>
+    <span class="s1">edata</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">_check_empty(data)</span>
+
+    <span class="s2">if </span><span class="s1">(ciphername</span><span class="s2">, </span><span class="s1">kdfname) != (_NONE</span><span class="s2">, </span><span class="s1">_NONE):</span>
+        <span class="s1">ciphername = ciphername.tobytes()</span>
+        <span class="s2">if </span><span class="s1">ciphername </span><span class="s2">not in </span><span class="s1">_SSH_CIPHERS:</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span><span class="s3">&quot;Unsupported cipher: %r&quot; </span><span class="s1">% ciphername)</span>
+        <span class="s2">if </span><span class="s1">kdfname != _BCRYPT:</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span><span class="s3">&quot;Unsupported KDF: %r&quot; </span><span class="s1">% kdfname)</span>
+        <span class="s1">blklen = _SSH_CIPHERS[ciphername][</span><span class="s5">3</span><span class="s1">]</span>
+        <span class="s1">_check_block_size(edata</span><span class="s2">, </span><span class="s1">blklen)</span>
+        <span class="s1">salt</span><span class="s2">, </span><span class="s1">kbuf = _get_sshstr(kdfoptions)</span>
+        <span class="s1">rounds</span><span class="s2">, </span><span class="s1">kbuf = _get_u32(kbuf)</span>
+        <span class="s1">_check_empty(kbuf)</span>
+        <span class="s1">ciph = _init_cipher(</span>
+            <span class="s1">ciphername</span><span class="s2">, </span><span class="s1">password</span><span class="s2">, </span><span class="s1">salt.tobytes()</span><span class="s2">, </span><span class="s1">rounds</span><span class="s2">, </span><span class="s1">backend</span>
+        <span class="s1">)</span>
+        <span class="s1">edata = memoryview(ciph.decryptor().update(edata))</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">blklen = </span><span class="s5">8</span>
+        <span class="s1">_check_block_size(edata</span><span class="s2">, </span><span class="s1">blklen)</span>
+    <span class="s1">ck1</span><span class="s2">, </span><span class="s1">edata = _get_u32(edata)</span>
+    <span class="s1">ck2</span><span class="s2">, </span><span class="s1">edata = _get_u32(edata)</span>
+    <span class="s2">if </span><span class="s1">ck1 != ck2:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: broken checksum&quot;</span><span class="s1">)</span>
+
+    <span class="s0"># load per-key struct</span>
+    <span class="s1">key_type</span><span class="s2">, </span><span class="s1">edata = _get_sshstr(edata)</span>
+    <span class="s2">if </span><span class="s1">key_type != pub_key_type:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: key type mismatch&quot;</span><span class="s1">)</span>
+    <span class="s1">private_key</span><span class="s2">, </span><span class="s1">edata = kformat.load_private(edata</span><span class="s2">, </span><span class="s1">pubfields</span><span class="s2">, </span><span class="s1">backend)</span>
+    <span class="s1">comment</span><span class="s2">, </span><span class="s1">edata = _get_sshstr(edata)</span>
+
+    <span class="s0"># yes, SSH does padding check *after* all other parsing is done.</span>
+    <span class="s0"># need to follow as it writes zero-byte padding too.</span>
+    <span class="s2">if </span><span class="s1">edata != _PADDING[: len(edata)]:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Corrupt data: invalid padding&quot;</span><span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">private_key</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_ssh_private_key(</span>
+    <span class="s1">private_key: _SSH_PRIVATE_KEY_TYPES</span><span class="s2">,</span>
+    <span class="s1">password: typing.Optional[bytes] = </span><span class="s2">None,</span>
+<span class="s1">):</span>
+    <span class="s6">&quot;&quot;&quot;Serialize private key with OpenSSH custom encoding.&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">password </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;password&quot;</span><span class="s2">, </span><span class="s1">password)</span>
+    <span class="s2">if </span><span class="s1">password </span><span class="s2">and </span><span class="s1">len(password) &gt; _MAX_PASSWORD:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s3">&quot;Passwords longer than 72 bytes are not supported by &quot;</span>
+            <span class="s3">&quot;OpenSSH private key format&quot;</span>
+        <span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">isinstance(private_key</span><span class="s2">, </span><span class="s1">ec.EllipticCurvePrivateKey):</span>
+        <span class="s1">key_type = _ecdsa_key_type(private_key.public_key())</span>
+    <span class="s2">elif </span><span class="s1">isinstance(private_key</span><span class="s2">, </span><span class="s1">rsa.RSAPrivateKey):</span>
+        <span class="s1">key_type = _SSH_RSA</span>
+    <span class="s2">elif </span><span class="s1">isinstance(private_key</span><span class="s2">, </span><span class="s1">dsa.DSAPrivateKey):</span>
+        <span class="s1">key_type = _SSH_DSA</span>
+    <span class="s2">elif </span><span class="s1">isinstance(private_key</span><span class="s2">, </span><span class="s1">ed25519.Ed25519PrivateKey):</span>
+        <span class="s1">key_type = _SSH_ED25519</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Unsupported key type&quot;</span><span class="s1">)</span>
+    <span class="s1">kformat = _lookup_kformat(key_type)</span>
+
+    <span class="s0"># setup parameters</span>
+    <span class="s1">f_kdfoptions = _FragList()</span>
+    <span class="s2">if </span><span class="s1">password:</span>
+        <span class="s1">ciphername = _DEFAULT_CIPHER</span>
+        <span class="s1">blklen = _SSH_CIPHERS[ciphername][</span><span class="s5">3</span><span class="s1">]</span>
+        <span class="s1">kdfname = _BCRYPT</span>
+        <span class="s1">rounds = _DEFAULT_ROUNDS</span>
+        <span class="s1">salt = os.urandom(</span><span class="s5">16</span><span class="s1">)</span>
+        <span class="s1">f_kdfoptions.put_sshstr(salt)</span>
+        <span class="s1">f_kdfoptions.put_u32(rounds)</span>
+        <span class="s1">backend = _get_backend(</span><span class="s2">None</span><span class="s1">)</span>
+        <span class="s1">ciph = _init_cipher(ciphername</span><span class="s2">, </span><span class="s1">password</span><span class="s2">, </span><span class="s1">salt</span><span class="s2">, </span><span class="s1">rounds</span><span class="s2">, </span><span class="s1">backend)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">ciphername = kdfname = _NONE</span>
+        <span class="s1">blklen = </span><span class="s5">8</span>
+        <span class="s1">ciph = </span><span class="s2">None</span>
+    <span class="s1">nkeys = </span><span class="s5">1</span>
+    <span class="s1">checkval = os.urandom(</span><span class="s5">4</span><span class="s1">)</span>
+    <span class="s1">comment = </span><span class="s4">b&quot;&quot;</span>
+
+    <span class="s0"># encode public and private parts together</span>
+    <span class="s1">f_public_key = _FragList()</span>
+    <span class="s1">f_public_key.put_sshstr(key_type)</span>
+    <span class="s1">kformat.encode_public(private_key.public_key()</span><span class="s2">, </span><span class="s1">f_public_key)</span>
+
+    <span class="s1">f_secrets = _FragList([checkval</span><span class="s2">, </span><span class="s1">checkval])</span>
+    <span class="s1">f_secrets.put_sshstr(key_type)</span>
+    <span class="s1">kformat.encode_private(private_key</span><span class="s2">, </span><span class="s1">f_secrets)</span>
+    <span class="s1">f_secrets.put_sshstr(comment)</span>
+    <span class="s1">f_secrets.put_raw(_PADDING[: blklen - (f_secrets.size() % blklen)])</span>
+
+    <span class="s0"># top-level structure</span>
+    <span class="s1">f_main = _FragList()</span>
+    <span class="s1">f_main.put_raw(_SK_MAGIC)</span>
+    <span class="s1">f_main.put_sshstr(ciphername)</span>
+    <span class="s1">f_main.put_sshstr(kdfname)</span>
+    <span class="s1">f_main.put_sshstr(f_kdfoptions)</span>
+    <span class="s1">f_main.put_u32(nkeys)</span>
+    <span class="s1">f_main.put_sshstr(f_public_key)</span>
+    <span class="s1">f_main.put_sshstr(f_secrets)</span>
+
+    <span class="s0"># copy result info bytearray</span>
+    <span class="s1">slen = f_secrets.size()</span>
+    <span class="s1">mlen = f_main.size()</span>
+    <span class="s1">buf = memoryview(bytearray(mlen + blklen))</span>
+    <span class="s1">f_main.render(buf)</span>
+    <span class="s1">ofs = mlen - slen</span>
+
+    <span class="s0"># encrypt in-place</span>
+    <span class="s2">if </span><span class="s1">ciph </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s1">ciph.encryptor().update_into(buf[ofs:mlen]</span><span class="s2">, </span><span class="s1">buf[ofs:])</span>
+
+    <span class="s1">txt = _ssh_pem_encode(buf[:mlen])</span>
+    <span class="s0"># Ignore the following type because mypy wants</span>
+    <span class="s0"># Sequence[bytes] but what we're passing is fine.</span>
+    <span class="s0"># https://github.com/python/mypy/issues/9999</span>
+    <span class="s1">buf[ofs:mlen] = bytearray(slen)  </span><span class="s0"># type: ignore</span>
+    <span class="s2">return </span><span class="s1">txt</span>
+
+
+<span class="s1">_SSH_PUBLIC_KEY_TYPES = typing.Union[</span>
+    <span class="s1">ec.EllipticCurvePublicKey</span><span class="s2">,</span>
+    <span class="s1">rsa.RSAPublicKey</span><span class="s2">,</span>
+    <span class="s1">dsa.DSAPublicKey</span><span class="s2">,</span>
+    <span class="s1">ed25519.Ed25519PublicKey</span><span class="s2">,</span>
+<span class="s1">]</span>
+
+
+<span class="s2">def </span><span class="s1">load_ssh_public_key(data: bytes</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; _SSH_PUBLIC_KEY_TYPES:</span>
+    <span class="s6">&quot;&quot;&quot;Load public key from OpenSSH one-line format.&quot;&quot;&quot;</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s1">utils._check_byteslike(</span><span class="s3">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+
+    <span class="s1">m = _SSH_PUBKEY_RC.match(data)</span>
+    <span class="s2">if not </span><span class="s1">m:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid line format&quot;</span><span class="s1">)</span>
+    <span class="s1">key_type = orig_key_type = m.group(</span><span class="s5">1</span><span class="s1">)</span>
+    <span class="s1">key_body = m.group(</span><span class="s5">2</span><span class="s1">)</span>
+    <span class="s1">with_cert = </span><span class="s2">False</span>
+    <span class="s2">if </span><span class="s1">_CERT_SUFFIX == key_type[-len(_CERT_SUFFIX) :]:</span>
+        <span class="s1">with_cert = </span><span class="s2">True</span>
+        <span class="s1">key_type = key_type[: -len(_CERT_SUFFIX)]</span>
+    <span class="s1">kformat = _lookup_kformat(key_type)</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">data = memoryview(binascii.a2b_base64(key_body))</span>
+    <span class="s2">except </span><span class="s1">(TypeError</span><span class="s2">, </span><span class="s1">binascii.Error):</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid key format&quot;</span><span class="s1">)</span>
+
+    <span class="s1">inner_key_type</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s2">if </span><span class="s1">inner_key_type != orig_key_type:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Invalid key format&quot;</span><span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">with_cert:</span>
+        <span class="s1">nonce</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">public_key</span><span class="s2">, </span><span class="s1">data = kformat.load_public(key_type</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">backend)</span>
+    <span class="s2">if </span><span class="s1">with_cert:</span>
+        <span class="s1">serial</span><span class="s2">, </span><span class="s1">data = _get_u64(data)</span>
+        <span class="s1">cctype</span><span class="s2">, </span><span class="s1">data = _get_u32(data)</span>
+        <span class="s1">key_id</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">principals</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">valid_after</span><span class="s2">, </span><span class="s1">data = _get_u64(data)</span>
+        <span class="s1">valid_before</span><span class="s2">, </span><span class="s1">data = _get_u64(data)</span>
+        <span class="s1">crit_options</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">extensions</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">reserved</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">sig_key</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+        <span class="s1">signature</span><span class="s2">, </span><span class="s1">data = _get_sshstr(data)</span>
+    <span class="s1">_check_empty(data)</span>
+    <span class="s2">return </span><span class="s1">public_key</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_ssh_public_key(public_key: _SSH_PUBLIC_KEY_TYPES) -&gt; bytes:</span>
+    <span class="s6">&quot;&quot;&quot;One-line public key format for OpenSSH&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">isinstance(public_key</span><span class="s2">, </span><span class="s1">ec.EllipticCurvePublicKey):</span>
+        <span class="s1">key_type = _ecdsa_key_type(public_key)</span>
+    <span class="s2">elif </span><span class="s1">isinstance(public_key</span><span class="s2">, </span><span class="s1">rsa.RSAPublicKey):</span>
+        <span class="s1">key_type = _SSH_RSA</span>
+    <span class="s2">elif </span><span class="s1">isinstance(public_key</span><span class="s2">, </span><span class="s1">dsa.DSAPublicKey):</span>
+        <span class="s1">key_type = _SSH_DSA</span>
+    <span class="s2">elif </span><span class="s1">isinstance(public_key</span><span class="s2">, </span><span class="s1">ed25519.Ed25519PublicKey):</span>
+        <span class="s1">key_type = _SSH_ED25519</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Unsupported key type&quot;</span><span class="s1">)</span>
+    <span class="s1">kformat = _lookup_kformat(key_type)</span>
+
+    <span class="s1">f_pub = _FragList()</span>
+    <span class="s1">f_pub.put_sshstr(key_type)</span>
+    <span class="s1">kformat.encode_public(public_key</span><span class="s2">, </span><span class="s1">f_pub)</span>
+
+    <span class="s1">pub = binascii.b2a_base64(f_pub.tobytes()).strip()</span>
+    <span class="s2">return </span><span class="s4">b&quot;&quot;</span><span class="s1">.join([key_type</span><span class="s2">, </span><span class="s4">b&quot; &quot;</span><span class="s2">, </span><span class="s1">pub])</span>
+</pre>
+</body>
+</html>

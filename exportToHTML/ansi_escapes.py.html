@@ -1,0 +1,115 @@
+<html>
+<head>
+<title>ansi_escapes.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+ansi_escapes.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides ANSI escape sequences for coloring/formatting output in ANSI terminals. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">import </span><span class="s1">os</span>
+<span class="s3">import </span><span class="s1">re</span>
+
+<span class="s1">colors = {</span>
+    <span class="s4">&quot;black&quot;</span><span class="s1">:        </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[30m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;red&quot;</span><span class="s1">:          </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[31m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;green&quot;</span><span class="s1">:        </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[32m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;yellow&quot;</span><span class="s1">:       </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[33m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;blue&quot;</span><span class="s1">:         </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[34m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;magenta&quot;</span><span class="s1">:      </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[35m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;cyan&quot;</span><span class="s1">:         </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[36m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;white&quot;</span><span class="s1">:        </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[37m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;grey&quot;</span><span class="s1">:         </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[90m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;bold&quot;</span><span class="s1">:         </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[1m&quot;</span><span class="s3">,</span>
+<span class="s1">}</span>
+
+<span class="s1">aliases = {</span>
+    <span class="s4">&quot;untested&quot;</span><span class="s1">:     </span><span class="s4">&quot;cyan&quot;</span><span class="s3">,     </span><span class="s0"># SAME-COLOR AS: skipped</span>
+    <span class="s4">&quot;undefined&quot;</span><span class="s1">:    </span><span class="s4">&quot;yellow&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;pending&quot;</span><span class="s1">:      </span><span class="s4">&quot;yellow&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;executing&quot;</span><span class="s1">:    </span><span class="s4">&quot;grey&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;failed&quot;</span><span class="s1">:       </span><span class="s4">&quot;red&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;passed&quot;</span><span class="s1">:       </span><span class="s4">&quot;green&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;outline&quot;</span><span class="s1">:      </span><span class="s4">&quot;cyan&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;skipped&quot;</span><span class="s1">:      </span><span class="s4">&quot;cyan&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;comments&quot;</span><span class="s1">:     </span><span class="s4">&quot;grey&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;tag&quot;</span><span class="s1">:          </span><span class="s4">&quot;cyan&quot;</span><span class="s3">,</span>
+<span class="s1">}</span>
+
+<span class="s1">escapes = {</span>
+    <span class="s4">&quot;reset&quot;</span><span class="s1">:        </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[0m&quot;</span><span class="s3">,</span>
+    <span class="s4">&quot;up&quot;</span><span class="s1">:           </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[1A&quot;</span><span class="s3">,</span>
+<span class="s1">}</span>
+
+<span class="s3">if </span><span class="s4">&quot;GHERKIN_COLORS&quot; </span><span class="s3">in </span><span class="s1">os.environ:</span>
+    <span class="s1">new_aliases = [p.split(</span><span class="s4">&quot;=&quot;</span><span class="s1">) </span><span class="s3">for </span><span class="s1">p </span><span class="s3">in </span><span class="s1">os.environ[</span><span class="s4">&quot;GHERKIN_COLORS&quot;</span><span class="s1">].split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)]</span>
+    <span class="s1">aliases.update(dict(new_aliases))</span>
+
+<span class="s3">for </span><span class="s1">alias </span><span class="s3">in </span><span class="s1">aliases:</span>
+    <span class="s1">escapes[alias] = </span><span class="s4">&quot;&quot;</span><span class="s1">.join([colors[c] </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">aliases[alias].split(</span><span class="s4">&quot;,&quot;</span><span class="s1">)])</span>
+    <span class="s1">arg_alias = alias + </span><span class="s4">&quot;_arg&quot;</span>
+    <span class="s1">arg_seq = aliases.get(arg_alias</span><span class="s3">, </span><span class="s1">aliases[alias] + </span><span class="s4">&quot;,bold&quot;</span><span class="s1">)</span>
+    <span class="s1">escapes[arg_alias] = </span><span class="s4">&quot;&quot;</span><span class="s1">.join([colors[c] </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">arg_seq.split(</span><span class="s4">&quot;,&quot;</span><span class="s1">)])</span>
+
+
+<span class="s0"># pylint: disable=anomalous-backslash-in-string</span>
+<span class="s3">def </span><span class="s1">up(n):</span>
+    <span class="s3">return </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[%dA&quot; </span><span class="s1">% n</span>
+
+
+<span class="s1">_ANSI_ESCAPE_PATTERN = re.compile(</span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">\[\d+[mA]&quot;</span><span class="s3">, </span><span class="s1">re.UNICODE)</span>
+<span class="s0"># pylint: enable=anomalous-backslash-in-string</span>
+<span class="s3">def </span><span class="s1">strip_escapes(text):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Removes ANSI escape sequences from text (if any are contained). 
+ 
+    :param text: Text that may or may not contain ANSI escape sequences. 
+    :return: Text without ANSI escape sequences. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">return </span><span class="s1">_ANSI_ESCAPE_PATTERN.sub(</span><span class="s4">&quot;&quot;</span><span class="s3">, </span><span class="s1">text)</span>
+
+
+<span class="s3">def </span><span class="s1">use_ansi_escape_colorbold_composites():     </span><span class="s0"># pragma: no cover</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Patch for &quot;sphinxcontrib-ansi&quot; to process the following ANSI escapes 
+    correctly (set-color set-bold sequences): 
+ 
+        ESC[{color}mESC[1m  =&gt; ESC[{color};1m 
+ 
+    Reapply aliases to ANSI escapes mapping. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># NOT-NEEDED: global escapes</span>
+    <span class="s1">color_codes = {}</span>
+    <span class="s3">for </span><span class="s1">color_name</span><span class="s3">, </span><span class="s1">color_escape </span><span class="s3">in </span><span class="s1">colors.items():</span>
+        <span class="s1">color_code = color_escape.replace(</span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">).replace(</span><span class="s4">u&quot;m&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">color_codes[color_name] = color_code</span>
+
+    <span class="s0"># pylint: disable=redefined-outer-name</span>
+    <span class="s3">for </span><span class="s1">alias </span><span class="s3">in </span><span class="s1">aliases:</span>
+        <span class="s1">parts = [color_codes[c] </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">aliases[alias].split(</span><span class="s4">&quot;,&quot;</span><span class="s1">)]</span>
+        <span class="s1">composite_escape = </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[{0}m&quot;</span><span class="s1">.format(</span><span class="s4">u&quot;;&quot;</span><span class="s1">.join(parts))</span>
+        <span class="s1">escapes[alias] = composite_escape</span>
+
+        <span class="s1">arg_alias = alias + </span><span class="s4">&quot;_arg&quot;</span>
+        <span class="s1">arg_seq = aliases.get(arg_alias</span><span class="s3">, </span><span class="s1">aliases[alias] + </span><span class="s4">&quot;,bold&quot;</span><span class="s1">)</span>
+        <span class="s1">parts = [color_codes[c] </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">arg_seq.split(</span><span class="s4">&quot;,&quot;</span><span class="s1">)]</span>
+        <span class="s1">composite_escape = </span><span class="s4">u&quot;</span><span class="s3">\x1b</span><span class="s4">[{0}m&quot;</span><span class="s1">.format(</span><span class="s4">u&quot;;&quot;</span><span class="s1">.join(parts))</span>
+        <span class="s1">escapes[arg_alias] = composite_escape</span>
+</pre>
+</body>
+</html>

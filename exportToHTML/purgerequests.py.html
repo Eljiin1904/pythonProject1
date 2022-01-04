@@ -1,0 +1,97 @@
+<html>
+<head>
+<title>purgerequests.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+purgerequests.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">datetime </span><span class="s0">import </span><span class="s1">timedelta</span>
+
+<span class="s0">from </span><span class="s1">dateutil.relativedelta </span><span class="s0">import </span><span class="s1">relativedelta</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">timezone</span>
+
+<span class="s0">from </span><span class="s1">...models </span><span class="s0">import </span><span class="s1">Request</span>
+
+<span class="s1">DURATION_OPTIONS = {</span>
+    <span class="s2">'hours'</span><span class="s1">: </span><span class="s0">lambda </span><span class="s1">amount: timezone.now() - timedelta(hours=amount)</span><span class="s0">,</span>
+    <span class="s2">'days'</span><span class="s1">: </span><span class="s0">lambda </span><span class="s1">amount: timezone.now() - timedelta(days=amount)</span><span class="s0">,</span>
+    <span class="s2">'weeks'</span><span class="s1">: </span><span class="s0">lambda </span><span class="s1">amount: timezone.now() - timedelta(weeks=amount)</span><span class="s0">,</span>
+    <span class="s2">'months'</span><span class="s1">: </span><span class="s0">lambda </span><span class="s1">amount: timezone.now() + relativedelta(months=-amount)</span><span class="s0">,</span>
+    <span class="s2">'years'</span><span class="s1">: </span><span class="s0">lambda </span><span class="s1">amount: timezone.now() + relativedelta(years=-amount)</span><span class="s0">,</span>
+<span class="s1">}</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s3"># to keep backward Python 2 compatibility</span>
+    <span class="s1">input = raw_input</span>
+<span class="s0">except </span><span class="s1">NameError:</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s2">'Purge old requests.'</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'amount'</span><span class="s0">,</span>
+            <span class="s1">type=int</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span><span class="s2">'duration'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--noinput'</span><span class="s0">,</span>
+            <span class="s1">action=</span><span class="s2">'store_false'</span><span class="s0">,</span>
+            <span class="s1">dest=</span><span class="s2">'interactive'</span><span class="s0">,</span>
+            <span class="s1">default=</span><span class="s0">True,</span>
+            <span class="s1">help=</span><span class="s2">'Tells Django to NOT prompt the user for input of any kind.'</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">amount = options[</span><span class="s2">'amount'</span><span class="s1">]</span>
+        <span class="s1">duration = options[</span><span class="s2">'duration'</span><span class="s1">]</span>
+
+        <span class="s3"># Check we have the correct values</span>
+        <span class="s0">if </span><span class="s1">duration[-</span><span class="s4">1</span><span class="s1">] != </span><span class="s2">'s'</span><span class="s1">:  </span><span class="s3"># If its not plural, make it plural</span>
+            <span class="s1">duration_plural = </span><span class="s2">'{0}s'</span><span class="s1">.format(duration)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">duration_plural = duration</span>
+
+        <span class="s0">if </span><span class="s1">duration_plural </span><span class="s0">not in </span><span class="s1">DURATION_OPTIONS:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">'Amount must be {0}'</span><span class="s1">.format(</span><span class="s2">', '</span><span class="s1">.join(DURATION_OPTIONS)))</span>
+
+        <span class="s1">qs = Request.objects.filter(time__lte=DURATION_OPTIONS[duration_plural](amount))</span>
+        <span class="s1">count = qs.count()</span>
+
+        <span class="s0">if </span><span class="s1">count == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s1">print(</span><span class="s2">'There are no requests to delete.'</span><span class="s1">)</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if </span><span class="s1">options.get(</span><span class="s2">'interactive'</span><span class="s1">):</span>
+            <span class="s1">confirm = input(</span><span class="s2">''' 
+You have requested a database reset. 
+This will IRREVERSIBLY DESTROY any 
+requests created before {0} {1} ago. 
+That is a total of {2} requests. 
+Are you sure you want to do this? 
+ 
+Type 'yes' to continue, or 'no' to cancel:'''</span><span class="s1">.format(amount</span><span class="s0">, </span><span class="s1">duration</span><span class="s0">, </span><span class="s1">count))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">confirm = </span><span class="s2">'yes'</span>
+
+        <span class="s0">if </span><span class="s1">confirm == </span><span class="s2">'yes'</span><span class="s1">:</span>
+            <span class="s1">qs.delete()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">print(</span><span class="s2">'Purge cancelled'</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

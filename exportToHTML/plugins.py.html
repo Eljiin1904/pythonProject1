@@ -1,0 +1,178 @@
+<html>
+<head>
+<title>plugins.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+plugins.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Count</span>
+<span class="s0">from </span><span class="s1">django.template.loader </span><span class="s0">import </span><span class="s1">render_to_string</span>
+
+<span class="s0">from </span><span class="s1">. </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">.models </span><span class="s0">import </span><span class="s1">Request</span>
+<span class="s0">from </span><span class="s1">.traffic </span><span class="s0">import </span><span class="s1">modules</span>
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">get_verbose_name</span>
+
+
+<span class="s0">def </span><span class="s1">set_count(items):</span>
+    <span class="s2">''' 
+    This is similar to &quot;set&quot;, but this just creates a list with values. 
+    The list will be ordered from most frequent down. 
+ 
+    Example: 
+        &gt;&gt;&gt; inventory = ['apple', 'lemon', 'apple', 'orange', 'lemon', 'lemon'] 
+        &gt;&gt;&gt; set_count(inventory) 
+        [('lemon', 3), ('apple', 2), ('orange', 1)] 
+    '''</span>
+    <span class="s1">item_count = {}</span>
+    <span class="s0">for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">items:</span>
+        <span class="s0">if not </span><span class="s1">item:</span>
+            <span class="s0">continue</span>
+        <span class="s0">if </span><span class="s1">item </span><span class="s0">not in </span><span class="s1">item_count:</span>
+            <span class="s1">item_count[item] = </span><span class="s3">0</span>
+        <span class="s1">item_count[item] += </span><span class="s3">1</span>
+
+    <span class="s1">items = [(v</span><span class="s0">, </span><span class="s1">k) </span><span class="s0">for </span><span class="s1">k</span><span class="s0">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">item_count.items()]</span>
+    <span class="s1">items.sort()</span>
+    <span class="s1">items.reverse()</span>
+
+    <span class="s0">return </span><span class="s1">[(k</span><span class="s0">, </span><span class="s1">v) </span><span class="s0">for </span><span class="s1">v</span><span class="s0">, </span><span class="s1">k </span><span class="s0">in </span><span class="s1">items]</span>
+
+
+<span class="s0">class </span><span class="s1">Plugins:</span>
+    <span class="s0">def </span><span class="s1">load(self):</span>
+        <span class="s0">from </span><span class="s1">importlib </span><span class="s0">import </span><span class="s1">import_module</span>
+
+        <span class="s0">from </span><span class="s1">django.core </span><span class="s0">import </span><span class="s1">exceptions</span>
+
+        <span class="s1">self._plugins = []</span>
+        <span class="s0">for </span><span class="s1">module_path </span><span class="s0">in </span><span class="s1">settings.PLUGINS:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">dot = module_path.rindex(</span><span class="s4">'.'</span><span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s0">raise </span><span class="s1">exceptions.ImproperlyConfigured(</span><span class="s4">'{0} isn</span><span class="s0">\'</span><span class="s4">t a plugin'</span><span class="s1">.format(module_path))</span>
+            <span class="s1">plugin</span><span class="s0">, </span><span class="s1">plugin_classname = module_path[:dot]</span><span class="s0">, </span><span class="s1">module_path[dot + </span><span class="s3">1</span><span class="s1">:]</span>
+
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">mod = import_module(plugin)</span>
+            <span class="s0">except </span><span class="s1">ImportError </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s0">raise </span><span class="s1">exceptions.ImproperlyConfigured(</span><span class="s4">'Error importing plugin {0}: &quot;{1}&quot;'</span><span class="s1">.format(plugin</span><span class="s0">, </span><span class="s1">e))</span>
+
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">plugin_class = getattr(mod</span><span class="s0">, </span><span class="s1">plugin_classname)</span>
+            <span class="s0">except </span><span class="s1">AttributeError:</span>
+                <span class="s0">raise </span><span class="s1">exceptions.ImproperlyConfigured(</span><span class="s4">'Plugin &quot;{0}&quot; does not define a &quot;{1}&quot; class'</span><span class="s1">.format(</span>
+                    <span class="s1">plugin</span><span class="s0">,</span>
+                    <span class="s1">plugin_classname</span><span class="s0">,</span>
+                <span class="s1">))</span>
+
+            <span class="s1">self._plugins.append(plugin_class())</span>
+
+    <span class="s0">def </span><span class="s1">plugins(self):</span>
+        <span class="s0">if not </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s4">'_plugins'</span><span class="s1">):</span>
+            <span class="s1">self.load()</span>
+        <span class="s0">return </span><span class="s1">self._plugins</span>
+    <span class="s1">plugins = property(plugins)</span>
+
+
+<span class="s1">plugins = Plugins()</span>
+
+
+<span class="s0">class </span><span class="s1">Plugin:</span>
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.module_name = self.__class__.__name__</span>
+
+        <span class="s0">if not </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s4">'verbose_name'</span><span class="s1">):</span>
+            <span class="s1">self.verbose_name = get_verbose_name(self.module_name)</span>
+
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{}</span>
+
+    <span class="s0">def </span><span class="s1">render(self):</span>
+        <span class="s1">templates = [</span>
+            <span class="s4">'request/plugins/{0}.html'</span><span class="s1">.format(self.__class__.__name__.lower())</span><span class="s0">,</span>
+            <span class="s4">'request/plugins/base.html'</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+        <span class="s0">if </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s4">'template'</span><span class="s1">):</span>
+            <span class="s1">templates.insert(</span><span class="s3">0</span><span class="s0">, </span><span class="s1">self.template)</span>
+
+        <span class="s1">kwargs = self.template_context()</span>
+        <span class="s1">kwargs[</span><span class="s4">'verbose_name'</span><span class="s1">] = self.verbose_name</span>
+        <span class="s1">kwargs[</span><span class="s4">'plugin'</span><span class="s1">] = self</span>
+        <span class="s0">return </span><span class="s1">render_to_string(templates</span><span class="s0">, </span><span class="s1">kwargs)</span>
+
+
+<span class="s0">class </span><span class="s1">LatestRequests(Plugin):</span>
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{</span><span class="s4">'requests'</span><span class="s1">: Request.objects.all()[:</span><span class="s3">5</span><span class="s1">]}</span>
+
+
+<span class="s0">class </span><span class="s1">TrafficInformation(Plugin):</span>
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s1">INFO_TABLE = (</span><span class="s4">'today'</span><span class="s0">, </span><span class="s4">'this_week'</span><span class="s0">, </span><span class="s4">'this_month'</span><span class="s0">, </span><span class="s4">'this_year'</span><span class="s0">, </span><span class="s4">'all'</span><span class="s1">)</span>
+        <span class="s1">INFO_TABLE_QUERIES = [getattr(Request.objects</span><span class="s0">, </span><span class="s1">query</span><span class="s0">, None</span><span class="s1">)() </span><span class="s0">for </span><span class="s1">query </span><span class="s0">in </span><span class="s1">INFO_TABLE]</span>
+
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s4">'traffic'</span><span class="s1">: modules.table(INFO_TABLE_QUERIES)</span>
+        <span class="s1">}</span>
+
+
+<span class="s0">class </span><span class="s1">TopPaths(Plugin):</span>
+    <span class="s0">def </span><span class="s1">queryset(self):</span>
+        <span class="s0">return </span><span class="s1">self.qs.filter(response__lt=</span><span class="s3">400</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s4">'paths'</span><span class="s1">: self.queryset().values(</span><span class="s4">'path'</span><span class="s1">).annotate(Count(</span><span class="s4">'path'</span><span class="s1">)).order_by(</span><span class="s4">'-path__count'</span><span class="s1">)[:</span><span class="s3">10</span><span class="s1">]</span>
+        <span class="s1">}</span>
+
+
+<span class="s0">class </span><span class="s1">TopErrorPaths(TopPaths):</span>
+    <span class="s1">template = </span><span class="s4">'request/plugins/toppaths.html'</span>
+
+    <span class="s0">def </span><span class="s1">queryset(self):</span>
+        <span class="s0">return </span><span class="s1">self.qs.filter(response__gte=</span><span class="s3">400</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">TopReferrers(Plugin):</span>
+    <span class="s0">def </span><span class="s1">queryset(self):</span>
+        <span class="s0">return </span><span class="s1">self.qs.unique_visits().exclude(referer=</span><span class="s4">''</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s4">'referrers'</span><span class="s1">: self.queryset().values(</span><span class="s4">'referer'</span><span class="s1">).annotate(Count(</span><span class="s4">'referer'</span><span class="s1">)).order_by(</span><span class="s4">'-referer__count'</span><span class="s1">)[:</span><span class="s3">10</span><span class="s1">]</span>
+        <span class="s1">}</span>
+
+
+<span class="s0">class </span><span class="s1">TopSearchPhrases(Plugin):</span>
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s4">'phrases'</span><span class="s1">: set_count(self.qs.search().only(</span><span class="s4">'referer'</span><span class="s1">).attr_list(</span><span class="s4">'keywords'</span><span class="s1">))[:</span><span class="s3">10</span><span class="s1">]</span>
+        <span class="s1">}</span>
+
+
+<span class="s0">class </span><span class="s1">TopBrowsers(Plugin):</span>
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s4">'browsers'</span><span class="s1">: set_count(self.qs.only(</span><span class="s4">'user_agent'</span><span class="s1">).attr_list(</span><span class="s4">'browser'</span><span class="s1">))[:</span><span class="s3">5</span><span class="s1">]</span>
+        <span class="s1">}</span>
+
+
+<span class="s0">class </span><span class="s1">ActiveUsers(Plugin):</span>
+    <span class="s0">def </span><span class="s1">template_context(self):</span>
+        <span class="s0">return </span><span class="s1">{}</span>
+</pre>
+</body>
+</html>

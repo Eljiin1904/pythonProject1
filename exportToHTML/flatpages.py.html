@@ -1,0 +1,121 @@
+<html>
+<head>
+<title>flatpages.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+flatpages.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django </span><span class="s0">import </span><span class="s1">template</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.contrib.flatpages.models </span><span class="s0">import </span><span class="s1">FlatPage</span>
+<span class="s0">from </span><span class="s1">django.contrib.sites.shortcuts </span><span class="s0">import </span><span class="s1">get_current_site</span>
+
+<span class="s1">register = template.Library()</span>
+
+
+<span class="s0">class </span><span class="s1">FlatpageNode(template.Node):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">context_name</span><span class="s0">, </span><span class="s1">starts_with=</span><span class="s0">None, </span><span class="s1">user=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.context_name = context_name</span>
+        <span class="s0">if </span><span class="s1">starts_with:</span>
+            <span class="s1">self.starts_with = template.Variable(starts_with)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.starts_with = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">user:</span>
+            <span class="s1">self.user = template.Variable(user)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.user = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">context):</span>
+        <span class="s0">if </span><span class="s2">'request' </span><span class="s0">in </span><span class="s1">context:</span>
+            <span class="s1">site_pk = get_current_site(context[</span><span class="s2">'request'</span><span class="s1">]).pk</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">site_pk = settings.SITE_ID</span>
+        <span class="s1">flatpages = FlatPage.objects.filter(sites__id=site_pk)</span>
+        <span class="s3"># If a prefix was specified, add a filter</span>
+        <span class="s0">if </span><span class="s1">self.starts_with:</span>
+            <span class="s1">flatpages = flatpages.filter(</span>
+                <span class="s1">url__startswith=self.starts_with.resolve(context))</span>
+
+        <span class="s3"># If the provided user is not authenticated, or no user</span>
+        <span class="s3"># was provided, filter the list to only public flatpages.</span>
+        <span class="s0">if </span><span class="s1">self.user:</span>
+            <span class="s1">user = self.user.resolve(context)</span>
+            <span class="s0">if not </span><span class="s1">user.is_authenticated:</span>
+                <span class="s1">flatpages = flatpages.filter(registration_required=</span><span class="s0">False</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">flatpages = flatpages.filter(registration_required=</span><span class="s0">False</span><span class="s1">)</span>
+
+        <span class="s1">context[self.context_name] = flatpages</span>
+        <span class="s0">return </span><span class="s2">''</span>
+
+
+<span class="s1">@register.tag</span>
+<span class="s0">def </span><span class="s1">get_flatpages(parser</span><span class="s0">, </span><span class="s1">token):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Retrieve all flatpage objects available for the current site and 
+    visible to the specific user (or visible to all users if no user is 
+    specified). Populate the template context with them in a variable 
+    whose name is defined by the ``as`` clause. 
+ 
+    An optional ``for`` clause controls the user whose permissions are used in 
+    determining which flatpages are visible. 
+ 
+    An optional argument, ``starts_with``, limits the returned flatpages to 
+    those beginning with a particular base URL. This argument can be a variable 
+    or a string, as it resolves from the template context. 
+ 
+    Syntax:: 
+ 
+        {% get_flatpages ['url_starts_with'] [for user] as context_name %} 
+ 
+    Example usage:: 
+ 
+        {% get_flatpages as flatpages %} 
+        {% get_flatpages for someuser as flatpages %} 
+        {% get_flatpages '/about/' as about_pages %} 
+        {% get_flatpages prefix as about_pages %} 
+        {% get_flatpages '/about/' for someuser as about_pages %} 
+    &quot;&quot;&quot;</span>
+    <span class="s1">bits = token.split_contents()</span>
+    <span class="s1">syntax_message = (</span><span class="s2">&quot;%(tag_name)s expects a syntax of %(tag_name)s &quot;</span>
+                      <span class="s2">&quot;['url_starts_with'] [for user] as context_name&quot; </span><span class="s1">%</span>
+                      <span class="s1">{</span><span class="s2">'tag_name'</span><span class="s1">: bits[</span><span class="s5">0</span><span class="s1">]})</span>
+    <span class="s3"># Must have at 3-6 bits in the tag</span>
+    <span class="s0">if </span><span class="s5">3 </span><span class="s1">&lt;= len(bits) &lt;= </span><span class="s5">6</span><span class="s1">:</span>
+        <span class="s3"># If there's an even number of bits, there's no prefix</span>
+        <span class="s0">if </span><span class="s1">len(bits) % </span><span class="s5">2 </span><span class="s1">== </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">prefix = bits[</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">prefix = </span><span class="s0">None</span>
+
+        <span class="s3"># The very last bit must be the context name</span>
+        <span class="s0">if </span><span class="s1">bits[-</span><span class="s5">2</span><span class="s1">] != </span><span class="s2">'as'</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">template.TemplateSyntaxError(syntax_message)</span>
+        <span class="s1">context_name = bits[-</span><span class="s5">1</span><span class="s1">]</span>
+
+        <span class="s3"># If there are 5 or 6 bits, there is a user defined</span>
+        <span class="s0">if </span><span class="s1">len(bits) &gt;= </span><span class="s5">5</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">bits[-</span><span class="s5">4</span><span class="s1">] != </span><span class="s2">'for'</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">template.TemplateSyntaxError(syntax_message)</span>
+            <span class="s1">user = bits[-</span><span class="s5">3</span><span class="s1">]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">user = </span><span class="s0">None</span>
+
+        <span class="s0">return </span><span class="s1">FlatpageNode(context_name</span><span class="s0">, </span><span class="s1">starts_with=prefix</span><span class="s0">, </span><span class="s1">user=user)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">template.TemplateSyntaxError(syntax_message)</span>
+</pre>
+</body>
+</html>

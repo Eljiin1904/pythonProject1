@@ -1,0 +1,225 @@
+<html>
+<head>
+<title>manager.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+manager.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">copy</span>
+<span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">from </span><span class="s1">importlib </span><span class="s0">import </span><span class="s1">import_module</span>
+
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">router</span>
+<span class="s0">from </span><span class="s1">django.db.models.query </span><span class="s0">import </span><span class="s1">QuerySet</span>
+
+
+<span class="s0">class </span><span class="s1">BaseManager:</span>
+    <span class="s2"># To retain order, track each time a Manager instance is created.</span>
+    <span class="s1">creation_counter = </span><span class="s3">0</span>
+
+    <span class="s2"># Set to True for the 'objects' managers that are automatically created.</span>
+    <span class="s1">auto_created = </span><span class="s0">False</span>
+
+    <span class="s2">#: If set to True the manager will be serialized into migrations and will</span>
+    <span class="s2">#: thus be available in e.g. RunPython operations.</span>
+    <span class="s1">use_in_migrations = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">__new__(cls</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2"># Capture the arguments to make returning them trivial.</span>
+        <span class="s1">obj = super().__new__(cls)</span>
+        <span class="s1">obj._constructor_args = (args</span><span class="s0">, </span><span class="s1">kwargs)</span>
+        <span class="s0">return </span><span class="s1">obj</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self._set_creation_counter()</span>
+        <span class="s1">self.model = </span><span class="s0">None</span>
+        <span class="s1">self.name = </span><span class="s0">None</span>
+        <span class="s1">self._db = </span><span class="s0">None</span>
+        <span class="s1">self._hints = {}</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s4">&quot;&quot;&quot;Return &quot;app_label.model_label.manager_name&quot;.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s5">'%s.%s' </span><span class="s1">% (self.model._meta.label</span><span class="s0">, </span><span class="s1">self.name)</span>
+
+    <span class="s0">def </span><span class="s1">__class_getitem__(cls</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">cls</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Return a 5-tuple of the form (as_manager (True), manager_class, 
+        queryset_class, args, kwargs). 
+ 
+        Raise a ValueError if the manager is dynamically generated. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">qs_class = self._queryset_class</span>
+        <span class="s0">if </span><span class="s1">getattr(self</span><span class="s0">, </span><span class="s5">'_built_with_as_manager'</span><span class="s0">, False</span><span class="s1">):</span>
+            <span class="s2"># using MyQuerySet.as_manager()</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s0">True,  </span><span class="s2"># as_manager</span>
+                <span class="s0">None,  </span><span class="s2"># manager_class</span>
+                <span class="s5">'%s.%s' </span><span class="s1">% (qs_class.__module__</span><span class="s0">, </span><span class="s1">qs_class.__name__)</span><span class="s0">,  </span><span class="s2"># qs_class</span>
+                <span class="s0">None,  </span><span class="s2"># args</span>
+                <span class="s0">None,  </span><span class="s2"># kwargs</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">module_name = self.__module__</span>
+            <span class="s1">name = self.__class__.__name__</span>
+            <span class="s2"># Make sure it's actually there and not an inner class</span>
+            <span class="s1">module = import_module(module_name)</span>
+            <span class="s0">if not </span><span class="s1">hasattr(module</span><span class="s0">, </span><span class="s1">name):</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span>
+                    <span class="s5">&quot;Could not find manager %s in %s.</span><span class="s0">\n</span><span class="s5">&quot;</span>
+                    <span class="s5">&quot;Please note that you need to inherit from managers you &quot;</span>
+                    <span class="s5">&quot;dynamically generated with 'from_queryset()'.&quot;</span>
+                    <span class="s1">% (name</span><span class="s0">, </span><span class="s1">module_name)</span>
+                <span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s0">False,  </span><span class="s2"># as_manager</span>
+                <span class="s5">'%s.%s' </span><span class="s1">% (module_name</span><span class="s0">, </span><span class="s1">name)</span><span class="s0">,  </span><span class="s2"># manager_class</span>
+                <span class="s0">None,  </span><span class="s2"># qs_class</span>
+                <span class="s1">self._constructor_args[</span><span class="s3">0</span><span class="s1">]</span><span class="s0">,  </span><span class="s2"># args</span>
+                <span class="s1">self._constructor_args[</span><span class="s3">1</span><span class="s1">]</span><span class="s0">,  </span><span class="s2"># kwargs</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">check(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">[]</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_get_queryset_methods(cls</span><span class="s0">, </span><span class="s1">queryset_class):</span>
+        <span class="s0">def </span><span class="s1">create_method(name</span><span class="s0">, </span><span class="s1">method):</span>
+            <span class="s0">def </span><span class="s1">manager_method(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+                <span class="s0">return </span><span class="s1">getattr(self.get_queryset()</span><span class="s0">, </span><span class="s1">name)(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">manager_method.__name__ = method.__name__</span>
+            <span class="s1">manager_method.__doc__ = method.__doc__</span>
+            <span class="s0">return </span><span class="s1">manager_method</span>
+
+        <span class="s1">new_methods = {}</span>
+        <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">method </span><span class="s0">in </span><span class="s1">inspect.getmembers(queryset_class</span><span class="s0">, </span><span class="s1">predicate=inspect.isfunction):</span>
+            <span class="s2"># Only copy missing methods.</span>
+            <span class="s0">if </span><span class="s1">hasattr(cls</span><span class="s0">, </span><span class="s1">name):</span>
+                <span class="s0">continue</span>
+            <span class="s2"># Only copy public methods or methods with the attribute `queryset_only=False`.</span>
+            <span class="s1">queryset_only = getattr(method</span><span class="s0">, </span><span class="s5">'queryset_only'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">queryset_only </span><span class="s0">or </span><span class="s1">(queryset_only </span><span class="s0">is None and </span><span class="s1">name.startswith(</span><span class="s5">'_'</span><span class="s1">)):</span>
+                <span class="s0">continue</span>
+            <span class="s2"># Copy the method onto the manager.</span>
+            <span class="s1">new_methods[name] = create_method(name</span><span class="s0">, </span><span class="s1">method)</span>
+        <span class="s0">return </span><span class="s1">new_methods</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">from_queryset(cls</span><span class="s0">, </span><span class="s1">queryset_class</span><span class="s0">, </span><span class="s1">class_name=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">class_name </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">class_name = </span><span class="s5">'%sFrom%s' </span><span class="s1">% (cls.__name__</span><span class="s0">, </span><span class="s1">queryset_class.__name__)</span>
+        <span class="s0">return </span><span class="s1">type(class_name</span><span class="s0">, </span><span class="s1">(cls</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s5">'_queryset_class'</span><span class="s1">: queryset_class</span><span class="s0">,</span>
+            <span class="s1">**cls._get_queryset_methods(queryset_class)</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+    <span class="s0">def </span><span class="s1">contribute_to_class(self</span><span class="s0">, </span><span class="s1">cls</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">self.name = self.name </span><span class="s0">or </span><span class="s1">name</span>
+        <span class="s1">self.model = cls</span>
+
+        <span class="s1">setattr(cls</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">ManagerDescriptor(self))</span>
+
+        <span class="s1">cls._meta.add_manager(self)</span>
+
+    <span class="s0">def </span><span class="s1">_set_creation_counter(self):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Set the creation counter value for this instance and increment the 
+        class-level copy. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.creation_counter = BaseManager.creation_counter</span>
+        <span class="s1">BaseManager.creation_counter += </span><span class="s3">1</span>
+
+    <span class="s0">def </span><span class="s1">db_manager(self</span><span class="s0">, </span><span class="s1">using=</span><span class="s0">None, </span><span class="s1">hints=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">obj = copy.copy(self)</span>
+        <span class="s1">obj._db = using </span><span class="s0">or </span><span class="s1">self._db</span>
+        <span class="s1">obj._hints = hints </span><span class="s0">or </span><span class="s1">self._hints</span>
+        <span class="s0">return </span><span class="s1">obj</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">db(self):</span>
+        <span class="s0">return </span><span class="s1">self._db </span><span class="s0">or </span><span class="s1">router.db_for_read(self.model</span><span class="s0">, </span><span class="s1">**self._hints)</span>
+
+    <span class="s2">#######################</span>
+    <span class="s2"># PROXIES TO QUERYSET #</span>
+    <span class="s2">#######################</span>
+
+    <span class="s0">def </span><span class="s1">get_queryset(self):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Return a new QuerySet object. Subclasses can override this method to 
+        customize the behavior of the Manager. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self._queryset_class(model=self.model</span><span class="s0">, </span><span class="s1">using=self._db</span><span class="s0">, </span><span class="s1">hints=self._hints)</span>
+
+    <span class="s0">def </span><span class="s1">all(self):</span>
+        <span class="s2"># We can't proxy this method through the `QuerySet` like we do for the</span>
+        <span class="s2"># rest of the `QuerySet` methods. This is because `QuerySet.all()`</span>
+        <span class="s2"># works by creating a &quot;copy&quot; of the current queryset and in making said</span>
+        <span class="s2"># copy, all the cached `prefetch_related` lookups are lost. See the</span>
+        <span class="s2"># implementation of `RelatedManager.get_queryset()` for a better</span>
+        <span class="s2"># understanding of how this comes into play.</span>
+        <span class="s0">return </span><span class="s1">self.get_queryset()</span>
+
+    <span class="s0">def </span><span class="s1">__eq__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">(</span>
+            <span class="s1">isinstance(other</span><span class="s0">, </span><span class="s1">self.__class__) </span><span class="s0">and</span>
+            <span class="s1">self._constructor_args == other._constructor_args</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__hash__(self):</span>
+        <span class="s0">return </span><span class="s1">id(self)</span>
+
+
+<span class="s0">class </span><span class="s1">Manager(BaseManager.from_queryset(QuerySet)):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">ManagerDescriptor:</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">manager):</span>
+        <span class="s1">self.manager = manager</span>
+
+    <span class="s0">def </span><span class="s1">__get__(self</span><span class="s0">, </span><span class="s1">instance</span><span class="s0">, </span><span class="s1">cls=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">instance </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">AttributeError(</span><span class="s5">&quot;Manager isn't accessible via %s instances&quot; </span><span class="s1">% cls.__name__)</span>
+
+        <span class="s0">if </span><span class="s1">cls._meta.abstract:</span>
+            <span class="s0">raise </span><span class="s1">AttributeError(</span><span class="s5">&quot;Manager isn't available; %s is abstract&quot; </span><span class="s1">% (</span>
+                <span class="s1">cls._meta.object_name</span><span class="s0">,</span>
+            <span class="s1">))</span>
+
+        <span class="s0">if </span><span class="s1">cls._meta.swapped:</span>
+            <span class="s0">raise </span><span class="s1">AttributeError(</span>
+                <span class="s5">&quot;Manager isn't available; '%s' has been swapped for '%s'&quot; </span><span class="s1">% (</span>
+                    <span class="s1">cls._meta.label</span><span class="s0">,</span>
+                    <span class="s1">cls._meta.swapped</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+
+        <span class="s0">return </span><span class="s1">cls._meta.managers_map[self.manager.name]</span>
+
+
+<span class="s0">class </span><span class="s1">EmptyManager(Manager):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">model):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self.model = model</span>
+
+    <span class="s0">def </span><span class="s1">get_queryset(self):</span>
+        <span class="s0">return </span><span class="s1">super().get_queryset().none()</span>
+</pre>
+</body>
+</html>

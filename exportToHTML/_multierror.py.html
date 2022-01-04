@@ -1,0 +1,538 @@
+<html>
+<head>
+<title>_multierror.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_multierror.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">traceback</span>
+<span class="s0">import </span><span class="s1">textwrap</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">import </span><span class="s1">attr</span>
+
+<span class="s2"># python traceback.TracebackException &lt; 3.6.4 does not support unhashable exceptions</span>
+<span class="s2"># see https://github.com/python/cpython/pull/4014 for details</span>
+<span class="s0">if </span><span class="s1">sys.version_info &lt; (</span><span class="s3">3</span><span class="s0">, </span><span class="s3">6</span><span class="s0">, </span><span class="s3">4</span><span class="s1">):</span>
+    <span class="s1">exc_key = </span><span class="s0">lambda </span><span class="s1">exc: exc</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s1">exc_key = id</span>
+
+<span class="s2">################################################################</span>
+<span class="s2"># MultiError</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s0">def </span><span class="s1">_filter_impl(handler</span><span class="s0">, </span><span class="s1">root_exc):</span>
+    <span class="s2"># We have a tree of MultiError's, like:</span>
+    <span class="s2">#</span>
+    <span class="s2">#  MultiError([</span>
+    <span class="s2">#      ValueError,</span>
+    <span class="s2">#      MultiError([</span>
+    <span class="s2">#          KeyError,</span>
+    <span class="s2">#          ValueError,</span>
+    <span class="s2">#      ]),</span>
+    <span class="s2">#  ])</span>
+    <span class="s2">#</span>
+    <span class="s2"># or similar.</span>
+    <span class="s2">#</span>
+    <span class="s2"># We want to</span>
+    <span class="s2"># 1) apply the filter to each of the leaf exceptions -- each leaf</span>
+    <span class="s2">#    might stay the same, be replaced (with the original exception</span>
+    <span class="s2">#    potentially sticking around as __context__ or __cause__), or</span>
+    <span class="s2">#    disappear altogether.</span>
+    <span class="s2"># 2) simplify the resulting tree -- remove empty nodes, and replace</span>
+    <span class="s2">#    singleton MultiError's with their contents, e.g.:</span>
+    <span class="s2">#        MultiError([KeyError]) -&gt; KeyError</span>
+    <span class="s2">#    (This can happen recursively, e.g. if the two ValueErrors above</span>
+    <span class="s2">#    get caught then we'll just be left with a bare KeyError.)</span>
+    <span class="s2"># 3) preserve sensible tracebacks</span>
+    <span class="s2">#</span>
+    <span class="s2"># It's the tracebacks that are most confusing. As a MultiError</span>
+    <span class="s2"># propagates through the stack, it accumulates traceback frames, but</span>
+    <span class="s2"># the exceptions inside it don't. Semantically, the traceback for a</span>
+    <span class="s2"># leaf exception is the concatenation the tracebacks of all the</span>
+    <span class="s2"># exceptions you see when traversing the exception tree from the root</span>
+    <span class="s2"># to that leaf. Our correctness invariant is that this concatenated</span>
+    <span class="s2"># traceback should be the same before and after.</span>
+    <span class="s2">#</span>
+    <span class="s2"># The easy way to do that would be to, at the beginning of this</span>
+    <span class="s2"># function, &quot;push&quot; all tracebacks down to the leafs, so all the</span>
+    <span class="s2"># MultiErrors have __traceback__=None, and all the leafs have complete</span>
+    <span class="s2"># tracebacks. But whenever possible, we'd actually prefer to keep</span>
+    <span class="s2"># tracebacks as high up in the tree as possible, because this lets us</span>
+    <span class="s2"># keep only a single copy of the common parts of these exception's</span>
+    <span class="s2"># tracebacks. This is cheaper (in memory + time -- tracebacks are</span>
+    <span class="s2"># unpleasantly quadratic-ish to work with, and this might matter if</span>
+    <span class="s2"># you have thousands of exceptions, which can happen e.g. after</span>
+    <span class="s2"># cancelling a large task pool, and no-one will ever look at their</span>
+    <span class="s2"># tracebacks!), and more importantly, factoring out redundant parts of</span>
+    <span class="s2"># the tracebacks makes them more readable if/when users do see them.</span>
+    <span class="s2">#</span>
+    <span class="s2"># So instead our strategy is:</span>
+    <span class="s2"># - first go through and construct the new tree, preserving any</span>
+    <span class="s2">#   unchanged subtrees</span>
+    <span class="s2"># - then go through the original tree (!) and push tracebacks down</span>
+    <span class="s2">#   until either we hit a leaf, or we hit a subtree which was</span>
+    <span class="s2">#   preserved in the new tree.</span>
+
+    <span class="s2"># This used to also support async handler functions. But that runs into:</span>
+    <span class="s2">#   https://bugs.python.org/issue29600</span>
+    <span class="s2"># which is difficult to fix on our end.</span>
+
+    <span class="s2"># Filters a subtree, ignoring tracebacks, while keeping a record of</span>
+    <span class="s2"># which MultiErrors were preserved unchanged</span>
+    <span class="s0">def </span><span class="s1">filter_tree(exc</span><span class="s0">, </span><span class="s1">preserved):</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">MultiError):</span>
+            <span class="s1">new_exceptions = []</span>
+            <span class="s1">changed = </span><span class="s0">False</span>
+            <span class="s0">for </span><span class="s1">child_exc </span><span class="s0">in </span><span class="s1">exc.exceptions:</span>
+                <span class="s1">new_child_exc = filter_tree(child_exc</span><span class="s0">, </span><span class="s1">preserved)</span>
+                <span class="s0">if </span><span class="s1">new_child_exc </span><span class="s0">is not </span><span class="s1">child_exc:</span>
+                    <span class="s1">changed = </span><span class="s0">True</span>
+                <span class="s0">if </span><span class="s1">new_child_exc </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s1">new_exceptions.append(new_child_exc)</span>
+            <span class="s0">if not </span><span class="s1">new_exceptions:</span>
+                <span class="s0">return None</span>
+            <span class="s0">elif </span><span class="s1">changed:</span>
+                <span class="s0">return </span><span class="s1">MultiError(new_exceptions)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">preserved.add(id(exc))</span>
+                <span class="s0">return </span><span class="s1">exc</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">new_exc = handler(exc)</span>
+            <span class="s2"># Our version of implicit exception chaining</span>
+            <span class="s0">if </span><span class="s1">new_exc </span><span class="s0">is not None and </span><span class="s1">new_exc </span><span class="s0">is not </span><span class="s1">exc:</span>
+                <span class="s1">new_exc.__context__ = exc</span>
+            <span class="s0">return </span><span class="s1">new_exc</span>
+
+    <span class="s0">def </span><span class="s1">push_tb_down(tb</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">preserved):</span>
+        <span class="s0">if </span><span class="s1">id(exc) </span><span class="s0">in </span><span class="s1">preserved:</span>
+            <span class="s0">return</span>
+        <span class="s1">new_tb = concat_tb(tb</span><span class="s0">, </span><span class="s1">exc.__traceback__)</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">MultiError):</span>
+            <span class="s0">for </span><span class="s1">child_exc </span><span class="s0">in </span><span class="s1">exc.exceptions:</span>
+                <span class="s1">push_tb_down(new_tb</span><span class="s0">, </span><span class="s1">child_exc</span><span class="s0">, </span><span class="s1">preserved)</span>
+            <span class="s1">exc.__traceback__ = </span><span class="s0">None</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">exc.__traceback__ = new_tb</span>
+
+    <span class="s1">preserved = set()</span>
+    <span class="s1">new_root_exc = filter_tree(root_exc</span><span class="s0">, </span><span class="s1">preserved)</span>
+    <span class="s1">push_tb_down(</span><span class="s0">None, </span><span class="s1">root_exc</span><span class="s0">, </span><span class="s1">preserved)</span>
+    <span class="s2"># Delete the local functions to avoid a reference cycle (see</span>
+    <span class="s2"># test_simple_cancel_scope_usage_doesnt_create_cyclic_garbage)</span>
+    <span class="s0">del </span><span class="s1">filter_tree</span><span class="s0">, </span><span class="s1">push_tb_down</span>
+    <span class="s0">return </span><span class="s1">new_root_exc</span>
+
+
+<span class="s2"># Normally I'm a big fan of (a)contextmanager, but in this case I found it</span>
+<span class="s2"># easier to use the raw context manager protocol, because it makes it a lot</span>
+<span class="s2"># easier to reason about how we're mutating the traceback as we go. (End</span>
+<span class="s2"># result: if the exception gets modified, then the 'raise' here makes this</span>
+<span class="s2"># frame show up in the traceback; otherwise, we leave no trace.)</span>
+<span class="s1">@attr.s(frozen=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">class </span><span class="s1">MultiErrorCatcher:</span>
+    <span class="s1">_handler = attr.ib()</span>
+
+    <span class="s0">def </span><span class="s1">__enter__(self):</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">__exit__(self</span><span class="s0">, </span><span class="s1">etype</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">tb):</span>
+        <span class="s0">if </span><span class="s1">exc </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">filtered_exc = MultiError.filter(self._handler</span><span class="s0">, </span><span class="s1">exc)</span>
+
+            <span class="s0">if </span><span class="s1">filtered_exc </span><span class="s0">is </span><span class="s1">exc:</span>
+                <span class="s2"># Let the interpreter re-raise it</span>
+                <span class="s0">return False</span>
+            <span class="s0">if </span><span class="s1">filtered_exc </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s2"># Swallow the exception</span>
+                <span class="s0">return True</span>
+            <span class="s2"># When we raise filtered_exc, Python will unconditionally blow</span>
+            <span class="s2"># away its __context__ attribute and replace it with the original</span>
+            <span class="s2"># exc we caught. So after we raise it, we have to pause it while</span>
+            <span class="s2"># it's in flight to put the correct __context__ back.</span>
+            <span class="s1">old_context = filtered_exc.__context__</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">filtered_exc</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s1">_</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">_ = sys.exc_info()</span>
+                <span class="s0">assert </span><span class="s1">value </span><span class="s0">is </span><span class="s1">filtered_exc</span>
+                <span class="s1">value.__context__ = old_context</span>
+
+
+<span class="s0">class </span><span class="s1">MultiError(BaseException):</span>
+    <span class="s4">&quot;&quot;&quot;An exception that contains other exceptions; also known as an 
+    &quot;inception&quot;. 
+ 
+    It's main use is to represent the situation when multiple child tasks all 
+    raise errors &quot;in parallel&quot;. 
+ 
+    Args: 
+      exceptions (list): The exceptions 
+ 
+    Returns: 
+      If ``len(exceptions) == 1``, returns that exception. This means that a 
+      call to ``MultiError(...)`` is not guaranteed to return a 
+      :exc:`MultiError` object! 
+ 
+      Otherwise, returns a new :exc:`MultiError` object. 
+ 
+    Raises: 
+      TypeError: if any of the passed in objects are not instances of 
+          :exc:`BaseException`. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">exceptions):</span>
+        <span class="s2"># Avoid recursion when exceptions[0] returned by __new__() happens</span>
+        <span class="s2"># to be a MultiError and subsequently __init__() is called.</span>
+        <span class="s0">if </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s5">&quot;exceptions&quot;</span><span class="s1">):</span>
+            <span class="s2"># __init__ was already called on this object</span>
+            <span class="s0">assert </span><span class="s1">len(exceptions) == </span><span class="s3">1 </span><span class="s0">and </span><span class="s1">exceptions[</span><span class="s3">0</span><span class="s1">] </span><span class="s0">is </span><span class="s1">self</span>
+            <span class="s0">return</span>
+        <span class="s1">self.exceptions = exceptions</span>
+
+    <span class="s0">def </span><span class="s1">__new__(cls</span><span class="s0">, </span><span class="s1">exceptions):</span>
+        <span class="s1">exceptions = list(exceptions)</span>
+        <span class="s0">for </span><span class="s1">exc </span><span class="s0">in </span><span class="s1">exceptions:</span>
+            <span class="s0">if not </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">BaseException):</span>
+                <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;Expected an exception object, not {!r}&quot;</span><span class="s1">.format(exc))</span>
+        <span class="s0">if </span><span class="s1">len(exceptions) == </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s2"># If this lone object happens to itself be a MultiError, then</span>
+            <span class="s2"># Python will implicitly call our __init__ on it again.  See</span>
+            <span class="s2"># special handling in __init__.</span>
+            <span class="s0">return </span><span class="s1">exceptions[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s2"># The base class __new__() implicitly invokes our __init__, which</span>
+            <span class="s2"># is what we want.</span>
+            <span class="s2">#</span>
+            <span class="s2"># In an earlier version of the code, we didn't define __init__ and</span>
+            <span class="s2"># simply set the `exceptions` attribute directly on the new object.</span>
+            <span class="s2"># However, linters expect attributes to be initialized in __init__.</span>
+            <span class="s0">return </span><span class="s1">BaseException.__new__(cls</span><span class="s0">, </span><span class="s1">exceptions)</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s0">return </span><span class="s5">&quot;, &quot;</span><span class="s1">.join(repr(exc) </span><span class="s0">for </span><span class="s1">exc </span><span class="s0">in </span><span class="s1">self.exceptions)</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s5">&quot;&lt;MultiError: {}&gt;&quot;</span><span class="s1">.format(self)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">filter(cls</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">root_exc):</span>
+        <span class="s4">&quot;&quot;&quot;Apply the given ``handler`` to all the exceptions in ``root_exc``. 
+ 
+        Args: 
+          handler: A callable that takes an atomic (non-MultiError) exception 
+              as input, and returns either a new exception object or None. 
+          root_exc: An exception, often (though not necessarily) a 
+              :exc:`MultiError`. 
+ 
+        Returns: 
+          A new exception object in which each component exception ``exc`` has 
+          been replaced by the result of running ``handler(exc)`` – or, if 
+          ``handler`` returned None for all the inputs, returns None. 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">return </span><span class="s1">_filter_impl(handler</span><span class="s0">, </span><span class="s1">root_exc)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">catch(cls</span><span class="s0">, </span><span class="s1">handler):</span>
+        <span class="s4">&quot;&quot;&quot;Return a context manager that catches and re-throws exceptions 
+        after running :meth:`filter` on them. 
+ 
+        Args: 
+          handler: as for :meth:`filter` 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">return </span><span class="s1">MultiErrorCatcher(handler)</span>
+
+
+<span class="s2"># Clean up exception printing:</span>
+<span class="s1">MultiError.__module__ = </span><span class="s5">&quot;trio&quot;</span>
+
+<span class="s2">################################################################</span>
+<span class="s2"># concat_tb</span>
+<span class="s2">################################################################</span>
+
+<span class="s2"># We need to compute a new traceback that is the concatenation of two existing</span>
+<span class="s2"># tracebacks. This requires copying the entries in 'head' and then pointing</span>
+<span class="s2"># the final tb_next to 'tail'.</span>
+<span class="s2">#</span>
+<span class="s2"># NB: 'tail' might be None, which requires some special handling in the ctypes</span>
+<span class="s2"># version.</span>
+<span class="s2">#</span>
+<span class="s2"># The complication here is that Python doesn't actually support copying or</span>
+<span class="s2"># modifying traceback objects, so we have to get creative...</span>
+<span class="s2">#</span>
+<span class="s2"># On CPython, we use ctypes. On PyPy, we use &quot;transparent proxies&quot;.</span>
+<span class="s2">#</span>
+<span class="s2"># Jinja2 is a useful source of inspiration:</span>
+<span class="s2">#   https://github.com/pallets/jinja/blob/master/jinja2/debug.py</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">tputil</span>
+<span class="s0">except </span><span class="s1">ImportError:</span>
+    <span class="s1">have_tproxy = </span><span class="s0">False</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s1">have_tproxy = </span><span class="s0">True</span>
+
+<span class="s0">if </span><span class="s1">have_tproxy:</span>
+    <span class="s2"># http://doc.pypy.org/en/latest/objspace-proxies.html</span>
+    <span class="s0">def </span><span class="s1">copy_tb(base_tb</span><span class="s0">, </span><span class="s1">tb_next):</span>
+        <span class="s0">def </span><span class="s1">controller(operation):</span>
+            <span class="s2"># Rationale for pragma: I looked fairly carefully and tried a few</span>
+            <span class="s2"># things, and AFAICT it's not actually possible to get any</span>
+            <span class="s2"># 'opname' that isn't __getattr__ or __getattribute__. So there's</span>
+            <span class="s2"># no missing test we could add, and no value in coverage nagging</span>
+            <span class="s2"># us about adding one.</span>
+            <span class="s0">if </span><span class="s1">operation.opname </span><span class="s0">in </span><span class="s1">[</span>
+                <span class="s5">&quot;__getattribute__&quot;</span><span class="s0">,</span>
+                <span class="s5">&quot;__getattr__&quot;</span><span class="s0">,</span>
+            <span class="s1">]:  </span><span class="s2"># pragma: no cover</span>
+                <span class="s0">if </span><span class="s1">operation.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s5">&quot;tb_next&quot;</span><span class="s1">:</span>
+                    <span class="s0">return </span><span class="s1">tb_next</span>
+            <span class="s0">return </span><span class="s1">operation.delegate()</span>
+
+        <span class="s0">return </span><span class="s1">tputil.make_proxy(controller</span><span class="s0">, </span><span class="s1">type(base_tb)</span><span class="s0">, </span><span class="s1">base_tb)</span>
+
+
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s2"># ctypes it is</span>
+    <span class="s0">import </span><span class="s1">ctypes</span>
+
+    <span class="s2"># How to handle refcounting? I don't want to use ctypes.py_object because</span>
+    <span class="s2"># I don't understand or trust it, and I don't want to use</span>
+    <span class="s2"># ctypes.pythonapi.Py_{Inc,Dec}Ref because we might clash with user code</span>
+    <span class="s2"># that also tries to use them but with different types. So private _ctypes</span>
+    <span class="s2"># APIs it is!</span>
+    <span class="s0">import </span><span class="s1">_ctypes</span>
+
+    <span class="s0">class </span><span class="s1">CTraceback(ctypes.Structure):</span>
+        <span class="s1">_fields_ = [</span>
+            <span class="s1">(</span><span class="s5">&quot;PyObject_HEAD&quot;</span><span class="s0">, </span><span class="s1">ctypes.c_byte * object().__sizeof__())</span><span class="s0">,</span>
+            <span class="s1">(</span><span class="s5">&quot;tb_next&quot;</span><span class="s0">, </span><span class="s1">ctypes.c_void_p)</span><span class="s0">,</span>
+            <span class="s1">(</span><span class="s5">&quot;tb_frame&quot;</span><span class="s0">, </span><span class="s1">ctypes.c_void_p)</span><span class="s0">,</span>
+            <span class="s1">(</span><span class="s5">&quot;tb_lasti&quot;</span><span class="s0">, </span><span class="s1">ctypes.c_int)</span><span class="s0">,</span>
+            <span class="s1">(</span><span class="s5">&quot;tb_lineno&quot;</span><span class="s0">, </span><span class="s1">ctypes.c_int)</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">copy_tb(base_tb</span><span class="s0">, </span><span class="s1">tb_next):</span>
+        <span class="s2"># TracebackType has no public constructor, so allocate one the hard way</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span>
+        <span class="s0">except </span><span class="s1">ValueError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">new_tb = exc.__traceback__</span>
+        <span class="s1">c_new_tb = CTraceback.from_address(id(new_tb))</span>
+
+        <span class="s2"># At the C level, tb_next either pointer to the next traceback or is</span>
+        <span class="s2"># NULL. c_void_p and the .tb_next accessor both convert NULL to None,</span>
+        <span class="s2"># but we shouldn't DECREF None just because we assigned to a NULL</span>
+        <span class="s2"># pointer! Here we know that our new traceback has only 1 frame in it,</span>
+        <span class="s2"># so we can assume the tb_next field is NULL.</span>
+        <span class="s0">assert </span><span class="s1">c_new_tb.tb_next </span><span class="s0">is None</span>
+        <span class="s2"># If tb_next is None, then we want to set c_new_tb.tb_next to NULL,</span>
+        <span class="s2"># which it already is, so we're done. Otherwise, we have to actually</span>
+        <span class="s2"># do some work:</span>
+        <span class="s0">if </span><span class="s1">tb_next </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">_ctypes.Py_INCREF(tb_next)</span>
+            <span class="s1">c_new_tb.tb_next = id(tb_next)</span>
+
+        <span class="s0">assert </span><span class="s1">c_new_tb.tb_frame </span><span class="s0">is not None</span>
+        <span class="s1">_ctypes.Py_INCREF(base_tb.tb_frame)</span>
+        <span class="s1">old_tb_frame = new_tb.tb_frame</span>
+        <span class="s1">c_new_tb.tb_frame = id(base_tb.tb_frame)</span>
+        <span class="s1">_ctypes.Py_DECREF(old_tb_frame)</span>
+
+        <span class="s1">c_new_tb.tb_lasti = base_tb.tb_lasti</span>
+        <span class="s1">c_new_tb.tb_lineno = base_tb.tb_lineno</span>
+
+        <span class="s0">return </span><span class="s1">new_tb</span>
+
+
+<span class="s0">def </span><span class="s1">concat_tb(head</span><span class="s0">, </span><span class="s1">tail):</span>
+    <span class="s2"># We have to use an iterative algorithm here, because in the worst case</span>
+    <span class="s2"># this might be a RecursionError stack that is by definition too deep to</span>
+    <span class="s2"># process by recursion!</span>
+    <span class="s1">head_tbs = []</span>
+    <span class="s1">pointer = head</span>
+    <span class="s0">while </span><span class="s1">pointer </span><span class="s0">is not None</span><span class="s1">:</span>
+        <span class="s1">head_tbs.append(pointer)</span>
+        <span class="s1">pointer = pointer.tb_next</span>
+    <span class="s1">current_head = tail</span>
+    <span class="s0">for </span><span class="s1">head_tb </span><span class="s0">in </span><span class="s1">reversed(head_tbs):</span>
+        <span class="s1">current_head = copy_tb(head_tb</span><span class="s0">, </span><span class="s1">tb_next=current_head)</span>
+    <span class="s0">return </span><span class="s1">current_head</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2"># MultiError traceback formatting</span>
+<span class="s2">#</span>
+<span class="s2"># What follows is terrible, terrible monkey patching of</span>
+<span class="s2"># traceback.TracebackException to add support for handling</span>
+<span class="s2"># MultiErrors</span>
+<span class="s2">################################################################</span>
+
+<span class="s1">traceback_exception_original_init = traceback.TracebackException.__init__</span>
+
+
+<span class="s0">def </span><span class="s1">traceback_exception_init(</span>
+    <span class="s1">self</span><span class="s0">,</span>
+    <span class="s1">exc_type</span><span class="s0">,</span>
+    <span class="s1">exc_value</span><span class="s0">,</span>
+    <span class="s1">exc_traceback</span><span class="s0">,</span>
+    <span class="s1">*</span><span class="s0">,</span>
+    <span class="s1">limit=</span><span class="s0">None,</span>
+    <span class="s1">lookup_lines=</span><span class="s0">True,</span>
+    <span class="s1">capture_locals=</span><span class="s0">False,</span>
+    <span class="s1">compact=</span><span class="s0">False,</span>
+    <span class="s1">_seen=</span><span class="s0">None,</span>
+<span class="s1">):</span>
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s3">3</span><span class="s0">, </span><span class="s3">10</span><span class="s1">):</span>
+        <span class="s1">kwargs = {</span><span class="s5">&quot;compact&quot;</span><span class="s1">: compact}</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">kwargs = {}</span>
+
+    <span class="s2"># Capture the original exception and its cause and context as TracebackExceptions</span>
+    <span class="s1">traceback_exception_original_init(</span>
+        <span class="s1">self</span><span class="s0">,</span>
+        <span class="s1">exc_type</span><span class="s0">,</span>
+        <span class="s1">exc_value</span><span class="s0">,</span>
+        <span class="s1">exc_traceback</span><span class="s0">,</span>
+        <span class="s1">limit=limit</span><span class="s0">,</span>
+        <span class="s1">lookup_lines=lookup_lines</span><span class="s0">,</span>
+        <span class="s1">capture_locals=capture_locals</span><span class="s0">,</span>
+        <span class="s1">_seen=_seen</span><span class="s0">,</span>
+        <span class="s1">**kwargs</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s1">seen_was_none = _seen </span><span class="s0">is None</span>
+
+    <span class="s0">if </span><span class="s1">_seen </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">_seen = set()</span>
+
+    <span class="s2"># Capture each of the exceptions in the MultiError along with each of their causes and contexts</span>
+    <span class="s0">if </span><span class="s1">isinstance(exc_value</span><span class="s0">, </span><span class="s1">MultiError):</span>
+        <span class="s1">embedded = []</span>
+        <span class="s0">for </span><span class="s1">exc </span><span class="s0">in </span><span class="s1">exc_value.exceptions:</span>
+            <span class="s0">if </span><span class="s1">exc_key(exc) </span><span class="s0">not in </span><span class="s1">_seen:</span>
+                <span class="s1">embedded.append(</span>
+                    <span class="s1">traceback.TracebackException.from_exception(</span>
+                        <span class="s1">exc</span><span class="s0">,</span>
+                        <span class="s1">limit=limit</span><span class="s0">,</span>
+                        <span class="s1">lookup_lines=lookup_lines</span><span class="s0">,</span>
+                        <span class="s1">capture_locals=capture_locals</span><span class="s0">,</span>
+                        <span class="s2"># copy the set of _seen exceptions so that duplicates</span>
+                        <span class="s2"># shared between sub-exceptions are not omitted</span>
+                        <span class="s1">_seen=</span><span class="s0">None if </span><span class="s1">seen_was_none </span><span class="s0">else </span><span class="s1">set(_seen)</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+        <span class="s1">self.embedded = embedded</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">self.embedded = []</span>
+
+
+<span class="s1">traceback.TracebackException.__init__ = traceback_exception_init  </span><span class="s2"># type: ignore</span>
+<span class="s1">traceback_exception_original_format = traceback.TracebackException.format</span>
+
+
+<span class="s0">def </span><span class="s1">traceback_exception_format(self</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">chain=</span><span class="s0">True</span><span class="s1">):</span>
+    <span class="s0">yield from </span><span class="s1">traceback_exception_original_format(self</span><span class="s0">, </span><span class="s1">chain=chain)</span>
+
+    <span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">exc </span><span class="s0">in </span><span class="s1">enumerate(self.embedded):</span>
+        <span class="s0">yield </span><span class="s5">&quot;</span><span class="s0">\n</span><span class="s5">Details of embedded exception {}:</span><span class="s0">\n\n</span><span class="s5">&quot;</span><span class="s1">.format(i + </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s0">yield from </span><span class="s1">(textwrap.indent(line</span><span class="s0">, </span><span class="s5">&quot; &quot; </span><span class="s1">* </span><span class="s3">2</span><span class="s1">) </span><span class="s0">for </span><span class="s1">line </span><span class="s0">in </span><span class="s1">exc.format(chain=chain))</span>
+
+
+<span class="s1">traceback.TracebackException.format = traceback_exception_format  </span><span class="s2"># type: ignore</span>
+
+
+<span class="s0">def </span><span class="s1">trio_excepthook(etype</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">tb):</span>
+    <span class="s0">for </span><span class="s1">chunk </span><span class="s0">in </span><span class="s1">traceback.format_exception(etype</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">tb):</span>
+        <span class="s1">sys.stderr.write(chunk)</span>
+
+
+<span class="s1">monkeypatched_or_warned = </span><span class="s0">False</span>
+
+<span class="s0">if </span><span class="s5">&quot;IPython&quot; </span><span class="s0">in </span><span class="s1">sys.modules:</span>
+    <span class="s0">import </span><span class="s1">IPython</span>
+
+    <span class="s1">ip = IPython.get_ipython()</span>
+    <span class="s0">if </span><span class="s1">ip </span><span class="s0">is not None</span><span class="s1">:</span>
+        <span class="s0">if </span><span class="s1">ip.custom_exceptions != ():</span>
+            <span class="s1">warnings.warn(</span>
+                <span class="s5">&quot;IPython detected, but you already have a custom exception &quot;</span>
+                <span class="s5">&quot;handler installed. I'll skip installing Trio's custom &quot;</span>
+                <span class="s5">&quot;handler, but this means MultiErrors will not show full &quot;</span>
+                <span class="s5">&quot;tracebacks.&quot;</span><span class="s0">,</span>
+                <span class="s1">category=RuntimeWarning</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s1">monkeypatched_or_warned = </span><span class="s0">True</span>
+        <span class="s0">else</span><span class="s1">:</span>
+
+            <span class="s0">def </span><span class="s1">trio_show_traceback(self</span><span class="s0">, </span><span class="s1">etype</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">tb</span><span class="s0">, </span><span class="s1">tb_offset=</span><span class="s0">None</span><span class="s1">):</span>
+                <span class="s2"># XX it would be better to integrate with IPython's fancy</span>
+                <span class="s2"># exception formatting stuff (and not ignore tb_offset)</span>
+                <span class="s1">trio_excepthook(etype</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">tb)</span>
+
+            <span class="s1">ip.set_custom_exc((MultiError</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">trio_show_traceback)</span>
+            <span class="s1">monkeypatched_or_warned = </span><span class="s0">True</span>
+
+<span class="s0">if </span><span class="s1">sys.excepthook </span><span class="s0">is </span><span class="s1">sys.__excepthook__:</span>
+    <span class="s1">sys.excepthook = trio_excepthook</span>
+    <span class="s1">monkeypatched_or_warned = </span><span class="s0">True</span>
+
+<span class="s2"># Ubuntu's system Python has a sitecustomize.py file that import</span>
+<span class="s2"># apport_python_hook and replaces sys.excepthook.</span>
+<span class="s2">#</span>
+<span class="s2"># The custom hook captures the error for crash reporting, and then calls</span>
+<span class="s2"># sys.__excepthook__ to actually print the error.</span>
+<span class="s2">#</span>
+<span class="s2"># We don't mind it capturing the error for crash reporting, but we want to</span>
+<span class="s2"># take over printing the error. So we monkeypatch the apport_python_hook</span>
+<span class="s2"># module so that instead of calling sys.__excepthook__, it calls our custom</span>
+<span class="s2"># hook.</span>
+<span class="s2">#</span>
+<span class="s2"># More details: https://github.com/python-trio/trio/issues/1065</span>
+<span class="s0">if </span><span class="s1">getattr(sys.excepthook</span><span class="s0">, </span><span class="s5">&quot;__name__&quot;</span><span class="s0">, None</span><span class="s1">) == </span><span class="s5">&quot;apport_excepthook&quot;</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">apport_python_hook</span>
+
+    <span class="s0">assert </span><span class="s1">sys.excepthook </span><span class="s0">is </span><span class="s1">apport_python_hook.apport_excepthook</span>
+
+    <span class="s2"># Give it a descriptive name as a hint for anyone who's stuck trying to</span>
+    <span class="s2"># debug this mess later.</span>
+    <span class="s0">class </span><span class="s1">TrioFakeSysModuleForApport:</span>
+        <span class="s0">pass</span>
+
+    <span class="s1">fake_sys = TrioFakeSysModuleForApport()</span>
+    <span class="s1">fake_sys.__dict__.update(sys.__dict__)</span>
+    <span class="s1">fake_sys.__excepthook__ = trio_excepthook  </span><span class="s2"># type: ignore</span>
+    <span class="s1">apport_python_hook.sys = fake_sys</span>
+
+    <span class="s1">monkeypatched_or_warned = </span><span class="s0">True</span>
+
+<span class="s0">if not </span><span class="s1">monkeypatched_or_warned:</span>
+    <span class="s1">warnings.warn(</span>
+        <span class="s5">&quot;You seem to already have a custom sys.excepthook handler &quot;</span>
+        <span class="s5">&quot;installed. I'll skip installing Trio's custom handler, but this &quot;</span>
+        <span class="s5">&quot;means MultiErrors will not show full tracebacks.&quot;</span><span class="s0">,</span>
+        <span class="s1">category=RuntimeWarning</span><span class="s0">,</span>
+    <span class="s1">)</span>
+</pre>
+</body>
+</html>

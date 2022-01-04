@@ -1,0 +1,1036 @@
+<html>
+<head>
+<title>test_async_generator.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_async_generator.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">import </span><span class="s1">types</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">collections.abc</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">wraps</span>
+<span class="s0">import </span><span class="s1">gc</span>
+
+<span class="s0">from </span><span class="s1">.conftest </span><span class="s0">import </span><span class="s1">mock_sleep</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">async_generator</span><span class="s0">,</span>
+    <span class="s1">yield_</span><span class="s0">,</span>
+    <span class="s1">yield_from_</span><span class="s0">,</span>
+    <span class="s1">isasyncgen</span><span class="s0">,</span>
+    <span class="s1">isasyncgenfunction</span><span class="s0">,</span>
+    <span class="s1">get_asyncgen_hooks</span><span class="s0">,</span>
+    <span class="s1">set_asyncgen_hooks</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s2"># like list(it) but works on async iterators</span>
+<span class="s0">async def </span><span class="s1">collect(ait):</span>
+    <span class="s1">items = []</span>
+    <span class="s0">async for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">ait:</span>
+        <span class="s1">items.append(value)</span>
+    <span class="s0">return </span><span class="s1">items</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># Basic test</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">async_range(count):</span>
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(count):</span>
+        <span class="s1">print(</span><span class="s3">&quot;Calling yield_({})&quot;</span><span class="s1">.format(i))</span>
+        <span class="s0">await </span><span class="s1">yield_(i)</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">double(ait):</span>
+    <span class="s0">async for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">ait:</span>
+        <span class="s0">await </span><span class="s1">yield_(value * </span><span class="s4">2</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">mock_sleep()</span>
+
+
+<span class="s0">class </span><span class="s1">HasAsyncGenMethod:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">factor):</span>
+        <span class="s1">self._factor = factor</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">async_multiplied(self</span><span class="s0">, </span><span class="s1">ait):</span>
+        <span class="s0">async for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">ait:</span>
+            <span class="s0">await </span><span class="s1">yield_(value * self._factor)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_async_generator():</span>
+    <span class="s0">assert await </span><span class="s1">collect(async_range(</span><span class="s4">10</span><span class="s1">)) == list(range(</span><span class="s4">10</span><span class="s1">))</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">collect(double(async_range(</span><span class="s4">5</span><span class="s1">))) == [</span><span class="s4">0</span><span class="s0">, </span><span class="s4">2</span><span class="s0">, </span><span class="s4">4</span><span class="s0">, </span><span class="s4">6</span><span class="s0">, </span><span class="s4">8</span><span class="s1">])</span>
+
+    <span class="s1">tripler = HasAsyncGenMethod(</span><span class="s4">3</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">(</span>
+        <span class="s0">await</span>
+        <span class="s1">collect(tripler.async_multiplied(async_range(</span><span class="s4">5</span><span class="s1">))) == [</span><span class="s4">0</span><span class="s0">, </span><span class="s4">3</span><span class="s0">, </span><span class="s4">6</span><span class="s0">, </span><span class="s4">9</span><span class="s0">, </span><span class="s4">12</span><span class="s1">]</span>
+    <span class="s1">)</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">agen_yield_no_arg():</span>
+    <span class="s0">await </span><span class="s1">yield_()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_yield_no_arg():</span>
+    <span class="s0">assert await </span><span class="s1">collect(agen_yield_no_arg()) == [</span><span class="s0">None</span><span class="s1">]</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># async_generators return value</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">async_gen_with_non_None_return():</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+    <span class="s0">return </span><span class="s3">&quot;hi&quot;</span>
+
+
+<span class="s0">async def </span><span class="s1">test_bad_return_value():</span>
+    <span class="s1">gen = async_gen_with_non_None_return()</span>
+    <span class="s0">async for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">gen:  </span><span class="s2"># pragma: no branch</span>
+        <span class="s0">assert </span><span class="s1">item == </span><span class="s4">1</span>
+        <span class="s0">break</span>
+    <span class="s0">async for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">gen:  </span><span class="s2"># pragma: no branch</span>
+        <span class="s0">assert </span><span class="s1">item == </span><span class="s4">2</span>
+        <span class="s0">break</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">gen.__anext__()</span>
+    <span class="s0">except </span><span class="s1">StopAsyncIteration </span><span class="s0">as </span><span class="s1">e:</span>
+        <span class="s0">assert </span><span class="s1">e.args[</span><span class="s4">0</span><span class="s1">] == </span><span class="s3">&quot;hi&quot;</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># Exhausitve tests of the different ways to re-enter a coroutine.</span>
+<span class="s2">#</span>
+<span class="s2"># It used to be that re-entering via send/__next__ would work, but throw()</span>
+<span class="s2"># immediately followed by an await yield_(...)  wouldn't work, and the</span>
+<span class="s2"># YieldWrapper object would propagate back out to the coroutine runner.</span>
+<span class="s2">#</span>
+<span class="s2"># Before I fixed this, the 'assert value is None' check below would fail</span>
+<span class="s2"># (because of the YieldWrapper leaking out), and if you removed that</span>
+<span class="s2"># assertion, then the code would appear to run successfully but the final list</span>
+<span class="s2"># would just be [1, 3] instead of [1, 2, 3].</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s0">class </span><span class="s1">MyTestError(Exception):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s2"># This unconditionally raises a MyTestError exception, so from the outside</span>
+<span class="s2"># it's equivalent to a simple 'raise MyTestError`. But, for this test to check</span>
+<span class="s2"># the thing we want it to check, the point is that the exception must be</span>
+<span class="s2"># thrown in from the coroutine runner -- this simulates something like an</span>
+<span class="s2"># 'await sock.recv(...) -&gt; TimeoutError'.</span>
+<span class="s1">@types.coroutine</span>
+<span class="s0">def </span><span class="s1">hit_me():</span>
+    <span class="s0">yield </span><span class="s3">&quot;hit me&quot;</span>
+
+
+<span class="s1">@types.coroutine</span>
+<span class="s0">def </span><span class="s1">number_me():</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">yield </span><span class="s3">&quot;number me&quot;</span><span class="s1">) == </span><span class="s4">1</span>
+
+
+<span class="s1">@types.coroutine</span>
+<span class="s0">def </span><span class="s1">next_me():</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">yield </span><span class="s3">&quot;next me&quot;</span><span class="s1">) </span><span class="s0">is None</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">yield_after_different_entries():</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">hit_me()</span>
+    <span class="s0">except </span><span class="s1">MyTestError:</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">number_me()</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">3</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">next_me()</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">4</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">hostile_coroutine_runner(coro):</span>
+    <span class="s1">coro_iter = coro.__await__()</span>
+    <span class="s1">value = </span><span class="s0">None</span>
+    <span class="s0">while True</span><span class="s1">:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">value == </span><span class="s3">&quot;hit me&quot;</span><span class="s1">:</span>
+                <span class="s1">value = coro_iter.throw(MyTestError())</span>
+            <span class="s0">elif </span><span class="s1">value == </span><span class="s3">&quot;number me&quot;</span><span class="s1">:</span>
+                <span class="s1">value = coro_iter.send(</span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">assert </span><span class="s1">value </span><span class="s0">in </span><span class="s1">(</span><span class="s0">None, </span><span class="s3">&quot;next me&quot;</span><span class="s1">)</span>
+                <span class="s1">value = coro_iter.__next__()</span>
+        <span class="s0">except </span><span class="s1">StopIteration </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s0">return </span><span class="s1">exc.value</span>
+
+
+<span class="s0">def </span><span class="s1">test_yield_different_entries():</span>
+    <span class="s1">coro = collect(yield_after_different_entries())</span>
+    <span class="s1">yielded = hostile_coroutine_runner(coro)</span>
+    <span class="s0">assert </span><span class="s1">yielded == [</span><span class="s4">1</span><span class="s0">, </span><span class="s4">2</span><span class="s0">, </span><span class="s4">3</span><span class="s0">, </span><span class="s4">4</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_reentrance_forbidden():</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">recurse():</span>
+        <span class="s0">async for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">agen:  </span><span class="s2"># pragma: no branch</span>
+            <span class="s0">await </span><span class="s1">yield_(obj)  </span><span class="s2"># pragma: no cover</span>
+
+    <span class="s1">agen = recurse()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">async for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">agen:  </span><span class="s2"># pragma: no branch</span>
+            <span class="s0">pass  </span><span class="s2"># pragma: no cover</span>
+
+
+<span class="s0">async def </span><span class="s1">test_reentrance_forbidden_simultaneous_asends():</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">f():</span>
+        <span class="s0">await </span><span class="s1">mock_sleep()</span>
+
+    <span class="s1">ag = f()</span>
+    <span class="s1">sender1 = ag.asend(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s1">sender2 = ag.asend(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">sender1.send(</span><span class="s0">None</span><span class="s1">) == </span><span class="s3">&quot;mock_sleep&quot;</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s1">sender2.send(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(StopAsyncIteration):</span>
+        <span class="s1">sender1.send(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">ag.aclose()</span>
+
+
+<span class="s2"># https://bugs.python.org/issue32526</span>
+<span class="s0">async def </span><span class="s1">test_reentrance_forbidden_while_suspended_in_coroutine_runner():</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">f():</span>
+        <span class="s0">await </span><span class="s1">mock_sleep()</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s3">&quot;final yield&quot;</span><span class="s1">)</span>
+
+    <span class="s1">ag = f()</span>
+    <span class="s1">asend_coro = ag.asend(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s1">fut = asend_coro.send(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">fut == </span><span class="s3">&quot;mock_sleep&quot;</span>
+    <span class="s2"># Now the async generator's frame is not executing, but a call to asend()</span>
+    <span class="s2"># *is* executing. Make sure that in this case, ag_running is True, and we</span>
+    <span class="s2"># can't start up another call to asend().</span>
+    <span class="s0">assert </span><span class="s1">ag.ag_running</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">await </span><span class="s1">ag.asend(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s2"># Clean up</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(StopIteration):</span>
+        <span class="s1">asend_coro.send(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(StopAsyncIteration):</span>
+        <span class="s1">ag.asend(</span><span class="s0">None</span><span class="s1">).send(</span><span class="s0">None</span><span class="s1">)</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># asend</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">asend_me():</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)) == </span><span class="s4">2</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">yield_(</span><span class="s4">3</span><span class="s1">)) == </span><span class="s4">4</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asend():</span>
+    <span class="s1">aiter = asend_me()</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.__anext__()) == </span><span class="s4">1</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.asend(</span><span class="s4">2</span><span class="s1">)) == </span><span class="s4">3</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(StopAsyncIteration):</span>
+        <span class="s0">await </span><span class="s1">aiter.asend(</span><span class="s4">4</span><span class="s1">)</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># athrow</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">athrow_me():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(KeyError):</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">3</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_athrow():</span>
+    <span class="s1">aiter = athrow_me()</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.__anext__()) == </span><span class="s4">1</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.athrow(KeyError(</span><span class="s3">&quot;oops&quot;</span><span class="s1">))) == </span><span class="s4">2</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.athrow(ValueError(</span><span class="s3">&quot;oops&quot;</span><span class="s1">))) == </span><span class="s4">3</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(OSError):</span>
+        <span class="s0">await </span><span class="s1">aiter.athrow(OSError(</span><span class="s3">&quot;oops&quot;</span><span class="s1">))</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># aclose</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">close_me_aiter(track):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">except </span><span class="s1">GeneratorExit:</span>
+        <span class="s1">track[</span><span class="s4">0</span><span class="s1">] = </span><span class="s3">&quot;closed&quot;</span>
+        <span class="s0">raise</span>
+    <span class="s0">else</span><span class="s1">:  </span><span class="s2"># pragma: no cover</span>
+        <span class="s1">track[</span><span class="s4">0</span><span class="s1">] = </span><span class="s3">&quot;wtf&quot;</span>
+
+
+<span class="s0">async def </span><span class="s1">test_aclose():</span>
+    <span class="s1">track = [</span><span class="s0">None</span><span class="s1">]</span>
+    <span class="s1">aiter = close_me_aiter(track)</span>
+    <span class="s0">async for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">aiter:  </span><span class="s2"># pragma: no branch</span>
+        <span class="s0">assert </span><span class="s1">obj == </span><span class="s4">1</span>
+        <span class="s0">break</span>
+    <span class="s0">assert </span><span class="s1">track[</span><span class="s4">0</span><span class="s1">] </span><span class="s0">is None</span>
+    <span class="s0">await </span><span class="s1">aiter.aclose()</span>
+    <span class="s0">assert </span><span class="s1">track[</span><span class="s4">0</span><span class="s1">] == </span><span class="s3">&quot;closed&quot;</span>
+
+
+<span class="s0">async def </span><span class="s1">test_aclose_on_unstarted_generator():</span>
+    <span class="s1">aiter = close_me_aiter([</span><span class="s0">None</span><span class="s1">])</span>
+    <span class="s0">await </span><span class="s1">aiter.aclose()</span>
+    <span class="s0">async for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">aiter:</span>
+        <span class="s0">assert False  </span><span class="s2"># pragma: no cover</span>
+
+
+<span class="s0">async def </span><span class="s1">test_aclose_on_finished_generator():</span>
+    <span class="s1">aiter = async_range(</span><span class="s4">3</span><span class="s1">)</span>
+    <span class="s0">async for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">aiter:</span>
+        <span class="s0">pass  </span><span class="s2"># pragma: no cover</span>
+    <span class="s0">await </span><span class="s1">aiter.aclose()</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">sync_yield_during_aclose():</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">mock_sleep()</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">async_yield_during_aclose():</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_aclose_yielding():</span>
+    <span class="s1">aiter = sync_yield_during_aclose()</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.__anext__()) == </span><span class="s4">1</span>
+    <span class="s2"># Doesn't raise:</span>
+    <span class="s0">await </span><span class="s1">aiter.aclose()</span>
+
+    <span class="s1">aiter = async_yield_during_aclose()</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">aiter.__anext__()) == </span><span class="s4">1</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s0">await </span><span class="s1">aiter.aclose()</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># yield from</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">async_range_twice(count):</span>
+    <span class="s0">await </span><span class="s1">yield_from_(async_range(count))</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">yield_from_(async_range(count))</span>
+
+
+<span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">6</span><span class="s1">):</span>
+    <span class="s1">exec(</span>
+        <span class="s3">&quot;&quot;&quot; 
+async def native_async_range(count): 
+    for i in range(count): 
+        yield i 
+ 
+# XX uncomment if/when we re-enable the ctypes hacks: 
+# async def native_async_range_twice(count): 
+#     # make sure yield_from_ works inside a native async generator 
+#     await yield_from_(async_range(count)) 
+#     yield None 
+#     # make sure we can yield_from_ a native async generator 
+#     await yield_from_(native_async_range(count)) 
+    &quot;&quot;&quot;</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_async_yield_from_():</span>
+    <span class="s0">assert await </span><span class="s1">collect(async_range_twice(</span><span class="s4">3</span><span class="s1">)) == [</span>
+        <span class="s4">0</span><span class="s0">,</span>
+        <span class="s4">1</span><span class="s0">,</span>
+        <span class="s4">2</span><span class="s0">,</span>
+        <span class="s0">None,</span>
+        <span class="s4">0</span><span class="s0">,</span>
+        <span class="s4">1</span><span class="s0">,</span>
+        <span class="s4">2</span><span class="s0">,</span>
+    <span class="s1">]</span>
+
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">6</span><span class="s1">):</span>
+        <span class="s2"># Make sure we can yield_from_ a native generator</span>
+        <span class="s1">@async_generator</span>
+        <span class="s0">async def </span><span class="s1">yield_from_native():</span>
+            <span class="s0">await </span><span class="s1">yield_from_(native_async_range(</span><span class="s4">3</span><span class="s1">))</span>
+
+        <span class="s0">assert await </span><span class="s1">collect(yield_from_native()) == [</span><span class="s4">0</span><span class="s0">, </span><span class="s4">1</span><span class="s0">, </span><span class="s4">2</span><span class="s1">]</span>
+
+    <span class="s2"># XX uncomment if/when we re-enable the ctypes hacks:</span>
+    <span class="s2"># if sys.version_info &gt;= (3, 6):</span>
+    <span class="s2">#     assert await collect(native_async_range_twice(3)) == [</span>
+    <span class="s2">#         0, 1, 2, None, 0, 1, 2,</span>
+    <span class="s2">#     ]</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">doubles_sends(value):</span>
+    <span class="s0">while True</span><span class="s1">:</span>
+        <span class="s1">value = </span><span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2 </span><span class="s1">* value)</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">wraps_doubles_sends(value):</span>
+    <span class="s0">await </span><span class="s1">yield_from_(doubles_sends(value))</span>
+
+
+<span class="s0">async def </span><span class="s1">test_async_yield_from_asend():</span>
+    <span class="s1">gen = wraps_doubles_sends(</span><span class="s4">10</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">gen.__anext__() == </span><span class="s4">20</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">gen.asend(</span><span class="s4">2</span><span class="s1">)) == </span><span class="s4">4</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">gen.asend(</span><span class="s4">5</span><span class="s1">)) == </span><span class="s4">10</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">gen.asend(</span><span class="s4">0</span><span class="s1">)) == </span><span class="s4">0</span>
+    <span class="s0">await </span><span class="s1">gen.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_async_yield_from_athrow():</span>
+    <span class="s1">gen = async_range_twice(</span><span class="s4">2</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">gen.__anext__()) == </span><span class="s4">0</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">await </span><span class="s1">gen.athrow(ValueError)</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">returns_1():</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">0</span><span class="s1">)</span>
+    <span class="s0">return </span><span class="s4">1</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">yields_from_returns_1():</span>
+    <span class="s0">await </span><span class="s1">yield_(</span><span class="s0">await </span><span class="s1">yield_from_(returns_1()))</span>
+
+
+<span class="s0">async def </span><span class="s1">test_async_yield_from_return_value():</span>
+    <span class="s0">assert await </span><span class="s1">collect(yields_from_returns_1()) == [</span><span class="s4">0</span><span class="s0">, </span><span class="s4">1</span><span class="s1">]</span>
+
+
+<span class="s2"># Special cases to get coverage</span>
+<span class="s0">async def </span><span class="s1">test_yield_from_empty():</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">empty():</span>
+        <span class="s0">return </span><span class="s3">&quot;done&quot;</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yield_from_empty():</span>
+        <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">yield_from_(empty())) == </span><span class="s3">&quot;done&quot;</span>
+
+    <span class="s0">assert await </span><span class="s1">collect(yield_from_empty()) == []</span>
+
+
+<span class="s0">async def </span><span class="s1">test_yield_from_non_generator():</span>
+    <span class="s0">class </span><span class="s1">Countdown:</span>
+        <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">count):</span>
+            <span class="s1">self.count = count</span>
+            <span class="s1">self.closed = </span><span class="s0">False</span>
+
+        <span class="s0">if </span><span class="s1">sys.version_info &lt; (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">5</span><span class="s0">, </span><span class="s4">2</span><span class="s1">):</span>
+
+            <span class="s0">async def </span><span class="s1">__aiter__(self):</span>
+                <span class="s0">return </span><span class="s1">self</span>
+        <span class="s0">else</span><span class="s1">:</span>
+
+            <span class="s0">def </span><span class="s1">__aiter__(self):</span>
+                <span class="s0">return </span><span class="s1">self</span>
+
+        <span class="s0">async def </span><span class="s1">__anext__(self):</span>
+            <span class="s1">self.count -= </span><span class="s4">1</span>
+            <span class="s0">if </span><span class="s1">self.count &lt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">StopAsyncIteration(</span><span class="s3">&quot;boom&quot;</span><span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">self.count</span>
+
+        <span class="s0">async def </span><span class="s1">aclose(self):</span>
+            <span class="s1">self.closed = </span><span class="s0">True</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yield_from_countdown(count</span><span class="s0">, </span><span class="s1">happenings):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">c = Countdown(count)</span>
+            <span class="s0">assert </span><span class="s1">(</span><span class="s0">await </span><span class="s1">yield_from_(c)) == </span><span class="s3">&quot;boom&quot;</span>
+        <span class="s0">except </span><span class="s1">BaseException </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">if </span><span class="s1">c.closed:</span>
+                <span class="s1">happenings.append(</span><span class="s3">&quot;countdown closed&quot;</span><span class="s1">)</span>
+            <span class="s1">happenings.append(</span><span class="s3">&quot;raise&quot;</span><span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">e</span>
+
+    <span class="s1">h = []</span>
+    <span class="s0">assert await </span><span class="s1">collect(yield_from_countdown(</span><span class="s4">3</span><span class="s0">, </span><span class="s1">h)) == [</span><span class="s4">2</span><span class="s0">, </span><span class="s4">1</span><span class="s0">, </span><span class="s4">0</span><span class="s1">]</span>
+    <span class="s0">assert </span><span class="s1">h == []</span>
+
+    <span class="s2"># Throwing into a yield_from_(object with no athrow) just raises the</span>
+    <span class="s2"># exception in the generator.</span>
+    <span class="s1">h = []</span>
+    <span class="s1">agen = yield_from_countdown(</span><span class="s4">3</span><span class="s0">, </span><span class="s1">h)</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s4">2</span>
+    <span class="s1">exc = ValueError(</span><span class="s3">&quot;x&quot;</span><span class="s1">)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">agen.athrow(exc)</span>
+    <span class="s0">except </span><span class="s1">StopAsyncIteration </span><span class="s0">as </span><span class="s1">e:</span>
+        <span class="s0">assert </span><span class="s1">e.args[</span><span class="s4">0</span><span class="s1">] </span><span class="s0">is </span><span class="s1">exc</span>
+    <span class="s0">assert </span><span class="s1">h == [</span><span class="s3">&quot;raise&quot;</span><span class="s1">]</span>
+
+    <span class="s2"># Calling aclose on the generator calls aclose on the iterator</span>
+    <span class="s1">h = []</span>
+    <span class="s1">agen = yield_from_countdown(</span><span class="s4">3</span><span class="s0">, </span><span class="s1">h)</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s4">2</span>
+    <span class="s0">await </span><span class="s1">agen.aclose()</span>
+    <span class="s0">assert </span><span class="s1">h == [</span><span class="s3">&quot;countdown closed&quot;</span><span class="s0">, </span><span class="s3">&quot;raise&quot;</span><span class="s1">]</span>
+
+    <span class="s2"># Throwing GeneratorExit into the generator calls *aclose* on the iterator</span>
+    <span class="s2"># (!)</span>
+    <span class="s1">h = []</span>
+    <span class="s1">agen = yield_from_countdown(</span><span class="s4">3</span><span class="s0">, </span><span class="s1">h)</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s4">2</span>
+    <span class="s1">exc = GeneratorExit()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(StopAsyncIteration):</span>
+        <span class="s0">await </span><span class="s1">agen.athrow(exc)</span>
+    <span class="s0">assert </span><span class="s1">h == [</span><span class="s3">&quot;countdown closed&quot;</span><span class="s0">, </span><span class="s3">&quot;raise&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_yield_from_non_generator_with_no_aclose():</span>
+    <span class="s0">class </span><span class="s1">Countdown:</span>
+        <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">count):</span>
+            <span class="s1">self.count = count</span>
+            <span class="s1">self.closed = </span><span class="s0">False</span>
+
+        <span class="s0">if </span><span class="s1">sys.version_info &lt; (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">5</span><span class="s0">, </span><span class="s4">2</span><span class="s1">):</span>
+
+            <span class="s0">async def </span><span class="s1">__aiter__(self):</span>
+                <span class="s0">return </span><span class="s1">self</span>
+        <span class="s0">else</span><span class="s1">:</span>
+
+            <span class="s0">def </span><span class="s1">__aiter__(self):</span>
+                <span class="s0">return </span><span class="s1">self</span>
+
+        <span class="s0">async def </span><span class="s1">__anext__(self):</span>
+            <span class="s1">self.count -= </span><span class="s4">1</span>
+            <span class="s0">if </span><span class="s1">self.count &lt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">StopAsyncIteration(</span><span class="s3">&quot;boom&quot;</span><span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">self.count</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yield_from_countdown(count):</span>
+        <span class="s0">return await </span><span class="s1">yield_from_(Countdown(count))</span>
+
+    <span class="s0">assert await </span><span class="s1">collect(yield_from_countdown(</span><span class="s4">3</span><span class="s1">)) == [</span><span class="s4">2</span><span class="s0">, </span><span class="s4">1</span><span class="s0">, </span><span class="s4">0</span><span class="s1">]</span>
+
+    <span class="s1">agen = yield_from_countdown(</span><span class="s4">3</span><span class="s1">)</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s4">2</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s4">1</span>
+    <span class="s2"># It's OK that Countdown has no aclose</span>
+    <span class="s0">await </span><span class="s1">agen.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_yield_from_with_old_style_aiter():</span>
+    <span class="s2"># old-style 'async def __aiter__' should still work even on newer pythons</span>
+    <span class="s0">class </span><span class="s1">Countdown:</span>
+        <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">count):</span>
+            <span class="s1">self.count = count</span>
+            <span class="s1">self.closed = </span><span class="s0">False</span>
+
+        <span class="s2"># This is wrong, that's the point</span>
+        <span class="s0">async def </span><span class="s1">__aiter__(self):</span>
+            <span class="s0">return </span><span class="s1">self</span>
+
+        <span class="s0">async def </span><span class="s1">__anext__(self):</span>
+            <span class="s1">self.count -= </span><span class="s4">1</span>
+            <span class="s0">if </span><span class="s1">self.count &lt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">StopAsyncIteration(</span><span class="s3">&quot;boom&quot;</span><span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">self.count</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yield_from_countdown(count):</span>
+        <span class="s0">return await </span><span class="s1">yield_from_(Countdown(count))</span>
+
+    <span class="s0">assert await </span><span class="s1">collect(yield_from_countdown(</span><span class="s4">3</span><span class="s1">)) == [</span><span class="s4">2</span><span class="s0">, </span><span class="s4">1</span><span class="s0">, </span><span class="s4">0</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_yield_from_athrow_raises_StopAsyncIteration():</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">catch():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s0">await </span><span class="s1">yield_(</span><span class="s3">&quot;hi&quot;</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s0">return </span><span class="s1">(</span><span class="s3">&quot;bye&quot;</span><span class="s0">, </span><span class="s1">exc)</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yield_from_catch():</span>
+        <span class="s0">return await </span><span class="s1">yield_from_(catch())</span>
+
+    <span class="s1">agen = yield_from_catch()</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s3">&quot;hi&quot;</span>
+    <span class="s0">assert await </span><span class="s1">agen.__anext__() == </span><span class="s3">&quot;hi&quot;</span>
+    <span class="s1">thrown = ValueError(</span><span class="s3">&quot;oops&quot;</span><span class="s1">)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">print(</span><span class="s0">await </span><span class="s1">agen.athrow(thrown))</span>
+    <span class="s0">except </span><span class="s1">StopAsyncIteration </span><span class="s0">as </span><span class="s1">caught:</span>
+        <span class="s0">assert </span><span class="s1">caught.args == ((</span><span class="s3">&quot;bye&quot;</span><span class="s0">, </span><span class="s1">thrown)</span><span class="s0">,</span><span class="s1">)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">AssertionError  </span><span class="s2"># pragma: no cover</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2"># __del__</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s0">async def </span><span class="s1">test___del__(capfd):</span>
+    <span class="s1">completions = </span><span class="s4">0</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">awaits_when_unwinding():</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">0</span><span class="s1">)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">mock_sleep()</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">nonlocal </span><span class="s1">completions</span>
+            <span class="s1">completions += </span><span class="s4">1</span>
+
+    <span class="s1">gen = awaits_when_unwinding()</span>
+    <span class="s2"># Hasn't started yet, so no problem</span>
+    <span class="s1">gen.__del__()</span>
+
+    <span class="s1">gen = awaits_when_unwinding()</span>
+    <span class="s0">assert await </span><span class="s1">collect(gen) == [</span><span class="s4">0</span><span class="s0">, </span><span class="s4">1</span><span class="s0">, </span><span class="s4">2</span><span class="s1">]</span>
+    <span class="s2"># Exhausted, so no problem</span>
+    <span class="s1">gen.__del__()</span>
+
+    <span class="s0">for </span><span class="s1">stop_after_turn </span><span class="s0">in </span><span class="s1">(</span><span class="s4">1</span><span class="s0">, </span><span class="s4">2</span><span class="s0">, </span><span class="s4">3</span><span class="s1">):</span>
+        <span class="s1">gen = awaits_when_unwinding()</span>
+        <span class="s0">for </span><span class="s1">turn </span><span class="s0">in </span><span class="s1">range(stop_after_turn):</span>
+            <span class="s0">assert await </span><span class="s1">gen.__anext__() == turn</span>
+        <span class="s0">await </span><span class="s1">gen.aclose()</span>
+        <span class="s2"># Closed, so no problem</span>
+        <span class="s1">gen.__del__()</span>
+
+    <span class="s0">for </span><span class="s1">stop_after_turn </span><span class="s0">in </span><span class="s1">(</span><span class="s4">1</span><span class="s0">, </span><span class="s4">2</span><span class="s0">, </span><span class="s4">3</span><span class="s1">):</span>
+        <span class="s1">gen = awaits_when_unwinding()</span>
+        <span class="s0">for </span><span class="s1">turn </span><span class="s0">in </span><span class="s1">range(stop_after_turn):</span>
+            <span class="s0">assert await </span><span class="s1">gen.__anext__() == turn</span>
+
+        <span class="s0">if </span><span class="s1">stop_after_turn == </span><span class="s4">2</span><span class="s1">:</span>
+            <span class="s2"># Stopped in the middle of a try/finally that awaits in the finally,</span>
+            <span class="s2"># so __del__ can't cleanup.</span>
+            <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">info:</span>
+                <span class="s1">gen.__del__()</span>
+            <span class="s0">assert </span><span class="s3">&quot;awaited during finalization; install a finalization hook&quot; </span><span class="s0">in </span><span class="s1">str(</span>
+                <span class="s1">info.value</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s2"># Can clean up without awaiting, so __del__ is fine</span>
+            <span class="s1">gen.__del__()</span>
+
+    <span class="s0">assert </span><span class="s1">completions == </span><span class="s4">3</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yields_when_unwinding():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+
+    <span class="s1">gen = yields_when_unwinding()</span>
+    <span class="s0">assert await </span><span class="s1">gen.__anext__() == </span><span class="s4">1</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">info:</span>
+        <span class="s1">gen.__del__()</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2"># introspection</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s0">def </span><span class="s1">test_isasyncgen():</span>
+    <span class="s0">assert not </span><span class="s1">isasyncgen(async_range)</span>
+    <span class="s0">assert </span><span class="s1">isasyncgen(async_range(</span><span class="s4">10</span><span class="s1">))</span>
+
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">6</span><span class="s1">):</span>
+        <span class="s0">assert not </span><span class="s1">isasyncgen(native_async_range)</span>
+        <span class="s0">assert </span><span class="s1">isasyncgen(native_async_range(</span><span class="s4">10</span><span class="s1">))</span>
+
+
+<span class="s0">def </span><span class="s1">test_isasyncgenfunction():</span>
+    <span class="s0">assert </span><span class="s1">isasyncgenfunction(async_range)</span>
+    <span class="s0">assert not </span><span class="s1">isasyncgenfunction(list)</span>
+    <span class="s0">assert not </span><span class="s1">isasyncgenfunction(async_range(</span><span class="s4">10</span><span class="s1">))</span>
+
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">6</span><span class="s1">):</span>
+        <span class="s0">assert </span><span class="s1">isasyncgenfunction(native_async_range)</span>
+        <span class="s0">assert not </span><span class="s1">isasyncgenfunction(native_async_range(</span><span class="s4">10</span><span class="s1">))</span>
+
+
+<span class="s2"># Very subtle bug: functools.wraps copies across the entire contents of the</span>
+<span class="s2"># wrapped function's __dict__. We used to use a simple _is_async_gen=True</span>
+<span class="s2"># attribute to mark async generators. But if we do that, then simple wrappers</span>
+<span class="s2"># like async_range_wrapper *do* return True for isasyncgenfunction. But that's</span>
+<span class="s2"># not how inspect.isasyncgenfunction works, and it also caused problems for</span>
+<span class="s2"># sphinxcontrib-trio, because given a function like:</span>
+<span class="s2">#</span>
+<span class="s2"># @acontextmanager</span>
+<span class="s2"># @async_generator</span>
+<span class="s2"># async def async_cm():</span>
+<span class="s2">#    ...</span>
+<span class="s2">#</span>
+<span class="s2"># then we end up with async_cm introspecting as both an async context manager</span>
+<span class="s2"># and an async generator, and it doesn't know who to believe. With the</span>
+<span class="s2"># correct, inspect.isasyncgenfunction-compliant behavior, we have async_cm</span>
+<span class="s2"># introspecting as an async context manager, and async_cm.__wrapped__</span>
+<span class="s2"># introspecting as an async generator.</span>
+<span class="s0">def </span><span class="s1">test_isasyncgenfunction_is_not_inherited_by_wrappers():</span>
+    <span class="s1">@wraps(async_range)</span>
+    <span class="s0">def </span><span class="s1">async_range_wrapper(*args</span><span class="s0">, </span><span class="s1">**kwargs):  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">return </span><span class="s1">async_range(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">assert not </span><span class="s1">isasyncgenfunction(async_range_wrapper)</span>
+    <span class="s0">assert </span><span class="s1">isasyncgenfunction(async_range_wrapper.__wrapped__)</span>
+
+
+<span class="s0">def </span><span class="s1">test_collections_abc_AsyncGenerator():</span>
+    <span class="s0">if </span><span class="s1">hasattr(collections.abc</span><span class="s0">, </span><span class="s3">&quot;AsyncGenerator&quot;</span><span class="s1">):</span>
+        <span class="s0">assert </span><span class="s1">isinstance(async_range(</span><span class="s4">10</span><span class="s1">)</span><span class="s0">, </span><span class="s1">collections.abc.AsyncGenerator)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ag_attributes():</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">f():</span>
+        <span class="s1">x = </span><span class="s4">1</span>
+        <span class="s0">await </span><span class="s1">yield_()</span>
+
+    <span class="s1">agen = f()</span>
+    <span class="s0">assert </span><span class="s1">agen.ag_code.co_name == </span><span class="s3">&quot;f&quot;</span>
+    <span class="s0">async for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">agen:  </span><span class="s2"># pragma: no branch</span>
+        <span class="s0">assert </span><span class="s1">agen.ag_frame.f_locals[</span><span class="s3">&quot;x&quot;</span><span class="s1">] == </span><span class="s4">1</span>
+        <span class="s0">break</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2"># Finicky tests to check that the overly clever ctype stuff has plausible</span>
+<span class="s2"># refcounting</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_impl</span>
+
+
+<span class="s1">@pytest.mark.skipif(</span><span class="s0">not </span><span class="s1">hasattr(sys</span><span class="s0">, </span><span class="s3">&quot;getrefcount&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">reason=</span><span class="s3">&quot;CPython only&quot;</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">test_refcnt():</span>
+    <span class="s1">x = object()</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">base_count = sys.getrefcount(x)</span>
+    <span class="s1">l = [_impl._wrap(x) </span><span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">100</span><span class="s1">)]</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s0">assert </span><span class="s1">sys.getrefcount(x) &gt;= base_count + </span><span class="s4">100</span>
+    <span class="s1">l2 = [_impl._unwrap(box) </span><span class="s0">for </span><span class="s1">box </span><span class="s0">in </span><span class="s1">l]</span>
+    <span class="s0">assert </span><span class="s1">sys.getrefcount(x) &gt;= base_count + </span><span class="s4">200</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s0">del </span><span class="s1">l</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s0">del </span><span class="s1">l2</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+    <span class="s0">assert </span><span class="s1">sys.getrefcount(x) == base_count</span>
+    <span class="s1">print(sys.getrefcount(x))</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># Edge cases</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s2"># PEP 479: StopIteration or StopAsyncIteration exiting from inside an async</span>
+<span class="s2"># generator should produce a RuntimeError with the __cause__ set to the</span>
+<span class="s2"># original exception. Note that contextlib.asynccontextmanager depends on this</span>
+<span class="s2"># behavior.</span>
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">lets_exception_out():</span>
+    <span class="s0">await </span><span class="s1">yield_()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_throw_StopIteration_or_StopAsyncIteration():</span>
+    <span class="s0">for </span><span class="s1">cls </span><span class="s0">in </span><span class="s1">[StopIteration</span><span class="s0">, </span><span class="s1">StopAsyncIteration]:</span>
+        <span class="s1">agen = lets_exception_out()</span>
+        <span class="s0">await </span><span class="s1">agen.asend(</span><span class="s0">None</span><span class="s1">)</span>
+        <span class="s1">exc = cls()</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">agen.athrow(exc)</span>
+        <span class="s0">assert </span><span class="s1">excinfo.type </span><span class="s0">is </span><span class="s1">RuntimeError</span>
+        <span class="s0">assert </span><span class="s1">excinfo.value.__cause__ </span><span class="s0">is </span><span class="s1">exc</span>
+
+
+<span class="s2"># No &quot;coroutine was never awaited&quot; warnings for async generators that are not</span>
+<span class="s2"># iterated</span>
+<span class="s0">async def </span><span class="s1">test_no_spurious_unawaited_coroutine_warning(recwarn):</span>
+    <span class="s1">agen = async_range(</span><span class="s4">10</span><span class="s1">)</span>
+    <span class="s0">del </span><span class="s1">agen</span>
+
+    <span class="s2"># Run collection a few times to make sure any</span>
+    <span class="s2"># loops/resurrection/etc. stuff gets fully handled (necessary on pypy)</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">4</span><span class="s1">):</span>
+        <span class="s1">gc.collect()</span>
+
+    <span class="s2"># I've seen DeprecationWarnings here triggered by pytest-asyncio, so let's</span>
+    <span class="s2"># filter for RuntimeWarning. But if there are no warnings at all, then</span>
+    <span class="s2"># that's OK too, so tell coverage not to worry about it.</span>
+    <span class="s0">for </span><span class="s1">msg </span><span class="s0">in </span><span class="s1">recwarn:  </span><span class="s2"># pragma: no cover</span>
+        <span class="s1">print(msg)</span>
+        <span class="s0">assert not </span><span class="s1">issubclass(msg.category</span><span class="s0">, </span><span class="s1">RuntimeWarning)</span>
+
+
+<span class="s2">################################################################</span>
+<span class="s2">#</span>
+<span class="s2"># GC hooks</span>
+<span class="s2">#</span>
+<span class="s2">################################################################</span>
+
+
+<span class="s1">@pytest.fixture</span>
+<span class="s0">def </span><span class="s1">local_asyncgen_hooks():</span>
+    <span class="s1">old_hooks = get_asyncgen_hooks()</span>
+    <span class="s0">yield</span>
+    <span class="s1">set_asyncgen_hooks(*old_hooks)</span>
+
+
+<span class="s0">def </span><span class="s1">test_gc_hooks_interface(local_asyncgen_hooks):</span>
+    <span class="s0">def </span><span class="s1">one(agen):  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">two(agen):  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">pass</span>
+
+    <span class="s1">set_asyncgen_hooks(</span><span class="s0">None, None</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == (</span><span class="s0">None, None</span><span class="s1">)</span>
+    <span class="s1">set_asyncgen_hooks(finalizer=two)</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == (</span><span class="s0">None, </span><span class="s1">two)</span>
+    <span class="s1">set_asyncgen_hooks(firstiter=one)</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == (one</span><span class="s0">, </span><span class="s1">two)</span>
+    <span class="s1">set_asyncgen_hooks(finalizer=</span><span class="s0">None, </span><span class="s1">firstiter=two)</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == (two</span><span class="s0">, None</span><span class="s1">)</span>
+    <span class="s1">set_asyncgen_hooks(</span><span class="s0">None, </span><span class="s1">one)</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == (</span><span class="s0">None, </span><span class="s1">one)</span>
+    <span class="s1">tup = (one</span><span class="s0">, </span><span class="s1">two)</span>
+    <span class="s1">set_asyncgen_hooks(*tup)</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == tup</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">set_asyncgen_hooks(firstiter=</span><span class="s4">42</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">set_asyncgen_hooks(finalizer=</span><span class="s0">False</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">in_thread(results):</span>
+        <span class="s1">results.append(get_asyncgen_hooks())</span>
+        <span class="s1">set_asyncgen_hooks(two</span><span class="s0">, </span><span class="s1">one)</span>
+        <span class="s1">results.append(get_asyncgen_hooks())</span>
+
+    <span class="s0">from </span><span class="s1">threading </span><span class="s0">import </span><span class="s1">Thread</span>
+    <span class="s1">results = []</span>
+    <span class="s1">thread = Thread(target=in_thread</span><span class="s0">, </span><span class="s1">args=(results</span><span class="s0">,</span><span class="s1">))</span>
+    <span class="s1">thread.start()</span>
+    <span class="s1">thread.join()</span>
+    <span class="s0">assert </span><span class="s1">results == [(</span><span class="s0">None, None</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(two</span><span class="s0">, </span><span class="s1">one)]</span>
+    <span class="s0">assert </span><span class="s1">get_asyncgen_hooks() == (one</span><span class="s0">, </span><span class="s1">two)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_gc_hooks_behavior(local_asyncgen_hooks):</span>
+    <span class="s1">events = []</span>
+    <span class="s1">to_finalize = []</span>
+
+    <span class="s0">def </span><span class="s1">firstiter(agen):</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;firstiter {}&quot;</span><span class="s1">.format(agen.ag_frame.f_locals[</span><span class="s3">&quot;ident&quot;</span><span class="s1">]))</span>
+
+    <span class="s0">def </span><span class="s1">finalizer(agen):</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;finalizer {}&quot;</span><span class="s1">.format(agen.ag_frame.f_locals[</span><span class="s3">&quot;ident&quot;</span><span class="s1">]))</span>
+        <span class="s1">to_finalize.append(agen)</span>
+
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">agen(ident):</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;yield 1 {}&quot;</span><span class="s1">.format(ident))</span>
+        <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">events.append(</span><span class="s3">&quot;yield 2 {}&quot;</span><span class="s1">.format(ident))</span>
+            <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">2</span><span class="s1">)</span>
+            <span class="s1">events.append(</span><span class="s3">&quot;after yield 2 {}&quot;</span><span class="s1">.format(ident))</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">events.append(</span><span class="s3">&quot;mock_sleep {}&quot;</span><span class="s1">.format(ident))</span>
+            <span class="s0">await </span><span class="s1">mock_sleep()</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">events.append(</span><span class="s3">&quot;yield 3 {}&quot;</span><span class="s1">.format(ident))</span>
+            <span class="s0">await </span><span class="s1">yield_(</span><span class="s4">3</span><span class="s1">)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">events.append(</span><span class="s3">&quot;unwind 3 {}&quot;</span><span class="s1">.format(ident))</span>
+        <span class="s2"># this one is included to make sure we _don't_ execute it</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;done {}&quot;</span><span class="s1">.format(ident))  </span><span class="s2"># pragma: no cover</span>
+
+    <span class="s0">async def </span><span class="s1">anext_verbosely(iter</span><span class="s0">, </span><span class="s1">ident):</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;before asend {}&quot;</span><span class="s1">.format(ident))</span>
+        <span class="s1">sender = iter.asend(</span><span class="s0">None</span><span class="s1">)</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;before send {}&quot;</span><span class="s1">.format(ident))</span>
+        <span class="s0">await </span><span class="s1">sender</span>
+        <span class="s1">events.append(</span><span class="s3">&quot;after asend {}&quot;</span><span class="s1">.format(ident))</span>
+
+    <span class="s2"># Ensure that firstiter is called immediately on asend(),</span>
+    <span class="s2"># before the first turn of the coroutine that asend() returns,</span>
+    <span class="s2"># to match the behavior of native generators.</span>
+    <span class="s2"># Ensure that the firstiter that gets used is the one in effect</span>
+    <span class="s2"># at the time of that first call, rather than at the time of iteration.</span>
+    <span class="s1">iterA = agen(</span><span class="s3">&quot;A&quot;</span><span class="s1">)</span>
+    <span class="s1">iterB = agen(</span><span class="s3">&quot;B&quot;</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">anext_verbosely(iterA</span><span class="s0">, </span><span class="s3">&quot;A&quot;</span><span class="s1">)</span>
+    <span class="s1">set_asyncgen_hooks(firstiter</span><span class="s0">, </span><span class="s1">finalizer)</span>
+    <span class="s0">await </span><span class="s1">anext_verbosely(iterB</span><span class="s0">, </span><span class="s3">&quot;B&quot;</span><span class="s1">)</span>
+    <span class="s1">iterC = agen(</span><span class="s3">&quot;C&quot;</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">anext_verbosely(iterC</span><span class="s0">, </span><span class="s3">&quot;C&quot;</span><span class="s1">)</span>
+
+    <span class="s0">assert </span><span class="s1">events == [</span>
+        <span class="s3">&quot;before asend A&quot;</span><span class="s0">, </span><span class="s3">&quot;before send A&quot;</span><span class="s0">, </span><span class="s3">&quot;yield 1 A&quot;</span><span class="s0">, </span><span class="s3">&quot;after asend A&quot;</span><span class="s0">,</span>
+        <span class="s3">&quot;before asend B&quot;</span><span class="s0">, </span><span class="s3">&quot;firstiter B&quot;</span><span class="s0">, </span><span class="s3">&quot;before send B&quot;</span><span class="s0">, </span><span class="s3">&quot;yield 1 B&quot;</span><span class="s0">,</span>
+        <span class="s3">&quot;after asend B&quot;</span><span class="s0">, </span><span class="s3">&quot;before asend C&quot;</span><span class="s0">, </span><span class="s3">&quot;firstiter C&quot;</span><span class="s0">, </span><span class="s3">&quot;before send C&quot;</span><span class="s0">,</span>
+        <span class="s3">&quot;yield 1 C&quot;</span><span class="s0">, </span><span class="s3">&quot;after asend C&quot;</span>
+    <span class="s1">]</span>
+    <span class="s0">del </span><span class="s1">events[:]</span>
+
+    <span class="s2"># Ensure that firstiter is only called once, even if we create</span>
+    <span class="s2"># two asend() coroutines before iterating either of them.</span>
+    <span class="s1">iterX = agen(</span><span class="s3">&quot;X&quot;</span><span class="s1">)</span>
+    <span class="s1">sender1 = iterX.asend(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s1">sender2 = iterX.asend(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s1">events.append(</span><span class="s3">&quot;before close&quot;</span><span class="s1">)</span>
+    <span class="s1">sender1.close()</span>
+    <span class="s1">sender2.close()</span>
+    <span class="s0">await </span><span class="s1">iterX.aclose()</span>
+    <span class="s0">assert </span><span class="s1">events == [</span><span class="s3">&quot;firstiter X&quot;</span><span class="s0">, </span><span class="s3">&quot;before close&quot;</span><span class="s1">]</span>
+    <span class="s0">del </span><span class="s1">events[:]</span>
+
+    <span class="s0">from </span><span class="s1">weakref </span><span class="s0">import </span><span class="s1">ref</span>
+    <span class="s1">refA</span><span class="s0">, </span><span class="s1">refB</span><span class="s0">, </span><span class="s1">refC = map(ref</span><span class="s0">, </span><span class="s1">(iterA</span><span class="s0">, </span><span class="s1">iterB</span><span class="s0">, </span><span class="s1">iterC))</span>
+
+    <span class="s2"># iterA uses the finalizer that was in effect when it started, i.e. no finalizer</span>
+    <span class="s0">await </span><span class="s1">iterA.__anext__()</span>
+    <span class="s0">await </span><span class="s1">iterA.__anext__()</span>
+    <span class="s0">del </span><span class="s1">iterA</span>
+    <span class="s2"># Do multiple GC passes since we're deliberately shielding the</span>
+    <span class="s2"># coroutine objects from the first pass due to PyPy issue 2786.</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">4</span><span class="s1">):</span>
+        <span class="s1">gc.collect()</span>
+    <span class="s0">assert </span><span class="s1">refA() </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s1">events == [</span>
+        <span class="s3">&quot;yield 2 A&quot;</span><span class="s0">, </span><span class="s3">&quot;after yield 2 A&quot;</span><span class="s0">, </span><span class="s3">&quot;mock_sleep A&quot;</span><span class="s0">, </span><span class="s3">&quot;yield 3 A&quot;</span><span class="s0">,</span>
+        <span class="s3">&quot;unwind 3 A&quot;</span>
+    <span class="s1">]</span>
+    <span class="s0">assert not </span><span class="s1">to_finalize</span>
+    <span class="s0">del </span><span class="s1">events[:]</span>
+
+    <span class="s2"># iterB and iterC do use our finalizer</span>
+    <span class="s0">await </span><span class="s1">iterC.__anext__()</span>
+    <span class="s0">await </span><span class="s1">iterB.__anext__()</span>
+    <span class="s0">await </span><span class="s1">iterC.__anext__()</span>
+    <span class="s1">idB</span><span class="s0">, </span><span class="s1">idC = id(iterB)</span><span class="s0">, </span><span class="s1">id(iterC)</span>
+    <span class="s0">del </span><span class="s1">iterB</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">4</span><span class="s1">):</span>
+        <span class="s1">gc.collect()</span>
+    <span class="s0">del </span><span class="s1">iterC</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">4</span><span class="s1">):</span>
+        <span class="s1">gc.collect()</span>
+    <span class="s0">assert </span><span class="s1">events == [</span>
+        <span class="s3">&quot;yield 2 C&quot;</span><span class="s0">, </span><span class="s3">&quot;yield 2 B&quot;</span><span class="s0">, </span><span class="s3">&quot;after yield 2 C&quot;</span><span class="s0">, </span><span class="s3">&quot;mock_sleep C&quot;</span><span class="s0">,</span>
+        <span class="s3">&quot;yield 3 C&quot;</span><span class="s0">, </span><span class="s3">&quot;finalizer B&quot;</span><span class="s0">, </span><span class="s3">&quot;finalizer C&quot;</span>
+    <span class="s1">]</span>
+    <span class="s0">del </span><span class="s1">events[:]</span>
+
+    <span class="s2"># finalizer invokes aclose() is not called again once the revived reference drops</span>
+    <span class="s0">assert </span><span class="s1">list(map(id</span><span class="s0">, </span><span class="s1">to_finalize)) == [idB</span><span class="s0">, </span><span class="s1">idC]</span>
+    <span class="s1">events.append(</span><span class="s3">&quot;before aclose B&quot;</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">to_finalize[</span><span class="s4">0</span><span class="s1">].aclose()</span>
+    <span class="s1">events.append(</span><span class="s3">&quot;before aclose C&quot;</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">to_finalize[</span><span class="s4">1</span><span class="s1">].aclose()</span>
+    <span class="s1">events.append(</span><span class="s3">&quot;after aclose both&quot;</span><span class="s1">)</span>
+    <span class="s0">del </span><span class="s1">to_finalize[:]</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">4</span><span class="s1">):</span>
+        <span class="s1">gc.collect()</span>
+    <span class="s0">assert </span><span class="s1">refB() </span><span class="s0">is None and </span><span class="s1">refC() </span><span class="s0">is None</span>
+
+    <span class="s0">assert </span><span class="s1">events == [</span>
+        <span class="s3">&quot;before aclose B&quot;</span><span class="s0">, </span><span class="s3">&quot;mock_sleep B&quot;</span><span class="s0">, </span><span class="s3">&quot;before aclose C&quot;</span><span class="s0">, </span><span class="s3">&quot;unwind 3 C&quot;</span><span class="s0">,</span>
+        <span class="s3">&quot;after aclose both&quot;</span>
+    <span class="s1">]</span>
+</pre>
+</body>
+</html>

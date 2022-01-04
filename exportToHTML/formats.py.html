@@ -1,0 +1,319 @@
+<html>
+<head>
+<title>formats.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6a8759;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+formats.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">datetime</span>
+<span class="s0">import </span><span class="s1">decimal</span>
+<span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">import </span><span class="s1">unicodedata</span>
+<span class="s0">from </span><span class="s1">importlib </span><span class="s0">import </span><span class="s1">import_module</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">dateformat</span><span class="s0">, </span><span class="s1">numberformat</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">lazy</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">check_for_language</span><span class="s0">, </span><span class="s1">get_language</span><span class="s0">, </span><span class="s1">to_locale</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+<span class="s2"># format_cache is a mapping from (format_type, lang) to the format string.</span>
+<span class="s2"># By using the cache, it is possible to avoid running get_format_modules</span>
+<span class="s2"># repeatedly.</span>
+<span class="s1">_format_cache = {}</span>
+<span class="s1">_format_modules_cache = {}</span>
+
+<span class="s1">ISO_INPUT_FORMATS = {</span>
+    <span class="s3">'DATE_INPUT_FORMATS'</span><span class="s1">: [</span><span class="s3">'%Y-%m-%d'</span><span class="s1">]</span><span class="s0">,</span>
+    <span class="s3">'TIME_INPUT_FORMATS'</span><span class="s1">: [</span><span class="s3">'%H:%M:%S'</span><span class="s0">, </span><span class="s3">'%H:%M:%S.%f'</span><span class="s0">, </span><span class="s3">'%H:%M'</span><span class="s1">]</span><span class="s0">,</span>
+    <span class="s3">'DATETIME_INPUT_FORMATS'</span><span class="s1">: [</span>
+        <span class="s3">'%Y-%m-%d %H:%M:%S'</span><span class="s0">,</span>
+        <span class="s3">'%Y-%m-%d %H:%M:%S.%f'</span><span class="s0">,</span>
+        <span class="s3">'%Y-%m-%d %H:%M'</span><span class="s0">,</span>
+        <span class="s3">'%Y-%m-%d'</span>
+    <span class="s1">]</span><span class="s0">,</span>
+<span class="s1">}</span>
+
+
+<span class="s1">FORMAT_SETTINGS = frozenset([</span>
+    <span class="s3">'DECIMAL_SEPARATOR'</span><span class="s0">,</span>
+    <span class="s3">'THOUSAND_SEPARATOR'</span><span class="s0">,</span>
+    <span class="s3">'NUMBER_GROUPING'</span><span class="s0">,</span>
+    <span class="s3">'FIRST_DAY_OF_WEEK'</span><span class="s0">,</span>
+    <span class="s3">'MONTH_DAY_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'TIME_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'DATE_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'DATETIME_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'SHORT_DATE_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'SHORT_DATETIME_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'YEAR_MONTH_FORMAT'</span><span class="s0">,</span>
+    <span class="s3">'DATE_INPUT_FORMATS'</span><span class="s0">,</span>
+    <span class="s3">'TIME_INPUT_FORMATS'</span><span class="s0">,</span>
+    <span class="s3">'DATETIME_INPUT_FORMATS'</span><span class="s0">,</span>
+<span class="s1">])</span>
+
+
+<span class="s0">def </span><span class="s1">reset_format_cache():</span>
+    <span class="s4">&quot;&quot;&quot;Clear any cached formats. 
+ 
+    This method is provided primarily for testing purposes, 
+    so that the effects of cached formats can be removed. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">global </span><span class="s1">_format_cache</span><span class="s0">, </span><span class="s1">_format_modules_cache</span>
+    <span class="s1">_format_cache = {}</span>
+    <span class="s1">_format_modules_cache = {}</span>
+
+
+<span class="s0">def </span><span class="s1">iter_format_modules(lang</span><span class="s0">, </span><span class="s1">format_module_path=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot;Find format modules.&quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">check_for_language(lang):</span>
+        <span class="s0">return</span>
+
+    <span class="s0">if </span><span class="s1">format_module_path </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">format_module_path = settings.FORMAT_MODULE_PATH</span>
+
+    <span class="s1">format_locations = []</span>
+    <span class="s0">if </span><span class="s1">format_module_path:</span>
+        <span class="s0">if </span><span class="s1">isinstance(format_module_path</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s1">format_module_path = [format_module_path]</span>
+        <span class="s0">for </span><span class="s1">path </span><span class="s0">in </span><span class="s1">format_module_path:</span>
+            <span class="s1">format_locations.append(path + </span><span class="s3">'.%s'</span><span class="s1">)</span>
+    <span class="s1">format_locations.append(</span><span class="s3">'django.conf.locale.%s'</span><span class="s1">)</span>
+    <span class="s1">locale = to_locale(lang)</span>
+    <span class="s1">locales = [locale]</span>
+    <span class="s0">if </span><span class="s3">'_' </span><span class="s0">in </span><span class="s1">locale:</span>
+        <span class="s1">locales.append(locale.split(</span><span class="s3">'_'</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">])</span>
+    <span class="s0">for </span><span class="s1">location </span><span class="s0">in </span><span class="s1">format_locations:</span>
+        <span class="s0">for </span><span class="s1">loc </span><span class="s0">in </span><span class="s1">locales:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">yield </span><span class="s1">import_module(</span><span class="s3">'%s.formats' </span><span class="s1">% (location % loc))</span>
+            <span class="s0">except </span><span class="s1">ImportError:</span>
+                <span class="s0">pass</span>
+
+
+<span class="s0">def </span><span class="s1">get_format_modules(lang=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot;Return a list of the format modules found.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">lang </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">lang = get_language()</span>
+    <span class="s0">if </span><span class="s1">lang </span><span class="s0">not in </span><span class="s1">_format_modules_cache:</span>
+        <span class="s1">_format_modules_cache[lang] = list(iter_format_modules(lang</span><span class="s0">, </span><span class="s1">settings.FORMAT_MODULE_PATH))</span>
+    <span class="s0">return </span><span class="s1">_format_modules_cache[lang]</span>
+
+
+<span class="s0">def </span><span class="s1">get_format(format_type</span><span class="s0">, </span><span class="s1">lang=</span><span class="s0">None, </span><span class="s1">use_l10n=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    For a specific format type, return the format for the current 
+    language (locale). Default to the format in the settings. 
+    format_type is the name of the format, e.g. 'DATE_FORMAT'. 
+ 
+    If use_l10n is provided and is not None, it forces the value to 
+    be localized (or not), overriding the value of settings.USE_L10N. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">use_l10n = use_l10n </span><span class="s0">or </span><span class="s1">(use_l10n </span><span class="s0">is None and </span><span class="s1">(</span>
+        <span class="s1">settings._USE_L10N_INTERNAL</span>
+        <span class="s0">if </span><span class="s1">hasattr(settings</span><span class="s0">, </span><span class="s3">'_USE_L10N_INTERNAL'</span><span class="s1">)</span>
+        <span class="s0">else </span><span class="s1">settings.USE_L10N</span>
+    <span class="s1">))</span>
+    <span class="s0">if </span><span class="s1">use_l10n </span><span class="s0">and </span><span class="s1">lang </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">lang = get_language()</span>
+    <span class="s1">cache_key = (format_type</span><span class="s0">, </span><span class="s1">lang)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">_format_cache[cache_key]</span>
+    <span class="s0">except </span><span class="s1">KeyError:</span>
+        <span class="s0">pass</span>
+
+    <span class="s2"># The requested format_type has not been cached yet. Try to find it in any</span>
+    <span class="s2"># of the format_modules for the given lang if l10n is enabled. If it's not</span>
+    <span class="s2"># there or if l10n is disabled, fall back to the project settings.</span>
+    <span class="s1">val = </span><span class="s0">None</span>
+    <span class="s0">if </span><span class="s1">use_l10n:</span>
+        <span class="s0">for </span><span class="s1">module </span><span class="s0">in </span><span class="s1">get_format_modules(lang):</span>
+            <span class="s1">val = getattr(module</span><span class="s0">, </span><span class="s1">format_type</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">val </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s0">break</span>
+    <span class="s0">if </span><span class="s1">val </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s0">if </span><span class="s1">format_type </span><span class="s0">not in </span><span class="s1">FORMAT_SETTINGS:</span>
+            <span class="s0">return </span><span class="s1">format_type</span>
+        <span class="s1">val = getattr(settings</span><span class="s0">, </span><span class="s1">format_type)</span>
+    <span class="s0">elif </span><span class="s1">format_type </span><span class="s0">in </span><span class="s1">ISO_INPUT_FORMATS:</span>
+        <span class="s2"># If a list of input formats from one of the format_modules was</span>
+        <span class="s2"># retrieved, make sure the ISO_INPUT_FORMATS are in this list.</span>
+        <span class="s1">val = list(val)</span>
+        <span class="s0">for </span><span class="s1">iso_input </span><span class="s0">in </span><span class="s1">ISO_INPUT_FORMATS.get(format_type</span><span class="s0">, </span><span class="s1">()):</span>
+            <span class="s0">if </span><span class="s1">iso_input </span><span class="s0">not in </span><span class="s1">val:</span>
+                <span class="s1">val.append(iso_input)</span>
+    <span class="s1">_format_cache[cache_key] = val</span>
+    <span class="s0">return </span><span class="s1">val</span>
+
+
+<span class="s1">get_format_lazy = lazy(get_format</span><span class="s0">, </span><span class="s1">str</span><span class="s0">, </span><span class="s1">list</span><span class="s0">, </span><span class="s1">tuple)</span>
+
+
+<span class="s0">def </span><span class="s1">date_format(value</span><span class="s0">, </span><span class="s1">format=</span><span class="s0">None, </span><span class="s1">use_l10n=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Format a datetime.date or datetime.datetime object using a 
+    localizable format. 
+ 
+    If use_l10n is provided and is not None, that will force the value to 
+    be localized (or not), overriding the value of settings.USE_L10N. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">dateformat.format(value</span><span class="s0">, </span><span class="s1">get_format(format </span><span class="s0">or </span><span class="s3">'DATE_FORMAT'</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n))</span>
+
+
+<span class="s0">def </span><span class="s1">time_format(value</span><span class="s0">, </span><span class="s1">format=</span><span class="s0">None, </span><span class="s1">use_l10n=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Format a datetime.time object using a localizable format. 
+ 
+    If use_l10n is provided and is not None, it forces the value to 
+    be localized (or not), overriding the value of settings.USE_L10N. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">dateformat.time_format(value</span><span class="s0">, </span><span class="s1">get_format(format </span><span class="s0">or </span><span class="s3">'TIME_FORMAT'</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n))</span>
+
+
+<span class="s0">def </span><span class="s1">number_format(value</span><span class="s0">, </span><span class="s1">decimal_pos=</span><span class="s0">None, </span><span class="s1">use_l10n=</span><span class="s0">None, </span><span class="s1">force_grouping=</span><span class="s0">False</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Format a numeric value using localization settings. 
+ 
+    If use_l10n is provided and is not None, it forces the value to 
+    be localized (or not), overriding the value of settings.USE_L10N. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">use_l10n = use_l10n </span><span class="s0">or </span><span class="s1">(use_l10n </span><span class="s0">is None and </span><span class="s1">(</span>
+        <span class="s1">settings._USE_L10N_INTERNAL</span>
+        <span class="s0">if </span><span class="s1">hasattr(settings</span><span class="s0">, </span><span class="s3">'_USE_L10N_INTERNAL'</span><span class="s1">)</span>
+        <span class="s0">else </span><span class="s1">settings.USE_L10N</span>
+    <span class="s1">))</span>
+    <span class="s1">lang = get_language() </span><span class="s0">if </span><span class="s1">use_l10n </span><span class="s0">else None</span>
+    <span class="s0">return </span><span class="s1">numberformat.format(</span>
+        <span class="s1">value</span><span class="s0">,</span>
+        <span class="s1">get_format(</span><span class="s3">'DECIMAL_SEPARATOR'</span><span class="s0">, </span><span class="s1">lang</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span><span class="s0">,</span>
+        <span class="s1">decimal_pos</span><span class="s0">,</span>
+        <span class="s1">get_format(</span><span class="s3">'NUMBER_GROUPING'</span><span class="s0">, </span><span class="s1">lang</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span><span class="s0">,</span>
+        <span class="s1">get_format(</span><span class="s3">'THOUSAND_SEPARATOR'</span><span class="s0">, </span><span class="s1">lang</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span><span class="s0">,</span>
+        <span class="s1">force_grouping=force_grouping</span><span class="s0">,</span>
+        <span class="s1">use_l10n=use_l10n</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">localize(value</span><span class="s0">, </span><span class="s1">use_l10n=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Check if value is a localizable type (date, number...) and return it 
+    formatted as a string using current locale format. 
+ 
+    If use_l10n is provided and is not None, it forces the value to 
+    be localized (or not), overriding the value of settings.USE_L10N. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">str):  </span><span class="s2"># Handle strings first for performance reasons.</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">bool):  </span><span class="s2"># Make sure booleans don't get treated as numbers</span>
+        <span class="s0">return </span><span class="s1">str(value)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(decimal.Decimal</span><span class="s0">, </span><span class="s1">float</span><span class="s0">, </span><span class="s1">int)):</span>
+        <span class="s0">if </span><span class="s1">use_l10n </span><span class="s0">is False</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">str(value)</span>
+        <span class="s0">return </span><span class="s1">number_format(value</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime.datetime):</span>
+        <span class="s0">return </span><span class="s1">date_format(value</span><span class="s0">, </span><span class="s3">'DATETIME_FORMAT'</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime.date):</span>
+        <span class="s0">return </span><span class="s1">date_format(value</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime.time):</span>
+        <span class="s0">return </span><span class="s1">time_format(value</span><span class="s0">, </span><span class="s3">'TIME_FORMAT'</span><span class="s0">, </span><span class="s1">use_l10n=use_l10n)</span>
+    <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s0">def </span><span class="s1">localize_input(value</span><span class="s0">, </span><span class="s1">default=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Check if an input value is a localizable type and return it 
+    formatted with the appropriate formatting string of the current locale. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">str):  </span><span class="s2"># Handle strings first for performance reasons.</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">bool):  </span><span class="s2"># Don't treat booleans as numbers.</span>
+        <span class="s0">return </span><span class="s1">str(value)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(decimal.Decimal</span><span class="s0">, </span><span class="s1">float</span><span class="s0">, </span><span class="s1">int)):</span>
+        <span class="s0">return </span><span class="s1">number_format(value)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime.datetime):</span>
+        <span class="s1">format = default </span><span class="s0">or </span><span class="s1">get_format(</span><span class="s3">'DATETIME_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">format = sanitize_strftime_format(format)</span>
+        <span class="s0">return </span><span class="s1">value.strftime(format)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime.date):</span>
+        <span class="s1">format = default </span><span class="s0">or </span><span class="s1">get_format(</span><span class="s3">'DATE_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">format = sanitize_strftime_format(format)</span>
+        <span class="s0">return </span><span class="s1">value.strftime(format)</span>
+    <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime.time):</span>
+        <span class="s1">format = default </span><span class="s0">or </span><span class="s1">get_format(</span><span class="s3">'TIME_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s0">return </span><span class="s1">value.strftime(format)</span>
+    <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s1">@functools.lru_cache()</span>
+<span class="s0">def </span><span class="s1">sanitize_strftime_format(fmt):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Ensure that certain specifiers are correctly padded with leading zeros. 
+ 
+    For years &lt; 1000 specifiers %C, %F, %G, and %Y don't work as expected for 
+    strftime provided by glibc on Linux as they don't pad the year or century 
+    with leading zeros. Support for specifying the padding explicitly is 
+    available, however, which can be used to fix this issue. 
+ 
+    FreeBSD, macOS, and Windows do not support explicitly specifying the 
+    padding, but return four digit years (with leading zeros) as expected. 
+ 
+    This function checks whether the %Y produces a correctly padded string and, 
+    if not, makes the following substitutions: 
+ 
+    - %C → %02C 
+    - %F → %010F 
+    - %G → %04G 
+    - %Y → %04Y 
+ 
+    See https://bugs.python.org/issue13305 for more details. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">datetime.date(</span><span class="s5">1</span><span class="s0">, </span><span class="s5">1</span><span class="s0">, </span><span class="s5">1</span><span class="s1">).strftime(</span><span class="s3">'%Y'</span><span class="s1">) == </span><span class="s3">'0001'</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">fmt</span>
+    <span class="s1">mapping = {</span><span class="s3">'C'</span><span class="s1">: </span><span class="s5">2</span><span class="s0">, </span><span class="s3">'F'</span><span class="s1">: </span><span class="s5">10</span><span class="s0">, </span><span class="s3">'G'</span><span class="s1">: </span><span class="s5">4</span><span class="s0">, </span><span class="s3">'Y'</span><span class="s1">: </span><span class="s5">4</span><span class="s1">}</span>
+    <span class="s0">return </span><span class="s1">re.sub(</span>
+        <span class="s3">r'((?:^|[^%])(?:%%)*)%([CFGY])'</span><span class="s0">,</span>
+        <span class="s0">lambda </span><span class="s1">m: </span><span class="s3">r'%s%%0%s%s' </span><span class="s1">% (m[</span><span class="s5">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">mapping[m[</span><span class="s5">2</span><span class="s1">]]</span><span class="s0">, </span><span class="s1">m[</span><span class="s5">2</span><span class="s1">])</span><span class="s0">,</span>
+        <span class="s1">fmt</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">sanitize_separators(value):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Sanitize a value according to the current decimal and 
+    thousand separator setting. Used with form field input. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">str):</span>
+        <span class="s1">parts = []</span>
+        <span class="s1">decimal_separator = get_format(</span><span class="s3">'DECIMAL_SEPARATOR'</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">decimal_separator </span><span class="s0">in </span><span class="s1">value:</span>
+            <span class="s1">value</span><span class="s0">, </span><span class="s1">decimals = value.split(decimal_separator</span><span class="s0">, </span><span class="s5">1</span><span class="s1">)</span>
+            <span class="s1">parts.append(decimals)</span>
+        <span class="s0">if </span><span class="s1">settings.USE_THOUSAND_SEPARATOR:</span>
+            <span class="s1">thousand_sep = get_format(</span><span class="s3">'THOUSAND_SEPARATOR'</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">thousand_sep == </span><span class="s3">'.' </span><span class="s0">and </span><span class="s1">value.count(</span><span class="s3">'.'</span><span class="s1">) == </span><span class="s5">1 </span><span class="s0">and </span><span class="s1">len(value.split(</span><span class="s3">'.'</span><span class="s1">)[-</span><span class="s5">1</span><span class="s1">]) != </span><span class="s5">3</span><span class="s1">:</span>
+                <span class="s2"># Special case where we suspect a dot meant decimal separator (see #22171)</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">for </span><span class="s1">replacement </span><span class="s0">in </span><span class="s1">{</span>
+                        <span class="s1">thousand_sep</span><span class="s0">, </span><span class="s1">unicodedata.normalize(</span><span class="s3">'NFKD'</span><span class="s0">, </span><span class="s1">thousand_sep)}:</span>
+                    <span class="s1">value = value.replace(replacement</span><span class="s0">, </span><span class="s3">''</span><span class="s1">)</span>
+        <span class="s1">parts.append(value)</span>
+        <span class="s1">value = </span><span class="s3">'.'</span><span class="s1">.join(reversed(parts))</span>
+    <span class="s0">return </span><span class="s1">value</span>
+</pre>
+</body>
+</html>

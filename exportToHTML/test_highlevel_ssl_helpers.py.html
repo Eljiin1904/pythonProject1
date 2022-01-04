@@ -1,0 +1,135 @@
+<html>
+<head>
+<title>test_highlevel_ssl_helpers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_highlevel_ssl_helpers.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">partial</span>
+
+<span class="s0">import </span><span class="s1">attr</span>
+
+<span class="s0">import </span><span class="s1">trio</span>
+<span class="s0">from </span><span class="s1">trio.socket </span><span class="s0">import </span><span class="s1">AF_INET</span><span class="s0">, </span><span class="s1">SOCK_STREAM</span><span class="s0">, </span><span class="s1">IPPROTO_TCP</span>
+<span class="s0">import </span><span class="s1">trio.testing</span>
+<span class="s0">from </span><span class="s1">.test_ssl </span><span class="s0">import </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">SERVER_CTX</span>
+
+<span class="s0">from </span><span class="s1">.._highlevel_ssl_helpers </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">open_ssl_over_tcp_stream</span><span class="s0">,</span>
+    <span class="s1">open_ssl_over_tcp_listeners</span><span class="s0">,</span>
+    <span class="s1">serve_ssl_over_tcp</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">echo_handler(stream):</span>
+    <span class="s0">async with </span><span class="s1">stream:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s1">data = </span><span class="s0">await </span><span class="s1">stream.receive_some(</span><span class="s2">10000</span><span class="s1">)</span>
+                <span class="s0">if not </span><span class="s1">data:</span>
+                    <span class="s0">break</span>
+                <span class="s0">await </span><span class="s1">stream.send_all(data)</span>
+        <span class="s0">except </span><span class="s1">trio.BrokenResourceError:</span>
+            <span class="s0">pass</span>
+
+
+<span class="s3"># Resolver that always returns the given sockaddr, no matter what host/port</span>
+<span class="s3"># you ask for.</span>
+<span class="s1">@attr.s</span>
+<span class="s0">class </span><span class="s1">FakeHostnameResolver(trio.abc.HostnameResolver):</span>
+    <span class="s1">sockaddr = attr.ib()</span>
+
+    <span class="s0">async def </span><span class="s1">getaddrinfo(self</span><span class="s0">, </span><span class="s1">*args):</span>
+        <span class="s0">return </span><span class="s1">[(AF_INET</span><span class="s0">, </span><span class="s1">SOCK_STREAM</span><span class="s0">, </span><span class="s1">IPPROTO_TCP</span><span class="s0">, </span><span class="s4">&quot;&quot;</span><span class="s0">, </span><span class="s1">self.sockaddr)]</span>
+
+    <span class="s0">async def </span><span class="s1">getnameinfo(self</span><span class="s0">, </span><span class="s1">*args):  </span><span class="s3"># pragma: no cover</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+
+<span class="s3"># This uses serve_ssl_over_tcp, which uses open_ssl_over_tcp_listeners...</span>
+<span class="s3"># noqa is needed because flake8 doesn't understand how pytest fixtures work.</span>
+<span class="s0">async def </span><span class="s1">test_open_ssl_over_tcp_stream_and_everything_else(client_ctx):  </span><span class="s3"># noqa: F811</span>
+    <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">(listener</span><span class="s0">,</span><span class="s1">) = </span><span class="s0">await </span><span class="s1">nursery.start(</span>
+            <span class="s1">partial(serve_ssl_over_tcp</span><span class="s0">, </span><span class="s1">echo_handler</span><span class="s0">, </span><span class="s2">0</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">host=</span><span class="s4">&quot;127.0.0.1&quot;</span><span class="s1">)</span>
+        <span class="s1">)</span>
+        <span class="s0">async with </span><span class="s1">listener:</span>
+            <span class="s1">sockaddr = listener.transport_listener.socket.getsockname()</span>
+            <span class="s1">hostname_resolver = FakeHostnameResolver(sockaddr)</span>
+            <span class="s1">trio.socket.set_custom_hostname_resolver(hostname_resolver)</span>
+
+            <span class="s3"># We don't have the right trust set up</span>
+            <span class="s3"># (checks that ssl_context=None is doing some validation)</span>
+            <span class="s1">stream = </span><span class="s0">await </span><span class="s1">open_ssl_over_tcp_stream(</span><span class="s4">&quot;trio-test-1.example.org&quot;</span><span class="s0">, </span><span class="s2">80</span><span class="s1">)</span>
+            <span class="s0">async with </span><span class="s1">stream:</span>
+                <span class="s0">with </span><span class="s1">pytest.raises(trio.BrokenResourceError):</span>
+                    <span class="s0">await </span><span class="s1">stream.do_handshake()</span>
+
+            <span class="s3"># We have the trust but not the hostname</span>
+            <span class="s3"># (checks custom ssl_context + hostname checking)</span>
+            <span class="s1">stream = </span><span class="s0">await </span><span class="s1">open_ssl_over_tcp_stream(</span>
+                <span class="s4">&quot;xyzzy.example.org&quot;</span><span class="s0">, </span><span class="s2">80</span><span class="s0">, </span><span class="s1">ssl_context=client_ctx</span>
+            <span class="s1">)</span>
+            <span class="s0">async with </span><span class="s1">stream:</span>
+                <span class="s0">with </span><span class="s1">pytest.raises(trio.BrokenResourceError):</span>
+                    <span class="s0">await </span><span class="s1">stream.do_handshake()</span>
+
+            <span class="s3"># This one should work!</span>
+            <span class="s1">stream = </span><span class="s0">await </span><span class="s1">open_ssl_over_tcp_stream(</span>
+                <span class="s4">&quot;trio-test-1.example.org&quot;</span><span class="s0">, </span><span class="s2">80</span><span class="s0">, </span><span class="s1">ssl_context=client_ctx</span>
+            <span class="s1">)</span>
+            <span class="s0">async with </span><span class="s1">stream:</span>
+                <span class="s0">assert </span><span class="s1">isinstance(stream</span><span class="s0">, </span><span class="s1">trio.SSLStream)</span>
+                <span class="s0">assert </span><span class="s1">stream.server_hostname == </span><span class="s4">&quot;trio-test-1.example.org&quot;</span>
+                <span class="s0">await </span><span class="s1">stream.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+                <span class="s0">assert await </span><span class="s1">stream.receive_some(</span><span class="s2">1</span><span class="s1">) == </span><span class="s5">b&quot;x&quot;</span>
+
+            <span class="s3"># Check https_compatible settings are being passed through</span>
+            <span class="s0">assert not </span><span class="s1">stream._https_compatible</span>
+            <span class="s1">stream = </span><span class="s0">await </span><span class="s1">open_ssl_over_tcp_stream(</span>
+                <span class="s4">&quot;trio-test-1.example.org&quot;</span><span class="s0">,</span>
+                <span class="s2">80</span><span class="s0">,</span>
+                <span class="s1">ssl_context=client_ctx</span><span class="s0">,</span>
+                <span class="s1">https_compatible=</span><span class="s0">True,</span>
+                <span class="s3"># also, smoke test happy_eyeballs_delay</span>
+                <span class="s1">happy_eyeballs_delay=</span><span class="s2">1</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s0">async with </span><span class="s1">stream:</span>
+                <span class="s0">assert </span><span class="s1">stream._https_compatible</span>
+
+            <span class="s3"># Stop the echo server</span>
+            <span class="s1">nursery.cancel_scope.cancel()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_ssl_over_tcp_listeners():</span>
+    <span class="s1">(listener</span><span class="s0">,</span><span class="s1">) = </span><span class="s0">await </span><span class="s1">open_ssl_over_tcp_listeners(</span><span class="s2">0</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">host=</span><span class="s4">&quot;127.0.0.1&quot;</span><span class="s1">)</span>
+    <span class="s0">async with </span><span class="s1">listener:</span>
+        <span class="s0">assert </span><span class="s1">isinstance(listener</span><span class="s0">, </span><span class="s1">trio.SSLListener)</span>
+        <span class="s1">tl = listener.transport_listener</span>
+        <span class="s0">assert </span><span class="s1">isinstance(tl</span><span class="s0">, </span><span class="s1">trio.SocketListener)</span>
+        <span class="s0">assert </span><span class="s1">tl.socket.getsockname()[</span><span class="s2">0</span><span class="s1">] == </span><span class="s4">&quot;127.0.0.1&quot;</span>
+
+        <span class="s0">assert not </span><span class="s1">listener._https_compatible</span>
+
+    <span class="s1">(listener</span><span class="s0">,</span><span class="s1">) = </span><span class="s0">await </span><span class="s1">open_ssl_over_tcp_listeners(</span>
+        <span class="s2">0</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">host=</span><span class="s4">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s1">https_compatible=</span><span class="s0">True</span>
+    <span class="s1">)</span>
+    <span class="s0">async with </span><span class="s1">listener:</span>
+        <span class="s0">assert </span><span class="s1">listener._https_compatible</span>
+</pre>
+</body>
+</html>

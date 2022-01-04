@@ -1,0 +1,276 @@
+<html>
+<head>
+<title>name.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+name.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">typing</span>
+<span class="s2">from </span><span class="s1">enum </span><span class="s2">import </span><span class="s1">Enum</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.oid </span><span class="s2">import </span><span class="s1">NameOID</span><span class="s2">, </span><span class="s1">ObjectIdentifier</span>
+
+
+<span class="s2">class </span><span class="s1">_ASN1Type(Enum):</span>
+    <span class="s1">UTF8String = </span><span class="s3">12</span>
+    <span class="s1">NumericString = </span><span class="s3">18</span>
+    <span class="s1">PrintableString = </span><span class="s3">19</span>
+    <span class="s1">T61String = </span><span class="s3">20</span>
+    <span class="s1">IA5String = </span><span class="s3">22</span>
+    <span class="s1">UTCTime = </span><span class="s3">23</span>
+    <span class="s1">GeneralizedTime = </span><span class="s3">24</span>
+    <span class="s1">VisibleString = </span><span class="s3">26</span>
+    <span class="s1">UniversalString = </span><span class="s3">28</span>
+    <span class="s1">BMPString = </span><span class="s3">30</span>
+
+
+<span class="s1">_ASN1_TYPE_TO_ENUM = {i.value: i </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">_ASN1Type}</span>
+<span class="s1">_SENTINEL = object()</span>
+<span class="s1">_NAMEOID_DEFAULT_TYPE = {</span>
+    <span class="s1">NameOID.COUNTRY_NAME: _ASN1Type.PrintableString</span><span class="s2">,</span>
+    <span class="s1">NameOID.JURISDICTION_COUNTRY_NAME: _ASN1Type.PrintableString</span><span class="s2">,</span>
+    <span class="s1">NameOID.SERIAL_NUMBER: _ASN1Type.PrintableString</span><span class="s2">,</span>
+    <span class="s1">NameOID.DN_QUALIFIER: _ASN1Type.PrintableString</span><span class="s2">,</span>
+    <span class="s1">NameOID.EMAIL_ADDRESS: _ASN1Type.IA5String</span><span class="s2">,</span>
+    <span class="s1">NameOID.DOMAIN_COMPONENT: _ASN1Type.IA5String</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s0">#: Short attribute names from RFC 4514:</span>
+<span class="s0">#: https://tools.ietf.org/html/rfc4514#page-7</span>
+<span class="s1">_NAMEOID_TO_NAME = {</span>
+    <span class="s1">NameOID.COMMON_NAME: </span><span class="s4">&quot;CN&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.LOCALITY_NAME: </span><span class="s4">&quot;L&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.STATE_OR_PROVINCE_NAME: </span><span class="s4">&quot;ST&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.ORGANIZATION_NAME: </span><span class="s4">&quot;O&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.ORGANIZATIONAL_UNIT_NAME: </span><span class="s4">&quot;OU&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.COUNTRY_NAME: </span><span class="s4">&quot;C&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.STREET_ADDRESS: </span><span class="s4">&quot;STREET&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.DOMAIN_COMPONENT: </span><span class="s4">&quot;DC&quot;</span><span class="s2">,</span>
+    <span class="s1">NameOID.USER_ID: </span><span class="s4">&quot;UID&quot;</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+
+<span class="s2">def </span><span class="s1">_escape_dn_value(val):</span>
+    <span class="s5">&quot;&quot;&quot;Escape special characters in RFC4514 Distinguished Name value.&quot;&quot;&quot;</span>
+
+    <span class="s2">if not </span><span class="s1">val:</span>
+        <span class="s2">return </span><span class="s4">&quot;&quot;</span>
+
+    <span class="s0"># See https://tools.ietf.org/html/rfc4514#section-2.4</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\\\</span><span class="s4">&quot;</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">'&quot;'</span><span class="s2">, </span><span class="s4">'</span><span class="s2">\\</span><span class="s4">&quot;'</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;+&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">+&quot;</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;,&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">,&quot;</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;;&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">;&quot;</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;&lt;&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">&lt;&quot;</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;&gt;&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">&gt;&quot;</span><span class="s1">)</span>
+    <span class="s1">val = val.replace(</span><span class="s4">&quot;</span><span class="s2">\0</span><span class="s4">&quot;</span><span class="s2">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">00&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">val[</span><span class="s3">0</span><span class="s1">] </span><span class="s2">in </span><span class="s1">(</span><span class="s4">&quot;#&quot;</span><span class="s2">, </span><span class="s4">&quot; &quot;</span><span class="s1">):</span>
+        <span class="s1">val = </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">&quot; </span><span class="s1">+ val</span>
+    <span class="s2">if </span><span class="s1">val[-</span><span class="s3">1</span><span class="s1">] == </span><span class="s4">&quot; &quot;</span><span class="s1">:</span>
+        <span class="s1">val = val[:-</span><span class="s3">1</span><span class="s1">] + </span><span class="s4">&quot;</span><span class="s2">\\ </span><span class="s4">&quot;</span>
+
+    <span class="s2">return </span><span class="s1">val</span>
+
+
+<span class="s2">class </span><span class="s1">NameAttribute(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">oid: ObjectIdentifier</span><span class="s2">, </span><span class="s1">value: str</span><span class="s2">, </span><span class="s1">_type=_SENTINEL):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(oid</span><span class="s2">, </span><span class="s1">ObjectIdentifier):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;oid argument must be an ObjectIdentifier instance.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">str):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;value argument must be a text type.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">(</span>
+            <span class="s1">oid == NameOID.COUNTRY_NAME</span>
+            <span class="s2">or </span><span class="s1">oid == NameOID.JURISDICTION_COUNTRY_NAME</span>
+        <span class="s1">):</span>
+            <span class="s2">if </span><span class="s1">len(value.encode(</span><span class="s4">&quot;utf8&quot;</span><span class="s1">)) != </span><span class="s3">2</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s4">&quot;Country name must be a 2 character country code&quot;</span>
+                <span class="s1">)</span>
+
+        <span class="s0"># The appropriate ASN1 string type varies by OID and is defined across</span>
+        <span class="s0"># multiple RFCs including 2459, 3280, and 5280. In general UTF8String</span>
+        <span class="s0"># is preferred (2459), but 3280 and 5280 specify several OIDs with</span>
+        <span class="s0"># alternate types. This means when we see the sentinel value we need</span>
+        <span class="s0"># to look up whether the OID has a non-UTF8 type. If it does, set it</span>
+        <span class="s0"># to that. Otherwise, UTF8!</span>
+        <span class="s2">if </span><span class="s1">_type == _SENTINEL:</span>
+            <span class="s1">_type = _NAMEOID_DEFAULT_TYPE.get(oid</span><span class="s2">, </span><span class="s1">_ASN1Type.UTF8String)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(_type</span><span class="s2">, </span><span class="s1">_ASN1Type):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;_type must be from the _ASN1Type enum&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._oid = oid</span>
+        <span class="s1">self._value = value</span>
+        <span class="s1">self._type = _type</span>
+
+    <span class="s1">oid = utils.read_only_property(</span><span class="s4">&quot;_oid&quot;</span><span class="s1">)</span>
+    <span class="s1">value = utils.read_only_property(</span><span class="s4">&quot;_value&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">rfc4514_string(self) -&gt; str:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Format as RFC4514 Distinguished Name string. 
+ 
+        Use short attribute name if available, otherwise fall back to OID 
+        dotted string. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">key = _NAMEOID_TO_NAME.get(self.oid</span><span class="s2">, </span><span class="s1">self.oid.dotted_string)</span>
+        <span class="s2">return </span><span class="s4">&quot;%s=%s&quot; </span><span class="s1">% (key</span><span class="s2">, </span><span class="s1">_escape_dn_value(self.value))</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">NameAttribute):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">self.oid == other.oid </span><span class="s2">and </span><span class="s1">self.value == other.value</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">hash((self.oid</span><span class="s2">, </span><span class="s1">self.value))</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self) -&gt; str:</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;NameAttribute(oid={0.oid}, value={0.value!r})&gt;&quot;</span><span class="s1">.format(self)</span>
+
+
+<span class="s2">class </span><span class="s1">RelativeDistinguishedName(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">attributes: typing.Iterable[NameAttribute]):</span>
+        <span class="s1">attributes = list(attributes)</span>
+        <span class="s2">if not </span><span class="s1">attributes:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;a relative distinguished name cannot be empty&quot;</span><span class="s1">)</span>
+        <span class="s2">if not </span><span class="s1">all(isinstance(x</span><span class="s2">, </span><span class="s1">NameAttribute) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">attributes):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;attributes must be an iterable of NameAttribute&quot;</span><span class="s1">)</span>
+
+        <span class="s0"># Keep list and frozenset to preserve attribute order where it matters</span>
+        <span class="s1">self._attributes = attributes</span>
+        <span class="s1">self._attribute_set = frozenset(attributes)</span>
+
+        <span class="s2">if </span><span class="s1">len(self._attribute_set) != len(attributes):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;duplicate attributes are not allowed&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">get_attributes_for_oid(self</span><span class="s2">, </span><span class="s1">oid) -&gt; typing.List[NameAttribute]:</span>
+        <span class="s2">return </span><span class="s1">[i </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">self </span><span class="s2">if </span><span class="s1">i.oid == oid]</span>
+
+    <span class="s2">def </span><span class="s1">rfc4514_string(self) -&gt; str:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Format as RFC4514 Distinguished Name string. 
+ 
+        Within each RDN, attributes are joined by '+', although that is rarely 
+        used in certificates. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s4">&quot;+&quot;</span><span class="s1">.join(attr.rfc4514_string() </span><span class="s2">for </span><span class="s1">attr </span><span class="s2">in </span><span class="s1">self._attributes)</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">RelativeDistinguishedName):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">self._attribute_set == other._attribute_set</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">hash(self._attribute_set)</span>
+
+    <span class="s2">def </span><span class="s1">__iter__(self) -&gt; typing.Iterator[NameAttribute]:</span>
+        <span class="s2">return </span><span class="s1">iter(self._attributes)</span>
+
+    <span class="s2">def </span><span class="s1">__len__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">len(self._attributes)</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self) -&gt; str:</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;RelativeDistinguishedName({})&gt;&quot;</span><span class="s1">.format(self.rfc4514_string())</span>
+
+
+<span class="s2">class </span><span class="s1">Name(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">attributes):</span>
+        <span class="s1">attributes = list(attributes)</span>
+        <span class="s2">if </span><span class="s1">all(isinstance(x</span><span class="s2">, </span><span class="s1">NameAttribute) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">attributes):</span>
+            <span class="s1">self._attributes = [</span>
+                <span class="s1">RelativeDistinguishedName([x]) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">attributes</span>
+            <span class="s1">]</span>
+        <span class="s2">elif </span><span class="s1">all(isinstance(x</span><span class="s2">, </span><span class="s1">RelativeDistinguishedName) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">attributes):</span>
+            <span class="s1">self._attributes = attributes</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;attributes must be a list of NameAttribute&quot;</span>
+                <span class="s4">&quot; or a list RelativeDistinguishedName&quot;</span>
+            <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">rfc4514_string(self) -&gt; str:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Format as RFC4514 Distinguished Name string. 
+        For example 'CN=foobar.com,O=Foo Corp,C=US' 
+ 
+        An X.509 name is a two-level structure: a list of sets of attributes. 
+        Each list element is separated by ',' and within each list element, set 
+        elements are separated by '+'. The latter is almost never used in 
+        real world certificates. According to RFC4514 section 2.1 the 
+        RDNSequence must be reversed when converting to string representation. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s4">&quot;,&quot;</span><span class="s1">.join(</span>
+            <span class="s1">attr.rfc4514_string() </span><span class="s2">for </span><span class="s1">attr </span><span class="s2">in </span><span class="s1">reversed(self._attributes)</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">get_attributes_for_oid(self</span><span class="s2">, </span><span class="s1">oid) -&gt; typing.List[NameAttribute]:</span>
+        <span class="s2">return </span><span class="s1">[i </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">self </span><span class="s2">if </span><span class="s1">i.oid == oid]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">rdns(self) -&gt; typing.Iterable[RelativeDistinguishedName]:</span>
+        <span class="s2">return </span><span class="s1">self._attributes</span>
+
+    <span class="s2">def </span><span class="s1">public_bytes(self</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; bytes:</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.x509_name_bytes(self)</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">Name):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">self._attributes == other._attributes</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self) -&gt; int:</span>
+        <span class="s0"># TODO: this is relatively expensive, if this looks like a bottleneck</span>
+        <span class="s0"># for you, consider optimizing!</span>
+        <span class="s2">return </span><span class="s1">hash(tuple(self._attributes))</span>
+
+    <span class="s2">def </span><span class="s1">__iter__(self) -&gt; typing.Iterator[NameAttribute]:</span>
+        <span class="s2">for </span><span class="s1">rdn </span><span class="s2">in </span><span class="s1">self._attributes:</span>
+            <span class="s2">for </span><span class="s1">ava </span><span class="s2">in </span><span class="s1">rdn:</span>
+                <span class="s2">yield </span><span class="s1">ava</span>
+
+    <span class="s2">def </span><span class="s1">__len__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">sum(len(rdn) </span><span class="s2">for </span><span class="s1">rdn </span><span class="s2">in </span><span class="s1">self._attributes)</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self) -&gt; str:</span>
+        <span class="s1">rdns = </span><span class="s4">&quot;,&quot;</span><span class="s1">.join(attr.rfc4514_string() </span><span class="s2">for </span><span class="s1">attr </span><span class="s2">in </span><span class="s1">self._attributes)</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;Name({})&gt;&quot;</span><span class="s1">.format(rdns)</span>
+</pre>
+</body>
+</html>

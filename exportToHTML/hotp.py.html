@@ -1,0 +1,98 @@
+<html>
+<head>
+<title>hotp.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+hotp.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">struct</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">UnsupportedAlgorithm</span><span class="s2">, </span><span class="s1">_Reasons</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HMACBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">constant_time</span><span class="s2">, </span><span class="s1">hmac</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.hashes </span><span class="s2">import </span><span class="s1">SHA1</span><span class="s2">, </span><span class="s1">SHA256</span><span class="s2">, </span><span class="s1">SHA512</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.twofactor </span><span class="s2">import </span><span class="s1">InvalidToken</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.twofactor.utils </span><span class="s2">import </span><span class="s1">_generate_uri</span>
+
+
+<span class="s1">_ALLOWED_HASH_TYPES = typing.Union[SHA1</span><span class="s2">, </span><span class="s1">SHA256</span><span class="s2">, </span><span class="s1">SHA512]</span>
+
+
+<span class="s2">class </span><span class="s1">HOTP(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">key: bytes</span><span class="s2">,</span>
+        <span class="s1">length: int</span><span class="s2">,</span>
+        <span class="s1">algorithm: _ALLOWED_HASH_TYPES</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+        <span class="s1">enforce_key_length: bool = </span><span class="s2">True,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HMACBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement HMACBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">len(key) &lt; </span><span class="s4">16 </span><span class="s2">and </span><span class="s1">enforce_key_length </span><span class="s2">is True</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Key length has to be at least 128 bits.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(length</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;Length parameter must be an integer type.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">length &lt; </span><span class="s4">6 </span><span class="s2">or </span><span class="s1">length &gt; </span><span class="s4">8</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Length of HOTP has to be between 6 to 8.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(algorithm</span><span class="s2">, </span><span class="s1">(SHA1</span><span class="s2">, </span><span class="s1">SHA256</span><span class="s2">, </span><span class="s1">SHA512)):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;Algorithm must be SHA1, SHA256 or SHA512.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._key = key</span>
+        <span class="s1">self._length = length</span>
+        <span class="s1">self._algorithm = algorithm</span>
+        <span class="s1">self._backend = backend</span>
+
+    <span class="s2">def </span><span class="s1">generate(self</span><span class="s2">, </span><span class="s1">counter: int) -&gt; bytes:</span>
+        <span class="s1">truncated_value = self._dynamic_truncate(counter)</span>
+        <span class="s1">hotp = truncated_value % (</span><span class="s4">10 </span><span class="s1">** self._length)</span>
+        <span class="s2">return </span><span class="s3">&quot;{0:0{1}}&quot;</span><span class="s1">.format(hotp</span><span class="s2">, </span><span class="s1">self._length).encode()</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">hotp: bytes</span><span class="s2">, </span><span class="s1">counter: int) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(self.generate(counter)</span><span class="s2">, </span><span class="s1">hotp):</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken(</span><span class="s3">&quot;Supplied HOTP value does not match.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_dynamic_truncate(self</span><span class="s2">, </span><span class="s1">counter: int) -&gt; int:</span>
+        <span class="s1">ctx = hmac.HMAC(self._key</span><span class="s2">, </span><span class="s1">self._algorithm</span><span class="s2">, </span><span class="s1">self._backend)</span>
+        <span class="s1">ctx.update(struct.pack(</span><span class="s3">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">counter))</span>
+        <span class="s1">hmac_value = ctx.finalize()</span>
+
+        <span class="s1">offset = hmac_value[len(hmac_value) - </span><span class="s4">1</span><span class="s1">] &amp; </span><span class="s4">0b1111</span>
+        <span class="s1">p = hmac_value[offset : offset + </span><span class="s4">4</span><span class="s1">]</span>
+        <span class="s2">return </span><span class="s1">struct.unpack(</span><span class="s3">&quot;&gt;I&quot;</span><span class="s2">, </span><span class="s1">p)[</span><span class="s4">0</span><span class="s1">] &amp; </span><span class="s4">0x7FFFFFFF</span>
+
+    <span class="s2">def </span><span class="s1">get_provisioning_uri(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">account_name: str</span><span class="s2">, </span><span class="s1">counter: int</span><span class="s2">, </span><span class="s1">issuer: typing.Optional[str]</span>
+    <span class="s1">) -&gt; str:</span>
+        <span class="s2">return </span><span class="s1">_generate_uri(</span>
+            <span class="s1">self</span><span class="s2">, </span><span class="s3">&quot;hotp&quot;</span><span class="s2">, </span><span class="s1">account_name</span><span class="s2">, </span><span class="s1">issuer</span><span class="s2">, </span><span class="s1">[(</span><span class="s3">&quot;counter&quot;</span><span class="s2">, </span><span class="s1">int(counter))]</span>
+        <span class="s1">)</span>
+</pre>
+</body>
+</html>

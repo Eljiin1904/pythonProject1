@@ -1,0 +1,216 @@
+<html>
+<head>
+<title>http.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #808080;}
+.s6 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+http.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">asyncio</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Tuple</span>
+
+<span class="s0">from </span><span class="s1">..datastructures </span><span class="s0">import </span><span class="s1">Headers</span>
+<span class="s0">from </span><span class="s1">..exceptions </span><span class="s0">import </span><span class="s1">SecurityError</span>
+
+
+<span class="s1">__all__ = [</span><span class="s2">&quot;read_request&quot;</span><span class="s0">, </span><span class="s2">&quot;read_response&quot;</span><span class="s1">]</span>
+
+<span class="s1">MAX_HEADERS = </span><span class="s3">256</span>
+<span class="s1">MAX_LINE = </span><span class="s3">4110</span>
+
+
+<span class="s0">def </span><span class="s1">d(value: bytes) -&gt; str:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Decode a bytestring for interpolating into an error message. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">value.decode(errors=</span><span class="s2">&quot;backslashreplace&quot;</span><span class="s1">)</span>
+
+
+<span class="s5"># See https://tools.ietf.org/html/rfc7230#appendix-B.</span>
+
+<span class="s5"># Regex for validating header names.</span>
+
+<span class="s1">_token_re = re.compile(</span><span class="s6">rb&quot;[-!#$%&amp;\'*+.^_`|~0-9a-zA-Z]+&quot;</span><span class="s1">)</span>
+
+<span class="s5"># Regex for validating header values.</span>
+
+<span class="s5"># We don't attempt to support obsolete line folding.</span>
+
+<span class="s5"># Include HTAB (\x09), SP (\x20), VCHAR (\x21-\x7e), obs-text (\x80-\xff).</span>
+
+<span class="s5"># The ABNF is complicated because it attempts to express that optional</span>
+<span class="s5"># whitespace is ignored. We strip whitespace and don't revalidate that.</span>
+
+<span class="s5"># See also https://www.rfc-editor.org/errata_search.php?rfc=7230&amp;eid=4189</span>
+
+<span class="s1">_value_re = re.compile(</span><span class="s6">rb&quot;[\x09\x20-\x7e\x80-\xff]*&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">read_request(stream: asyncio.StreamReader) -&gt; Tuple[str</span><span class="s0">, </span><span class="s1">Headers]:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Read an HTTP/1.1 GET request and return ``(path, headers)``. 
+ 
+    ``path`` isn't URL-decoded or validated in any way. 
+ 
+    ``path`` and ``headers`` are expected to contain only ASCII characters. 
+    Other characters are represented with surrogate escapes. 
+ 
+    :func:`read_request` doesn't attempt to read the request body because 
+    WebSocket handshake requests don't have one. If the request contains a 
+    body, it may be read from ``stream`` after this coroutine returns. 
+ 
+    :param stream: input to read the request from 
+    :raises EOFError: if the connection is closed without a full HTTP request 
+    :raises SecurityError: if the request exceeds a security limit 
+    :raises ValueError: if the request isn't well formatted 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s5"># https://tools.ietf.org/html/rfc7230#section-3.1.1</span>
+
+    <span class="s5"># Parsing is simple because fixed values are expected for method and</span>
+    <span class="s5"># version and because path isn't checked. Since WebSocket software tends</span>
+    <span class="s5"># to implement HTTP/1.1 strictly, there's little need for lenient parsing.</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">request_line = </span><span class="s0">await </span><span class="s1">read_line(stream)</span>
+    <span class="s0">except </span><span class="s1">EOFError </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s2">&quot;connection closed while reading HTTP request line&quot;</span><span class="s1">) </span><span class="s0">from </span><span class="s1">exc</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">method</span><span class="s0">, </span><span class="s1">raw_path</span><span class="s0">, </span><span class="s1">version = request_line.split(</span><span class="s6">b&quot; &quot;</span><span class="s0">, </span><span class="s3">2</span><span class="s1">)</span>
+    <span class="s0">except </span><span class="s1">ValueError:  </span><span class="s5"># not enough values to unpack (expected 3, got 1-2)</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP request line: </span><span class="s0">{</span><span class="s1">d(request_line)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">) </span><span class="s0">from None</span>
+
+    <span class="s0">if </span><span class="s1">method != </span><span class="s6">b&quot;GET&quot;</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;unsupported HTTP method: </span><span class="s0">{</span><span class="s1">d(method)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+    <span class="s0">if </span><span class="s1">version != </span><span class="s6">b&quot;HTTP/1.1&quot;</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;unsupported HTTP version: </span><span class="s0">{</span><span class="s1">d(version)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+    <span class="s1">path = raw_path.decode(</span><span class="s2">&quot;ascii&quot;</span><span class="s0">, </span><span class="s2">&quot;surrogateescape&quot;</span><span class="s1">)</span>
+
+    <span class="s1">headers = </span><span class="s0">await </span><span class="s1">read_headers(stream)</span>
+
+    <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">headers</span>
+
+
+<span class="s0">async def </span><span class="s1">read_response(stream: asyncio.StreamReader) -&gt; Tuple[int</span><span class="s0">, </span><span class="s1">str</span><span class="s0">, </span><span class="s1">Headers]:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Read an HTTP/1.1 response and return ``(status_code, reason, headers)``. 
+ 
+    ``reason`` and ``headers`` are expected to contain only ASCII characters. 
+    Other characters are represented with surrogate escapes. 
+ 
+    :func:`read_request` doesn't attempt to read the response body because 
+    WebSocket handshake responses don't have one. If the response contains a 
+    body, it may be read from ``stream`` after this coroutine returns. 
+ 
+    :param stream: input to read the response from 
+    :raises EOFError: if the connection is closed without a full HTTP response 
+    :raises SecurityError: if the response exceeds a security limit 
+    :raises ValueError: if the response isn't well formatted 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s5"># https://tools.ietf.org/html/rfc7230#section-3.1.2</span>
+
+    <span class="s5"># As in read_request, parsing is simple because a fixed value is expected</span>
+    <span class="s5"># for version, status_code is a 3-digit number, and reason can be ignored.</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">status_line = </span><span class="s0">await </span><span class="s1">read_line(stream)</span>
+    <span class="s0">except </span><span class="s1">EOFError </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s2">&quot;connection closed while reading HTTP status line&quot;</span><span class="s1">) </span><span class="s0">from </span><span class="s1">exc</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">version</span><span class="s0">, </span><span class="s1">raw_status_code</span><span class="s0">, </span><span class="s1">raw_reason = status_line.split(</span><span class="s6">b&quot; &quot;</span><span class="s0">, </span><span class="s3">2</span><span class="s1">)</span>
+    <span class="s0">except </span><span class="s1">ValueError:  </span><span class="s5"># not enough values to unpack (expected 3, got 1-2)</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP status line: </span><span class="s0">{</span><span class="s1">d(status_line)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">) </span><span class="s0">from None</span>
+
+    <span class="s0">if </span><span class="s1">version != </span><span class="s6">b&quot;HTTP/1.1&quot;</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;unsupported HTTP version: </span><span class="s0">{</span><span class="s1">d(version)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">status_code = int(raw_status_code)</span>
+    <span class="s0">except </span><span class="s1">ValueError:  </span><span class="s5"># invalid literal for int() with base 10</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP status code: </span><span class="s0">{</span><span class="s1">d(raw_status_code)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">) </span><span class="s0">from None</span>
+    <span class="s0">if not </span><span class="s3">100 </span><span class="s1">&lt;= status_code &lt; </span><span class="s3">1000</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;unsupported HTTP status code: </span><span class="s0">{</span><span class="s1">d(raw_status_code)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+    <span class="s0">if not </span><span class="s1">_value_re.fullmatch(raw_reason):</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP reason phrase: </span><span class="s0">{</span><span class="s1">d(raw_reason)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+    <span class="s1">reason = raw_reason.decode()</span>
+
+    <span class="s1">headers = </span><span class="s0">await </span><span class="s1">read_headers(stream)</span>
+
+    <span class="s0">return </span><span class="s1">status_code</span><span class="s0">, </span><span class="s1">reason</span><span class="s0">, </span><span class="s1">headers</span>
+
+
+<span class="s0">async def </span><span class="s1">read_headers(stream: asyncio.StreamReader) -&gt; Headers:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Read HTTP headers from ``stream``. 
+ 
+    Non-ASCII characters are represented with surrogate escapes. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s5"># https://tools.ietf.org/html/rfc7230#section-3.2</span>
+
+    <span class="s5"># We don't attempt to support obsolete line folding.</span>
+
+    <span class="s1">headers = Headers()</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(MAX_HEADERS + </span><span class="s3">1</span><span class="s1">):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">line = </span><span class="s0">await </span><span class="s1">read_line(stream)</span>
+        <span class="s0">except </span><span class="s1">EOFError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s2">&quot;connection closed while reading HTTP headers&quot;</span><span class="s1">) </span><span class="s0">from </span><span class="s1">exc</span>
+        <span class="s0">if </span><span class="s1">line == </span><span class="s6">b&quot;&quot;</span><span class="s1">:</span>
+            <span class="s0">break</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">raw_name</span><span class="s0">, </span><span class="s1">raw_value = line.split(</span><span class="s6">b&quot;:&quot;</span><span class="s0">, </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">ValueError:  </span><span class="s5"># not enough values to unpack (expected 2, got 1)</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP header line: </span><span class="s0">{</span><span class="s1">d(line)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">) </span><span class="s0">from None</span>
+        <span class="s0">if not </span><span class="s1">_token_re.fullmatch(raw_name):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP header name: </span><span class="s0">{</span><span class="s1">d(raw_name)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+        <span class="s1">raw_value = raw_value.strip(</span><span class="s6">b&quot; </span><span class="s0">\t</span><span class="s6">&quot;</span><span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">_value_re.fullmatch(raw_value):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;invalid HTTP header value: </span><span class="s0">{</span><span class="s1">d(raw_value)</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+
+        <span class="s1">name = raw_name.decode(</span><span class="s2">&quot;ascii&quot;</span><span class="s1">)  </span><span class="s5"># guaranteed to be ASCII at this point</span>
+        <span class="s1">value = raw_value.decode(</span><span class="s2">&quot;ascii&quot;</span><span class="s0">, </span><span class="s2">&quot;surrogateescape&quot;</span><span class="s1">)</span>
+        <span class="s1">headers[name] = value</span>
+
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">SecurityError(</span><span class="s2">&quot;too many HTTP headers&quot;</span><span class="s1">)</span>
+
+    <span class="s0">return </span><span class="s1">headers</span>
+
+
+<span class="s0">async def </span><span class="s1">read_line(stream: asyncio.StreamReader) -&gt; bytes:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Read a single line from ``stream``. 
+ 
+    CRLF is stripped from the return value. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s5"># Security: this is bounded by the StreamReader's limit (default = 32 KiB).</span>
+    <span class="s1">line = </span><span class="s0">await </span><span class="s1">stream.readline()</span>
+    <span class="s5"># Security: this guarantees header values are small (hard-coded = 4 KiB)</span>
+    <span class="s0">if </span><span class="s1">len(line) &gt; MAX_LINE:</span>
+        <span class="s0">raise </span><span class="s1">SecurityError(</span><span class="s2">&quot;line too long&quot;</span><span class="s1">)</span>
+    <span class="s5"># Not mandatory but safe - https://tools.ietf.org/html/rfc7230#section-3.5</span>
+    <span class="s0">if not </span><span class="s1">line.endswith(</span><span class="s6">b&quot;</span><span class="s0">\r\n</span><span class="s6">&quot;</span><span class="s1">):</span>
+        <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s2">&quot;line without CRLF&quot;</span><span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">line[:-</span><span class="s3">2</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<html>
+<head>
+<title>uploadedfile.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+.s6 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+uploadedfile.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Classes representing uploaded files. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">from </span><span class="s1">io </span><span class="s2">import </span><span class="s1">BytesIO</span>
+
+<span class="s2">from </span><span class="s1">django.conf </span><span class="s2">import </span><span class="s1">settings</span>
+<span class="s2">from </span><span class="s1">django.core.files </span><span class="s2">import </span><span class="s1">temp </span><span class="s2">as </span><span class="s1">tempfile</span>
+<span class="s2">from </span><span class="s1">django.core.files.base </span><span class="s2">import </span><span class="s1">File</span>
+<span class="s2">from </span><span class="s1">django.core.files.utils </span><span class="s2">import </span><span class="s1">validate_file_name</span>
+
+<span class="s1">__all__ = (</span><span class="s3">'UploadedFile'</span><span class="s2">, </span><span class="s3">'TemporaryUploadedFile'</span><span class="s2">, </span><span class="s3">'InMemoryUploadedFile'</span><span class="s2">,</span>
+           <span class="s3">'SimpleUploadedFile'</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">UploadedFile(File):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    An abstract uploaded file (``TemporaryUploadedFile`` and 
+    ``InMemoryUploadedFile`` are the built-in concrete subclasses). 
+ 
+    An ``UploadedFile`` object behaves somewhat like a file object and 
+    represents some file data that the user submitted with a form. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">file=</span><span class="s2">None, </span><span class="s1">name=</span><span class="s2">None, </span><span class="s1">content_type=</span><span class="s2">None, </span><span class="s1">size=</span><span class="s2">None, </span><span class="s1">charset=</span><span class="s2">None, </span><span class="s1">content_type_extra=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">super().__init__(file</span><span class="s2">, </span><span class="s1">name)</span>
+        <span class="s1">self.size = size</span>
+        <span class="s1">self.content_type = content_type</span>
+        <span class="s1">self.charset = charset</span>
+        <span class="s1">self.content_type_extra = content_type_extra</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s3">&quot;&lt;%s: %s (%s)&gt;&quot; </span><span class="s1">% (self.__class__.__name__</span><span class="s2">, </span><span class="s1">self.name</span><span class="s2">, </span><span class="s1">self.content_type)</span>
+
+    <span class="s2">def </span><span class="s1">_get_name(self):</span>
+        <span class="s2">return </span><span class="s1">self._name</span>
+
+    <span class="s2">def </span><span class="s1">_set_name(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s4"># Sanitize the file name so that it can't be dangerous.</span>
+        <span class="s2">if </span><span class="s1">name </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s4"># Just use the basename of the file -- anything else is dangerous.</span>
+            <span class="s1">name = os.path.basename(name)</span>
+
+            <span class="s4"># File names longer than 255 characters can cause problems on older OSes.</span>
+            <span class="s2">if </span><span class="s1">len(name) &gt; </span><span class="s5">255</span><span class="s1">:</span>
+                <span class="s1">name</span><span class="s2">, </span><span class="s1">ext = os.path.splitext(name)</span>
+                <span class="s1">ext = ext[:</span><span class="s5">255</span><span class="s1">]</span>
+                <span class="s1">name = name[:</span><span class="s5">255 </span><span class="s1">- len(ext)] + ext</span>
+
+            <span class="s1">name = validate_file_name(name)</span>
+
+        <span class="s1">self._name = name</span>
+
+    <span class="s1">name = property(_get_name</span><span class="s2">, </span><span class="s1">_set_name)</span>
+
+
+<span class="s2">class </span><span class="s1">TemporaryUploadedFile(UploadedFile):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    A file uploaded to a temporary location (i.e. stream-to-disk). 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">content_type</span><span class="s2">, </span><span class="s1">size</span><span class="s2">, </span><span class="s1">charset</span><span class="s2">, </span><span class="s1">content_type_extra=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">_</span><span class="s2">, </span><span class="s1">ext = os.path.splitext(name)</span>
+        <span class="s1">file = tempfile.NamedTemporaryFile(suffix=</span><span class="s3">'.upload' </span><span class="s1">+ ext</span><span class="s2">, </span><span class="s1">dir=settings.FILE_UPLOAD_TEMP_DIR)</span>
+        <span class="s1">super().__init__(file</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">content_type</span><span class="s2">, </span><span class="s1">size</span><span class="s2">, </span><span class="s1">charset</span><span class="s2">, </span><span class="s1">content_type_extra)</span>
+
+    <span class="s2">def </span><span class="s1">temporary_file_path(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return the full path of this file.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.file.name</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self.file.close()</span>
+        <span class="s2">except </span><span class="s1">FileNotFoundError:</span>
+            <span class="s4"># The file was moved or deleted before the tempfile could unlink</span>
+            <span class="s4"># it. Still sets self.file.close_called and calls</span>
+            <span class="s4"># self.file.file.close() before the exception.</span>
+            <span class="s2">pass</span>
+
+
+<span class="s2">class </span><span class="s1">InMemoryUploadedFile(UploadedFile):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    A file uploaded into memory (i.e. stream-to-memory). 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">file</span><span class="s2">, </span><span class="s1">field_name</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">content_type</span><span class="s2">, </span><span class="s1">size</span><span class="s2">, </span><span class="s1">charset</span><span class="s2">, </span><span class="s1">content_type_extra=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">super().__init__(file</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">content_type</span><span class="s2">, </span><span class="s1">size</span><span class="s2">, </span><span class="s1">charset</span><span class="s2">, </span><span class="s1">content_type_extra)</span>
+        <span class="s1">self.field_name = field_name</span>
+
+    <span class="s2">def </span><span class="s1">open(self</span><span class="s2">, </span><span class="s1">mode=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">self.file.seek(</span><span class="s5">0</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">chunks(self</span><span class="s2">, </span><span class="s1">chunk_size=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">self.file.seek(</span><span class="s5">0</span><span class="s1">)</span>
+        <span class="s2">yield </span><span class="s1">self.read()</span>
+
+    <span class="s2">def </span><span class="s1">multiple_chunks(self</span><span class="s2">, </span><span class="s1">chunk_size=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s4"># Since it's in memory, we'll never have multiple chunks.</span>
+        <span class="s2">return False</span>
+
+
+<span class="s2">class </span><span class="s1">SimpleUploadedFile(InMemoryUploadedFile):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    A simple representation of a file, which just has content, size, and a name. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">content</span><span class="s2">, </span><span class="s1">content_type=</span><span class="s3">'text/plain'</span><span class="s1">):</span>
+        <span class="s1">content = content </span><span class="s2">or </span><span class="s6">b''</span>
+        <span class="s1">super().__init__(BytesIO(content)</span><span class="s2">, None, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">content_type</span><span class="s2">, </span><span class="s1">len(content)</span><span class="s2">, None, None</span><span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">from_dict(cls</span><span class="s2">, </span><span class="s1">file_dict):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Create a SimpleUploadedFile object from a dictionary with keys: 
+           - filename 
+           - content-type 
+           - content 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">cls(file_dict[</span><span class="s3">'filename'</span><span class="s1">]</span><span class="s2">,</span>
+                   <span class="s1">file_dict[</span><span class="s3">'content'</span><span class="s1">]</span><span class="s2">,</span>
+                   <span class="s1">file_dict.get(</span><span class="s3">'content-type'</span><span class="s2">, </span><span class="s3">'text/plain'</span><span class="s1">))</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<html>
+<head>
+<title>scenario_autoretry.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+scenario_autoretry.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF -*-</span>
+<span class="s0"># pylint: disable=line-too-long</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides support functionality to retry scenarios a number of times before 
+their failure is accepted. This functionality can be helpful when you use 
+behave tests in a unreliable server/network infrastructure. 
+ 
+EXAMPLE: 
+ 
+.. sourcecode:: gherkin 
+ 
+    # -- FILE: features/alice.feature 
+    # TAG:  Feature or Scenario/ScenarioOutline with @autoretry 
+    # NOTE: If you tag the feature, all its scenarios are retried. 
+    @autoretry 
+    Feature: Use unreliable Server infrastructure 
+ 
+        Scenario: ... 
+ 
+ 
+.. sourcecode:: python 
+ 
+    # -- FILE: features/environment.py 
+    from behave.contrib.scenario_autoretry import patch_scenario_with_autoretry 
+ 
+    def before_feature(context, feature): 
+        for scenario in feature.scenarios: 
+            if &quot;autoretry&quot; in scenario.effective_tags: 
+                patch_scenario_with_autoretry(scenario, max_attempts=2) 
+ 
+.. seealso:: 
+    * https://github.com/behave/behave/pull/328 
+    * https://github.com/hypothesis/smokey/blob/sauce-reliability/smokey/features/environment.py 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">print_function</span>
+<span class="s3">import </span><span class="s1">functools</span>
+<span class="s3">from </span><span class="s1">behave.model </span><span class="s3">import </span><span class="s1">ScenarioOutline</span>
+
+
+<span class="s3">def </span><span class="s1">patch_scenario_with_autoretry(scenario</span><span class="s3">, </span><span class="s1">max_attempts=</span><span class="s4">3</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Monkey-patches :func:`~behave.model.Scenario.run()` to auto-retry a 
+    scenario that fails. The scenario is retried a number of times 
+    before its failure is accepted. 
+ 
+    This is helpful when the test infrastructure (server/network environment) 
+    is unreliable (which should be a rare case). 
+ 
+    :param scenario:        Scenario or ScenarioOutline to patch. 
+    :param max_attempts:    How many times the scenario can be run. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">scenario_run_with_retries(scenario_run</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">for </span><span class="s1">attempt </span><span class="s3">in </span><span class="s1">range(</span><span class="s4">1</span><span class="s3">, </span><span class="s1">max_attempts+</span><span class="s4">1</span><span class="s1">):</span>
+            <span class="s3">if not </span><span class="s1">scenario_run(*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+                <span class="s3">if </span><span class="s1">attempt &gt; </span><span class="s4">1</span><span class="s1">:</span>
+                    <span class="s1">message = </span><span class="s5">u&quot;AUTO-RETRY SCENARIO PASSED (after {0} attempts)&quot;</span>
+                    <span class="s1">print(message.format(attempt))</span>
+                <span class="s3">return False    </span><span class="s0"># -- NOT-FAILED = PASSED</span>
+            <span class="s0"># -- SCENARIO FAILED:</span>
+            <span class="s3">if </span><span class="s1">attempt &lt; max_attempts:</span>
+                <span class="s1">print(</span><span class="s5">u&quot;AUTO-RETRY SCENARIO (attempt {0})&quot;</span><span class="s1">.format(attempt))</span>
+        <span class="s1">message = </span><span class="s5">u&quot;AUTO-RETRY SCENARIO FAILED (after {0} attempts)&quot;</span>
+        <span class="s1">print(message.format(max_attempts))</span>
+        <span class="s3">return True</span>
+
+    <span class="s3">if </span><span class="s1">isinstance(scenario</span><span class="s3">, </span><span class="s1">ScenarioOutline):</span>
+        <span class="s1">scenario_outline = scenario</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">scenario_outline.scenarios:</span>
+            <span class="s1">scenario_run = scenario.run</span>
+            <span class="s1">scenario.run = functools.partial(scenario_run_with_retries</span><span class="s3">, </span><span class="s1">scenario_run)</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s1">scenario_run = scenario.run</span>
+        <span class="s1">scenario.run = functools.partial(scenario_run_with_retries</span><span class="s3">, </span><span class="s1">scenario_run)</span>
+</pre>
+</body>
+</html>

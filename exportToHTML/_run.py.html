@@ -1,0 +1,2401 @@
+<html>
+<head>
+<title>_run.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_run.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># coding: utf-8</span>
+
+<span class="s2">import </span><span class="s1">functools</span>
+<span class="s2">import </span><span class="s1">itertools</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">random</span>
+<span class="s2">import </span><span class="s1">select</span>
+<span class="s2">import </span><span class="s1">sys</span>
+<span class="s2">import </span><span class="s1">threading</span>
+<span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">deque</span>
+<span class="s2">import </span><span class="s1">collections.abc</span>
+<span class="s2">from </span><span class="s1">contextlib </span><span class="s2">import </span><span class="s1">contextmanager</span>
+<span class="s2">import </span><span class="s1">warnings</span>
+<span class="s2">import </span><span class="s1">weakref</span>
+<span class="s2">import </span><span class="s1">enum</span>
+
+<span class="s2">from </span><span class="s1">contextvars </span><span class="s2">import </span><span class="s1">copy_context</span>
+<span class="s2">from </span><span class="s1">math </span><span class="s2">import </span><span class="s1">inf</span>
+<span class="s2">from </span><span class="s1">time </span><span class="s2">import </span><span class="s1">perf_counter</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">Callable</span><span class="s2">, </span><span class="s1">TYPE_CHECKING</span>
+
+<span class="s2">from </span><span class="s1">sniffio </span><span class="s2">import </span><span class="s1">current_async_library_cvar</span>
+
+<span class="s2">import </span><span class="s1">attr</span>
+<span class="s2">from </span><span class="s1">heapq </span><span class="s2">import </span><span class="s1">heapify</span><span class="s2">, </span><span class="s1">heappop</span><span class="s2">, </span><span class="s1">heappush</span>
+<span class="s2">from </span><span class="s1">sortedcontainers </span><span class="s2">import </span><span class="s1">SortedDict</span>
+<span class="s2">from </span><span class="s1">outcome </span><span class="s2">import </span><span class="s1">Error</span><span class="s2">, </span><span class="s1">Outcome</span><span class="s2">, </span><span class="s1">Value</span><span class="s2">, </span><span class="s1">capture</span>
+
+<span class="s2">from </span><span class="s1">._entry_queue </span><span class="s2">import </span><span class="s1">EntryQueue</span><span class="s2">, </span><span class="s1">TrioToken</span>
+<span class="s2">from </span><span class="s1">._exceptions </span><span class="s2">import </span><span class="s1">TrioInternalError</span><span class="s2">, </span><span class="s1">RunFinishedError</span><span class="s2">, </span><span class="s1">Cancelled</span>
+<span class="s2">from </span><span class="s1">._ki </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">LOCALS_KEY_KI_PROTECTION_ENABLED</span><span class="s2">,</span>
+    <span class="s1">KIManager</span><span class="s2">,</span>
+    <span class="s1">enable_ki_protection</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">._multierror </span><span class="s2">import </span><span class="s1">MultiError</span>
+<span class="s2">from </span><span class="s1">._traps </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">Abort</span><span class="s2">,</span>
+    <span class="s1">wait_task_rescheduled</span><span class="s2">,</span>
+    <span class="s1">cancel_shielded_checkpoint</span><span class="s2">,</span>
+    <span class="s1">CancelShieldedCheckpoint</span><span class="s2">,</span>
+    <span class="s1">PermanentlyDetachCoroutineObject</span><span class="s2">,</span>
+    <span class="s1">WaitTaskRescheduled</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">._asyncgens </span><span class="s2">import </span><span class="s1">AsyncGenerators</span>
+<span class="s2">from </span><span class="s1">._thread_cache </span><span class="s2">import </span><span class="s1">start_thread_soon</span>
+<span class="s2">from </span><span class="s1">._instrumentation </span><span class="s2">import </span><span class="s1">Instruments</span>
+<span class="s2">from </span><span class="s1">.. </span><span class="s2">import </span><span class="s1">_core</span>
+<span class="s2">from </span><span class="s1">.._deprecate </span><span class="s2">import </span><span class="s1">warn_deprecated</span>
+<span class="s2">from </span><span class="s1">.._util </span><span class="s2">import </span><span class="s1">Final</span><span class="s2">, </span><span class="s1">NoPublicConstructor</span><span class="s2">, </span><span class="s1">coroutine_or_error</span>
+
+<span class="s1">DEADLINE_HEAP_MIN_PRUNE_THRESHOLD = </span><span class="s3">1000</span>
+
+<span class="s1">_NO_SEND = object()</span>
+
+
+<span class="s0"># Decorator to mark methods public. This does nothing by itself, but</span>
+<span class="s0"># trio/_tools/gen_exports.py looks for it.</span>
+<span class="s2">def </span><span class="s1">_public(fn):</span>
+    <span class="s2">return </span><span class="s1">fn</span>
+
+
+<span class="s0"># When running under Hypothesis, we want examples to be reproducible and</span>
+<span class="s0"># shrinkable.  pytest-trio's Hypothesis integration monkeypatches this</span>
+<span class="s0"># variable to True, and registers the Random instance _r for Hypothesis</span>
+<span class="s0"># to manage for each test case, which together should make Trio's task</span>
+<span class="s0"># scheduling loop deterministic.  We have a test for that, of course.</span>
+<span class="s1">_ALLOW_DETERMINISTIC_SCHEDULING = </span><span class="s2">False</span>
+<span class="s1">_r = random.Random()</span>
+
+
+<span class="s0"># On 3.7+, Context.run() is implemented in C and doesn't show up in</span>
+<span class="s0"># tracebacks. On 3.6, we use the contextvars backport, which is</span>
+<span class="s0"># currently implemented in Python and adds 1 frame to tracebacks. So this</span>
+<span class="s0"># function is a super-overkill version of &quot;0 if sys.version_info &gt;= (3, 7)</span>
+<span class="s0"># else 1&quot;. But if Context.run ever changes, we'll be ready!</span>
+<span class="s0">#</span>
+<span class="s0"># This can all be removed once we drop support for 3.6.</span>
+<span class="s2">def </span><span class="s1">_count_context_run_tb_frames():</span>
+    <span class="s2">def </span><span class="s1">function_with_unique_name_xyzzy():</span>
+        <span class="s3">1 </span><span class="s1">/ </span><span class="s3">0</span>
+
+    <span class="s1">ctx = copy_context()</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">ctx.run(function_with_unique_name_xyzzy)</span>
+    <span class="s2">except </span><span class="s1">ZeroDivisionError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s1">tb = exc.__traceback__</span>
+        <span class="s0"># Skip the frame where we caught it</span>
+        <span class="s1">tb = tb.tb_next</span>
+        <span class="s1">count = </span><span class="s3">0</span>
+        <span class="s2">while </span><span class="s1">tb.tb_frame.f_code.co_name != </span><span class="s4">&quot;function_with_unique_name_xyzzy&quot;</span><span class="s1">:</span>
+            <span class="s1">tb = tb.tb_next</span>
+            <span class="s1">count += </span><span class="s3">1</span>
+        <span class="s2">return </span><span class="s1">count</span>
+
+
+<span class="s1">CONTEXT_RUN_TB_FRAMES = _count_context_run_tb_frames()</span>
+
+
+<span class="s1">@attr.s(frozen=</span><span class="s2">True, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">SystemClock:</span>
+    <span class="s0"># Add a large random offset to our clock to ensure that if people</span>
+    <span class="s0"># accidentally call time.perf_counter() directly or start comparing clocks</span>
+    <span class="s0"># between different runs, then they'll notice the bug quickly:</span>
+    <span class="s1">offset = attr.ib(factory=</span><span class="s2">lambda</span><span class="s1">: _r.uniform(</span><span class="s3">10000</span><span class="s2">, </span><span class="s3">200000</span><span class="s1">))</span>
+
+    <span class="s2">def </span><span class="s1">start_clock(self):</span>
+        <span class="s2">pass</span>
+
+    <span class="s0"># In cPython 3, on every platform except Windows, perf_counter is</span>
+    <span class="s0"># exactly the same as time.monotonic; and on Windows, it uses</span>
+    <span class="s0"># QueryPerformanceCounter instead of GetTickCount64.</span>
+    <span class="s2">def </span><span class="s1">current_time(self):</span>
+        <span class="s2">return </span><span class="s1">self.offset + perf_counter()</span>
+
+    <span class="s2">def </span><span class="s1">deadline_to_sleep_time(self</span><span class="s2">, </span><span class="s1">deadline):</span>
+        <span class="s2">return </span><span class="s1">deadline - self.current_time()</span>
+
+
+<span class="s2">class </span><span class="s1">IdlePrimedTypes(enum.Enum):</span>
+    <span class="s1">WAITING_FOR_IDLE = </span><span class="s3">1</span>
+    <span class="s1">AUTOJUMP_CLOCK = </span><span class="s3">2</span>
+
+
+<span class="s0">################################################################</span>
+<span class="s0"># CancelScope and friends</span>
+<span class="s0">################################################################</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">Deadlines:</span>
+    <span class="s5">&quot;&quot;&quot;A container of deadlined cancel scopes. 
+ 
+    Only contains scopes with non-infinite deadlines that are currently 
+    attached to at least one task. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0"># Heap of (deadline, id(CancelScope), CancelScope)</span>
+    <span class="s1">_heap = attr.ib(factory=list)</span>
+    <span class="s0"># Count of active deadlines (those that haven't been changed)</span>
+    <span class="s1">_active = attr.ib(default=</span><span class="s3">0</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">add(self</span><span class="s2">, </span><span class="s1">deadline</span><span class="s2">, </span><span class="s1">cancel_scope):</span>
+        <span class="s1">heappush(self._heap</span><span class="s2">, </span><span class="s1">(deadline</span><span class="s2">, </span><span class="s1">id(cancel_scope)</span><span class="s2">, </span><span class="s1">cancel_scope))</span>
+        <span class="s1">self._active += </span><span class="s3">1</span>
+
+    <span class="s2">def </span><span class="s1">remove(self</span><span class="s2">, </span><span class="s1">deadline</span><span class="s2">, </span><span class="s1">cancel_scope):</span>
+        <span class="s1">self._active -= </span><span class="s3">1</span>
+
+    <span class="s2">def </span><span class="s1">next_deadline(self):</span>
+        <span class="s2">while </span><span class="s1">self._heap:</span>
+            <span class="s1">deadline</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">cancel_scope = self._heap[</span><span class="s3">0</span><span class="s1">]</span>
+            <span class="s2">if </span><span class="s1">deadline == cancel_scope._registered_deadline:</span>
+                <span class="s2">return </span><span class="s1">deadline</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s0"># This entry is stale; discard it and try again</span>
+                <span class="s1">heappop(self._heap)</span>
+        <span class="s2">return </span><span class="s1">inf</span>
+
+    <span class="s2">def </span><span class="s1">_prune(self):</span>
+        <span class="s0"># In principle, it's possible for a cancel scope to toggle back and</span>
+        <span class="s0"># forth repeatedly between the same two deadlines, and end up with</span>
+        <span class="s0"># lots of stale entries that *look* like they're still active, because</span>
+        <span class="s0"># their deadline is correct, but in fact are redundant. So when</span>
+        <span class="s0"># pruning we have to eliminate entries with the wrong deadline, *and*</span>
+        <span class="s0"># eliminate duplicates.</span>
+        <span class="s1">seen = set()</span>
+        <span class="s1">pruned_heap = []</span>
+        <span class="s2">for </span><span class="s1">deadline</span><span class="s2">, </span><span class="s1">tiebreaker</span><span class="s2">, </span><span class="s1">cancel_scope </span><span class="s2">in </span><span class="s1">self._heap:</span>
+            <span class="s2">if </span><span class="s1">deadline == cancel_scope._registered_deadline:</span>
+                <span class="s2">if </span><span class="s1">cancel_scope </span><span class="s2">in </span><span class="s1">seen:</span>
+                    <span class="s2">continue</span>
+                <span class="s1">seen.add(cancel_scope)</span>
+                <span class="s1">pruned_heap.append((deadline</span><span class="s2">, </span><span class="s1">tiebreaker</span><span class="s2">, </span><span class="s1">cancel_scope))</span>
+        <span class="s0"># See test_cancel_scope_deadline_duplicates for a test that exercises</span>
+        <span class="s0"># this assert:</span>
+        <span class="s2">assert </span><span class="s1">len(pruned_heap) == self._active</span>
+        <span class="s1">heapify(pruned_heap)</span>
+        <span class="s1">self._heap = pruned_heap</span>
+
+    <span class="s2">def </span><span class="s1">expire(self</span><span class="s2">, </span><span class="s1">now):</span>
+        <span class="s1">did_something = </span><span class="s2">False</span>
+        <span class="s2">while </span><span class="s1">self._heap </span><span class="s2">and </span><span class="s1">self._heap[</span><span class="s3">0</span><span class="s1">][</span><span class="s3">0</span><span class="s1">] &lt;= now:</span>
+            <span class="s1">deadline</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">cancel_scope = heappop(self._heap)</span>
+            <span class="s2">if </span><span class="s1">deadline == cancel_scope._registered_deadline:</span>
+                <span class="s1">did_something = </span><span class="s2">True</span>
+                <span class="s0"># This implicitly calls self.remove(), so we don't need to</span>
+                <span class="s0"># decrement _active here</span>
+                <span class="s1">cancel_scope.cancel()</span>
+        <span class="s0"># If we've accumulated too many stale entries, then prune the heap to</span>
+        <span class="s0"># keep it under control. (We only do this occasionally in a batch, to</span>
+        <span class="s0"># keep the amortized cost down)</span>
+        <span class="s2">if </span><span class="s1">len(self._heap) &gt; self._active * </span><span class="s3">2 </span><span class="s1">+ DEADLINE_HEAP_MIN_PRUNE_THRESHOLD:</span>
+            <span class="s1">self._prune()</span>
+        <span class="s2">return </span><span class="s1">did_something</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">CancelStatus:</span>
+    <span class="s5">&quot;&quot;&quot;Tracks the cancellation status for a contiguous extent 
+    of code that will become cancelled, or not, as a unit. 
+ 
+    Each task has at all times a single &quot;active&quot; CancelStatus whose 
+    cancellation state determines whether checkpoints executed in that 
+    task raise Cancelled. Each 'with CancelScope(...)' context is 
+    associated with a particular CancelStatus.  When a task enters 
+    such a context, a CancelStatus is created which becomes the active 
+    CancelStatus for that task; when the 'with' block is exited, the 
+    active CancelStatus for that task goes back to whatever it was 
+    before. 
+ 
+    CancelStatus objects are arranged in a tree whose structure 
+    mirrors the lexical nesting of the cancel scope contexts.  When a 
+    CancelStatus becomes cancelled, it notifies all of its direct 
+    children, who become cancelled in turn (and continue propagating 
+    the cancellation down the tree) unless they are shielded. (There 
+    will be at most one such child except in the case of a 
+    CancelStatus that immediately encloses a nursery.) At the leaves 
+    of this tree are the tasks themselves, which get woken up to deliver 
+    an abort when their direct parent CancelStatus becomes cancelled. 
+ 
+    You can think of CancelStatus as being responsible for the 
+    &quot;plumbing&quot; of cancellations as oppposed to CancelScope which is 
+    responsible for the origination of them. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0"># Our associated cancel scope. Can be any object with attributes</span>
+    <span class="s0"># `deadline`, `shield`, and `cancel_called`, but in current usage</span>
+    <span class="s0"># is always a CancelScope object. Must not be None.</span>
+    <span class="s1">_scope = attr.ib()</span>
+
+    <span class="s0"># True iff the tasks in self._tasks should receive cancellations</span>
+    <span class="s0"># when they checkpoint. Always True when scope.cancel_called is True;</span>
+    <span class="s0"># may also be True due to a cancellation propagated from our</span>
+    <span class="s0"># parent.  Unlike scope.cancel_called, this does not necessarily stay</span>
+    <span class="s0"># true once it becomes true. For example, we might become</span>
+    <span class="s0"># effectively cancelled due to the cancel scope two levels out</span>
+    <span class="s0"># becoming cancelled, but then the cancel scope one level out</span>
+    <span class="s0"># becomes shielded so we're not effectively cancelled anymore.</span>
+    <span class="s1">effectively_cancelled = attr.ib(default=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s0"># The CancelStatus whose cancellations can propagate to us; we</span>
+    <span class="s0"># become effectively cancelled when they do, unless scope.shield</span>
+    <span class="s0"># is True.  May be None (for the outermost CancelStatus in a call</span>
+    <span class="s0"># to trio.run(), briefly during TaskStatus.started(), or during</span>
+    <span class="s0"># recovery from mis-nesting of cancel scopes).</span>
+    <span class="s1">_parent = attr.ib(default=</span><span class="s2">None, </span><span class="s1">repr=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s0"># All of the CancelStatuses that have this CancelStatus as their parent.</span>
+    <span class="s1">_children = attr.ib(factory=set</span><span class="s2">, </span><span class="s1">init=</span><span class="s2">False, </span><span class="s1">repr=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s0"># Tasks whose cancellation state is currently tied directly to</span>
+    <span class="s0"># the cancellation state of this CancelStatus object. Don't modify</span>
+    <span class="s0"># this directly; instead, use Task._activate_cancel_status().</span>
+    <span class="s0"># Invariant: all(task._cancel_status is self for task in self._tasks)</span>
+    <span class="s1">_tasks = attr.ib(factory=set</span><span class="s2">, </span><span class="s1">init=</span><span class="s2">False, </span><span class="s1">repr=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s0"># Set to True on still-active cancel statuses that are children</span>
+    <span class="s0"># of a cancel status that's been closed. This is used to permit</span>
+    <span class="s0"># recovery from mis-nested cancel scopes (well, at least enough</span>
+    <span class="s0"># recovery to show a useful traceback).</span>
+    <span class="s1">abandoned_by_misnesting = attr.ib(default=</span><span class="s2">False, </span><span class="s1">init=</span><span class="s2">False, </span><span class="s1">repr=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__attrs_post_init__(self):</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._parent._children.add(self)</span>
+            <span class="s1">self.recalculate()</span>
+
+    <span class="s0"># parent/children/tasks accessors are used by TaskStatus.started()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">parent(self):</span>
+        <span class="s2">return </span><span class="s1">self._parent</span>
+
+    <span class="s1">@parent.setter</span>
+    <span class="s2">def </span><span class="s1">parent(self</span><span class="s2">, </span><span class="s1">parent):</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._parent._children.remove(self)</span>
+        <span class="s1">self._parent = parent</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._parent._children.add(self)</span>
+            <span class="s1">self.recalculate()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">children(self):</span>
+        <span class="s2">return </span><span class="s1">frozenset(self._children)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">tasks(self):</span>
+        <span class="s2">return </span><span class="s1">frozenset(self._tasks)</span>
+
+    <span class="s2">def </span><span class="s1">encloses(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s5">&quot;&quot;&quot;Returns true if this cancel status is a direct or indirect 
+        parent of cancel status *other*, or if *other* is *self*. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">while </span><span class="s1">other </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">other </span><span class="s2">is </span><span class="s1">self:</span>
+                <span class="s2">return True</span>
+            <span class="s1">other = other.parent</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s1">self.parent = </span><span class="s2">None  </span><span class="s0"># now we're not a child of self.parent anymore</span>
+        <span class="s2">if </span><span class="s1">self._tasks </span><span class="s2">or </span><span class="s1">self._children:</span>
+            <span class="s0"># Cancel scopes weren't exited in opposite order of being</span>
+            <span class="s0"># entered. CancelScope._close() deals with raising an error</span>
+            <span class="s0"># if appropriate; our job is to leave things in a reasonable</span>
+            <span class="s0"># state for unwinding our dangling children. We choose to leave</span>
+            <span class="s0"># this part of the CancelStatus tree unlinked from everyone</span>
+            <span class="s0"># else, cancelled, and marked so that exiting a CancelScope</span>
+            <span class="s0"># within the abandoned subtree doesn't affect the active</span>
+            <span class="s0"># CancelStatus. Note that it's possible for us to get here</span>
+            <span class="s0"># without CancelScope._close() raising an error, if a</span>
+            <span class="s0"># nursery's cancel scope is closed within the nursery's</span>
+            <span class="s0"># nested child and no other cancel scopes are involved,</span>
+            <span class="s0"># but in that case task_exited() will deal with raising</span>
+            <span class="s0"># the error.</span>
+            <span class="s1">self._mark_abandoned()</span>
+
+            <span class="s0"># Since our CancelScope is about to forget about us, and we</span>
+            <span class="s0"># have no parent anymore, there's nothing left to call</span>
+            <span class="s0"># recalculate(). So, we can stay cancelled by setting</span>
+            <span class="s0"># effectively_cancelled and updating our children.</span>
+            <span class="s1">self.effectively_cancelled = </span><span class="s2">True</span>
+            <span class="s2">for </span><span class="s1">task </span><span class="s2">in </span><span class="s1">self._tasks:</span>
+                <span class="s1">task._attempt_delivery_of_any_pending_cancel()</span>
+            <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">self._children:</span>
+                <span class="s1">child.recalculate()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">parent_cancellation_is_visible_to_us(self):</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">self._parent </span><span class="s2">is not None</span>
+            <span class="s2">and not </span><span class="s1">self._scope.shield</span>
+            <span class="s2">and </span><span class="s1">self._parent.effectively_cancelled</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">recalculate(self):</span>
+        <span class="s0"># This does a depth-first traversal over this and descendent cancel</span>
+        <span class="s0"># statuses, to ensure their state is up-to-date. It's basically a</span>
+        <span class="s0"># recursive algorithm, but we use an explicit stack to avoid any</span>
+        <span class="s0"># issues with stack overflow.</span>
+        <span class="s1">todo = [self]</span>
+        <span class="s2">while </span><span class="s1">todo:</span>
+            <span class="s1">current = todo.pop()</span>
+            <span class="s1">new_state = (</span>
+                <span class="s1">current._scope.cancel_called</span>
+                <span class="s2">or </span><span class="s1">current.parent_cancellation_is_visible_to_us</span>
+            <span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">new_state != current.effectively_cancelled:</span>
+                <span class="s1">current.effectively_cancelled = new_state</span>
+                <span class="s2">if </span><span class="s1">new_state:</span>
+                    <span class="s2">for </span><span class="s1">task </span><span class="s2">in </span><span class="s1">current._tasks:</span>
+                        <span class="s1">task._attempt_delivery_of_any_pending_cancel()</span>
+                <span class="s1">todo.extend(current._children)</span>
+
+    <span class="s2">def </span><span class="s1">_mark_abandoned(self):</span>
+        <span class="s1">self.abandoned_by_misnesting = </span><span class="s2">True</span>
+        <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">self._children:</span>
+            <span class="s1">child._mark_abandoned()</span>
+
+    <span class="s2">def </span><span class="s1">effective_deadline(self):</span>
+        <span class="s2">if </span><span class="s1">self.effectively_cancelled:</span>
+            <span class="s2">return </span><span class="s1">-inf</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is None or </span><span class="s1">self._scope.shield:</span>
+            <span class="s2">return </span><span class="s1">self._scope.deadline</span>
+        <span class="s2">return </span><span class="s1">min(self._scope.deadline</span><span class="s2">, </span><span class="s1">self._parent.effective_deadline())</span>
+
+
+<span class="s1">MISNESTING_ADVICE = </span><span class="s4">&quot;&quot;&quot; 
+This is probably a bug in your code, that has caused Trio's internal state to 
+become corrupted. We'll do our best to recover, but from now on there are 
+no guarantees. 
+ 
+Typically this is caused by one of the following: 
+  - yielding within a generator or async generator that's opened a cancel 
+    scope or nursery (unless the generator is a @contextmanager or 
+    @asynccontextmanager); see https://github.com/python-trio/trio/issues/638 
+  - manually calling __enter__ or __exit__ on a trio.CancelScope, or 
+    __aenter__ or __aexit__ on the object returned by trio.open_nursery(); 
+    doing so correctly is difficult and you should use @[async]contextmanager 
+    instead, or maybe [Async]ExitStack 
+  - using [Async]ExitStack to interleave the entries/exits of cancel scopes 
+    and/or nurseries in a way that couldn't be achieved by some nesting of 
+    'with' and 'async with' blocks 
+  - using the low-level coroutine object protocol to execute some parts of 
+    an async function in a different cancel scope/nursery context than 
+    other parts 
+If you don't believe you're doing any of these things, please file a bug: 
+https://github.com/python-trio/trio/issues/new 
+&quot;&quot;&quot;</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">repr=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">CancelScope(metaclass=Final):</span>
+    <span class="s5">&quot;&quot;&quot;A *cancellation scope*: the link between a unit of cancellable 
+    work and Trio's cancellation system. 
+ 
+    A :class:`CancelScope` becomes associated with some cancellable work 
+    when it is used as a context manager surrounding that work:: 
+ 
+        cancel_scope = trio.CancelScope() 
+        ... 
+        with cancel_scope: 
+            await long_running_operation() 
+ 
+    Inside the ``with`` block, a cancellation of ``cancel_scope`` (via 
+    a call to its :meth:`cancel` method or via the expiry of its 
+    :attr:`deadline`) will immediately interrupt the 
+    ``long_running_operation()`` by raising :exc:`Cancelled` at its 
+    next :ref:`checkpoint &lt;checkpoints&gt;`. 
+ 
+    The context manager ``__enter__`` returns the :class:`CancelScope` 
+    object itself, so you can also write ``with trio.CancelScope() as 
+    cancel_scope:``. 
+ 
+    If a cancel scope becomes cancelled before entering its ``with`` block, 
+    the :exc:`Cancelled` exception will be raised at the first 
+    checkpoint inside the ``with`` block. This allows a 
+    :class:`CancelScope` to be created in one :ref:`task &lt;tasks&gt;` and 
+    passed to another, so that the first task can later cancel some work 
+    inside the second. 
+ 
+    Cancel scopes are not reusable or reentrant; that is, each cancel 
+    scope can be used for at most one ``with`` block.  (You'll get a 
+    :exc:`RuntimeError` if you violate this rule.) 
+ 
+    The :class:`CancelScope` constructor takes initial values for the 
+    cancel scope's :attr:`deadline` and :attr:`shield` attributes; these 
+    may be freely modified after construction, whether or not the scope 
+    has been entered yet, and changes take immediate effect. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">_cancel_status = attr.ib(default=</span><span class="s2">None, </span><span class="s1">init=</span><span class="s2">False</span><span class="s1">)</span>
+    <span class="s1">_has_been_entered = attr.ib(default=</span><span class="s2">False, </span><span class="s1">init=</span><span class="s2">False</span><span class="s1">)</span>
+    <span class="s1">_registered_deadline = attr.ib(default=inf</span><span class="s2">, </span><span class="s1">init=</span><span class="s2">False</span><span class="s1">)</span>
+    <span class="s1">_cancel_called = attr.ib(default=</span><span class="s2">False, </span><span class="s1">init=</span><span class="s2">False</span><span class="s1">)</span>
+    <span class="s1">cancelled_caught = attr.ib(default=</span><span class="s2">False, </span><span class="s1">init=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s0"># Constructor arguments:</span>
+    <span class="s1">_deadline = attr.ib(default=inf</span><span class="s2">, </span><span class="s1">kw_only=</span><span class="s2">True</span><span class="s1">)</span>
+    <span class="s1">_shield = attr.ib(default=</span><span class="s2">False, </span><span class="s1">kw_only=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">def </span><span class="s1">__enter__(self):</span>
+        <span class="s1">task = _core.current_task()</span>
+        <span class="s2">if </span><span class="s1">self._has_been_entered:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span>
+                <span class="s4">&quot;Each CancelScope may only be used for a single 'with' block&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">self._has_been_entered = </span><span class="s2">True</span>
+        <span class="s2">if </span><span class="s1">current_time() &gt;= self._deadline:</span>
+            <span class="s1">self.cancel()</span>
+        <span class="s2">with </span><span class="s1">self._might_change_registered_deadline():</span>
+            <span class="s1">self._cancel_status = CancelStatus(scope=self</span><span class="s2">, </span><span class="s1">parent=task._cancel_status)</span>
+            <span class="s1">task._activate_cancel_status(self._cancel_status)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">_exc_filter(self</span><span class="s2">, </span><span class="s1">exc):</span>
+        <span class="s2">if </span><span class="s1">isinstance(exc</span><span class="s2">, </span><span class="s1">Cancelled):</span>
+            <span class="s1">self.cancelled_caught = </span><span class="s2">True</span>
+            <span class="s2">return None</span>
+        <span class="s2">return </span><span class="s1">exc</span>
+
+    <span class="s2">def </span><span class="s1">_close(self</span><span class="s2">, </span><span class="s1">exc):</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">new_exc = RuntimeError(</span>
+                <span class="s4">&quot;Cancel scope stack corrupted: attempted to exit {!r} &quot;</span>
+                <span class="s4">&quot;which had already been exited&quot;</span><span class="s1">.format(self)</span>
+            <span class="s1">)</span>
+            <span class="s1">new_exc.__context__ = exc</span>
+            <span class="s2">return </span><span class="s1">new_exc</span>
+        <span class="s1">scope_task = current_task()</span>
+        <span class="s2">if </span><span class="s1">scope_task._cancel_status </span><span class="s2">is not </span><span class="s1">self._cancel_status:</span>
+            <span class="s0"># Cancel scope mis-nesting: this cancel scope isn't the most</span>
+            <span class="s0"># recently opened by this task (that's still open). That is,</span>
+            <span class="s0"># our assumptions about context managers forming a stack</span>
+            <span class="s0"># have been violated. Try and make the best of it.</span>
+            <span class="s2">if </span><span class="s1">self._cancel_status.abandoned_by_misnesting:</span>
+                <span class="s0"># We are an inner cancel scope that was still active when</span>
+                <span class="s0"># some outer scope was closed. The closure of that outer</span>
+                <span class="s0"># scope threw an error, so we don't need to throw another</span>
+                <span class="s0"># one; it would just confuse the traceback.</span>
+                <span class="s2">pass</span>
+            <span class="s2">elif not </span><span class="s1">self._cancel_status.encloses(scope_task._cancel_status):</span>
+                <span class="s0"># This task isn't even indirectly contained within the</span>
+                <span class="s0"># cancel scope it's trying to close. Raise an error</span>
+                <span class="s0"># without changing any state.</span>
+                <span class="s1">new_exc = RuntimeError(</span>
+                    <span class="s4">&quot;Cancel scope stack corrupted: attempted to exit {!r} &quot;</span>
+                    <span class="s4">&quot;from unrelated {!r}</span><span class="s2">\n</span><span class="s4">{}&quot;</span><span class="s1">.format(</span>
+                        <span class="s1">self</span><span class="s2">, </span><span class="s1">scope_task</span><span class="s2">, </span><span class="s1">MISNESTING_ADVICE</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+                <span class="s1">new_exc.__context__ = exc</span>
+                <span class="s2">return </span><span class="s1">new_exc</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s0"># Otherwise, there's some inner cancel scope(s) that</span>
+                <span class="s0"># we're abandoning by closing this outer one.</span>
+                <span class="s0"># CancelStatus.close() will take care of the plumbing;</span>
+                <span class="s0"># we just need to make sure we don't let the error</span>
+                <span class="s0"># pass silently.</span>
+                <span class="s1">new_exc = RuntimeError(</span>
+                    <span class="s4">&quot;Cancel scope stack corrupted: attempted to exit {!r} &quot;</span>
+                    <span class="s4">&quot;in {!r} that's still within its child {!r}</span><span class="s2">\n</span><span class="s4">{}&quot;</span><span class="s1">.format(</span>
+                        <span class="s1">self</span><span class="s2">,</span>
+                        <span class="s1">scope_task</span><span class="s2">,</span>
+                        <span class="s1">scope_task._cancel_status._scope</span><span class="s2">,</span>
+                        <span class="s1">MISNESTING_ADVICE</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+                <span class="s1">new_exc.__context__ = exc</span>
+                <span class="s1">exc = new_exc</span>
+                <span class="s1">scope_task._activate_cancel_status(self._cancel_status.parent)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">scope_task._activate_cancel_status(self._cancel_status.parent)</span>
+        <span class="s2">if </span><span class="s1">(</span>
+            <span class="s1">exc </span><span class="s2">is not None</span>
+            <span class="s2">and </span><span class="s1">self._cancel_status.effectively_cancelled</span>
+            <span class="s2">and not </span><span class="s1">self._cancel_status.parent_cancellation_is_visible_to_us</span>
+        <span class="s1">):</span>
+            <span class="s1">exc = MultiError.filter(self._exc_filter</span><span class="s2">, </span><span class="s1">exc)</span>
+        <span class="s1">self._cancel_status.close()</span>
+        <span class="s2">with </span><span class="s1">self._might_change_registered_deadline():</span>
+            <span class="s1">self._cancel_status = </span><span class="s2">None</span>
+        <span class="s2">return </span><span class="s1">exc</span>
+
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">def </span><span class="s1">__exit__(self</span><span class="s2">, </span><span class="s1">etype</span><span class="s2">, </span><span class="s1">exc</span><span class="s2">, </span><span class="s1">tb):</span>
+        <span class="s0"># NB: NurseryManager calls _close() directly rather than __exit__(),</span>
+        <span class="s0"># so __exit__() must be just _close() plus this logic for adapting</span>
+        <span class="s0"># the exception-filtering result to the context manager API.</span>
+
+        <span class="s0"># Tracebacks show the 'raise' line below out of context, so let's give</span>
+        <span class="s0"># this variable a name that makes sense out of context.</span>
+        <span class="s1">remaining_error_after_cancel_scope = self._close(exc)</span>
+        <span class="s2">if </span><span class="s1">remaining_error_after_cancel_scope </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return True</span>
+        <span class="s2">elif </span><span class="s1">remaining_error_after_cancel_scope </span><span class="s2">is </span><span class="s1">exc:</span>
+            <span class="s2">return False</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># Copied verbatim from MultiErrorCatcher.  Python doesn't</span>
+            <span class="s0"># allow us to encapsulate this __context__ fixup.</span>
+            <span class="s1">old_context = remaining_error_after_cancel_scope.__context__</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">remaining_error_after_cancel_scope</span>
+            <span class="s2">finally</span><span class="s1">:</span>
+                <span class="s1">_</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">_ = sys.exc_info()</span>
+                <span class="s2">assert </span><span class="s1">value </span><span class="s2">is </span><span class="s1">remaining_error_after_cancel_scope</span>
+                <span class="s1">value.__context__ = old_context</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">binding = </span><span class="s4">&quot;active&quot;</span>
+        <span class="s2">elif </span><span class="s1">self._has_been_entered:</span>
+            <span class="s1">binding = </span><span class="s4">&quot;exited&quot;</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">binding = </span><span class="s4">&quot;unbound&quot;</span>
+
+        <span class="s2">if </span><span class="s1">self._cancel_called:</span>
+            <span class="s1">state = </span><span class="s4">&quot;, cancelled&quot;</span>
+        <span class="s2">elif </span><span class="s1">self._deadline == inf:</span>
+            <span class="s1">state = </span><span class="s4">&quot;&quot;</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">now = current_time()</span>
+            <span class="s2">except </span><span class="s1">RuntimeError:  </span><span class="s0"># must be called from async context</span>
+                <span class="s1">state = </span><span class="s4">&quot;&quot;</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">state = </span><span class="s4">&quot;, deadline is {:.2f} seconds {}&quot;</span><span class="s1">.format(</span>
+                    <span class="s1">abs(self._deadline - now)</span><span class="s2">,</span>
+                    <span class="s4">&quot;from now&quot; </span><span class="s2">if </span><span class="s1">self._deadline &gt;= now </span><span class="s2">else </span><span class="s4">&quot;ago&quot;</span><span class="s2">,</span>
+                <span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s4">&quot;&lt;trio.CancelScope at {:#x}, {}{}&gt;&quot;</span><span class="s1">.format(id(self)</span><span class="s2">, </span><span class="s1">binding</span><span class="s2">, </span><span class="s1">state)</span>
+
+    <span class="s1">@contextmanager</span>
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">def </span><span class="s1">_might_change_registered_deadline(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">yield</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">old = self._registered_deadline</span>
+            <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is None or </span><span class="s1">self._cancel_called:</span>
+                <span class="s1">new = inf</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">new = self._deadline</span>
+            <span class="s2">if </span><span class="s1">old != new:</span>
+                <span class="s1">self._registered_deadline = new</span>
+                <span class="s1">runner = GLOBAL_RUN_CONTEXT.runner</span>
+                <span class="s2">if </span><span class="s1">runner.is_guest:</span>
+                    <span class="s1">old_next_deadline = runner.deadlines.next_deadline()</span>
+                <span class="s2">if </span><span class="s1">old != inf:</span>
+                    <span class="s1">runner.deadlines.remove(old</span><span class="s2">, </span><span class="s1">self)</span>
+                <span class="s2">if </span><span class="s1">new != inf:</span>
+                    <span class="s1">runner.deadlines.add(new</span><span class="s2">, </span><span class="s1">self)</span>
+                <span class="s2">if </span><span class="s1">runner.is_guest:</span>
+                    <span class="s1">new_next_deadline = runner.deadlines.next_deadline()</span>
+                    <span class="s2">if </span><span class="s1">old_next_deadline != new_next_deadline:</span>
+                        <span class="s1">runner.force_guest_tick_asap()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">deadline(self):</span>
+        <span class="s5">&quot;&quot;&quot;Read-write, :class:`float`. An absolute time on the current 
+        run's clock at which this scope will automatically become 
+        cancelled. You can adjust the deadline by modifying this 
+        attribute, e.g.:: 
+ 
+           # I need a little more time! 
+           cancel_scope.deadline += 30 
+ 
+        Note that for efficiency, the core run loop only checks for 
+        expired deadlines every once in a while. This means that in 
+        certain cases there may be a short delay between when the clock 
+        says the deadline should have expired, and when checkpoints 
+        start raising :exc:`~trio.Cancelled`. This is a very obscure 
+        corner case that you're unlikely to notice, but we document it 
+        for completeness. (If this *does* cause problems for you, of 
+        course, then `we want to know! 
+        &lt;https://github.com/python-trio/trio/issues&gt;`__) 
+ 
+        Defaults to :data:`math.inf`, which means &quot;no deadline&quot;, though 
+        this can be overridden by the ``deadline=`` argument to 
+        the :class:`~trio.CancelScope` constructor. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._deadline</span>
+
+    <span class="s1">@deadline.setter</span>
+    <span class="s2">def </span><span class="s1">deadline(self</span><span class="s2">, </span><span class="s1">new_deadline):</span>
+        <span class="s2">with </span><span class="s1">self._might_change_registered_deadline():</span>
+            <span class="s1">self._deadline = float(new_deadline)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">shield(self):</span>
+        <span class="s5">&quot;&quot;&quot;Read-write, :class:`bool`, default :data:`False`. So long as 
+        this is set to :data:`True`, then the code inside this scope 
+        will not receive :exc:`~trio.Cancelled` exceptions from scopes 
+        that are outside this scope. They can still receive 
+        :exc:`~trio.Cancelled` exceptions from (1) this scope, or (2) 
+        scopes inside this scope. You can modify this attribute:: 
+ 
+           with trio.CancelScope() as cancel_scope: 
+               cancel_scope.shield = True 
+               # This cannot be interrupted by any means short of 
+               # killing the process: 
+               await sleep(10) 
+ 
+               cancel_scope.shield = False 
+               # Now this can be cancelled normally: 
+               await sleep(10) 
+ 
+        Defaults to :data:`False`, though this can be overridden by the 
+        ``shield=`` argument to the :class:`~trio.CancelScope` constructor. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._shield</span>
+
+    <span class="s1">@shield.setter  </span><span class="s0"># type: ignore  # &quot;decorated property not supported&quot;</span>
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">def </span><span class="s1">shield(self</span><span class="s2">, </span><span class="s1">new_value):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(new_value</span><span class="s2">, </span><span class="s1">bool):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;shield must be a bool&quot;</span><span class="s1">)</span>
+        <span class="s1">self._shield = new_value</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._cancel_status.recalculate()</span>
+
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">def </span><span class="s1">cancel(self):</span>
+        <span class="s5">&quot;&quot;&quot;Cancels this scope immediately. 
+ 
+        This method is idempotent, i.e., if the scope was already 
+        cancelled then this method silently does nothing. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._cancel_called:</span>
+            <span class="s2">return</span>
+        <span class="s2">with </span><span class="s1">self._might_change_registered_deadline():</span>
+            <span class="s1">self._cancel_called = </span><span class="s2">True</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._cancel_status.recalculate()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">cancel_called(self):</span>
+        <span class="s5">&quot;&quot;&quot;Readonly :class:`bool`. Records whether cancellation has been 
+        requested for this scope, either by an explicit call to 
+        :meth:`cancel` or by the deadline expiring. 
+ 
+        This attribute being True does *not* necessarily mean that the 
+        code within the scope has been, or will be, affected by the 
+        cancellation. For example, if :meth:`cancel` was called after 
+        the last checkpoint in the ``with`` block, when it's too late to 
+        deliver a :exc:`~trio.Cancelled` exception, then this attribute 
+        will still be True. 
+ 
+        This attribute is mostly useful for debugging and introspection. 
+        If you want to know whether or not a chunk of code was actually 
+        cancelled, then :attr:`cancelled_caught` is usually more 
+        appropriate. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is not None or not </span><span class="s1">self._has_been_entered:</span>
+            <span class="s0"># Scope is active or not yet entered: make sure cancel_called</span>
+            <span class="s0"># is true if the deadline has passed. This shouldn't</span>
+            <span class="s0"># be able to actually change behavior, since we check for</span>
+            <span class="s0"># deadline expiry on scope entry and at every checkpoint,</span>
+            <span class="s0"># but it makes the value returned by cancel_called more</span>
+            <span class="s0"># closely match expectations.</span>
+            <span class="s2">if not </span><span class="s1">self._cancel_called </span><span class="s2">and </span><span class="s1">current_time() &gt;= self._deadline:</span>
+                <span class="s1">self.cancel()</span>
+        <span class="s2">return </span><span class="s1">self._cancel_called</span>
+
+
+<span class="s0">################################################################</span>
+<span class="s0"># Nursery and friends</span>
+<span class="s0">################################################################</span>
+
+
+<span class="s0"># This code needs to be read alongside the code from Nursery.start to make</span>
+<span class="s0"># sense.</span>
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False, </span><span class="s1">repr=</span><span class="s2">False</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">_TaskStatus:</span>
+    <span class="s1">_old_nursery = attr.ib()</span>
+    <span class="s1">_new_nursery = attr.ib()</span>
+    <span class="s1">_called_started = attr.ib(default=</span><span class="s2">False</span><span class="s1">)</span>
+    <span class="s1">_value = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;Task status object at {:#x}&gt;&quot;</span><span class="s1">.format(id(self))</span>
+
+    <span class="s2">def </span><span class="s1">started(self</span><span class="s2">, </span><span class="s1">value=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">self._called_started:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;called 'started' twice on the same task status&quot;</span><span class="s1">)</span>
+        <span class="s1">self._called_started = </span><span class="s2">True</span>
+        <span class="s1">self._value = value</span>
+
+        <span class="s0"># If the old nursery is cancelled, then quietly quit now; the child</span>
+        <span class="s0"># will eventually exit on its own, and we don't want to risk moving</span>
+        <span class="s0"># children that might have propagating Cancelled exceptions into</span>
+        <span class="s0"># a place with no cancelled cancel scopes to catch them.</span>
+        <span class="s2">if </span><span class="s1">self._old_nursery._cancel_status.effectively_cancelled:</span>
+            <span class="s2">return</span>
+
+        <span class="s0"># Can't be closed, b/c we checked in start() and then _pending_starts</span>
+        <span class="s0"># should keep it open.</span>
+        <span class="s2">assert not </span><span class="s1">self._new_nursery._closed</span>
+
+        <span class="s0"># Move tasks from the old nursery to the new</span>
+        <span class="s1">tasks = self._old_nursery._children</span>
+        <span class="s1">self._old_nursery._children = set()</span>
+        <span class="s2">for </span><span class="s1">task </span><span class="s2">in </span><span class="s1">tasks:</span>
+            <span class="s1">task._parent_nursery = self._new_nursery</span>
+            <span class="s1">task._eventual_parent_nursery = </span><span class="s2">None</span>
+            <span class="s1">self._new_nursery._children.add(task)</span>
+
+        <span class="s0"># Move all children of the old nursery's cancel status object</span>
+        <span class="s0"># to be underneath the new nursery instead. This includes both</span>
+        <span class="s0"># tasks and child cancel status objects.</span>
+        <span class="s0"># NB: If the new nursery is cancelled, reparenting a cancel</span>
+        <span class="s0"># status to be underneath it can invoke an abort_fn, which might</span>
+        <span class="s0"># do something evil like cancel the old nursery. We thus break</span>
+        <span class="s0"># everything off from the old nursery before we start attaching</span>
+        <span class="s0"># anything to the new.</span>
+        <span class="s1">cancel_status_children = self._old_nursery._cancel_status.children</span>
+        <span class="s1">cancel_status_tasks = set(self._old_nursery._cancel_status.tasks)</span>
+        <span class="s1">cancel_status_tasks.discard(self._old_nursery._parent_task)</span>
+        <span class="s2">for </span><span class="s1">cancel_status </span><span class="s2">in </span><span class="s1">cancel_status_children:</span>
+            <span class="s1">cancel_status.parent = </span><span class="s2">None</span>
+        <span class="s2">for </span><span class="s1">task </span><span class="s2">in </span><span class="s1">cancel_status_tasks:</span>
+            <span class="s1">task._activate_cancel_status(</span><span class="s2">None</span><span class="s1">)</span>
+        <span class="s2">for </span><span class="s1">cancel_status </span><span class="s2">in </span><span class="s1">cancel_status_children:</span>
+            <span class="s1">cancel_status.parent = self._new_nursery._cancel_status</span>
+        <span class="s2">for </span><span class="s1">task </span><span class="s2">in </span><span class="s1">cancel_status_tasks:</span>
+            <span class="s1">task._activate_cancel_status(self._new_nursery._cancel_status)</span>
+
+        <span class="s0"># That should have removed all the children from the old nursery</span>
+        <span class="s2">assert not </span><span class="s1">self._old_nursery._children</span>
+
+        <span class="s0"># And finally, poke the old nursery so it notices that all its</span>
+        <span class="s0"># children have disappeared and can exit.</span>
+        <span class="s1">self._old_nursery._check_nursery_closed()</span>
+
+
+<span class="s2">class </span><span class="s1">NurseryManager:</span>
+    <span class="s5">&quot;&quot;&quot;Nursery context manager. 
+ 
+    Note we explicitly avoid @asynccontextmanager and @async_generator 
+    since they add a lot of extraneous stack frames to exceptions, as 
+    well as cause problematic behavior with handling of StopIteration 
+    and StopAsyncIteration. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">async def </span><span class="s1">__aenter__(self):</span>
+        <span class="s1">self._scope = CancelScope()</span>
+        <span class="s1">self._scope.__enter__()</span>
+        <span class="s1">self._nursery = Nursery._create(current_task()</span><span class="s2">, </span><span class="s1">self._scope)</span>
+        <span class="s2">return </span><span class="s1">self._nursery</span>
+
+    <span class="s1">@enable_ki_protection</span>
+    <span class="s2">async def </span><span class="s1">__aexit__(self</span><span class="s2">, </span><span class="s1">etype</span><span class="s2">, </span><span class="s1">exc</span><span class="s2">, </span><span class="s1">tb):</span>
+        <span class="s1">new_exc = </span><span class="s2">await </span><span class="s1">self._nursery._nested_child_finished(exc)</span>
+        <span class="s0"># Tracebacks show the 'raise' line below out of context, so let's give</span>
+        <span class="s0"># this variable a name that makes sense out of context.</span>
+        <span class="s1">combined_error_from_nursery = self._scope._close(new_exc)</span>
+        <span class="s2">if </span><span class="s1">combined_error_from_nursery </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return True</span>
+        <span class="s2">elif </span><span class="s1">combined_error_from_nursery </span><span class="s2">is </span><span class="s1">exc:</span>
+            <span class="s2">return False</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># Copied verbatim from MultiErrorCatcher.  Python doesn't</span>
+            <span class="s0"># allow us to encapsulate this __context__ fixup.</span>
+            <span class="s1">old_context = combined_error_from_nursery.__context__</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">combined_error_from_nursery</span>
+            <span class="s2">finally</span><span class="s1">:</span>
+                <span class="s1">_</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">_ = sys.exc_info()</span>
+                <span class="s2">assert </span><span class="s1">value </span><span class="s2">is </span><span class="s1">combined_error_from_nursery</span>
+                <span class="s1">value.__context__ = old_context</span>
+
+    <span class="s2">def </span><span class="s1">__enter__(self):</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span>
+            <span class="s4">&quot;use 'async with open_nursery(...)', not 'with open_nursery(...)'&quot;</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__exit__(self):  </span><span class="s0"># pragma: no cover</span>
+        <span class="s2">assert False, </span><span class="s4">&quot;&quot;&quot;Never called, but should be defined&quot;&quot;&quot;</span>
+
+
+<span class="s2">def </span><span class="s1">open_nursery():</span>
+    <span class="s5">&quot;&quot;&quot;Returns an async context manager which must be used to create a 
+    new `Nursery`. 
+ 
+    It does not block on entry; on exit it blocks until all child tasks 
+    have exited. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">NurseryManager()</span>
+
+
+<span class="s2">class </span><span class="s1">Nursery(metaclass=NoPublicConstructor):</span>
+    <span class="s5">&quot;&quot;&quot;A context which may be used to spawn (or cancel) child tasks. 
+ 
+    Not constructed directly, use `open_nursery` instead. 
+ 
+    The nursery will remain open until all child tasks have completed, 
+    or until it is cancelled, at which point it will cancel all its 
+    remaining child tasks and close. 
+ 
+    Nurseries ensure the absence of orphaned Tasks, since all running 
+    tasks will belong to an open Nursery. 
+ 
+    Attributes: 
+        cancel_scope: 
+            Creating a nursery also implicitly creates a cancellation scope, 
+            which is exposed as the :attr:`cancel_scope` attribute. This is 
+            used internally to implement the logic where if an error occurs 
+            then ``__aexit__`` cancels all children, but you can use it for 
+            other things, e.g. if you want to explicitly cancel all children 
+            in response to some external event. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">parent_task</span><span class="s2">, </span><span class="s1">cancel_scope):</span>
+        <span class="s1">self._parent_task = parent_task</span>
+        <span class="s1">parent_task._child_nurseries.append(self)</span>
+        <span class="s0"># the cancel status that children inherit - we take a snapshot, so it</span>
+        <span class="s0"># won't be affected by any changes in the parent.</span>
+        <span class="s1">self._cancel_status = parent_task._cancel_status</span>
+        <span class="s0"># the cancel scope that directly surrounds us; used for cancelling all</span>
+        <span class="s0"># children.</span>
+        <span class="s1">self.cancel_scope = cancel_scope</span>
+        <span class="s2">assert </span><span class="s1">self.cancel_scope._cancel_status </span><span class="s2">is </span><span class="s1">self._cancel_status</span>
+        <span class="s1">self._children = set()</span>
+        <span class="s1">self._pending_excs = []</span>
+        <span class="s0"># The &quot;nested child&quot; is how this code refers to the contents of the</span>
+        <span class="s0"># nursery's 'async with' block, which acts like a child Task in all</span>
+        <span class="s0"># the ways we can make it.</span>
+        <span class="s1">self._nested_child_running = </span><span class="s2">True</span>
+        <span class="s1">self._parent_waiting_in_aexit = </span><span class="s2">False</span>
+        <span class="s1">self._pending_starts = </span><span class="s3">0</span>
+        <span class="s1">self._closed = </span><span class="s2">False</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">child_tasks(self):</span>
+        <span class="s5">&quot;&quot;&quot;(`frozenset`): Contains all the child :class:`~trio.lowlevel.Task` 
+        objects which are still running.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">frozenset(self._children)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">parent_task(self):</span>
+        <span class="s5">&quot;(`~trio.lowlevel.Task`):  The Task that opened this nursery.&quot;</span>
+        <span class="s2">return </span><span class="s1">self._parent_task</span>
+
+    <span class="s2">def </span><span class="s1">_add_exc(self</span><span class="s2">, </span><span class="s1">exc):</span>
+        <span class="s1">self._pending_excs.append(exc)</span>
+        <span class="s1">self.cancel_scope.cancel()</span>
+
+    <span class="s2">def </span><span class="s1">_check_nursery_closed(self):</span>
+        <span class="s2">if not </span><span class="s1">any([self._nested_child_running</span><span class="s2">, </span><span class="s1">self._children</span><span class="s2">, </span><span class="s1">self._pending_starts]):</span>
+            <span class="s1">self._closed = </span><span class="s2">True</span>
+            <span class="s2">if </span><span class="s1">self._parent_waiting_in_aexit:</span>
+                <span class="s1">self._parent_waiting_in_aexit = </span><span class="s2">False</span>
+                <span class="s1">GLOBAL_RUN_CONTEXT.runner.reschedule(self._parent_task)</span>
+
+    <span class="s2">def </span><span class="s1">_child_finished(self</span><span class="s2">, </span><span class="s1">task</span><span class="s2">, </span><span class="s1">outcome):</span>
+        <span class="s1">self._children.remove(task)</span>
+        <span class="s2">if </span><span class="s1">isinstance(outcome</span><span class="s2">, </span><span class="s1">Error):</span>
+            <span class="s1">self._add_exc(outcome.error)</span>
+        <span class="s1">self._check_nursery_closed()</span>
+
+    <span class="s2">async def </span><span class="s1">_nested_child_finished(self</span><span class="s2">, </span><span class="s1">nested_child_exc):</span>
+        <span class="s5">&quot;&quot;&quot;Returns MultiError instance if there are pending exceptions.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">nested_child_exc </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._add_exc(nested_child_exc)</span>
+        <span class="s1">self._nested_child_running = </span><span class="s2">False</span>
+        <span class="s1">self._check_nursery_closed()</span>
+
+        <span class="s2">if not </span><span class="s1">self._closed:</span>
+            <span class="s0"># If we get cancelled (or have an exception injected, like</span>
+            <span class="s0"># KeyboardInterrupt), then save that, but still wait until our</span>
+            <span class="s0"># children finish.</span>
+            <span class="s2">def </span><span class="s1">aborted(raise_cancel):</span>
+                <span class="s1">self._add_exc(capture(raise_cancel).error)</span>
+                <span class="s2">return </span><span class="s1">Abort.FAILED</span>
+
+            <span class="s1">self._parent_waiting_in_aexit = </span><span class="s2">True</span>
+            <span class="s2">await </span><span class="s1">wait_task_rescheduled(aborted)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># Nothing to wait for, so just execute a checkpoint -- but we</span>
+            <span class="s0"># still need to mix any exception (e.g. from an external</span>
+            <span class="s0"># cancellation) in with the rest of our exceptions.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">checkpoint()</span>
+            <span class="s2">except </span><span class="s1">BaseException </span><span class="s2">as </span><span class="s1">exc:</span>
+                <span class="s1">self._add_exc(exc)</span>
+
+        <span class="s1">popped = self._parent_task._child_nurseries.pop()</span>
+        <span class="s2">assert </span><span class="s1">popped </span><span class="s2">is </span><span class="s1">self</span>
+        <span class="s2">if </span><span class="s1">self._pending_excs:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">MultiError(self._pending_excs)</span>
+            <span class="s2">finally</span><span class="s1">:</span>
+                <span class="s0"># avoid a garbage cycle</span>
+                <span class="s0"># (see test_nursery_cancel_doesnt_create_cyclic_garbage)</span>
+                <span class="s2">del </span><span class="s1">self._pending_excs</span>
+
+    <span class="s2">def </span><span class="s1">start_soon(self</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">name=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s5">&quot;&quot;&quot;Creates a child task, scheduling ``await async_fn(*args)``. 
+ 
+        This and :meth:`start` are the two fundamental methods for 
+        creating concurrent tasks in Trio. 
+ 
+        Note that this is *not* an async function and you don't use await 
+        when calling it. It sets up the new task, but then returns 
+        immediately, *before* it has a chance to run. The new task won’t 
+        actually get a chance to do anything until some later point when 
+        you execute a checkpoint and the scheduler decides to run it. 
+        If you want to run a function and immediately wait for its result, 
+        then you don't need a nursery; just use ``await async_fn(*args)``. 
+        If you want to wait for the task to initialize itself before 
+        continuing, see :meth:`start`. 
+ 
+        It's possible to pass a nursery object into another task, which 
+        allows that task to start new child tasks in the first task's 
+        nursery. 
+ 
+        The child task inherits its parent nursery's cancel scopes. 
+ 
+        Args: 
+            async_fn: An async callable. 
+            args: Positional arguments for ``async_fn``. If you want 
+                  to pass keyword arguments, use 
+                  :func:`functools.partial`. 
+            name: The name for this task. Only used for 
+                  debugging/introspection 
+                  (e.g. ``repr(task_obj)``). If this isn't a string, 
+                  :meth:`start_soon` will try to make it one. A 
+                  common use case is if you're wrapping a function 
+                  before spawning a new task, you might pass the 
+                  original function as the ``name=`` to make 
+                  debugging easier. 
+ 
+        Raises: 
+            RuntimeError: If this nursery is no longer open 
+                          (i.e. its ``async with`` block has 
+                          exited). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">GLOBAL_RUN_CONTEXT.runner.spawn_impl(async_fn</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">name)</span>
+
+    <span class="s2">async def </span><span class="s1">start(self</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">name=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s5">r&quot;&quot;&quot;Creates and initializes a child task. 
+ 
+        Like :meth:`start_soon`, but blocks until the new task has 
+        finished initializing itself, and optionally returns some 
+        information from it. 
+ 
+        The ``async_fn`` must accept a ``task_status`` keyword argument, 
+        and it must make sure that it (or someone) eventually calls 
+        ``task_status.started()``. 
+ 
+        The conventional way to define ``async_fn`` is like:: 
+ 
+            async def async_fn(arg1, arg2, *, task_status=trio.TASK_STATUS_IGNORED): 
+                ... 
+                task_status.started() 
+                ... 
+ 
+        :attr:`trio.TASK_STATUS_IGNORED` is a special global object with 
+        a do-nothing ``started`` method. This way your function supports 
+        being called either like ``await nursery.start(async_fn, arg1, 
+        arg2)`` or directly like ``await async_fn(arg1, arg2)``, and 
+        either way it can call ``task_status.started()`` without 
+        worrying about which mode it's in. Defining your function like 
+        this will make it obvious to readers that it supports being used 
+        in both modes. 
+ 
+        Before the child calls ``task_status.started()``, it's 
+        effectively run underneath the call to :meth:`start`: if it 
+        raises an exception then that exception is reported by 
+        :meth:`start`, and does *not* propagate out of the nursery. If 
+        :meth:`start` is cancelled, then the child task is also 
+        cancelled. 
+ 
+        When the child calls ``task_status.started()``, it's moved out 
+        from underneath :meth:`start` and into the given nursery. 
+ 
+        If the child task passes a value to 
+        ``task_status.started(value)``, then :meth:`start` returns this 
+        value. Otherwise it returns ``None``. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._closed:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;Nursery is closed to new arrivals&quot;</span><span class="s1">)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self._pending_starts += </span><span class="s3">1</span>
+            <span class="s2">async with </span><span class="s1">open_nursery() </span><span class="s2">as </span><span class="s1">old_nursery:</span>
+                <span class="s1">task_status = _TaskStatus(old_nursery</span><span class="s2">, </span><span class="s1">self)</span>
+                <span class="s1">thunk = functools.partial(async_fn</span><span class="s2">, </span><span class="s1">task_status=task_status)</span>
+                <span class="s1">task = GLOBAL_RUN_CONTEXT.runner.spawn_impl(</span>
+                    <span class="s1">thunk</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">old_nursery</span><span class="s2">, </span><span class="s1">name</span>
+                <span class="s1">)</span>
+                <span class="s1">task._eventual_parent_nursery = self</span>
+                <span class="s0"># Wait for either _TaskStatus.started or an exception to</span>
+                <span class="s0"># cancel this nursery:</span>
+            <span class="s0"># If we get here, then the child either got reparented or exited</span>
+            <span class="s0"># normally. The complicated logic is all in _TaskStatus.started().</span>
+            <span class="s0"># (Any exceptions propagate directly out of the above.)</span>
+            <span class="s2">if not </span><span class="s1">task_status._called_started:</span>
+                <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;child exited without calling task_status.started()&quot;</span><span class="s1">)</span>
+            <span class="s2">return </span><span class="s1">task_status._value</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">self._pending_starts -= </span><span class="s3">1</span>
+            <span class="s1">self._check_nursery_closed()</span>
+
+    <span class="s2">def </span><span class="s1">__del__(self):</span>
+        <span class="s2">assert not </span><span class="s1">self._children</span>
+
+
+<span class="s0">################################################################</span>
+<span class="s0"># Task and friends</span>
+<span class="s0">################################################################</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False, </span><span class="s1">repr=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">Task(metaclass=NoPublicConstructor):</span>
+    <span class="s1">_parent_nursery = attr.ib()</span>
+    <span class="s1">coro = attr.ib()</span>
+    <span class="s1">_runner = attr.ib()</span>
+    <span class="s1">name = attr.ib()</span>
+    <span class="s0"># PEP 567 contextvars context</span>
+    <span class="s1">context = attr.ib()</span>
+    <span class="s1">_counter = attr.ib(init=</span><span class="s2">False, </span><span class="s1">factory=itertools.count().__next__)</span>
+
+    <span class="s0"># Invariant:</span>
+    <span class="s0"># - for unscheduled tasks, _next_send_fn and _next_send are both None</span>
+    <span class="s0"># - for scheduled tasks, _next_send_fn(_next_send) resumes the task;</span>
+    <span class="s0">#   usually _next_send_fn is self.coro.send and _next_send is an</span>
+    <span class="s0">#   Outcome. When recovering from a foreign await, _next_send_fn is</span>
+    <span class="s0">#   self.coro.throw and _next_send is an exception. _next_send_fn</span>
+    <span class="s0">#   will effectively be at the top of every task's call stack, so</span>
+    <span class="s0">#   it should be written in C if you don't want to pollute Trio</span>
+    <span class="s0">#   tracebacks with extraneous frames.</span>
+    <span class="s0"># - for scheduled tasks, custom_sleep_data is None</span>
+    <span class="s0"># Tasks start out unscheduled.</span>
+    <span class="s1">_next_send_fn = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">_next_send = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">_abort_func = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">custom_sleep_data = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+
+    <span class="s0"># For introspection and nursery.start()</span>
+    <span class="s1">_child_nurseries = attr.ib(factory=list)</span>
+    <span class="s1">_eventual_parent_nursery = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+
+    <span class="s0"># these are counts of how many cancel/schedule points this task has</span>
+    <span class="s0"># executed, for assert{_no,}_checkpoints</span>
+    <span class="s0"># XX maybe these should be exposed as part of a statistics() method?</span>
+    <span class="s1">_cancel_points = attr.ib(default=</span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s1">_schedule_points = attr.ib(default=</span><span class="s3">0</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;Task {!r} at {:#x}&gt;&quot;</span><span class="s1">.format(self.name</span><span class="s2">, </span><span class="s1">id(self))</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">parent_nursery(self):</span>
+        <span class="s5">&quot;&quot;&quot;The nursery this task is inside (or None if this is the &quot;init&quot; 
+        task). 
+ 
+        Example use case: drawing a visualization of the task tree in a 
+        debugger. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._parent_nursery</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">eventual_parent_nursery(self):</span>
+        <span class="s5">&quot;&quot;&quot;The nursery this task will be inside after it calls 
+        ``task_status.started()``. 
+ 
+        If this task has already called ``started()``, or if it was not 
+        spawned using `nursery.start() &lt;trio.Nursery.start&gt;`, then 
+        its `eventual_parent_nursery` is ``None``. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._eventual_parent_nursery</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">child_nurseries(self):</span>
+        <span class="s5">&quot;&quot;&quot;The nurseries this task contains. 
+ 
+        This is a list, with outer nurseries before inner nurseries. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">list(self._child_nurseries)</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># Cancellation</span>
+    <span class="s0">################</span>
+
+    <span class="s0"># The CancelStatus object that is currently active for this task.</span>
+    <span class="s0"># Don't change this directly; instead, use _activate_cancel_status().</span>
+    <span class="s1">_cancel_status = attr.ib(default=</span><span class="s2">None, </span><span class="s1">repr=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_activate_cancel_status(self</span><span class="s2">, </span><span class="s1">cancel_status):</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._cancel_status._tasks.remove(self)</span>
+        <span class="s1">self._cancel_status = cancel_status</span>
+        <span class="s2">if </span><span class="s1">self._cancel_status </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self._cancel_status._tasks.add(self)</span>
+            <span class="s2">if </span><span class="s1">self._cancel_status.effectively_cancelled:</span>
+                <span class="s1">self._attempt_delivery_of_any_pending_cancel()</span>
+
+    <span class="s2">def </span><span class="s1">_attempt_abort(self</span><span class="s2">, </span><span class="s1">raise_cancel):</span>
+        <span class="s0"># Either the abort succeeds, in which case we will reschedule the</span>
+        <span class="s0"># task, or else it fails, in which case it will worry about</span>
+        <span class="s0"># rescheduling itself (hopefully eventually calling reraise to raise</span>
+        <span class="s0"># the given exception, but not necessarily).</span>
+        <span class="s1">success = self._abort_func(raise_cancel)</span>
+        <span class="s2">if </span><span class="s1">type(success) </span><span class="s2">is not </span><span class="s1">Abort:</span>
+            <span class="s2">raise </span><span class="s1">TrioInternalError(</span><span class="s4">&quot;abort function must return Abort enum&quot;</span><span class="s1">)</span>
+        <span class="s0"># We only attempt to abort once per blocking call, regardless of</span>
+        <span class="s0"># whether we succeeded or failed.</span>
+        <span class="s1">self._abort_func = </span><span class="s2">None</span>
+        <span class="s2">if </span><span class="s1">success </span><span class="s2">is </span><span class="s1">Abort.SUCCEEDED:</span>
+            <span class="s1">self._runner.reschedule(self</span><span class="s2">, </span><span class="s1">capture(raise_cancel))</span>
+
+    <span class="s2">def </span><span class="s1">_attempt_delivery_of_any_pending_cancel(self):</span>
+        <span class="s2">if </span><span class="s1">self._abort_func </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return</span>
+        <span class="s2">if not </span><span class="s1">self._cancel_status.effectively_cancelled:</span>
+            <span class="s2">return</span>
+
+        <span class="s2">def </span><span class="s1">raise_cancel():</span>
+            <span class="s2">raise </span><span class="s1">Cancelled._create()</span>
+
+        <span class="s1">self._attempt_abort(raise_cancel)</span>
+
+    <span class="s2">def </span><span class="s1">_attempt_delivery_of_pending_ki(self):</span>
+        <span class="s2">assert </span><span class="s1">self._runner.ki_pending</span>
+        <span class="s2">if </span><span class="s1">self._abort_func </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return</span>
+
+        <span class="s2">def </span><span class="s1">raise_cancel():</span>
+            <span class="s1">self._runner.ki_pending = </span><span class="s2">False</span>
+            <span class="s2">raise </span><span class="s1">KeyboardInterrupt</span>
+
+        <span class="s1">self._attempt_abort(raise_cancel)</span>
+
+
+<span class="s0">################################################################</span>
+<span class="s0"># The central Runner object</span>
+<span class="s0">################################################################</span>
+
+
+<span class="s2">class </span><span class="s1">RunContext(threading.local):</span>
+    <span class="s1">runner: </span><span class="s4">&quot;Runner&quot;</span>
+    <span class="s1">task: Task</span>
+
+
+<span class="s1">GLOBAL_RUN_CONTEXT = RunContext()</span>
+
+
+<span class="s1">@attr.s(frozen=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">_RunStatistics:</span>
+    <span class="s1">tasks_living = attr.ib()</span>
+    <span class="s1">tasks_runnable = attr.ib()</span>
+    <span class="s1">seconds_to_next_deadline = attr.ib()</span>
+    <span class="s1">io_statistics = attr.ib()</span>
+    <span class="s1">run_sync_soon_queue_size = attr.ib()</span>
+
+
+<span class="s0"># This holds all the state that gets trampolined back and forth between</span>
+<span class="s0"># callbacks when we're running in guest mode.</span>
+<span class="s0">#</span>
+<span class="s0"># It has to be a separate object from Runner, and Runner *cannot* hold</span>
+<span class="s0"># references to it (directly or indirectly)!</span>
+<span class="s0">#</span>
+<span class="s0"># The idea is that we want a chance to detect if our host loop quits and stops</span>
+<span class="s0"># driving us forward. We detect that by unrolled_run_gen being garbage</span>
+<span class="s0"># collected, and hitting its 'except GeneratorExit:' block. So this only</span>
+<span class="s0"># happens if unrolled_run_gen is GCed.</span>
+<span class="s0">#</span>
+<span class="s0"># The Runner state is referenced from the global GLOBAL_RUN_CONTEXT. The only</span>
+<span class="s0"># way it gets *un*referenced is by unrolled_run_gen completing, e.g. by being</span>
+<span class="s0"># GCed. But if Runner has a direct or indirect reference to it, and the host</span>
+<span class="s0"># loop has abandoned it, then this will never happen!</span>
+<span class="s0">#</span>
+<span class="s0"># So this object can reference Runner, but Runner can't reference it. The only</span>
+<span class="s0"># references to it are the &quot;in flight&quot; callback chain on the host loop /</span>
+<span class="s0"># worker thread.</span>
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">GuestState:</span>
+    <span class="s1">runner = attr.ib()</span>
+    <span class="s1">run_sync_soon_threadsafe = attr.ib()</span>
+    <span class="s1">run_sync_soon_not_threadsafe = attr.ib()</span>
+    <span class="s1">done_callback = attr.ib()</span>
+    <span class="s1">unrolled_run_gen = attr.ib()</span>
+    <span class="s1">_value_factory: Callable[[]</span><span class="s2">, </span><span class="s1">Value] = </span><span class="s2">lambda</span><span class="s1">: Value(</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">unrolled_run_next_send = attr.ib(factory=_value_factory</span><span class="s2">, </span><span class="s1">type=Outcome)</span>
+
+    <span class="s2">def </span><span class="s1">guest_tick(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">timeout = self.unrolled_run_next_send.send(self.unrolled_run_gen)</span>
+        <span class="s2">except </span><span class="s1">StopIteration:</span>
+            <span class="s1">self.done_callback(self.runner.main_task_outcome)</span>
+            <span class="s2">return</span>
+        <span class="s2">except </span><span class="s1">TrioInternalError </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s1">self.done_callback(Error(exc))</span>
+            <span class="s2">return</span>
+
+        <span class="s0"># Optimization: try to skip going into the thread if we can avoid it</span>
+        <span class="s1">events_outcome = capture(self.runner.io_manager.get_events</span><span class="s2">, </span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">timeout &lt;= </span><span class="s3">0 </span><span class="s2">or </span><span class="s1">isinstance(events_outcome</span><span class="s2">, </span><span class="s1">Error) </span><span class="s2">or </span><span class="s1">events_outcome.value:</span>
+            <span class="s0"># No need to go into the thread</span>
+            <span class="s1">self.unrolled_run_next_send = events_outcome</span>
+            <span class="s1">self.runner.guest_tick_scheduled = </span><span class="s2">True</span>
+            <span class="s1">self.run_sync_soon_not_threadsafe(self.guest_tick)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># Need to go into the thread and call get_events() there</span>
+            <span class="s1">self.runner.guest_tick_scheduled = </span><span class="s2">False</span>
+
+            <span class="s2">def </span><span class="s1">get_events():</span>
+                <span class="s2">return </span><span class="s1">self.runner.io_manager.get_events(timeout)</span>
+
+            <span class="s2">def </span><span class="s1">deliver(events_outcome):</span>
+                <span class="s2">def </span><span class="s1">in_main_thread():</span>
+                    <span class="s1">self.unrolled_run_next_send = events_outcome</span>
+                    <span class="s1">self.runner.guest_tick_scheduled = </span><span class="s2">True</span>
+                    <span class="s1">self.guest_tick()</span>
+
+                <span class="s1">self.run_sync_soon_threadsafe(in_main_thread)</span>
+
+            <span class="s1">start_thread_soon(get_events</span><span class="s2">, </span><span class="s1">deliver)</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">Runner:</span>
+    <span class="s1">clock = attr.ib()</span>
+    <span class="s1">instruments: Instruments = attr.ib()</span>
+    <span class="s1">io_manager = attr.ib()</span>
+    <span class="s1">ki_manager = attr.ib()</span>
+
+    <span class="s0"># Run-local values, see _local.py</span>
+    <span class="s1">_locals = attr.ib(factory=dict)</span>
+
+    <span class="s1">runq = attr.ib(factory=deque)</span>
+    <span class="s1">tasks = attr.ib(factory=set)</span>
+
+    <span class="s1">deadlines = attr.ib(factory=Deadlines)</span>
+
+    <span class="s1">init_task = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">system_nursery = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">system_context = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">main_task = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">main_task_outcome = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+
+    <span class="s1">entry_queue = attr.ib(factory=EntryQueue)</span>
+    <span class="s1">trio_token = attr.ib(default=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s1">asyncgens = attr.ib(factory=AsyncGenerators)</span>
+
+    <span class="s0"># If everything goes idle for this long, we call clock._autojump()</span>
+    <span class="s1">clock_autojump_threshold = attr.ib(default=inf)</span>
+
+    <span class="s0"># Guest mode stuff</span>
+    <span class="s1">is_guest = attr.ib(default=</span><span class="s2">False</span><span class="s1">)</span>
+    <span class="s1">guest_tick_scheduled = attr.ib(default=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">force_guest_tick_asap(self):</span>
+        <span class="s2">if </span><span class="s1">self.guest_tick_scheduled:</span>
+            <span class="s2">return</span>
+        <span class="s1">self.guest_tick_scheduled = </span><span class="s2">True</span>
+        <span class="s1">self.io_manager.force_wakeup()</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s1">self.io_manager.close()</span>
+        <span class="s1">self.entry_queue.close()</span>
+        <span class="s1">self.asyncgens.close()</span>
+        <span class="s2">if </span><span class="s4">&quot;after_run&quot; </span><span class="s2">in </span><span class="s1">self.instruments:</span>
+            <span class="s1">self.instruments.call(</span><span class="s4">&quot;after_run&quot;</span><span class="s1">)</span>
+        <span class="s0"># This is where KI protection gets disabled, so we do it last</span>
+        <span class="s1">self.ki_manager.close()</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">current_statistics(self):</span>
+        <span class="s5">&quot;&quot;&quot;Returns an object containing run-loop-level debugging information. 
+ 
+        Currently the following fields are defined: 
+ 
+        * ``tasks_living`` (int): The number of tasks that have been spawned 
+          and not yet exited. 
+        * ``tasks_runnable`` (int): The number of tasks that are currently 
+          queued on the run queue (as opposed to blocked waiting for something 
+          to happen). 
+        * ``seconds_to_next_deadline`` (float): The time until the next 
+          pending cancel scope deadline. May be negative if the deadline has 
+          expired but we haven't yet processed cancellations. May be 
+          :data:`~math.inf` if there are no pending deadlines. 
+        * ``run_sync_soon_queue_size`` (int): The number of 
+          unprocessed callbacks queued via 
+          :meth:`trio.lowlevel.TrioToken.run_sync_soon`. 
+        * ``io_statistics`` (object): Some statistics from Trio's I/O 
+          backend. This always has an attribute ``backend`` which is a string 
+          naming which operating-system-specific I/O backend is in use; the 
+          other attributes vary between backends. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">seconds_to_next_deadline = self.deadlines.next_deadline() - self.current_time()</span>
+        <span class="s2">return </span><span class="s1">_RunStatistics(</span>
+            <span class="s1">tasks_living=len(self.tasks)</span><span class="s2">,</span>
+            <span class="s1">tasks_runnable=len(self.runq)</span><span class="s2">,</span>
+            <span class="s1">seconds_to_next_deadline=seconds_to_next_deadline</span><span class="s2">,</span>
+            <span class="s1">io_statistics=self.io_manager.statistics()</span><span class="s2">,</span>
+            <span class="s1">run_sync_soon_queue_size=self.entry_queue.size()</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">current_time(self):</span>
+        <span class="s5">&quot;&quot;&quot;Returns the current time according to Trio's internal clock. 
+ 
+        Returns: 
+            float: The current time. 
+ 
+        Raises: 
+            RuntimeError: if not inside a call to :func:`trio.run`. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.clock.current_time()</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">current_clock(self):</span>
+        <span class="s5">&quot;&quot;&quot;Returns the current :class:`~trio.abc.Clock`.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.clock</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">current_root_task(self):</span>
+        <span class="s5">&quot;&quot;&quot;Returns the current root :class:`Task`. 
+ 
+        This is the task that is the ultimate parent of all other tasks. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.init_task</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># Core task handling primitives</span>
+    <span class="s0">################</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">reschedule(self</span><span class="s2">, </span><span class="s1">task</span><span class="s2">, </span><span class="s1">next_send=_NO_SEND):</span>
+        <span class="s5">&quot;&quot;&quot;Reschedule the given task with the given 
+        :class:`outcome.Outcome`. 
+ 
+        See :func:`wait_task_rescheduled` for the gory details. 
+ 
+        There must be exactly one call to :func:`reschedule` for every call to 
+        :func:`wait_task_rescheduled`. (And when counting, keep in mind that 
+        returning :data:`Abort.SUCCEEDED` from an abort callback is equivalent 
+        to calling :func:`reschedule` once.) 
+ 
+        Args: 
+          task (trio.lowlevel.Task): the task to be rescheduled. Must be blocked 
+              in a call to :func:`wait_task_rescheduled`. 
+          next_send (outcome.Outcome): the value (or error) to return (or 
+              raise) from :func:`wait_task_rescheduled`. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">next_send </span><span class="s2">is </span><span class="s1">_NO_SEND:</span>
+            <span class="s1">next_send = Value(</span><span class="s2">None</span><span class="s1">)</span>
+
+        <span class="s2">assert </span><span class="s1">task._runner </span><span class="s2">is </span><span class="s1">self</span>
+        <span class="s2">assert </span><span class="s1">task._next_send_fn </span><span class="s2">is None</span>
+        <span class="s1">task._next_send_fn = task.coro.send</span>
+        <span class="s1">task._next_send = next_send</span>
+        <span class="s1">task._abort_func = </span><span class="s2">None</span>
+        <span class="s1">task.custom_sleep_data = </span><span class="s2">None</span>
+        <span class="s2">if not </span><span class="s1">self.runq </span><span class="s2">and </span><span class="s1">self.is_guest:</span>
+            <span class="s1">self.force_guest_tick_asap()</span>
+        <span class="s1">self.runq.append(task)</span>
+        <span class="s2">if </span><span class="s4">&quot;task_scheduled&quot; </span><span class="s2">in </span><span class="s1">self.instruments:</span>
+            <span class="s1">self.instruments.call(</span><span class="s4">&quot;task_scheduled&quot;</span><span class="s2">, </span><span class="s1">task)</span>
+
+    <span class="s2">def </span><span class="s1">spawn_impl(self</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">nursery</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">system_task=</span><span class="s2">False</span><span class="s1">):</span>
+
+        <span class="s0">######</span>
+        <span class="s0"># Make sure the nursery is in working order</span>
+        <span class="s0">######</span>
+
+        <span class="s0"># This sorta feels like it should be a method on nursery, except it</span>
+        <span class="s0"># has to handle nursery=None for init. And it touches the internals of</span>
+        <span class="s0"># all kinds of objects.</span>
+        <span class="s2">if </span><span class="s1">nursery </span><span class="s2">is not None and </span><span class="s1">nursery._closed:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;Nursery is closed to new arrivals&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">nursery </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">assert </span><span class="s1">self.init_task </span><span class="s2">is None</span>
+
+        <span class="s0">######</span>
+        <span class="s0"># Call the function and get the coroutine object, while giving helpful</span>
+        <span class="s0"># errors for common mistakes.</span>
+        <span class="s0">######</span>
+        <span class="s1">coro = coroutine_or_error(async_fn</span><span class="s2">, </span><span class="s1">*args)</span>
+
+        <span class="s2">if </span><span class="s1">name </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">name = async_fn</span>
+        <span class="s2">if </span><span class="s1">isinstance(name</span><span class="s2">, </span><span class="s1">functools.partial):</span>
+            <span class="s1">name = name.func</span>
+        <span class="s2">if not </span><span class="s1">isinstance(name</span><span class="s2">, </span><span class="s1">str):</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">name = </span><span class="s4">&quot;{}.{}&quot;</span><span class="s1">.format(name.__module__</span><span class="s2">, </span><span class="s1">name.__qualname__)</span>
+            <span class="s2">except </span><span class="s1">AttributeError:</span>
+                <span class="s1">name = repr(name)</span>
+
+        <span class="s2">if </span><span class="s1">system_task:</span>
+            <span class="s1">context = self.system_context.copy()</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">context = copy_context()</span>
+
+        <span class="s2">if not </span><span class="s1">hasattr(coro</span><span class="s2">, </span><span class="s4">&quot;cr_frame&quot;</span><span class="s1">):</span>
+            <span class="s0"># This async function is implemented in C or Cython</span>
+            <span class="s2">async def </span><span class="s1">python_wrapper(orig_coro):</span>
+                <span class="s2">return await </span><span class="s1">orig_coro</span>
+
+            <span class="s1">coro = python_wrapper(coro)</span>
+        <span class="s1">coro.cr_frame.f_locals.setdefault(LOCALS_KEY_KI_PROTECTION_ENABLED</span><span class="s2">, </span><span class="s1">system_task)</span>
+
+        <span class="s0">######</span>
+        <span class="s0"># Set up the Task object</span>
+        <span class="s0">######</span>
+        <span class="s1">task = Task._create(</span>
+            <span class="s1">coro=coro</span><span class="s2">, </span><span class="s1">parent_nursery=nursery</span><span class="s2">, </span><span class="s1">runner=self</span><span class="s2">, </span><span class="s1">name=name</span><span class="s2">, </span><span class="s1">context=context</span>
+        <span class="s1">)</span>
+
+        <span class="s1">self.tasks.add(task)</span>
+        <span class="s2">if </span><span class="s1">nursery </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">nursery._children.add(task)</span>
+            <span class="s1">task._activate_cancel_status(nursery._cancel_status)</span>
+
+        <span class="s2">if </span><span class="s4">&quot;task_spawned&quot; </span><span class="s2">in </span><span class="s1">self.instruments:</span>
+            <span class="s1">self.instruments.call(</span><span class="s4">&quot;task_spawned&quot;</span><span class="s2">, </span><span class="s1">task)</span>
+        <span class="s0"># Special case: normally next_send should be an Outcome, but for the</span>
+        <span class="s0"># very first send we have to send a literal unboxed None.</span>
+        <span class="s1">self.reschedule(task</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">task</span>
+
+    <span class="s2">def </span><span class="s1">task_exited(self</span><span class="s2">, </span><span class="s1">task</span><span class="s2">, </span><span class="s1">outcome):</span>
+        <span class="s2">if </span><span class="s1">(</span>
+            <span class="s1">task._cancel_status </span><span class="s2">is not None</span>
+            <span class="s2">and </span><span class="s1">task._cancel_status.abandoned_by_misnesting</span>
+            <span class="s2">and </span><span class="s1">task._cancel_status.parent </span><span class="s2">is None</span>
+        <span class="s1">):</span>
+            <span class="s0"># The cancel scope surrounding this task's nursery was closed</span>
+            <span class="s0"># before the task exited. Force the task to exit with an error,</span>
+            <span class="s0"># since the error might not have been caught elsewhere. See the</span>
+            <span class="s0"># comments in CancelStatus.close().</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s0"># Raise this, rather than just constructing it, to get a</span>
+                <span class="s0"># traceback frame included</span>
+                <span class="s2">raise </span><span class="s1">RuntimeError(</span>
+                    <span class="s4">&quot;Cancel scope stack corrupted: cancel scope surrounding &quot;</span>
+                    <span class="s4">&quot;{!r} was closed before the task exited</span><span class="s2">\n</span><span class="s4">{}&quot;</span><span class="s1">.format(</span>
+                        <span class="s1">task</span><span class="s2">, </span><span class="s1">MISNESTING_ADVICE</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s2">except </span><span class="s1">RuntimeError </span><span class="s2">as </span><span class="s1">new_exc:</span>
+                <span class="s2">if </span><span class="s1">isinstance(outcome</span><span class="s2">, </span><span class="s1">Error):</span>
+                    <span class="s1">new_exc.__context__ = outcome.error</span>
+                <span class="s1">outcome = Error(new_exc)</span>
+
+        <span class="s1">task._activate_cancel_status(</span><span class="s2">None</span><span class="s1">)</span>
+        <span class="s1">self.tasks.remove(task)</span>
+        <span class="s2">if </span><span class="s1">task </span><span class="s2">is </span><span class="s1">self.init_task:</span>
+            <span class="s0"># If the init task crashed, then something is very wrong and we</span>
+            <span class="s0"># let the error propagate. (It'll eventually be wrapped in a</span>
+            <span class="s0"># TrioInternalError.)</span>
+            <span class="s1">outcome.unwrap()</span>
+            <span class="s0"># the init task should be the last task to exit. If not, then</span>
+            <span class="s0"># something is very wrong.</span>
+            <span class="s2">if </span><span class="s1">self.tasks:  </span><span class="s0"># pragma: no cover</span>
+                <span class="s2">raise </span><span class="s1">TrioInternalError</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">task </span><span class="s2">is </span><span class="s1">self.main_task:</span>
+                <span class="s1">self.main_task_outcome = outcome</span>
+                <span class="s1">outcome = Value(</span><span class="s2">None</span><span class="s1">)</span>
+            <span class="s1">task._parent_nursery._child_finished(task</span><span class="s2">, </span><span class="s1">outcome)</span>
+
+        <span class="s2">if </span><span class="s4">&quot;task_exited&quot; </span><span class="s2">in </span><span class="s1">self.instruments:</span>
+            <span class="s1">self.instruments.call(</span><span class="s4">&quot;task_exited&quot;</span><span class="s2">, </span><span class="s1">task)</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># System tasks and init</span>
+    <span class="s0">################</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">spawn_system_task(self</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">name=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s5">&quot;&quot;&quot;Spawn a &quot;system&quot; task. 
+ 
+        System tasks have a few differences from regular tasks: 
+ 
+        * They don't need an explicit nursery; instead they go into the 
+          internal &quot;system nursery&quot;. 
+ 
+        * If a system task raises an exception, then it's converted into a 
+          :exc:`~trio.TrioInternalError` and *all* tasks are cancelled. If you 
+          write a system task, you should be careful to make sure it doesn't 
+          crash. 
+ 
+        * System tasks are automatically cancelled when the main task exits. 
+ 
+        * By default, system tasks have :exc:`KeyboardInterrupt` protection 
+          *enabled*. If you want your task to be interruptible by control-C, 
+          then you need to use :func:`disable_ki_protection` explicitly (and 
+          come up with some plan for what to do with a 
+          :exc:`KeyboardInterrupt`, given that system tasks aren't allowed to 
+          raise exceptions). 
+ 
+        * System tasks do not inherit context variables from their creator. 
+ 
+        Towards the end of a call to :meth:`trio.run`, after the main 
+        task and all system tasks have exited, the system nursery 
+        becomes closed. At this point, new calls to 
+        :func:`spawn_system_task` will raise ``RuntimeError(&quot;Nursery 
+        is closed to new arrivals&quot;)`` instead of creating a system 
+        task. It's possible to encounter this state either in 
+        a ``finally`` block in an async generator, or in a callback 
+        passed to :meth:`TrioToken.run_sync_soon` at the right moment. 
+ 
+        Args: 
+          async_fn: An async callable. 
+          args: Positional arguments for ``async_fn``. If you want to pass 
+              keyword arguments, use :func:`functools.partial`. 
+          name: The name for this task. Only used for debugging/introspection 
+              (e.g. ``repr(task_obj)``). If this isn't a string, 
+              :func:`spawn_system_task` will try to make it one. A common use 
+              case is if you're wrapping a function before spawning a new 
+              task, you might pass the original function as the ``name=`` to 
+              make debugging easier. 
+ 
+        Returns: 
+          Task: the newly spawned task 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.spawn_impl(</span>
+            <span class="s1">async_fn</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">self.system_nursery</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">system_task=</span><span class="s2">True</span>
+        <span class="s1">)</span>
+
+    <span class="s2">async def </span><span class="s1">init(self</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">args):</span>
+        <span class="s0"># run_sync_soon task runs here:</span>
+        <span class="s2">async with </span><span class="s1">open_nursery() </span><span class="s2">as </span><span class="s1">run_sync_soon_nursery:</span>
+            <span class="s0"># All other system tasks run here:</span>
+            <span class="s2">async with </span><span class="s1">open_nursery() </span><span class="s2">as </span><span class="s1">self.system_nursery:</span>
+                <span class="s0"># Only the main task runs here:</span>
+                <span class="s2">async with </span><span class="s1">open_nursery() </span><span class="s2">as </span><span class="s1">main_task_nursery:</span>
+                    <span class="s2">try</span><span class="s1">:</span>
+                        <span class="s1">self.main_task = self.spawn_impl(</span>
+                            <span class="s1">async_fn</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">main_task_nursery</span><span class="s2">, None</span>
+                        <span class="s1">)</span>
+                    <span class="s2">except </span><span class="s1">BaseException </span><span class="s2">as </span><span class="s1">exc:</span>
+                        <span class="s1">self.main_task_outcome = Error(exc)</span>
+                        <span class="s2">return</span>
+                    <span class="s1">self.spawn_impl(</span>
+                        <span class="s1">self.entry_queue.task</span><span class="s2">,</span>
+                        <span class="s1">()</span><span class="s2">,</span>
+                        <span class="s1">run_sync_soon_nursery</span><span class="s2">,</span>
+                        <span class="s4">&quot;&lt;TrioToken.run_sync_soon task&gt;&quot;</span><span class="s2">,</span>
+                        <span class="s1">system_task=</span><span class="s2">True,</span>
+                    <span class="s1">)</span>
+
+                <span class="s0"># Main task is done; start shutting down system tasks</span>
+                <span class="s1">self.system_nursery.cancel_scope.cancel()</span>
+
+            <span class="s0"># System nursery is closed; finalize remaining async generators</span>
+            <span class="s2">await </span><span class="s1">self.asyncgens.finalize_remaining(self)</span>
+
+            <span class="s0"># There are no more asyncgens, which means no more user-provided</span>
+            <span class="s0"># code except possibly run_sync_soon callbacks. It's finally safe</span>
+            <span class="s0"># to stop the run_sync_soon task and exit run().</span>
+            <span class="s1">run_sync_soon_nursery.cancel_scope.cancel()</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># Outside context problems</span>
+    <span class="s0">################</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">def </span><span class="s1">current_trio_token(self):</span>
+        <span class="s5">&quot;&quot;&quot;Retrieve the :class:`TrioToken` for the current call to 
+        :func:`trio.run`. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.trio_token </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self.trio_token = TrioToken._create(self.entry_queue)</span>
+        <span class="s2">return </span><span class="s1">self.trio_token</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># KI handling</span>
+    <span class="s0">################</span>
+
+    <span class="s1">ki_pending = attr.ib(default=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s0"># deliver_ki is broke. Maybe move all the actual logic and state into</span>
+    <span class="s0"># RunToken, and we'll only have one instance per runner? But then we can't</span>
+    <span class="s0"># have a public constructor. Eh, but current_run_token() returning a</span>
+    <span class="s0"># unique object per run feels pretty nice. Maybe let's just go for it. And</span>
+    <span class="s0"># keep the class public so people can isinstance() it if they want.</span>
+
+    <span class="s0"># This gets called from signal context</span>
+    <span class="s2">def </span><span class="s1">deliver_ki(self):</span>
+        <span class="s1">self.ki_pending = </span><span class="s2">True</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.entry_queue.run_sync_soon(self._deliver_ki_cb)</span>
+        <span class="s2">except </span><span class="s1">RunFinishedError:</span>
+            <span class="s2">pass</span>
+
+    <span class="s2">def </span><span class="s1">_deliver_ki_cb(self):</span>
+        <span class="s2">if not </span><span class="s1">self.ki_pending:</span>
+            <span class="s2">return</span>
+        <span class="s0"># Can't happen because main_task and run_sync_soon_task are created at</span>
+        <span class="s0"># the same time -- so even if KI arrives before main_task is created,</span>
+        <span class="s0"># we won't get here until afterwards.</span>
+        <span class="s2">assert </span><span class="s1">self.main_task </span><span class="s2">is not None</span>
+        <span class="s2">if </span><span class="s1">self.main_task_outcome </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s0"># We're already in the process of exiting -- leave ki_pending set</span>
+            <span class="s0"># and we'll check it again on our way out of run().</span>
+            <span class="s2">return</span>
+        <span class="s1">self.main_task._attempt_delivery_of_pending_ki()</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># Quiescing</span>
+    <span class="s0">################</span>
+
+    <span class="s1">waiting_for_idle = attr.ib(factory=SortedDict)</span>
+
+    <span class="s1">@_public</span>
+    <span class="s2">async def </span><span class="s1">wait_all_tasks_blocked(self</span><span class="s2">, </span><span class="s1">cushion=</span><span class="s3">0.0</span><span class="s1">):</span>
+        <span class="s5">&quot;&quot;&quot;Block until there are no runnable tasks. 
+ 
+        This is useful in testing code when you want to give other tasks a 
+        chance to &quot;settle down&quot;. The calling task is blocked, and doesn't wake 
+        up until all other tasks are also blocked for at least ``cushion`` 
+        seconds. (Setting a non-zero ``cushion`` is intended to handle cases 
+        like two tasks talking to each other over a local socket, where we 
+        want to ignore the potential brief moment between a send and receive 
+        when all tasks are blocked.) 
+ 
+        Note that ``cushion`` is measured in *real* time, not the Trio clock 
+        time. 
+ 
+        If there are multiple tasks blocked in :func:`wait_all_tasks_blocked`, 
+        then the one with the shortest ``cushion`` is the one woken (and 
+        this task becoming unblocked resets the timers for the remaining 
+        tasks). If there are multiple tasks that have exactly the same 
+        ``cushion``, then all are woken. 
+ 
+        You should also consider :class:`trio.testing.Sequencer`, which 
+        provides a more explicit way to control execution ordering within a 
+        test, and will often produce more readable tests. 
+ 
+        Example: 
+          Here's an example of one way to test that Trio's locks are fair: we 
+          take the lock in the parent, start a child, wait for the child to be 
+          blocked waiting for the lock (!), and then check that we can't 
+          release and immediately re-acquire the lock:: 
+ 
+             async def lock_taker(lock): 
+                 await lock.acquire() 
+                 lock.release() 
+ 
+             async def test_lock_fairness(): 
+                 lock = trio.Lock() 
+                 await lock.acquire() 
+                 async with trio.open_nursery() as nursery: 
+                     nursery.start_soon(lock_taker, lock) 
+                     # child hasn't run yet, we have the lock 
+                     assert lock.locked() 
+                     assert lock._owner is trio.lowlevel.current_task() 
+                     await trio.testing.wait_all_tasks_blocked() 
+                     # now the child has run and is blocked on lock.acquire(), we 
+                     # still have the lock 
+                     assert lock.locked() 
+                     assert lock._owner is trio.lowlevel.current_task() 
+                     lock.release() 
+                     try: 
+                         # The child has a prior claim, so we can't have it 
+                         lock.acquire_nowait() 
+                     except trio.WouldBlock: 
+                         assert lock._owner is not trio.lowlevel.current_task() 
+                         print(&quot;PASS&quot;) 
+                     else: 
+                         print(&quot;FAIL&quot;) 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">task = current_task()</span>
+        <span class="s1">key = (cushion</span><span class="s2">, </span><span class="s1">id(task))</span>
+        <span class="s1">self.waiting_for_idle[key] = task</span>
+
+        <span class="s2">def </span><span class="s1">abort(_):</span>
+            <span class="s2">del </span><span class="s1">self.waiting_for_idle[key]</span>
+            <span class="s2">return </span><span class="s1">Abort.SUCCEEDED</span>
+
+        <span class="s2">await </span><span class="s1">wait_task_rescheduled(abort)</span>
+
+
+<span class="s0">################################################################</span>
+<span class="s0"># run</span>
+<span class="s0">################################################################</span>
+<span class="s0">#</span>
+<span class="s0"># Trio's core task scheduler and coroutine runner is in 'unrolled_run'. It's</span>
+<span class="s0"># called that because it has an unusual feature: it's actually a generator.</span>
+<span class="s0"># Whenever it needs to fetch IO events from the OS, it yields, and waits for</span>
+<span class="s0"># its caller to send the IO events back in. So the loop is &quot;unrolled&quot; into a</span>
+<span class="s0"># sequence of generator send() calls.</span>
+<span class="s0">#</span>
+<span class="s0"># The reason for this unusual design is to support two different modes of</span>
+<span class="s0"># operation, where the IO is handled differently.</span>
+<span class="s0">#</span>
+<span class="s0"># In normal mode using trio.run, the scheduler and IO run in the same thread:</span>
+<span class="s0">#</span>
+<span class="s0"># Main thread:</span>
+<span class="s0">#</span>
+<span class="s0"># +---------------------------+</span>
+<span class="s0"># | Run tasks                 |</span>
+<span class="s0"># | (unrolled_run)            |</span>
+<span class="s0"># +---------------------------+</span>
+<span class="s0"># | Block waiting for I/O     |</span>
+<span class="s0"># | (io_manager.get_events)   |</span>
+<span class="s0"># +---------------------------+</span>
+<span class="s0"># | Run tasks                 |</span>
+<span class="s0"># | (unrolled_run)            |</span>
+<span class="s0"># +---------------------------+</span>
+<span class="s0"># | Block waiting for I/O     |</span>
+<span class="s0"># | (io_manager.get_events)   |</span>
+<span class="s0"># +---------------------------+</span>
+<span class="s0"># :</span>
+<span class="s0">#</span>
+<span class="s0">#</span>
+<span class="s0"># In guest mode using trio.lowlevel.start_guest_run, the scheduler runs on the</span>
+<span class="s0"># main thread as a host loop callback, but blocking for IO gets pushed into a</span>
+<span class="s0"># worker thread:</span>
+<span class="s0">#</span>
+<span class="s0"># Main thread executing host loop:           Trio I/O thread:</span>
+<span class="s0">#</span>
+<span class="s0"># +---------------------------+</span>
+<span class="s0"># | Run Trio tasks            |</span>
+<span class="s0"># | (unrolled_run)            |</span>
+<span class="s0"># +---------------------------+ --------------+</span>
+<span class="s0">#                                             v</span>
+<span class="s0"># +---------------------------+              +----------------------------+</span>
+<span class="s0"># | Host loop does whatever   |              | Block waiting for Trio I/O |</span>
+<span class="s0"># | it wants                  |              | (io_manager.get_events)    |</span>
+<span class="s0"># +---------------------------+              +----------------------------+</span>
+<span class="s0">#                                             |</span>
+<span class="s0"># +---------------------------+ &lt;-------------+</span>
+<span class="s0"># | Run Trio tasks            |</span>
+<span class="s0"># | (unrolled_run)            |</span>
+<span class="s0"># +---------------------------+ --------------+</span>
+<span class="s0">#                                             v</span>
+<span class="s0"># +---------------------------+              +----------------------------+</span>
+<span class="s0"># | Host loop does whatever   |              | Block waiting for Trio I/O |</span>
+<span class="s0"># | it wants                  |              | (io_manager.get_events)    |</span>
+<span class="s0"># +---------------------------+              +----------------------------+</span>
+<span class="s0"># :                                            :</span>
+<span class="s0">#</span>
+<span class="s0"># Most of Trio's internals don't need to care about this difference. The main</span>
+<span class="s0"># complication it creates is that in guest mode, we might need to wake up not</span>
+<span class="s0"># just due to OS-reported IO events, but also because of code running on the</span>
+<span class="s0"># host loop calling reschedule() or changing task deadlines. Search for</span>
+<span class="s0"># 'is_guest' to see the special cases we need to handle this.</span>
+
+
+<span class="s2">def </span><span class="s1">setup_runner(clock</span><span class="s2">, </span><span class="s1">instruments</span><span class="s2">, </span><span class="s1">restrict_keyboard_interrupt_to_checkpoints):</span>
+    <span class="s5">&quot;&quot;&quot;Create a Runner object and install it as the GLOBAL_RUN_CONTEXT.&quot;&quot;&quot;</span>
+    <span class="s0"># It wouldn't be *hard* to support nested calls to run(), but I can't</span>
+    <span class="s0"># think of a single good reason for it, so let's be conservative for</span>
+    <span class="s0"># now:</span>
+    <span class="s2">if </span><span class="s1">hasattr(GLOBAL_RUN_CONTEXT</span><span class="s2">, </span><span class="s4">&quot;runner&quot;</span><span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;Attempted to call run() from inside a run()&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">clock </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">clock = SystemClock()</span>
+    <span class="s1">instruments = Instruments(instruments)</span>
+    <span class="s1">io_manager = TheIOManager()</span>
+    <span class="s1">system_context = copy_context()</span>
+    <span class="s1">system_context.run(current_async_library_cvar.set</span><span class="s2">, </span><span class="s4">&quot;trio&quot;</span><span class="s1">)</span>
+    <span class="s1">ki_manager = KIManager()</span>
+
+    <span class="s1">runner = Runner(</span>
+        <span class="s1">clock=clock</span><span class="s2">,</span>
+        <span class="s1">instruments=instruments</span><span class="s2">,</span>
+        <span class="s1">io_manager=io_manager</span><span class="s2">,</span>
+        <span class="s1">system_context=system_context</span><span class="s2">,</span>
+        <span class="s1">ki_manager=ki_manager</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">runner.asyncgens.install_hooks(runner)</span>
+
+    <span class="s0"># This is where KI protection gets enabled, so we want to do it early - in</span>
+    <span class="s0"># particular before we start modifying global state like GLOBAL_RUN_CONTEXT</span>
+    <span class="s1">ki_manager.install(runner.deliver_ki</span><span class="s2">, </span><span class="s1">restrict_keyboard_interrupt_to_checkpoints)</span>
+
+    <span class="s1">GLOBAL_RUN_CONTEXT.runner = runner</span>
+    <span class="s2">return </span><span class="s1">runner</span>
+
+
+<span class="s2">def </span><span class="s1">run(</span>
+    <span class="s1">async_fn</span><span class="s2">,</span>
+    <span class="s1">*args</span><span class="s2">,</span>
+    <span class="s1">clock=</span><span class="s2">None,</span>
+    <span class="s1">instruments=()</span><span class="s2">,</span>
+    <span class="s1">restrict_keyboard_interrupt_to_checkpoints=</span><span class="s2">False,</span>
+<span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;Run a Trio-flavored async function, and return the result. 
+ 
+    Calling:: 
+ 
+       run(async_fn, *args) 
+ 
+    is the equivalent of:: 
+ 
+       await async_fn(*args) 
+ 
+    except that :func:`run` can (and must) be called from a synchronous 
+    context. 
+ 
+    This is Trio's main entry point. Almost every other function in Trio 
+    requires that you be inside a call to :func:`run`. 
+ 
+    Args: 
+      async_fn: An async function. 
+ 
+      args: Positional arguments to be passed to *async_fn*. If you need to 
+          pass keyword arguments, then use :func:`functools.partial`. 
+ 
+      clock: ``None`` to use the default system-specific monotonic clock; 
+          otherwise, an object implementing the :class:`trio.abc.Clock` 
+          interface, like (for example) a :class:`trio.testing.MockClock` 
+          instance. 
+ 
+      instruments (list of :class:`trio.abc.Instrument` objects): Any 
+          instrumentation you want to apply to this run. This can also be 
+          modified during the run; see :ref:`instrumentation`. 
+ 
+      restrict_keyboard_interrupt_to_checkpoints (bool): What happens if the 
+          user hits control-C while :func:`run` is running? If this argument 
+          is False (the default), then you get the standard Python behavior: a 
+          :exc:`KeyboardInterrupt` exception will immediately interrupt 
+          whatever task is running (or if no task is running, then Trio will 
+          wake up a task to be interrupted). Alternatively, if you set this 
+          argument to True, then :exc:`KeyboardInterrupt` delivery will be 
+          delayed: it will be *only* be raised at :ref:`checkpoints 
+          &lt;checkpoints&gt;`, like a :exc:`Cancelled` exception. 
+ 
+          The default behavior is nice because it means that even if you 
+          accidentally write an infinite loop that never executes any 
+          checkpoints, then you can still break out of it using control-C. 
+          The alternative behavior is nice if you're paranoid about a 
+          :exc:`KeyboardInterrupt` at just the wrong place leaving your 
+          program in an inconsistent state, because it means that you only 
+          have to worry about :exc:`KeyboardInterrupt` at the exact same 
+          places where you already have to worry about :exc:`Cancelled`. 
+ 
+          This setting has no effect if your program has registered a custom 
+          SIGINT handler, or if :func:`run` is called from anywhere but the 
+          main thread (this is a Python limitation), or if you use 
+          :func:`open_signal_receiver` to catch SIGINT. 
+ 
+    Returns: 
+      Whatever ``async_fn`` returns. 
+ 
+    Raises: 
+      TrioInternalError: if an unexpected error is encountered inside Trio's 
+          internal machinery. This is a bug and you should `let us know 
+          &lt;https://github.com/python-trio/trio/issues&gt;`__. 
+ 
+      Anything else: if ``async_fn`` raises an exception, then :func:`run` 
+          propagates it. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">__tracebackhide__ = </span><span class="s2">True</span>
+
+    <span class="s1">runner = setup_runner(</span>
+        <span class="s1">clock</span><span class="s2">, </span><span class="s1">instruments</span><span class="s2">, </span><span class="s1">restrict_keyboard_interrupt_to_checkpoints</span>
+    <span class="s1">)</span>
+
+    <span class="s1">gen = unrolled_run(runner</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">args)</span>
+    <span class="s1">next_send = </span><span class="s2">None</span>
+    <span class="s2">while True</span><span class="s1">:</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">timeout = gen.send(next_send)</span>
+        <span class="s2">except </span><span class="s1">StopIteration:</span>
+            <span class="s2">break</span>
+        <span class="s1">next_send = runner.io_manager.get_events(timeout)</span>
+    <span class="s0"># Inlined copy of runner.main_task_outcome.unwrap() to avoid</span>
+    <span class="s0"># cluttering every single Trio traceback with an extra frame.</span>
+    <span class="s2">if </span><span class="s1">isinstance(runner.main_task_outcome</span><span class="s2">, </span><span class="s1">Value):</span>
+        <span class="s2">return </span><span class="s1">runner.main_task_outcome.value</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">runner.main_task_outcome.error</span>
+
+
+<span class="s2">def </span><span class="s1">start_guest_run(</span>
+    <span class="s1">async_fn</span><span class="s2">,</span>
+    <span class="s1">*args</span><span class="s2">,</span>
+    <span class="s1">run_sync_soon_threadsafe</span><span class="s2">,</span>
+    <span class="s1">done_callback</span><span class="s2">,</span>
+    <span class="s1">run_sync_soon_not_threadsafe=</span><span class="s2">None,</span>
+    <span class="s1">host_uses_signal_set_wakeup_fd=</span><span class="s2">False,</span>
+    <span class="s1">clock=</span><span class="s2">None,</span>
+    <span class="s1">instruments=()</span><span class="s2">,</span>
+    <span class="s1">restrict_keyboard_interrupt_to_checkpoints=</span><span class="s2">False,</span>
+<span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;Start a &quot;guest&quot; run of Trio on top of some other &quot;host&quot; event loop. 
+ 
+    Each host loop can only have one guest run at a time. 
+ 
+    You should always let the Trio run finish before stopping the host loop; 
+    if not, it may leave Trio's internal data structures in an inconsistent 
+    state. You might be able to get away with it if you immediately exit the 
+    program, but it's safest not to go there in the first place. 
+ 
+    Generally, the best way to do this is wrap this in a function that starts 
+    the host loop and then immediately starts the guest run, and then shuts 
+    down the host when the guest run completes. 
+ 
+    Args: 
+ 
+      run_sync_soon_threadsafe: An arbitrary callable, which will be passed a 
+         function as its sole argument:: 
+ 
+            def my_run_sync_soon_threadsafe(fn): 
+                ... 
+ 
+         This callable should schedule ``fn()`` to be run by the host on its 
+         next pass through its loop. **Must support being called from 
+         arbitrary threads.** 
+ 
+      done_callback: An arbitrary callable:: 
+ 
+            def my_done_callback(run_outcome): 
+                ... 
+ 
+         When the Trio run has finished, Trio will invoke this callback to let 
+         you know. The argument is an `outcome.Outcome`, reporting what would 
+         have been returned or raised by `trio.run`. This function can do 
+         anything you want, but commonly you'll want it to shut down the 
+         host loop, unwrap the outcome, etc. 
+ 
+      run_sync_soon_not_threadsafe: Like ``run_sync_soon_threadsafe``, but 
+         will only be called from inside the host loop's main thread. 
+         Optional, but if your host loop allows you to implement this more 
+         efficiently than ``run_sync_soon_threadsafe`` then passing it will 
+         make things a bit faster. 
+ 
+      host_uses_signal_set_wakeup_fd (bool): Pass `True` if your host loop 
+         uses `signal.set_wakeup_fd`, and `False` otherwise. For more details, 
+         see :ref:`guest-run-implementation`. 
+ 
+    For the meaning of other arguments, see `trio.run`. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">runner = setup_runner(</span>
+        <span class="s1">clock</span><span class="s2">, </span><span class="s1">instruments</span><span class="s2">, </span><span class="s1">restrict_keyboard_interrupt_to_checkpoints</span>
+    <span class="s1">)</span>
+    <span class="s1">runner.is_guest = </span><span class="s2">True</span>
+    <span class="s1">runner.guest_tick_scheduled = </span><span class="s2">True</span>
+
+    <span class="s2">if </span><span class="s1">run_sync_soon_not_threadsafe </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">run_sync_soon_not_threadsafe = run_sync_soon_threadsafe</span>
+
+    <span class="s1">guest_state = GuestState(</span>
+        <span class="s1">runner=runner</span><span class="s2">,</span>
+        <span class="s1">run_sync_soon_threadsafe=run_sync_soon_threadsafe</span><span class="s2">,</span>
+        <span class="s1">run_sync_soon_not_threadsafe=run_sync_soon_not_threadsafe</span><span class="s2">,</span>
+        <span class="s1">done_callback=done_callback</span><span class="s2">,</span>
+        <span class="s1">unrolled_run_gen=unrolled_run(</span>
+            <span class="s1">runner</span><span class="s2">,</span>
+            <span class="s1">async_fn</span><span class="s2">,</span>
+            <span class="s1">args</span><span class="s2">,</span>
+            <span class="s1">host_uses_signal_set_wakeup_fd=host_uses_signal_set_wakeup_fd</span><span class="s2">,</span>
+        <span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">run_sync_soon_not_threadsafe(guest_state.guest_tick)</span>
+
+
+<span class="s0"># 24 hours is arbitrary, but it avoids issues like people setting timeouts of</span>
+<span class="s0"># 10**20 and then getting integer overflows in the underlying system calls.</span>
+<span class="s1">_MAX_TIMEOUT = </span><span class="s3">24 </span><span class="s1">* </span><span class="s3">60 </span><span class="s1">* </span><span class="s3">60</span>
+
+
+<span class="s0"># Weird quirk: this is written as a generator in order to support &quot;guest</span>
+<span class="s0"># mode&quot;, where our core event loop gets unrolled into a series of callbacks on</span>
+<span class="s0"># the host loop. If you're doing a regular trio.run then this gets run</span>
+<span class="s0"># straight through.</span>
+<span class="s2">def </span><span class="s1">unrolled_run(runner</span><span class="s2">, </span><span class="s1">async_fn</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">host_uses_signal_set_wakeup_fd=</span><span class="s2">False</span><span class="s1">):</span>
+    <span class="s1">locals()[LOCALS_KEY_KI_PROTECTION_ENABLED] = </span><span class="s2">True</span>
+    <span class="s1">__tracebackhide__ = </span><span class="s2">True</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">host_uses_signal_set_wakeup_fd:</span>
+            <span class="s1">runner.entry_queue.wakeup.wakeup_on_signals()</span>
+
+        <span class="s2">if </span><span class="s4">&quot;before_run&quot; </span><span class="s2">in </span><span class="s1">runner.instruments:</span>
+            <span class="s1">runner.instruments.call(</span><span class="s4">&quot;before_run&quot;</span><span class="s1">)</span>
+        <span class="s1">runner.clock.start_clock()</span>
+        <span class="s1">runner.init_task = runner.spawn_impl(</span>
+            <span class="s1">runner.init</span><span class="s2">, </span><span class="s1">(async_fn</span><span class="s2">, </span><span class="s1">args)</span><span class="s2">, None, </span><span class="s4">&quot;&lt;init&gt;&quot;</span><span class="s2">, </span><span class="s1">system_task=</span><span class="s2">True</span>
+        <span class="s1">)</span>
+
+        <span class="s0"># You know how people talk about &quot;event loops&quot;? This 'while' loop right</span>
+        <span class="s0"># here is our event loop:</span>
+        <span class="s2">while </span><span class="s1">runner.tasks:</span>
+            <span class="s2">if </span><span class="s1">runner.runq:</span>
+                <span class="s1">timeout = </span><span class="s3">0</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">deadline = runner.deadlines.next_deadline()</span>
+                <span class="s1">timeout = runner.clock.deadline_to_sleep_time(deadline)</span>
+            <span class="s1">timeout = min(max(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">timeout)</span><span class="s2">, </span><span class="s1">_MAX_TIMEOUT)</span>
+
+            <span class="s1">idle_primed = </span><span class="s2">None</span>
+            <span class="s2">if </span><span class="s1">runner.waiting_for_idle:</span>
+                <span class="s1">cushion</span><span class="s2">, </span><span class="s1">_ = runner.waiting_for_idle.keys()[</span><span class="s3">0</span><span class="s1">]</span>
+                <span class="s2">if </span><span class="s1">cushion &lt; timeout:</span>
+                    <span class="s1">timeout = cushion</span>
+                    <span class="s1">idle_primed = IdlePrimedTypes.WAITING_FOR_IDLE</span>
+            <span class="s0"># We use 'elif' here because if there are tasks in</span>
+            <span class="s0"># wait_all_tasks_blocked, then those tasks will wake up without</span>
+            <span class="s0"># jumping the clock, so we don't need to autojump.</span>
+            <span class="s2">elif </span><span class="s1">runner.clock_autojump_threshold &lt; timeout:</span>
+                <span class="s1">timeout = runner.clock_autojump_threshold</span>
+                <span class="s1">idle_primed = IdlePrimedTypes.AUTOJUMP_CLOCK</span>
+
+            <span class="s2">if </span><span class="s4">&quot;before_io_wait&quot; </span><span class="s2">in </span><span class="s1">runner.instruments:</span>
+                <span class="s1">runner.instruments.call(</span><span class="s4">&quot;before_io_wait&quot;</span><span class="s2">, </span><span class="s1">timeout)</span>
+
+            <span class="s0"># Driver will call io_manager.get_events(timeout) and pass it back</span>
+            <span class="s0"># in through the yield</span>
+            <span class="s1">events = </span><span class="s2">yield </span><span class="s1">timeout</span>
+            <span class="s1">runner.io_manager.process_events(events)</span>
+
+            <span class="s2">if </span><span class="s4">&quot;after_io_wait&quot; </span><span class="s2">in </span><span class="s1">runner.instruments:</span>
+                <span class="s1">runner.instruments.call(</span><span class="s4">&quot;after_io_wait&quot;</span><span class="s2">, </span><span class="s1">timeout)</span>
+
+            <span class="s0"># Process cancellations due to deadline expiry</span>
+            <span class="s1">now = runner.clock.current_time()</span>
+            <span class="s2">if </span><span class="s1">runner.deadlines.expire(now):</span>
+                <span class="s1">idle_primed = </span><span class="s2">None</span>
+
+            <span class="s0"># idle_primed != None means: if the IO wait hit the timeout, and</span>
+            <span class="s0"># still nothing is happening, then we should start waking up</span>
+            <span class="s0"># wait_all_tasks_blocked tasks or autojump the clock. But there</span>
+            <span class="s0"># are some subtleties in defining &quot;nothing is happening&quot;.</span>
+            <span class="s0">#</span>
+            <span class="s0"># 'not runner.runq' means that no tasks are currently runnable.</span>
+            <span class="s0"># 'not events' means that the last IO wait call hit its full</span>
+            <span class="s0"># timeout. These are very similar, and if idle_primed != None and</span>
+            <span class="s0"># we're running in regular mode then they always go together. But,</span>
+            <span class="s0"># in *guest* mode, they can happen independently, even when</span>
+            <span class="s0"># idle_primed=True:</span>
+            <span class="s0">#</span>
+            <span class="s0"># - runner.runq=empty and events=True: the host loop adjusted a</span>
+            <span class="s0">#   deadline and that forced an IO wakeup before the timeout expired,</span>
+            <span class="s0">#   even though no actual tasks were scheduled.</span>
+            <span class="s0">#</span>
+            <span class="s0"># - runner.runq=nonempty and events=False: the IO wait hit its</span>
+            <span class="s0">#   timeout, but then some code in the host thread rescheduled a task</span>
+            <span class="s0">#   before we got here.</span>
+            <span class="s0">#</span>
+            <span class="s0"># So we need to check both.</span>
+            <span class="s2">if </span><span class="s1">idle_primed </span><span class="s2">is not None and not </span><span class="s1">runner.runq </span><span class="s2">and not </span><span class="s1">events:</span>
+                <span class="s2">if </span><span class="s1">idle_primed </span><span class="s2">is </span><span class="s1">IdlePrimedTypes.WAITING_FOR_IDLE:</span>
+                    <span class="s2">while </span><span class="s1">runner.waiting_for_idle:</span>
+                        <span class="s1">key</span><span class="s2">, </span><span class="s1">task = runner.waiting_for_idle.peekitem(</span><span class="s3">0</span><span class="s1">)</span>
+                        <span class="s2">if </span><span class="s1">key[</span><span class="s3">0</span><span class="s1">] == cushion:</span>
+                            <span class="s2">del </span><span class="s1">runner.waiting_for_idle[key]</span>
+                            <span class="s1">runner.reschedule(task)</span>
+                        <span class="s2">else</span><span class="s1">:</span>
+                            <span class="s2">break</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">assert </span><span class="s1">idle_primed </span><span class="s2">is </span><span class="s1">IdlePrimedTypes.AUTOJUMP_CLOCK</span>
+                    <span class="s1">runner.clock._autojump()</span>
+
+            <span class="s0"># Process all runnable tasks, but only the ones that are already</span>
+            <span class="s0"># runnable now. Anything that becomes runnable during this cycle</span>
+            <span class="s0"># needs to wait until the next pass. This avoids various</span>
+            <span class="s0"># starvation issues by ensuring that there's never an unbounded</span>
+            <span class="s0"># delay between successive checks for I/O.</span>
+            <span class="s0">#</span>
+            <span class="s0"># Also, we randomize the order of each batch to avoid assumptions</span>
+            <span class="s0"># about scheduling order sneaking in. In the long run, I suspect</span>
+            <span class="s0"># we'll either (a) use strict FIFO ordering and document that for</span>
+            <span class="s0"># predictability/determinism, or (b) implement a more</span>
+            <span class="s0"># sophisticated scheduler (e.g. some variant of fair queueing),</span>
+            <span class="s0"># for better behavior under load. For now, this is the worst of</span>
+            <span class="s0"># both worlds - but it keeps our options open. (If we do decide to</span>
+            <span class="s0"># go all in on deterministic scheduling, then there are other</span>
+            <span class="s0"># things that will probably need to change too, like the deadlines</span>
+            <span class="s0"># tie-breaker and the non-deterministic ordering of</span>
+            <span class="s0"># task._notify_queues.)</span>
+            <span class="s1">batch = list(runner.runq)</span>
+            <span class="s1">runner.runq.clear()</span>
+            <span class="s2">if </span><span class="s1">_ALLOW_DETERMINISTIC_SCHEDULING:</span>
+                <span class="s0"># We're running under Hypothesis, and pytest-trio has patched</span>
+                <span class="s0"># this in to make the scheduler deterministic and avoid flaky</span>
+                <span class="s0"># tests. It's not worth the (small) performance cost in normal</span>
+                <span class="s0"># operation, since we'll shuffle the list and _r is only</span>
+                <span class="s0"># seeded for tests.</span>
+                <span class="s1">batch.sort(key=</span><span class="s2">lambda </span><span class="s1">t: t._counter)</span>
+                <span class="s1">_r.shuffle(batch)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s0"># 50% chance of reversing the batch, this way each task</span>
+                <span class="s0"># can appear before/after any other task.</span>
+                <span class="s2">if </span><span class="s1">_r.random() &lt; </span><span class="s3">0.5</span><span class="s1">:</span>
+                    <span class="s1">batch.reverse()</span>
+            <span class="s2">while </span><span class="s1">batch:</span>
+                <span class="s1">task = batch.pop()</span>
+                <span class="s1">GLOBAL_RUN_CONTEXT.task = task</span>
+
+                <span class="s2">if </span><span class="s4">&quot;before_task_step&quot; </span><span class="s2">in </span><span class="s1">runner.instruments:</span>
+                    <span class="s1">runner.instruments.call(</span><span class="s4">&quot;before_task_step&quot;</span><span class="s2">, </span><span class="s1">task)</span>
+
+                <span class="s1">next_send_fn = task._next_send_fn</span>
+                <span class="s1">next_send = task._next_send</span>
+                <span class="s1">task._next_send_fn = task._next_send = </span><span class="s2">None</span>
+                <span class="s1">final_outcome = </span><span class="s2">None</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s0"># We used to unwrap the Outcome object here and send/throw</span>
+                    <span class="s0"># its contents in directly, but it turns out that .throw()</span>
+                    <span class="s0"># is buggy, at least on CPython 3.6:</span>
+                    <span class="s0">#   https://bugs.python.org/issue29587</span>
+                    <span class="s0">#   https://bugs.python.org/issue29590</span>
+                    <span class="s0"># So now we send in the Outcome object and unwrap it on the</span>
+                    <span class="s0"># other side.</span>
+                    <span class="s1">msg = task.context.run(next_send_fn</span><span class="s2">, </span><span class="s1">next_send)</span>
+                <span class="s2">except </span><span class="s1">StopIteration </span><span class="s2">as </span><span class="s1">stop_iteration:</span>
+                    <span class="s1">final_outcome = Value(stop_iteration.value)</span>
+                <span class="s2">except </span><span class="s1">BaseException </span><span class="s2">as </span><span class="s1">task_exc:</span>
+                    <span class="s0"># Store for later, removing uninteresting top frames: 1</span>
+                    <span class="s0"># frame we always remove, because it's this function</span>
+                    <span class="s0"># catching it, and then in addition we remove however many</span>
+                    <span class="s0"># more Context.run adds.</span>
+                    <span class="s1">tb = task_exc.__traceback__.tb_next</span>
+                    <span class="s2">for </span><span class="s1">_ </span><span class="s2">in </span><span class="s1">range(CONTEXT_RUN_TB_FRAMES):</span>
+                        <span class="s1">tb = tb.tb_next</span>
+                    <span class="s1">final_outcome = Error(task_exc.with_traceback(tb))</span>
+                    <span class="s0"># Remove local refs so that e.g. cancelled coroutine locals</span>
+                    <span class="s0"># are not kept alive by this frame until another exception</span>
+                    <span class="s0"># comes along.</span>
+                    <span class="s2">del </span><span class="s1">tb</span>
+
+                <span class="s2">if </span><span class="s1">final_outcome </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s0"># We can't call this directly inside the except: blocks</span>
+                    <span class="s0"># above, because then the exceptions end up attaching</span>
+                    <span class="s0"># themselves to other exceptions as __context__ in</span>
+                    <span class="s0"># unwanted ways.</span>
+                    <span class="s1">runner.task_exited(task</span><span class="s2">, </span><span class="s1">final_outcome)</span>
+                    <span class="s0"># final_outcome may contain a traceback ref. It's not as</span>
+                    <span class="s0"># crucial compared to the above, but this will allow more</span>
+                    <span class="s0"># prompt release of resources in coroutine locals.</span>
+                    <span class="s1">final_outcome = </span><span class="s2">None</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">task._schedule_points += </span><span class="s3">1</span>
+                    <span class="s2">if </span><span class="s1">msg </span><span class="s2">is </span><span class="s1">CancelShieldedCheckpoint:</span>
+                        <span class="s1">runner.reschedule(task)</span>
+                    <span class="s2">elif </span><span class="s1">type(msg) </span><span class="s2">is </span><span class="s1">WaitTaskRescheduled:</span>
+                        <span class="s1">task._cancel_points += </span><span class="s3">1</span>
+                        <span class="s1">task._abort_func = msg.abort_func</span>
+                        <span class="s0"># KI is &quot;outside&quot; all cancel scopes, so check for it</span>
+                        <span class="s0"># before checking for regular cancellation:</span>
+                        <span class="s2">if </span><span class="s1">runner.ki_pending </span><span class="s2">and </span><span class="s1">task </span><span class="s2">is </span><span class="s1">runner.main_task:</span>
+                            <span class="s1">task._attempt_delivery_of_pending_ki()</span>
+                        <span class="s1">task._attempt_delivery_of_any_pending_cancel()</span>
+                    <span class="s2">elif </span><span class="s1">type(msg) </span><span class="s2">is </span><span class="s1">PermanentlyDetachCoroutineObject:</span>
+                        <span class="s0"># Pretend the task just exited with the given outcome</span>
+                        <span class="s1">runner.task_exited(task</span><span class="s2">, </span><span class="s1">msg.final_outcome)</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s1">exc = TypeError(</span>
+                            <span class="s4">&quot;trio.run received unrecognized yield message {!r}. &quot;</span>
+                            <span class="s4">&quot;Are you trying to use a library written for some &quot;</span>
+                            <span class="s4">&quot;other framework like asyncio? That won't work &quot;</span>
+                            <span class="s4">&quot;without some kind of compatibility shim.&quot;</span><span class="s1">.format(msg)</span>
+                        <span class="s1">)</span>
+                        <span class="s0"># The foreign library probably doesn't adhere to our</span>
+                        <span class="s0"># protocol of unwrapping whatever outcome gets sent in.</span>
+                        <span class="s0"># Instead, we'll arrange to throw `exc` in directly,</span>
+                        <span class="s0"># which works for at least asyncio and curio.</span>
+                        <span class="s1">runner.reschedule(task</span><span class="s2">, </span><span class="s1">exc)</span>
+                        <span class="s1">task._next_send_fn = task.coro.throw</span>
+                    <span class="s0"># prevent long-lived reference</span>
+                    <span class="s0"># TODO: develop test for this deletion</span>
+                    <span class="s2">del </span><span class="s1">msg</span>
+
+                <span class="s2">if </span><span class="s4">&quot;after_task_step&quot; </span><span class="s2">in </span><span class="s1">runner.instruments:</span>
+                    <span class="s1">runner.instruments.call(</span><span class="s4">&quot;after_task_step&quot;</span><span class="s2">, </span><span class="s1">task)</span>
+                <span class="s2">del </span><span class="s1">GLOBAL_RUN_CONTEXT.task</span>
+                <span class="s0"># prevent long-lived references</span>
+                <span class="s0"># TODO: develop test for these deletions</span>
+                <span class="s2">del </span><span class="s1">task</span><span class="s2">, </span><span class="s1">next_send</span><span class="s2">, </span><span class="s1">next_send_fn</span>
+
+    <span class="s2">except </span><span class="s1">GeneratorExit:</span>
+        <span class="s0"># The run-loop generator has been garbage collected without finishing</span>
+        <span class="s1">warnings.warn(</span>
+            <span class="s1">RuntimeWarning(</span>
+                <span class="s4">&quot;Trio guest run got abandoned without properly finishing... &quot;</span>
+                <span class="s4">&quot;weird stuff might happen&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+    <span class="s2">except </span><span class="s1">TrioInternalError:</span>
+        <span class="s2">raise</span>
+    <span class="s2">except </span><span class="s1">BaseException </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">TrioInternalError(</span><span class="s4">&quot;internal error in Trio - please file a bug!&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+    <span class="s2">finally</span><span class="s1">:</span>
+        <span class="s1">GLOBAL_RUN_CONTEXT.__dict__.clear()</span>
+        <span class="s1">runner.close()</span>
+        <span class="s0"># Have to do this after runner.close() has disabled KI protection,</span>
+        <span class="s0"># because otherwise there's a race where ki_pending could get set</span>
+        <span class="s0"># after we check it.</span>
+        <span class="s2">if </span><span class="s1">runner.ki_pending:</span>
+            <span class="s1">ki = KeyboardInterrupt()</span>
+            <span class="s2">if </span><span class="s1">isinstance(runner.main_task_outcome</span><span class="s2">, </span><span class="s1">Error):</span>
+                <span class="s1">ki.__context__ = runner.main_task_outcome.error</span>
+            <span class="s1">runner.main_task_outcome = Error(ki)</span>
+
+
+<span class="s0">################################################################</span>
+<span class="s0"># Other public API functions</span>
+<span class="s0">################################################################</span>
+
+
+<span class="s2">class </span><span class="s1">_TaskStatusIgnored:</span>
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s4">&quot;TASK_STATUS_IGNORED&quot;</span>
+
+    <span class="s2">def </span><span class="s1">started(self</span><span class="s2">, </span><span class="s1">value=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">pass</span>
+
+
+<span class="s1">TASK_STATUS_IGNORED = _TaskStatusIgnored()</span>
+
+
+<span class="s2">def </span><span class="s1">current_task():</span>
+    <span class="s5">&quot;&quot;&quot;Return the :class:`Task` object representing the current task. 
+ 
+    Returns: 
+      Task: the :class:`Task` that called :func:`current_task`. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">GLOBAL_RUN_CONTEXT.task</span>
+    <span class="s2">except </span><span class="s1">AttributeError:</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;must be called from async context&quot;</span><span class="s1">) </span><span class="s2">from None</span>
+
+
+<span class="s2">def </span><span class="s1">current_effective_deadline():</span>
+    <span class="s5">&quot;&quot;&quot;Returns the current effective deadline for the current task. 
+ 
+    This function examines all the cancellation scopes that are currently in 
+    effect (taking into account shielding), and returns the deadline that will 
+    expire first. 
+ 
+    One example of where this might be is useful is if your code is trying to 
+    decide whether to begin an expensive operation like an RPC call, but wants 
+    to skip it if it knows that it can't possibly complete in the available 
+    time. Another example would be if you're using a protocol like gRPC that 
+    `propagates timeout information to the remote peer 
+    &lt;http://www.grpc.io/docs/guides/concepts.html#deadlines&gt;`__; this function 
+    gives a way to fetch that information so you can send it along. 
+ 
+    If this is called in a context where a cancellation is currently active 
+    (i.e., a blocking call will immediately raise :exc:`Cancelled`), then 
+    returned deadline is ``-inf``. If it is called in a context where no 
+    scopes have a deadline set, it returns ``inf``. 
+ 
+    Returns: 
+        float: the effective deadline, as an absolute time. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">current_task()._cancel_status.effective_deadline()</span>
+
+
+<span class="s2">async def </span><span class="s1">checkpoint():</span>
+    <span class="s5">&quot;&quot;&quot;A pure :ref:`checkpoint &lt;checkpoints&gt;`. 
+ 
+    This checks for cancellation and allows other tasks to be scheduled, 
+    without otherwise blocking. 
+ 
+    Note that the scheduler has the option of ignoring this and continuing to 
+    run the current task if it decides this is appropriate (e.g. for increased 
+    efficiency). 
+ 
+    Equivalent to ``await trio.sleep(0)`` (which is implemented by calling 
+    :func:`checkpoint`.) 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># The scheduler is what checks timeouts and converts them into</span>
+    <span class="s0"># cancellations. So by doing the schedule point first, we ensure that the</span>
+    <span class="s0"># cancel point has the most up-to-date info.</span>
+    <span class="s2">await </span><span class="s1">cancel_shielded_checkpoint()</span>
+    <span class="s1">task = current_task()</span>
+    <span class="s1">task._cancel_points += </span><span class="s3">1</span>
+    <span class="s2">if </span><span class="s1">task._cancel_status.effectively_cancelled </span><span class="s2">or </span><span class="s1">(</span>
+        <span class="s1">task </span><span class="s2">is </span><span class="s1">task._runner.main_task </span><span class="s2">and </span><span class="s1">task._runner.ki_pending</span>
+    <span class="s1">):</span>
+        <span class="s2">with </span><span class="s1">CancelScope(deadline=-inf):</span>
+            <span class="s2">await </span><span class="s1">_core.wait_task_rescheduled(</span><span class="s2">lambda </span><span class="s1">_: _core.Abort.SUCCEEDED)</span>
+
+
+<span class="s2">async def </span><span class="s1">checkpoint_if_cancelled():</span>
+    <span class="s5">&quot;&quot;&quot;Issue a :ref:`checkpoint &lt;checkpoints&gt;` if the calling context has been 
+    cancelled. 
+ 
+    Equivalent to (but potentially more efficient than):: 
+ 
+        if trio.current_deadline() == -inf: 
+            await trio.lowlevel.checkpoint() 
+ 
+    This is either a no-op, or else it allow other tasks to be scheduled and 
+    then raises :exc:`trio.Cancelled`. 
+ 
+    Typically used together with :func:`cancel_shielded_checkpoint`. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">task = current_task()</span>
+    <span class="s2">if </span><span class="s1">task._cancel_status.effectively_cancelled </span><span class="s2">or </span><span class="s1">(</span>
+        <span class="s1">task </span><span class="s2">is </span><span class="s1">task._runner.main_task </span><span class="s2">and </span><span class="s1">task._runner.ki_pending</span>
+    <span class="s1">):</span>
+        <span class="s2">await </span><span class="s1">_core.checkpoint()</span>
+        <span class="s2">assert False  </span><span class="s0"># pragma: no cover</span>
+    <span class="s1">task._cancel_points += </span><span class="s3">1</span>
+
+
+<span class="s2">if </span><span class="s1">sys.platform == </span><span class="s4">&quot;win32&quot;</span><span class="s1">:</span>
+    <span class="s2">from </span><span class="s1">._io_windows </span><span class="s2">import </span><span class="s1">WindowsIOManager </span><span class="s2">as </span><span class="s1">TheIOManager</span>
+    <span class="s2">from </span><span class="s1">._generated_io_windows </span><span class="s2">import </span><span class="s1">*</span>
+<span class="s2">elif </span><span class="s1">sys.platform == </span><span class="s4">&quot;linux&quot; </span><span class="s2">or </span><span class="s1">(</span><span class="s2">not </span><span class="s1">TYPE_CHECKING </span><span class="s2">and </span><span class="s1">hasattr(select</span><span class="s2">, </span><span class="s4">&quot;epoll&quot;</span><span class="s1">)):</span>
+    <span class="s2">from </span><span class="s1">._io_epoll </span><span class="s2">import </span><span class="s1">EpollIOManager </span><span class="s2">as </span><span class="s1">TheIOManager</span>
+    <span class="s2">from </span><span class="s1">._generated_io_epoll </span><span class="s2">import </span><span class="s1">*</span>
+<span class="s2">elif </span><span class="s1">TYPE_CHECKING </span><span class="s2">or </span><span class="s1">hasattr(select</span><span class="s2">, </span><span class="s4">&quot;kqueue&quot;</span><span class="s1">):</span>
+    <span class="s2">from </span><span class="s1">._io_kqueue </span><span class="s2">import </span><span class="s1">KqueueIOManager </span><span class="s2">as </span><span class="s1">TheIOManager</span>
+    <span class="s2">from </span><span class="s1">._generated_io_kqueue </span><span class="s2">import </span><span class="s1">*</span>
+<span class="s2">else</span><span class="s1">:  </span><span class="s0"># pragma: no cover</span>
+    <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s4">&quot;unsupported platform&quot;</span><span class="s1">)</span>
+
+<span class="s2">from </span><span class="s1">._generated_run </span><span class="s2">import </span><span class="s1">*</span>
+<span class="s2">from </span><span class="s1">._generated_instrumentation </span><span class="s2">import </span><span class="s1">*</span>
+</pre>
+</body>
+</html>

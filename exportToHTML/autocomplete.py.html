@@ -1,0 +1,132 @@
+<html>
+<head>
+<title>autocomplete.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+autocomplete.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">FieldDoesNotExist</span><span class="s0">, </span><span class="s1">PermissionDenied</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">Http404</span><span class="s0">, </span><span class="s1">JsonResponse</span>
+<span class="s0">from </span><span class="s1">django.views.generic.list </span><span class="s0">import </span><span class="s1">BaseListView</span>
+
+
+<span class="s0">class </span><span class="s1">AutocompleteJsonView(BaseListView):</span>
+    <span class="s2">&quot;&quot;&quot;Handle AutocompleteWidget's AJAX requests for data.&quot;&quot;&quot;</span>
+    <span class="s1">paginate_by = </span><span class="s3">20</span>
+    <span class="s1">admin_site = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return a JsonResponse with search results as defined in 
+        serialize_result(), by default: 
+        { 
+            results: [{id: &quot;123&quot; text: &quot;foo&quot;}], 
+            pagination: {more: true} 
+        } 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.term</span><span class="s0">, </span><span class="s1">self.model_admin</span><span class="s0">, </span><span class="s1">self.source_field</span><span class="s0">, </span><span class="s1">to_field_name = self.process_request(request)</span>
+
+        <span class="s0">if not </span><span class="s1">self.has_perm(request):</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied</span>
+
+        <span class="s1">self.object_list = self.get_queryset()</span>
+        <span class="s1">context = self.get_context_data()</span>
+        <span class="s0">return </span><span class="s1">JsonResponse({</span>
+            <span class="s4">'results'</span><span class="s1">: [</span>
+                <span class="s1">self.serialize_result(obj</span><span class="s0">, </span><span class="s1">to_field_name)</span>
+                <span class="s0">for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">context[</span><span class="s4">'object_list'</span><span class="s1">]</span>
+            <span class="s1">]</span><span class="s0">,</span>
+            <span class="s4">'pagination'</span><span class="s1">: {</span><span class="s4">'more'</span><span class="s1">: context[</span><span class="s4">'page_obj'</span><span class="s1">].has_next()}</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+    <span class="s0">def </span><span class="s1">serialize_result(self</span><span class="s0">, </span><span class="s1">obj</span><span class="s0">, </span><span class="s1">to_field_name):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Convert the provided model object to a dictionary that is added to the 
+        results list. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">{</span><span class="s4">'id'</span><span class="s1">: str(getattr(obj</span><span class="s0">, </span><span class="s1">to_field_name))</span><span class="s0">, </span><span class="s4">'text'</span><span class="s1">: str(obj)}</span>
+
+    <span class="s0">def </span><span class="s1">get_paginator(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot;Use the ModelAdmin's paginator.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.model_admin.get_paginator(self.request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">get_queryset(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return queryset based on ModelAdmin.get_search_results().&quot;&quot;&quot;</span>
+        <span class="s1">qs = self.model_admin.get_queryset(self.request)</span>
+        <span class="s1">qs = qs.complex_filter(self.source_field.get_limit_choices_to())</span>
+        <span class="s1">qs</span><span class="s0">, </span><span class="s1">search_use_distinct = self.model_admin.get_search_results(self.request</span><span class="s0">, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">self.term)</span>
+        <span class="s0">if </span><span class="s1">search_use_distinct:</span>
+            <span class="s1">qs = qs.distinct()</span>
+        <span class="s0">return </span><span class="s1">qs</span>
+
+    <span class="s0">def </span><span class="s1">process_request(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Validate request integrity, extract and return request parameters. 
+ 
+        Since the subsequent view permission check requires the target model 
+        admin, which is determined here, raise PermissionDenied if the 
+        requested app, model or field are malformed. 
+ 
+        Raise Http404 if the target model admin is not configured properly with 
+        search_fields. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">term = request.GET.get(</span><span class="s4">'term'</span><span class="s0">, </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">app_label = request.GET[</span><span class="s4">'app_label'</span><span class="s1">]</span>
+            <span class="s1">model_name = request.GET[</span><span class="s4">'model_name'</span><span class="s1">]</span>
+            <span class="s1">field_name = request.GET[</span><span class="s4">'field_name'</span><span class="s1">]</span>
+        <span class="s0">except </span><span class="s1">KeyError </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied </span><span class="s0">from </span><span class="s1">e</span>
+
+        <span class="s5"># Retrieve objects from parameters.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">source_model = apps.get_model(app_label</span><span class="s0">, </span><span class="s1">model_name)</span>
+        <span class="s0">except </span><span class="s1">LookupError </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied </span><span class="s0">from </span><span class="s1">e</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">source_field = source_model._meta.get_field(field_name)</span>
+        <span class="s0">except </span><span class="s1">FieldDoesNotExist </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied </span><span class="s0">from </span><span class="s1">e</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">remote_model = source_field.remote_field.model</span>
+        <span class="s0">except </span><span class="s1">AttributeError </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied </span><span class="s0">from </span><span class="s1">e</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">model_admin = self.admin_site._registry[remote_model]</span>
+        <span class="s0">except </span><span class="s1">KeyError </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied </span><span class="s0">from </span><span class="s1">e</span>
+
+        <span class="s5"># Validate suitability of objects.</span>
+        <span class="s0">if not </span><span class="s1">model_admin.get_search_fields(request):</span>
+            <span class="s0">raise </span><span class="s1">Http404(</span>
+                <span class="s4">'%s must have search_fields for the autocomplete_view.' </span><span class="s1">%</span>
+                <span class="s1">type(model_admin).__qualname__</span>
+            <span class="s1">)</span>
+
+        <span class="s1">to_field_name = getattr(source_field.remote_field</span><span class="s0">, </span><span class="s4">'field_name'</span><span class="s0">, </span><span class="s1">remote_model._meta.pk.attname)</span>
+        <span class="s1">to_field_name = remote_model._meta.get_field(to_field_name).attname</span>
+        <span class="s0">if not </span><span class="s1">model_admin.to_field_allowed(request</span><span class="s0">, </span><span class="s1">to_field_name):</span>
+            <span class="s0">raise </span><span class="s1">PermissionDenied</span>
+
+        <span class="s0">return </span><span class="s1">term</span><span class="s0">, </span><span class="s1">model_admin</span><span class="s0">, </span><span class="s1">source_field</span><span class="s0">, </span><span class="s1">to_field_name</span>
+
+    <span class="s0">def </span><span class="s1">has_perm(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">obj=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Check if user has permission to access the related model.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.model_admin.has_view_permission(request</span><span class="s0">, </span><span class="s1">obj=obj)</span>
+</pre>
+</body>
+</html>

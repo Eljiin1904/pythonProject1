@@ -1,0 +1,432 @@
+<html>
+<head>
+<title>connection.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #a5c261;}
+.s6 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+connection.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">enum</span>
+<span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Generator</span><span class="s0">, </span><span class="s1">List</span><span class="s0">, </span><span class="s1">Optional</span><span class="s0">, </span><span class="s1">Union</span>
+
+<span class="s0">from </span><span class="s1">.exceptions </span><span class="s0">import </span><span class="s1">InvalidState</span><span class="s0">, </span><span class="s1">PayloadTooBig</span><span class="s0">, </span><span class="s1">ProtocolError</span>
+<span class="s0">from </span><span class="s1">.extensions.base </span><span class="s0">import </span><span class="s1">Extension</span>
+<span class="s0">from </span><span class="s1">.frames </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">OP_BINARY</span><span class="s0">,</span>
+    <span class="s1">OP_CLOSE</span><span class="s0">,</span>
+    <span class="s1">OP_CONT</span><span class="s0">,</span>
+    <span class="s1">OP_PING</span><span class="s0">,</span>
+    <span class="s1">OP_PONG</span><span class="s0">,</span>
+    <span class="s1">OP_TEXT</span><span class="s0">,</span>
+    <span class="s1">Frame</span><span class="s0">,</span>
+    <span class="s1">parse_close</span><span class="s0">,</span>
+    <span class="s1">serialize_close</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">.http11 </span><span class="s0">import </span><span class="s1">Request</span><span class="s0">, </span><span class="s1">Response</span>
+<span class="s0">from </span><span class="s1">.streams </span><span class="s0">import </span><span class="s1">StreamReader</span>
+<span class="s0">from </span><span class="s1">.typing </span><span class="s0">import </span><span class="s1">Origin</span><span class="s0">, </span><span class="s1">Subprotocol</span>
+
+
+<span class="s1">__all__ = [</span>
+    <span class="s2">&quot;Connection&quot;</span><span class="s0">,</span>
+    <span class="s2">&quot;Side&quot;</span><span class="s0">,</span>
+    <span class="s2">&quot;State&quot;</span><span class="s0">,</span>
+    <span class="s2">&quot;SEND_EOF&quot;</span><span class="s0">,</span>
+<span class="s1">]</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+<span class="s1">Event = Union[Request</span><span class="s0">, </span><span class="s1">Response</span><span class="s0">, </span><span class="s1">Frame]</span>
+
+
+<span class="s3"># A WebSocket connection is either a server or a client.</span>
+
+
+<span class="s0">class </span><span class="s1">Side(enum.IntEnum):</span>
+    <span class="s1">SERVER</span><span class="s0">, </span><span class="s1">CLIENT = range(</span><span class="s4">2</span><span class="s1">)</span>
+
+
+<span class="s1">SERVER = Side.SERVER</span>
+<span class="s1">CLIENT = Side.CLIENT</span>
+
+
+<span class="s3"># A WebSocket connection goes through the following four states, in order:</span>
+
+
+<span class="s0">class </span><span class="s1">State(enum.IntEnum):</span>
+    <span class="s1">CONNECTING</span><span class="s0">, </span><span class="s1">OPEN</span><span class="s0">, </span><span class="s1">CLOSING</span><span class="s0">, </span><span class="s1">CLOSED = range(</span><span class="s4">4</span><span class="s1">)</span>
+
+
+<span class="s1">CONNECTING = State.CONNECTING</span>
+<span class="s1">OPEN = State.OPEN</span>
+<span class="s1">CLOSING = State.CLOSING</span>
+<span class="s1">CLOSED = State.CLOSED</span>
+
+
+<span class="s3"># Sentinel to signal that the connection should be closed.</span>
+
+<span class="s1">SEND_EOF = </span><span class="s5">b&quot;&quot;</span>
+
+
+<span class="s0">class </span><span class="s1">Connection:</span>
+    <span class="s0">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s0">,</span>
+        <span class="s1">side: Side</span><span class="s0">,</span>
+        <span class="s1">state: State = OPEN</span><span class="s0">,</span>
+        <span class="s1">max_size: Optional[int] = </span><span class="s4">2 </span><span class="s1">** </span><span class="s4">20</span><span class="s0">,</span>
+    <span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s3"># Connection side. CLIENT or SERVER.</span>
+        <span class="s1">self.side = side</span>
+
+        <span class="s3"># Connnection state. CONNECTING and CLOSED states are handled in subclasses.</span>
+        <span class="s1">logger.debug(</span><span class="s2">&quot;%s - initial state: %s&quot;</span><span class="s0">, </span><span class="s1">self.side</span><span class="s0">, </span><span class="s1">state.name)</span>
+        <span class="s1">self.state = state</span>
+
+        <span class="s3"># Maximum size of incoming messages in bytes.</span>
+        <span class="s1">self.max_size = max_size</span>
+
+        <span class="s3"># Current size of incoming message in bytes. Only set while reading a</span>
+        <span class="s3"># fragmented message i.e. a data frames with the FIN bit not set.</span>
+        <span class="s1">self.cur_size: Optional[int] = </span><span class="s0">None</span>
+
+        <span class="s3"># True while sending a fragmented message i.e. a data frames with the</span>
+        <span class="s3"># FIN bit not set.</span>
+        <span class="s1">self.expect_continuation_frame = </span><span class="s0">False</span>
+
+        <span class="s3"># WebSocket protocol parameters.</span>
+        <span class="s1">self.origin: Optional[Origin] = </span><span class="s0">None</span>
+        <span class="s1">self.extensions: List[Extension] = []</span>
+        <span class="s1">self.subprotocol: Optional[Subprotocol] = </span><span class="s0">None</span>
+
+        <span class="s3"># Connection state isn't enough to tell if a close frame was received:</span>
+        <span class="s3"># when this side closes the connection, state is CLOSING as soon as a</span>
+        <span class="s3"># close frame is sent, before a close frame is received.</span>
+        <span class="s1">self.close_frame_received = </span><span class="s0">False</span>
+
+        <span class="s3"># Close code and reason. Set when receiving a close frame or when the</span>
+        <span class="s3"># TCP connection drops.</span>
+        <span class="s1">self.close_code: int</span>
+        <span class="s1">self.close_reason: str</span>
+
+        <span class="s3"># Track if send_eof() was called.</span>
+        <span class="s1">self.eof_sent = </span><span class="s0">False</span>
+
+        <span class="s3"># Parser state.</span>
+        <span class="s1">self.reader = StreamReader()</span>
+        <span class="s1">self.events: List[Event] = []</span>
+        <span class="s1">self.writes: List[bytes] = []</span>
+        <span class="s1">self.parser = self.parse()</span>
+        <span class="s1">next(self.parser)  </span><span class="s3"># start coroutine</span>
+        <span class="s1">self.parser_exc: Optional[Exception] = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">set_state(self</span><span class="s0">, </span><span class="s1">state: State) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s1">logger.debug(</span>
+            <span class="s2">&quot;%s - state change: %s &gt; %s&quot;</span><span class="s0">, </span><span class="s1">self.side</span><span class="s0">, </span><span class="s1">self.state.name</span><span class="s0">, </span><span class="s1">state.name</span>
+        <span class="s1">)</span>
+        <span class="s1">self.state = state</span>
+
+    <span class="s3"># Public APIs for receiving data.</span>
+
+    <span class="s0">def </span><span class="s1">receive_data(self</span><span class="s0">, </span><span class="s1">data: bytes) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Receive data from the connection. 
+ 
+        After calling this method: 
+ 
+        - You must call :meth:`data_to_send` and send this data. 
+        - You should call :meth:`events_received` and process these events. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.reader.feed_data(data)</span>
+        <span class="s1">self.step_parser()</span>
+
+    <span class="s0">def </span><span class="s1">receive_eof(self) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Receive the end of the data stream from the connection. 
+ 
+        After calling this method: 
+ 
+        - You must call :meth:`data_to_send` and send this data. 
+        - You shouldn't call :meth:`events_received` as it won't 
+          return any new events. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.reader.feed_eof()</span>
+        <span class="s1">self.step_parser()</span>
+
+    <span class="s3"># Public APIs for sending events.</span>
+
+    <span class="s0">def </span><span class="s1">send_continuation(self</span><span class="s0">, </span><span class="s1">data: bytes</span><span class="s0">, </span><span class="s1">fin: bool) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Send a continuation frame. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self.expect_continuation_frame:</span>
+            <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;unexpected continuation frame&quot;</span><span class="s1">)</span>
+        <span class="s1">self.expect_continuation_frame = </span><span class="s0">not </span><span class="s1">fin</span>
+        <span class="s1">self.send_frame(Frame(fin</span><span class="s0">, </span><span class="s1">OP_CONT</span><span class="s0">, </span><span class="s1">data))</span>
+
+    <span class="s0">def </span><span class="s1">send_text(self</span><span class="s0">, </span><span class="s1">data: bytes</span><span class="s0">, </span><span class="s1">fin: bool = </span><span class="s0">True</span><span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Send a text frame. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.expect_continuation_frame:</span>
+            <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;expected a continuation frame&quot;</span><span class="s1">)</span>
+        <span class="s1">self.expect_continuation_frame = </span><span class="s0">not </span><span class="s1">fin</span>
+        <span class="s1">self.send_frame(Frame(fin</span><span class="s0">, </span><span class="s1">OP_TEXT</span><span class="s0">, </span><span class="s1">data))</span>
+
+    <span class="s0">def </span><span class="s1">send_binary(self</span><span class="s0">, </span><span class="s1">data: bytes</span><span class="s0">, </span><span class="s1">fin: bool = </span><span class="s0">True</span><span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Send a binary frame. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.expect_continuation_frame:</span>
+            <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;expected a continuation frame&quot;</span><span class="s1">)</span>
+        <span class="s1">self.expect_continuation_frame = </span><span class="s0">not </span><span class="s1">fin</span>
+        <span class="s1">self.send_frame(Frame(fin</span><span class="s0">, </span><span class="s1">OP_BINARY</span><span class="s0">, </span><span class="s1">data))</span>
+
+    <span class="s0">def </span><span class="s1">send_close(self</span><span class="s0">, </span><span class="s1">code: Optional[int] = </span><span class="s0">None, </span><span class="s1">reason: str = </span><span class="s2">&quot;&quot;</span><span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Send a connection close frame. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.expect_continuation_frame:</span>
+            <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;expected a continuation frame&quot;</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">code </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">reason != </span><span class="s2">&quot;&quot;</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;cannot send a reason without a code&quot;</span><span class="s1">)</span>
+            <span class="s1">data = </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">data = serialize_close(code</span><span class="s0">, </span><span class="s1">reason)</span>
+        <span class="s1">self.send_frame(Frame(</span><span class="s0">True, </span><span class="s1">OP_CLOSE</span><span class="s0">, </span><span class="s1">data))</span>
+        <span class="s3"># send_frame() guarantees that self.state is OPEN at this point.</span>
+        <span class="s3"># 7.1.3. The WebSocket Closing Handshake is Started</span>
+        <span class="s1">self.set_state(CLOSING)</span>
+        <span class="s0">if </span><span class="s1">self.side </span><span class="s0">is </span><span class="s1">SERVER:</span>
+            <span class="s1">self.send_eof()</span>
+
+    <span class="s0">def </span><span class="s1">send_ping(self</span><span class="s0">, </span><span class="s1">data: bytes) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Send a ping frame. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.send_frame(Frame(</span><span class="s0">True, </span><span class="s1">OP_PING</span><span class="s0">, </span><span class="s1">data))</span>
+
+    <span class="s0">def </span><span class="s1">send_pong(self</span><span class="s0">, </span><span class="s1">data: bytes) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Send a pong frame. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.send_frame(Frame(</span><span class="s0">True, </span><span class="s1">OP_PONG</span><span class="s0">, </span><span class="s1">data))</span>
+
+    <span class="s3"># Public API for getting incoming events after receiving data.</span>
+
+    <span class="s0">def </span><span class="s1">events_received(self) -&gt; List[Event]:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Return events read from the connection. 
+ 
+        Call this method immediately after calling any of the ``receive_*()`` 
+        methods and process the events. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">events</span><span class="s0">, </span><span class="s1">self.events = self.events</span><span class="s0">, </span><span class="s1">[]</span>
+        <span class="s0">return </span><span class="s1">events</span>
+
+    <span class="s3"># Public API for getting outgoing data after receiving data or sending events.</span>
+
+    <span class="s0">def </span><span class="s1">data_to_send(self) -&gt; List[bytes]:</span>
+        <span class="s6">&quot;&quot;&quot; 
+        Return data to write to the connection. 
+ 
+        Call this method immediately after calling any of the ``receive_*()`` 
+        or ``send_*()`` methods and write the data to the connection. 
+ 
+        The empty bytestring signals the end of the data stream. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">writes</span><span class="s0">, </span><span class="s1">self.writes = self.writes</span><span class="s0">, </span><span class="s1">[]</span>
+        <span class="s0">return </span><span class="s1">writes</span>
+
+    <span class="s3"># Private APIs for receiving data.</span>
+
+    <span class="s0">def </span><span class="s1">fail_connection(self</span><span class="s0">, </span><span class="s1">code: int = </span><span class="s4">1006</span><span class="s0">, </span><span class="s1">reason: str = </span><span class="s2">&quot;&quot;</span><span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s3"># Send a close frame when the state is OPEN (a close frame was already</span>
+        <span class="s3"># sent if it's CLOSING), except when failing the connection because of</span>
+        <span class="s3"># an error reading from or writing to the network.</span>
+        <span class="s0">if </span><span class="s1">code != </span><span class="s4">1006 </span><span class="s0">and </span><span class="s1">self.state </span><span class="s0">is </span><span class="s1">OPEN:</span>
+            <span class="s1">self.send_frame(Frame(</span><span class="s0">True, </span><span class="s1">OP_CLOSE</span><span class="s0">, </span><span class="s1">serialize_close(code</span><span class="s0">, </span><span class="s1">reason)))</span>
+            <span class="s1">self.set_state(CLOSING)</span>
+        <span class="s0">if not </span><span class="s1">self.eof_sent:</span>
+            <span class="s1">self.send_eof()</span>
+
+    <span class="s0">def </span><span class="s1">step_parser(self) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s3"># Run parser until more data is needed or EOF</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">next(self.parser)</span>
+        <span class="s0">except </span><span class="s1">StopIteration:</span>
+            <span class="s3"># This happens if receive_data() or receive_eof() is called after</span>
+            <span class="s3"># the parser raised an exception. (It cannot happen after reaching</span>
+            <span class="s3"># EOF because receive_data() or receive_eof() would fail earlier.)</span>
+            <span class="s0">assert </span><span class="s1">self.parser_exc </span><span class="s0">is not None</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                <span class="s2">&quot;cannot receive data or EOF after an error&quot;</span>
+            <span class="s1">) </span><span class="s0">from </span><span class="s1">self.parser_exc</span>
+        <span class="s0">except </span><span class="s1">ProtocolError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">self.fail_connection(</span><span class="s4">1002</span><span class="s0">, </span><span class="s1">str(exc))</span>
+            <span class="s1">self.parser_exc = exc</span>
+            <span class="s0">raise</span>
+        <span class="s0">except </span><span class="s1">EOFError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">self.fail_connection(</span><span class="s4">1006</span><span class="s0">, </span><span class="s1">str(exc))</span>
+            <span class="s1">self.parser_exc = exc</span>
+            <span class="s0">raise</span>
+        <span class="s0">except </span><span class="s1">UnicodeDecodeError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">self.fail_connection(</span><span class="s4">1007</span><span class="s0">, </span><span class="s2">f&quot;</span><span class="s0">{</span><span class="s1">exc.reason</span><span class="s0">} </span><span class="s2">at position </span><span class="s0">{</span><span class="s1">exc.start</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+            <span class="s1">self.parser_exc = exc</span>
+            <span class="s0">raise</span>
+        <span class="s0">except </span><span class="s1">PayloadTooBig </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">self.fail_connection(</span><span class="s4">1009</span><span class="s0">, </span><span class="s1">str(exc))</span>
+            <span class="s1">self.parser_exc = exc</span>
+            <span class="s0">raise</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">logger.error(</span><span class="s2">&quot;unexpected exception in parser&quot;</span><span class="s0">, </span><span class="s1">exc_info=</span><span class="s0">True</span><span class="s1">)</span>
+            <span class="s3"># Don't include exception details, which may be security-sensitive.</span>
+            <span class="s1">self.fail_connection(</span><span class="s4">1011</span><span class="s1">)</span>
+            <span class="s1">self.parser_exc = exc</span>
+            <span class="s0">raise</span>
+
+    <span class="s0">def </span><span class="s1">parse(self) -&gt; Generator[</span><span class="s0">None, None, None</span><span class="s1">]:</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">eof = </span><span class="s0">yield from </span><span class="s1">self.reader.at_eof()</span>
+            <span class="s0">if </span><span class="s1">eof:</span>
+                <span class="s0">if </span><span class="s1">self.close_frame_received:</span>
+                    <span class="s0">if not </span><span class="s1">self.eof_sent:</span>
+                        <span class="s1">self.send_eof()</span>
+                    <span class="s0">yield</span>
+                    <span class="s3"># Once the reader reaches EOF, its feed_data/eof() methods</span>
+                    <span class="s3"># raise an error, so our receive_data/eof() methods never</span>
+                    <span class="s3"># call step_parser(), so the generator shouldn't resume</span>
+                    <span class="s3"># executing until it's garbage collected.</span>
+                    <span class="s0">raise </span><span class="s1">AssertionError(</span>
+                        <span class="s2">&quot;parser shouldn't step after EOF&quot;</span>
+                    <span class="s1">)  </span><span class="s3"># pragma: no cover</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s2">&quot;unexpected end of stream&quot;</span><span class="s1">)</span>
+
+            <span class="s0">if </span><span class="s1">self.max_size </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s1">max_size = </span><span class="s0">None</span>
+            <span class="s0">elif </span><span class="s1">self.cur_size </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s1">max_size = self.max_size</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">max_size = self.max_size - self.cur_size</span>
+
+            <span class="s1">frame = </span><span class="s0">yield from </span><span class="s1">Frame.parse(</span>
+                <span class="s1">self.reader.read_exact</span><span class="s0">,</span>
+                <span class="s1">mask=self.side </span><span class="s0">is </span><span class="s1">SERVER</span><span class="s0">,</span>
+                <span class="s1">max_size=max_size</span><span class="s0">,</span>
+                <span class="s1">extensions=self.extensions</span><span class="s0">,</span>
+            <span class="s1">)</span>
+
+            <span class="s0">if </span><span class="s1">frame.opcode </span><span class="s0">is </span><span class="s1">OP_TEXT </span><span class="s0">or </span><span class="s1">frame.opcode </span><span class="s0">is </span><span class="s1">OP_BINARY:</span>
+                <span class="s3"># 5.5.1 Close: &quot;The application MUST NOT send any more data</span>
+                <span class="s3"># frames after sending a Close frame.&quot;</span>
+                <span class="s0">if </span><span class="s1">self.close_frame_received:</span>
+                    <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;data frame after close frame&quot;</span><span class="s1">)</span>
+
+                <span class="s0">if </span><span class="s1">self.cur_size </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;expected a continuation frame&quot;</span><span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">frame.fin:</span>
+                    <span class="s1">self.cur_size = </span><span class="s0">None</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self.cur_size = len(frame.data)</span>
+
+            <span class="s0">elif </span><span class="s1">frame.opcode </span><span class="s0">is </span><span class="s1">OP_CONT:</span>
+                <span class="s3"># 5.5.1 Close: &quot;The application MUST NOT send any more data</span>
+                <span class="s3"># frames after sending a Close frame.&quot;</span>
+                <span class="s0">if </span><span class="s1">self.close_frame_received:</span>
+                    <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;data frame after close frame&quot;</span><span class="s1">)</span>
+
+                <span class="s0">if </span><span class="s1">self.cur_size </span><span class="s0">is None</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;unexpected continuation frame&quot;</span><span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">frame.fin:</span>
+                    <span class="s1">self.cur_size = </span><span class="s0">None</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self.cur_size += len(frame.data)</span>
+
+            <span class="s0">elif </span><span class="s1">frame.opcode </span><span class="s0">is </span><span class="s1">OP_PING:</span>
+                <span class="s3"># 5.5.2. Ping: &quot;Upon receipt of a Ping frame, an endpoint MUST</span>
+                <span class="s3"># send a Pong frame in response, unless it already received a</span>
+                <span class="s3"># Close frame.&quot;</span>
+                <span class="s0">if not </span><span class="s1">self.close_frame_received:</span>
+                    <span class="s1">pong_frame = Frame(</span><span class="s0">True, </span><span class="s1">OP_PONG</span><span class="s0">, </span><span class="s1">frame.data)</span>
+                    <span class="s1">self.send_frame(pong_frame)</span>
+
+            <span class="s0">elif </span><span class="s1">frame.opcode </span><span class="s0">is </span><span class="s1">OP_PONG:</span>
+                <span class="s3"># 5.5.3 Pong: &quot;A response to an unsolicited Pong frame is not</span>
+                <span class="s3"># expected.&quot;</span>
+                <span class="s0">pass</span>
+
+            <span class="s0">elif </span><span class="s1">frame.opcode </span><span class="s0">is </span><span class="s1">OP_CLOSE:</span>
+                <span class="s1">self.close_frame_received = </span><span class="s0">True</span>
+                <span class="s3"># 7.1.5.  The WebSocket Connection Close Code</span>
+                <span class="s3"># 7.1.6.  The WebSocket Connection Close Reason</span>
+                <span class="s1">self.close_code</span><span class="s0">, </span><span class="s1">self.close_reason = parse_close(frame.data)</span>
+
+                <span class="s0">if </span><span class="s1">self.cur_size </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">ProtocolError(</span><span class="s2">&quot;incomplete fragmented message&quot;</span><span class="s1">)</span>
+                <span class="s3"># 5.5.1 Close: &quot;If an endpoint receives a Close frame and did</span>
+                <span class="s3"># not previously send a Close frame, the endpoint MUST send a</span>
+                <span class="s3"># Close frame in response. (When sending a Close frame in</span>
+                <span class="s3"># response, the endpoint typically echos the status code it</span>
+                <span class="s3"># received.)&quot;</span>
+                <span class="s0">if </span><span class="s1">self.state </span><span class="s0">is </span><span class="s1">OPEN:</span>
+                    <span class="s3"># Echo the original data instead of re-serializing it with</span>
+                    <span class="s3"># serialize_close() because that fails when the close frame</span>
+                    <span class="s3"># is empty and parse_close() synthetizes a 1005 close code.</span>
+                    <span class="s3"># The rest is identical to send_close().</span>
+                    <span class="s1">self.send_frame(Frame(</span><span class="s0">True, </span><span class="s1">OP_CLOSE</span><span class="s0">, </span><span class="s1">frame.data))</span>
+                    <span class="s1">self.set_state(CLOSING)</span>
+                    <span class="s0">if </span><span class="s1">self.side </span><span class="s0">is </span><span class="s1">SERVER:</span>
+                        <span class="s1">self.send_eof()</span>
+
+            <span class="s0">else</span><span class="s1">:  </span><span class="s3"># pragma: no cover</span>
+                <span class="s3"># This can't happen because Frame.parse() validates opcodes.</span>
+                <span class="s0">raise </span><span class="s1">AssertionError(</span><span class="s2">f&quot;unexpected opcode: </span><span class="s0">{</span><span class="s1">frame.opcode</span><span class="s0">:</span><span class="s2">02x</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+
+            <span class="s1">self.events.append(frame)</span>
+
+    <span class="s3"># Private APIs for sending events.</span>
+
+    <span class="s0">def </span><span class="s1">send_frame(self</span><span class="s0">, </span><span class="s1">frame: Frame) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s3"># Defensive assertion for protocol compliance.</span>
+        <span class="s0">if </span><span class="s1">self.state </span><span class="s0">is not </span><span class="s1">OPEN:</span>
+            <span class="s0">raise </span><span class="s1">InvalidState(</span>
+                <span class="s2">f&quot;cannot write to a WebSocket in the </span><span class="s0">{</span><span class="s1">self.state.name</span><span class="s0">} </span><span class="s2">state&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">logger.debug(</span><span class="s2">&quot;%s &gt; %r&quot;</span><span class="s0">, </span><span class="s1">self.side</span><span class="s0">, </span><span class="s1">frame)</span>
+        <span class="s1">self.writes.append(</span>
+            <span class="s1">frame.serialize(mask=self.side </span><span class="s0">is </span><span class="s1">CLIENT</span><span class="s0">, </span><span class="s1">extensions=self.extensions)</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">send_eof(self) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s0">assert not </span><span class="s1">self.eof_sent</span>
+        <span class="s1">self.eof_sent = </span><span class="s0">True</span>
+        <span class="s1">logger.debug(</span><span class="s2">&quot;%s &gt; EOF&quot;</span><span class="s0">, </span><span class="s1">self.side)</span>
+        <span class="s1">self.writes.append(SEND_EOF)</span>
+</pre>
+</body>
+</html>

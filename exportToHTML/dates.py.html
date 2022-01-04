@@ -1,0 +1,751 @@
+<html>
+<head>
+<title>dates.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dates.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">datetime</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">models</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">Http404</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">timezone</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext </span><span class="s0">as </span><span class="s1">_</span>
+<span class="s0">from </span><span class="s1">django.views.generic.base </span><span class="s0">import </span><span class="s1">View</span>
+<span class="s0">from </span><span class="s1">django.views.generic.detail </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">BaseDetailView</span><span class="s0">, </span><span class="s1">SingleObjectTemplateResponseMixin</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.views.generic.list </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">MultipleObjectMixin</span><span class="s0">, </span><span class="s1">MultipleObjectTemplateResponseMixin</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">YearMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Mixin for views manipulating year-based data.&quot;&quot;&quot;</span>
+    <span class="s1">year_format = </span><span class="s3">'%Y'</span>
+    <span class="s1">year = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_year_format(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get a year format string in strptime syntax to be used to parse the 
+        year from url variables. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.year_format</span>
+
+    <span class="s0">def </span><span class="s1">get_year(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the year for which this view should display data.&quot;&quot;&quot;</span>
+        <span class="s1">year = self.year</span>
+        <span class="s0">if </span><span class="s1">year </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">year = self.kwargs[</span><span class="s3">'year'</span><span class="s1">]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">year = self.request.GET[</span><span class="s3">'year'</span><span class="s1">]</span>
+                <span class="s0">except </span><span class="s1">KeyError:</span>
+                    <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;No year specified&quot;</span><span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">year</span>
+
+    <span class="s0">def </span><span class="s1">get_next_year(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the next valid year.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">False, </span><span class="s1">period=</span><span class="s3">'year'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_previous_year(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the previous valid year.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">True, </span><span class="s1">period=</span><span class="s3">'year'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_next_year(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the start date of the next interval. 
+ 
+        The interval is defined by start date &lt;= item date &lt; next start date. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">date.replace(year=date.year + </span><span class="s4">1</span><span class="s0">, </span><span class="s1">month=</span><span class="s4">1</span><span class="s0">, </span><span class="s1">day=</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">ValueError:</span>
+            <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;Date out of range&quot;</span><span class="s1">))</span>
+
+    <span class="s0">def </span><span class="s1">_get_current_year(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Return the start date of the current interval.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">date.replace(month=</span><span class="s4">1</span><span class="s0">, </span><span class="s1">day=</span><span class="s4">1</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">MonthMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Mixin for views manipulating month-based data.&quot;&quot;&quot;</span>
+    <span class="s1">month_format = </span><span class="s3">'%b'</span>
+    <span class="s1">month = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_month_format(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get a month format string in strptime syntax to be used to parse the 
+        month from url variables. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.month_format</span>
+
+    <span class="s0">def </span><span class="s1">get_month(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the month for which this view should display data.&quot;&quot;&quot;</span>
+        <span class="s1">month = self.month</span>
+        <span class="s0">if </span><span class="s1">month </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">month = self.kwargs[</span><span class="s3">'month'</span><span class="s1">]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">month = self.request.GET[</span><span class="s3">'month'</span><span class="s1">]</span>
+                <span class="s0">except </span><span class="s1">KeyError:</span>
+                    <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;No month specified&quot;</span><span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">month</span>
+
+    <span class="s0">def </span><span class="s1">get_next_month(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the next valid month.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">False, </span><span class="s1">period=</span><span class="s3">'month'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_previous_month(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the previous valid month.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">True, </span><span class="s1">period=</span><span class="s3">'month'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_next_month(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the start date of the next interval. 
+ 
+        The interval is defined by start date &lt;= item date &lt; next start date. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">date.month == </span><span class="s4">12</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">date.replace(year=date.year + </span><span class="s4">1</span><span class="s0">, </span><span class="s1">month=</span><span class="s4">1</span><span class="s0">, </span><span class="s1">day=</span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;Date out of range&quot;</span><span class="s1">))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">date.replace(month=date.month + </span><span class="s4">1</span><span class="s0">, </span><span class="s1">day=</span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_current_month(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Return the start date of the previous interval.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">date.replace(day=</span><span class="s4">1</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">DayMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Mixin for views manipulating day-based data.&quot;&quot;&quot;</span>
+    <span class="s1">day_format = </span><span class="s3">'%d'</span>
+    <span class="s1">day = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_day_format(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get a day format string in strptime syntax to be used to parse the day 
+        from url variables. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.day_format</span>
+
+    <span class="s0">def </span><span class="s1">get_day(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the day for which this view should display data.&quot;&quot;&quot;</span>
+        <span class="s1">day = self.day</span>
+        <span class="s0">if </span><span class="s1">day </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">day = self.kwargs[</span><span class="s3">'day'</span><span class="s1">]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">day = self.request.GET[</span><span class="s3">'day'</span><span class="s1">]</span>
+                <span class="s0">except </span><span class="s1">KeyError:</span>
+                    <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;No day specified&quot;</span><span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">day</span>
+
+    <span class="s0">def </span><span class="s1">get_next_day(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the next valid day.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">False, </span><span class="s1">period=</span><span class="s3">'day'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_previous_day(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the previous valid day.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">True, </span><span class="s1">period=</span><span class="s3">'day'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_next_day(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the start date of the next interval. 
+ 
+        The interval is defined by start date &lt;= item date &lt; next start date. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">date + datetime.timedelta(days=</span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_current_day(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Return the start date of the current interval.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">date</span>
+
+
+<span class="s0">class </span><span class="s1">WeekMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Mixin for views manipulating week-based data.&quot;&quot;&quot;</span>
+    <span class="s1">week_format = </span><span class="s3">'%U'</span>
+    <span class="s1">week = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_week_format(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get a week format string in strptime syntax to be used to parse the 
+        week from url variables. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.week_format</span>
+
+    <span class="s0">def </span><span class="s1">get_week(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the week for which this view should display data.&quot;&quot;&quot;</span>
+        <span class="s1">week = self.week</span>
+        <span class="s0">if </span><span class="s1">week </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">week = self.kwargs[</span><span class="s3">'week'</span><span class="s1">]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">week = self.request.GET[</span><span class="s3">'week'</span><span class="s1">]</span>
+                <span class="s0">except </span><span class="s1">KeyError:</span>
+                    <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;No week specified&quot;</span><span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">week</span>
+
+    <span class="s0">def </span><span class="s1">get_next_week(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the next valid week.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">False, </span><span class="s1">period=</span><span class="s3">'week'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_previous_week(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Get the previous valid week.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">_get_next_prev(self</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous=</span><span class="s0">True, </span><span class="s1">period=</span><span class="s3">'week'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_next_week(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the start date of the next interval. 
+ 
+        The interval is defined by start date &lt;= item date &lt; next start date. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">date + datetime.timedelta(days=</span><span class="s4">7 </span><span class="s1">- self._get_weekday(date))</span>
+        <span class="s0">except </span><span class="s1">OverflowError:</span>
+            <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;Date out of range&quot;</span><span class="s1">))</span>
+
+    <span class="s0">def </span><span class="s1">_get_current_week(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot;Return the start date of the current interval.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">date - datetime.timedelta(self._get_weekday(date))</span>
+
+    <span class="s0">def </span><span class="s1">_get_weekday(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the weekday for a given date. 
+ 
+        The first day according to the week format is 0 and the last day is 6. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">week_format = self.get_week_format()</span>
+        <span class="s0">if </span><span class="s1">week_format </span><span class="s0">in </span><span class="s1">{</span><span class="s3">'%W'</span><span class="s0">, </span><span class="s3">'%V'</span><span class="s1">}:         </span><span class="s5"># week starts on Monday</span>
+            <span class="s0">return </span><span class="s1">date.weekday()</span>
+        <span class="s0">elif </span><span class="s1">week_format == </span><span class="s3">'%U'</span><span class="s1">:               </span><span class="s5"># week starts on Sunday</span>
+            <span class="s0">return </span><span class="s1">(date.weekday() + </span><span class="s4">1</span><span class="s1">) % </span><span class="s4">7</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;unknown week format: %s&quot; </span><span class="s1">% week_format)</span>
+
+
+<span class="s0">class </span><span class="s1">DateMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Mixin class for views manipulating date-based data.&quot;&quot;&quot;</span>
+    <span class="s1">date_field = </span><span class="s0">None</span>
+    <span class="s1">allow_future = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">get_date_field(self):</span>
+        <span class="s2">&quot;&quot;&quot;Get the name of the date field to be used to filter by.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.date_field </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s3">&quot;%s.date_field is required.&quot; </span><span class="s1">% self.__class__.__name__)</span>
+        <span class="s0">return </span><span class="s1">self.date_field</span>
+
+    <span class="s0">def </span><span class="s1">get_allow_future(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return `True` if the view should be allowed to display objects from 
+        the future. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.allow_future</span>
+
+    <span class="s5"># Note: the following three methods only work in subclasses that also</span>
+    <span class="s5"># inherit SingleObjectMixin or MultipleObjectMixin.</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">uses_datetime_field(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return `True` if the date field is a `DateTimeField` and `False` 
+        if it's a `DateField`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">model = self.get_queryset().model </span><span class="s0">if </span><span class="s1">self.model </span><span class="s0">is None else </span><span class="s1">self.model</span>
+        <span class="s1">field = model._meta.get_field(self.get_date_field())</span>
+        <span class="s0">return </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">models.DateTimeField)</span>
+
+    <span class="s0">def </span><span class="s1">_make_date_lookup_arg(self</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Convert a date into a datetime when the date field is a DateTimeField. 
+ 
+        When time zone support is enabled, `date` is assumed to be in the 
+        current time zone, so that displayed items are consistent with the URL. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.uses_datetime_field:</span>
+            <span class="s1">value = datetime.datetime.combine(value</span><span class="s0">, </span><span class="s1">datetime.time.min)</span>
+            <span class="s0">if </span><span class="s1">settings.USE_TZ:</span>
+                <span class="s1">value = timezone.make_aware(value)</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+    <span class="s0">def </span><span class="s1">_make_single_date_lookup(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get the lookup kwargs for filtering on a single date. 
+ 
+        If the date field is a DateTimeField, we can't just filter on 
+        date_field=date because that doesn't take the time into account. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">date_field = self.get_date_field()</span>
+        <span class="s0">if </span><span class="s1">self.uses_datetime_field:</span>
+            <span class="s1">since = self._make_date_lookup_arg(date)</span>
+            <span class="s1">until = self._make_date_lookup_arg(date + datetime.timedelta(days=</span><span class="s4">1</span><span class="s1">))</span>
+            <span class="s0">return </span><span class="s1">{</span>
+                <span class="s3">'%s__gte' </span><span class="s1">% date_field: since</span><span class="s0">,</span>
+                <span class="s3">'%s__lt' </span><span class="s1">% date_field: until</span><span class="s0">,</span>
+            <span class="s1">}</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s5"># Skip self._make_date_lookup_arg, it's a no-op in this branch.</span>
+            <span class="s0">return </span><span class="s1">{date_field: date}</span>
+
+
+<span class="s0">class </span><span class="s1">BaseDateListView(MultipleObjectMixin</span><span class="s0">, </span><span class="s1">DateMixin</span><span class="s0">, </span><span class="s1">View):</span>
+    <span class="s2">&quot;&quot;&quot;Abstract base class for date-based views displaying a list of objects.&quot;&quot;&quot;</span>
+    <span class="s1">allow_empty = </span><span class="s0">False</span>
+    <span class="s1">date_list_period = </span><span class="s3">'year'</span>
+
+    <span class="s0">def </span><span class="s1">get(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.date_list</span><span class="s0">, </span><span class="s1">self.object_list</span><span class="s0">, </span><span class="s1">extra_context = self.get_dated_items()</span>
+        <span class="s1">context = self.get_context_data(</span>
+            <span class="s1">object_list=self.object_list</span><span class="s0">,</span>
+            <span class="s1">date_list=self.date_list</span><span class="s0">,</span>
+            <span class="s1">**extra_context</span>
+        <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self.render_to_response(context)</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Obtain the list of dates and items.&quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError(</span><span class="s3">'A DateView must provide an implementation of get_dated_items()'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_ordering(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the field or fields to use for ordering the queryset; use the 
+        date field by default. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s3">'-%s' </span><span class="s1">% self.get_date_field() </span><span class="s0">if </span><span class="s1">self.ordering </span><span class="s0">is None else </span><span class="s1">self.ordering</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_queryset(self</span><span class="s0">, </span><span class="s1">**lookup):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get a queryset properly filtered according to `allow_future` and any 
+        extra lookup kwargs. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">qs = self.get_queryset().filter(**lookup)</span>
+        <span class="s1">date_field = self.get_date_field()</span>
+        <span class="s1">allow_future = self.get_allow_future()</span>
+        <span class="s1">allow_empty = self.get_allow_empty()</span>
+        <span class="s1">paginate_by = self.get_paginate_by(qs)</span>
+
+        <span class="s0">if not </span><span class="s1">allow_future:</span>
+            <span class="s1">now = timezone.now() </span><span class="s0">if </span><span class="s1">self.uses_datetime_field </span><span class="s0">else </span><span class="s1">timezone_today()</span>
+            <span class="s1">qs = qs.filter(**{</span><span class="s3">'%s__lte' </span><span class="s1">% date_field: now})</span>
+
+        <span class="s0">if not </span><span class="s1">allow_empty:</span>
+            <span class="s5"># When pagination is enabled, it's better to do a cheap query</span>
+            <span class="s5"># than to load the unpaginated queryset in memory.</span>
+            <span class="s1">is_empty = </span><span class="s0">not </span><span class="s1">qs </span><span class="s0">if </span><span class="s1">paginate_by </span><span class="s0">is None else not </span><span class="s1">qs.exists()</span>
+            <span class="s0">if </span><span class="s1">is_empty:</span>
+                <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">&quot;No %(verbose_name_plural)s available&quot;</span><span class="s1">) % {</span>
+                    <span class="s3">'verbose_name_plural'</span><span class="s1">: qs.model._meta.verbose_name_plural</span><span class="s0">,</span>
+                <span class="s1">})</span>
+
+        <span class="s0">return </span><span class="s1">qs</span>
+
+    <span class="s0">def </span><span class="s1">get_date_list_period(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get the aggregation period for the list of dates: 'year', 'month', or 
+        'day'. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.date_list_period</span>
+
+    <span class="s0">def </span><span class="s1">get_date_list(self</span><span class="s0">, </span><span class="s1">queryset</span><span class="s0">, </span><span class="s1">date_type=</span><span class="s0">None, </span><span class="s1">ordering=</span><span class="s3">'ASC'</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get a date list by calling `queryset.dates/datetimes()`, checking 
+        along the way for empty lists that aren't allowed. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">date_field = self.get_date_field()</span>
+        <span class="s1">allow_empty = self.get_allow_empty()</span>
+        <span class="s0">if </span><span class="s1">date_type </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">date_type = self.get_date_list_period()</span>
+
+        <span class="s0">if </span><span class="s1">self.uses_datetime_field:</span>
+            <span class="s1">date_list = queryset.datetimes(date_field</span><span class="s0">, </span><span class="s1">date_type</span><span class="s0">, </span><span class="s1">ordering)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">date_list = queryset.dates(date_field</span><span class="s0">, </span><span class="s1">date_type</span><span class="s0">, </span><span class="s1">ordering)</span>
+        <span class="s0">if </span><span class="s1">date_list </span><span class="s0">is not None and not </span><span class="s1">date_list </span><span class="s0">and not </span><span class="s1">allow_empty:</span>
+            <span class="s0">raise </span><span class="s1">Http404(</span>
+                <span class="s1">_(</span><span class="s3">&quot;No %(verbose_name_plural)s available&quot;</span><span class="s1">) % {</span>
+                    <span class="s3">'verbose_name_plural'</span><span class="s1">: queryset.model._meta.verbose_name_plural</span><span class="s0">,</span>
+                <span class="s1">}</span>
+            <span class="s1">)</span>
+
+        <span class="s0">return </span><span class="s1">date_list</span>
+
+
+<span class="s0">class </span><span class="s1">BaseArchiveIndexView(BaseDateListView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Base class for archives of date-based items. Requires a response mixin. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">context_object_name = </span><span class="s3">'latest'</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return (date_list, items, extra_context) for this request.&quot;&quot;&quot;</span>
+        <span class="s1">qs = self.get_dated_queryset()</span>
+        <span class="s1">date_list = self.get_date_list(qs</span><span class="s0">, </span><span class="s1">ordering=</span><span class="s3">'DESC'</span><span class="s1">)</span>
+
+        <span class="s0">if not </span><span class="s1">date_list:</span>
+            <span class="s1">qs = qs.none()</span>
+
+        <span class="s0">return </span><span class="s1">(date_list</span><span class="s0">, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">{})</span>
+
+
+<span class="s0">class </span><span class="s1">ArchiveIndexView(MultipleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseArchiveIndexView):</span>
+    <span class="s2">&quot;&quot;&quot;Top-level archive of date-based items.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_archive'</span>
+
+
+<span class="s0">class </span><span class="s1">BaseYearArchiveView(YearMixin</span><span class="s0">, </span><span class="s1">BaseDateListView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published in a given year.&quot;&quot;&quot;</span>
+    <span class="s1">date_list_period = </span><span class="s3">'month'</span>
+    <span class="s1">make_object_list = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return (date_list, items, extra_context) for this request.&quot;&quot;&quot;</span>
+        <span class="s1">year = self.get_year()</span>
+
+        <span class="s1">date_field = self.get_date_field()</span>
+        <span class="s1">date = _date_from_string(year</span><span class="s0">, </span><span class="s1">self.get_year_format())</span>
+
+        <span class="s1">since = self._make_date_lookup_arg(date)</span>
+        <span class="s1">until = self._make_date_lookup_arg(self._get_next_year(date))</span>
+        <span class="s1">lookup_kwargs = {</span>
+            <span class="s3">'%s__gte' </span><span class="s1">% date_field: since</span><span class="s0">,</span>
+            <span class="s3">'%s__lt' </span><span class="s1">% date_field: until</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+        <span class="s1">qs = self.get_dated_queryset(**lookup_kwargs)</span>
+        <span class="s1">date_list = self.get_date_list(qs)</span>
+
+        <span class="s0">if not </span><span class="s1">self.get_make_object_list():</span>
+            <span class="s5"># We need this to be a queryset since parent classes introspect it</span>
+            <span class="s5"># to find information about the model.</span>
+            <span class="s1">qs = qs.none()</span>
+
+        <span class="s0">return </span><span class="s1">(date_list</span><span class="s0">, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s3">'year'</span><span class="s1">: date</span><span class="s0">,</span>
+            <span class="s3">'next_year'</span><span class="s1">: self.get_next_year(date)</span><span class="s0">,</span>
+            <span class="s3">'previous_year'</span><span class="s1">: self.get_previous_year(date)</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+    <span class="s0">def </span><span class="s1">get_make_object_list(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return `True` if this view should contain the full list of objects in 
+        the given year. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.make_object_list</span>
+
+
+<span class="s0">class </span><span class="s1">YearArchiveView(MultipleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseYearArchiveView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published in a given year.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_archive_year'</span>
+
+
+<span class="s0">class </span><span class="s1">BaseMonthArchiveView(YearMixin</span><span class="s0">, </span><span class="s1">MonthMixin</span><span class="s0">, </span><span class="s1">BaseDateListView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published in a given month.&quot;&quot;&quot;</span>
+    <span class="s1">date_list_period = </span><span class="s3">'day'</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return (date_list, items, extra_context) for this request.&quot;&quot;&quot;</span>
+        <span class="s1">year = self.get_year()</span>
+        <span class="s1">month = self.get_month()</span>
+
+        <span class="s1">date_field = self.get_date_field()</span>
+        <span class="s1">date = _date_from_string(year</span><span class="s0">, </span><span class="s1">self.get_year_format()</span><span class="s0">,</span>
+                                 <span class="s1">month</span><span class="s0">, </span><span class="s1">self.get_month_format())</span>
+
+        <span class="s1">since = self._make_date_lookup_arg(date)</span>
+        <span class="s1">until = self._make_date_lookup_arg(self._get_next_month(date))</span>
+        <span class="s1">lookup_kwargs = {</span>
+            <span class="s3">'%s__gte' </span><span class="s1">% date_field: since</span><span class="s0">,</span>
+            <span class="s3">'%s__lt' </span><span class="s1">% date_field: until</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+        <span class="s1">qs = self.get_dated_queryset(**lookup_kwargs)</span>
+        <span class="s1">date_list = self.get_date_list(qs)</span>
+
+        <span class="s0">return </span><span class="s1">(date_list</span><span class="s0">, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s3">'month'</span><span class="s1">: date</span><span class="s0">,</span>
+            <span class="s3">'next_month'</span><span class="s1">: self.get_next_month(date)</span><span class="s0">,</span>
+            <span class="s3">'previous_month'</span><span class="s1">: self.get_previous_month(date)</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+
+<span class="s0">class </span><span class="s1">MonthArchiveView(MultipleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseMonthArchiveView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published in a given month.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_archive_month'</span>
+
+
+<span class="s0">class </span><span class="s1">BaseWeekArchiveView(YearMixin</span><span class="s0">, </span><span class="s1">WeekMixin</span><span class="s0">, </span><span class="s1">BaseDateListView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published in a given week.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return (date_list, items, extra_context) for this request.&quot;&quot;&quot;</span>
+        <span class="s1">year = self.get_year()</span>
+        <span class="s1">week = self.get_week()</span>
+
+        <span class="s1">date_field = self.get_date_field()</span>
+        <span class="s1">week_format = self.get_week_format()</span>
+        <span class="s1">week_choices = {</span><span class="s3">'%W'</span><span class="s1">: </span><span class="s3">'1'</span><span class="s0">, </span><span class="s3">'%U'</span><span class="s1">: </span><span class="s3">'0'</span><span class="s0">, </span><span class="s3">'%V'</span><span class="s1">: </span><span class="s3">'1'</span><span class="s1">}</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">week_start = week_choices[week_format]</span>
+        <span class="s0">except </span><span class="s1">KeyError:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Unknown week format %r. Choices are: %s' </span><span class="s1">% (</span>
+                <span class="s1">week_format</span><span class="s0">,</span>
+                <span class="s3">', '</span><span class="s1">.join(sorted(week_choices))</span><span class="s0">,</span>
+            <span class="s1">))</span>
+        <span class="s1">year_format = self.get_year_format()</span>
+        <span class="s0">if </span><span class="s1">week_format == </span><span class="s3">'%V' </span><span class="s0">and </span><span class="s1">year_format != </span><span class="s3">'%G'</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;ISO week directive '%s' is incompatible with the year &quot;</span>
+                <span class="s3">&quot;directive '%s'. Use the ISO year '%%G' instead.&quot; </span><span class="s1">% (</span>
+                    <span class="s1">week_format</span><span class="s0">, </span><span class="s1">year_format</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s1">date = _date_from_string(year</span><span class="s0">, </span><span class="s1">year_format</span><span class="s0">, </span><span class="s1">week_start</span><span class="s0">, </span><span class="s3">'%w'</span><span class="s0">, </span><span class="s1">week</span><span class="s0">, </span><span class="s1">week_format)</span>
+        <span class="s1">since = self._make_date_lookup_arg(date)</span>
+        <span class="s1">until = self._make_date_lookup_arg(self._get_next_week(date))</span>
+        <span class="s1">lookup_kwargs = {</span>
+            <span class="s3">'%s__gte' </span><span class="s1">% date_field: since</span><span class="s0">,</span>
+            <span class="s3">'%s__lt' </span><span class="s1">% date_field: until</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+        <span class="s1">qs = self.get_dated_queryset(**lookup_kwargs)</span>
+
+        <span class="s0">return </span><span class="s1">(</span><span class="s0">None, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s3">'week'</span><span class="s1">: date</span><span class="s0">,</span>
+            <span class="s3">'next_week'</span><span class="s1">: self.get_next_week(date)</span><span class="s0">,</span>
+            <span class="s3">'previous_week'</span><span class="s1">: self.get_previous_week(date)</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+
+<span class="s0">class </span><span class="s1">WeekArchiveView(MultipleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseWeekArchiveView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published in a given week.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_archive_week'</span>
+
+
+<span class="s0">class </span><span class="s1">BaseDayArchiveView(YearMixin</span><span class="s0">, </span><span class="s1">MonthMixin</span><span class="s0">, </span><span class="s1">DayMixin</span><span class="s0">, </span><span class="s1">BaseDateListView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published on a given day.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return (date_list, items, extra_context) for this request.&quot;&quot;&quot;</span>
+        <span class="s1">year = self.get_year()</span>
+        <span class="s1">month = self.get_month()</span>
+        <span class="s1">day = self.get_day()</span>
+
+        <span class="s1">date = _date_from_string(year</span><span class="s0">, </span><span class="s1">self.get_year_format()</span><span class="s0">,</span>
+                                 <span class="s1">month</span><span class="s0">, </span><span class="s1">self.get_month_format()</span><span class="s0">,</span>
+                                 <span class="s1">day</span><span class="s0">, </span><span class="s1">self.get_day_format())</span>
+
+        <span class="s0">return </span><span class="s1">self._get_dated_items(date)</span>
+
+    <span class="s0">def </span><span class="s1">_get_dated_items(self</span><span class="s0">, </span><span class="s1">date):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Do the actual heavy lifting of getting the dated items; this accepts a 
+        date object so that TodayArchiveView can be trivial. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">lookup_kwargs = self._make_single_date_lookup(date)</span>
+        <span class="s1">qs = self.get_dated_queryset(**lookup_kwargs)</span>
+
+        <span class="s0">return </span><span class="s1">(</span><span class="s0">None, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s3">'day'</span><span class="s1">: date</span><span class="s0">,</span>
+            <span class="s3">'previous_day'</span><span class="s1">: self.get_previous_day(date)</span><span class="s0">,</span>
+            <span class="s3">'next_day'</span><span class="s1">: self.get_next_day(date)</span><span class="s0">,</span>
+            <span class="s3">'previous_month'</span><span class="s1">: self.get_previous_month(date)</span><span class="s0">,</span>
+            <span class="s3">'next_month'</span><span class="s1">: self.get_next_month(date)</span>
+        <span class="s1">})</span>
+
+
+<span class="s0">class </span><span class="s1">DayArchiveView(MultipleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseDayArchiveView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published on a given day.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">&quot;_archive_day&quot;</span>
+
+
+<span class="s0">class </span><span class="s1">BaseTodayArchiveView(BaseDayArchiveView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published today.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">get_dated_items(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return (date_list, items, extra_context) for this request.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self._get_dated_items(datetime.date.today())</span>
+
+
+<span class="s0">class </span><span class="s1">TodayArchiveView(MultipleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseTodayArchiveView):</span>
+    <span class="s2">&quot;&quot;&quot;List of objects published today.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">&quot;_archive_day&quot;</span>
+
+
+<span class="s0">class </span><span class="s1">BaseDateDetailView(YearMixin</span><span class="s0">, </span><span class="s1">MonthMixin</span><span class="s0">, </span><span class="s1">DayMixin</span><span class="s0">, </span><span class="s1">DateMixin</span><span class="s0">, </span><span class="s1">BaseDetailView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Detail view of a single object on a single date; this differs from the 
+    standard DetailView by accepting a year/month/day in the URL. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get_object(self</span><span class="s0">, </span><span class="s1">queryset=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Get the object this request displays.&quot;&quot;&quot;</span>
+        <span class="s1">year = self.get_year()</span>
+        <span class="s1">month = self.get_month()</span>
+        <span class="s1">day = self.get_day()</span>
+        <span class="s1">date = _date_from_string(year</span><span class="s0">, </span><span class="s1">self.get_year_format()</span><span class="s0">,</span>
+                                 <span class="s1">month</span><span class="s0">, </span><span class="s1">self.get_month_format()</span><span class="s0">,</span>
+                                 <span class="s1">day</span><span class="s0">, </span><span class="s1">self.get_day_format())</span>
+
+        <span class="s5"># Use a custom queryset if provided</span>
+        <span class="s1">qs = self.get_queryset() </span><span class="s0">if </span><span class="s1">queryset </span><span class="s0">is None else </span><span class="s1">queryset</span>
+
+        <span class="s0">if not </span><span class="s1">self.get_allow_future() </span><span class="s0">and </span><span class="s1">date &gt; datetime.date.today():</span>
+            <span class="s0">raise </span><span class="s1">Http404(_(</span>
+                <span class="s3">&quot;Future %(verbose_name_plural)s not available because &quot;</span>
+                <span class="s3">&quot;%(class_name)s.allow_future is False.&quot;</span>
+            <span class="s1">) % {</span>
+                <span class="s3">'verbose_name_plural'</span><span class="s1">: qs.model._meta.verbose_name_plural</span><span class="s0">,</span>
+                <span class="s3">'class_name'</span><span class="s1">: self.__class__.__name__</span><span class="s0">,</span>
+            <span class="s1">})</span>
+
+        <span class="s5"># Filter down a queryset from self.queryset using the date from the</span>
+        <span class="s5"># URL. This'll get passed as the queryset to DetailView.get_object,</span>
+        <span class="s5"># which'll handle the 404</span>
+        <span class="s1">lookup_kwargs = self._make_single_date_lookup(date)</span>
+        <span class="s1">qs = qs.filter(**lookup_kwargs)</span>
+
+        <span class="s0">return </span><span class="s1">super().get_object(queryset=qs)</span>
+
+
+<span class="s0">class </span><span class="s1">DateDetailView(SingleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseDateDetailView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Detail view of a single object on a single date; this differs from the 
+    standard DetailView by accepting a year/month/day in the URL. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_detail'</span>
+
+
+<span class="s0">def </span><span class="s1">_date_from_string(year</span><span class="s0">, </span><span class="s1">year_format</span><span class="s0">, </span><span class="s1">month=</span><span class="s3">''</span><span class="s0">, </span><span class="s1">month_format=</span><span class="s3">''</span><span class="s0">, </span><span class="s1">day=</span><span class="s3">''</span><span class="s0">, </span><span class="s1">day_format=</span><span class="s3">''</span><span class="s0">, </span><span class="s1">delim=</span><span class="s3">'__'</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Get a datetime.date object given a format string and a year, month, and day 
+    (only year is mandatory). Raise a 404 for an invalid date. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">format = year_format + delim + month_format + delim + day_format</span>
+    <span class="s1">datestr = str(year) + delim + str(month) + delim + str(day)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">datetime.datetime.strptime(datestr</span><span class="s0">, </span><span class="s1">format).date()</span>
+    <span class="s0">except </span><span class="s1">ValueError:</span>
+        <span class="s0">raise </span><span class="s1">Http404(_(</span><span class="s3">'Invalid date string “%(datestr)s” given format “%(format)s”'</span><span class="s1">) % {</span>
+            <span class="s3">'datestr'</span><span class="s1">: datestr</span><span class="s0">,</span>
+            <span class="s3">'format'</span><span class="s1">: format</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+
+<span class="s0">def </span><span class="s1">_get_next_prev(generic_view</span><span class="s0">, </span><span class="s1">date</span><span class="s0">, </span><span class="s1">is_previous</span><span class="s0">, </span><span class="s1">period):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Get the next or the previous valid date. The idea is to allow links on 
+    month/day views to never be 404s by never providing a date that'll be 
+    invalid for the given view. 
+ 
+    This is a bit complicated since it handles different intervals of time, 
+    hence the coupling to generic_view. 
+ 
+    However in essence the logic comes down to: 
+ 
+        * If allow_empty and allow_future are both true, this is easy: just 
+          return the naive result (just the next/previous day/week/month, 
+          regardless of object existence.) 
+ 
+        * If allow_empty is true, allow_future is false, and the naive result 
+          isn't in the future, then return it; otherwise return None. 
+ 
+        * If allow_empty is false and allow_future is true, return the next 
+          date *that contains a valid object*, even if it's in the future. If 
+          there are no next objects, return None. 
+ 
+        * If allow_empty is false and allow_future is false, return the next 
+          date that contains a valid object. If that date is in the future, or 
+          if there are no next objects, return None. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">date_field = generic_view.get_date_field()</span>
+    <span class="s1">allow_empty = generic_view.get_allow_empty()</span>
+    <span class="s1">allow_future = generic_view.get_allow_future()</span>
+
+    <span class="s1">get_current = getattr(generic_view</span><span class="s0">, </span><span class="s3">'_get_current_%s' </span><span class="s1">% period)</span>
+    <span class="s1">get_next = getattr(generic_view</span><span class="s0">, </span><span class="s3">'_get_next_%s' </span><span class="s1">% period)</span>
+
+    <span class="s5"># Bounds of the current interval</span>
+    <span class="s1">start</span><span class="s0">, </span><span class="s1">end = get_current(date)</span><span class="s0">, </span><span class="s1">get_next(date)</span>
+
+    <span class="s5"># If allow_empty is True, the naive result will be valid</span>
+    <span class="s0">if </span><span class="s1">allow_empty:</span>
+        <span class="s0">if </span><span class="s1">is_previous:</span>
+            <span class="s1">result = get_current(start - datetime.timedelta(days=</span><span class="s4">1</span><span class="s1">))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">result = end</span>
+
+        <span class="s0">if </span><span class="s1">allow_future </span><span class="s0">or </span><span class="s1">result &lt;= timezone_today():</span>
+            <span class="s0">return </span><span class="s1">result</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return None</span>
+
+    <span class="s5"># Otherwise, we'll need to go to the database to look for an object</span>
+    <span class="s5"># whose date_field is at least (greater than/less than) the given</span>
+    <span class="s5"># naive result</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s5"># Construct a lookup and an ordering depending on whether we're doing</span>
+        <span class="s5"># a previous date or a next date lookup.</span>
+        <span class="s0">if </span><span class="s1">is_previous:</span>
+            <span class="s1">lookup = {</span><span class="s3">'%s__lt' </span><span class="s1">% date_field: generic_view._make_date_lookup_arg(start)}</span>
+            <span class="s1">ordering = </span><span class="s3">'-%s' </span><span class="s1">% date_field</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">lookup = {</span><span class="s3">'%s__gte' </span><span class="s1">% date_field: generic_view._make_date_lookup_arg(end)}</span>
+            <span class="s1">ordering = date_field</span>
+
+        <span class="s5"># Filter out objects in the future if appropriate.</span>
+        <span class="s0">if not </span><span class="s1">allow_future:</span>
+            <span class="s5"># Fortunately, to match the implementation of allow_future,</span>
+            <span class="s5"># we need __lte, which doesn't conflict with __lt above.</span>
+            <span class="s0">if </span><span class="s1">generic_view.uses_datetime_field:</span>
+                <span class="s1">now = timezone.now()</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">now = timezone_today()</span>
+            <span class="s1">lookup[</span><span class="s3">'%s__lte' </span><span class="s1">% date_field] = now</span>
+
+        <span class="s1">qs = generic_view.get_queryset().filter(**lookup).order_by(ordering)</span>
+
+        <span class="s5"># Snag the first object from the queryset; if it doesn't exist that</span>
+        <span class="s5"># means there's no next/previous link available.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">result = getattr(qs[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">date_field)</span>
+        <span class="s0">except </span><span class="s1">IndexError:</span>
+            <span class="s0">return None</span>
+
+        <span class="s5"># Convert datetimes to dates in the current time zone.</span>
+        <span class="s0">if </span><span class="s1">generic_view.uses_datetime_field:</span>
+            <span class="s0">if </span><span class="s1">settings.USE_TZ:</span>
+                <span class="s1">result = timezone.localtime(result)</span>
+            <span class="s1">result = result.date()</span>
+
+        <span class="s5"># Return the first day of the period.</span>
+        <span class="s0">return </span><span class="s1">get_current(result)</span>
+
+
+<span class="s0">def </span><span class="s1">timezone_today():</span>
+    <span class="s2">&quot;&quot;&quot;Return the current date in the current time zone.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">settings.USE_TZ:</span>
+        <span class="s0">return </span><span class="s1">timezone.localdate()</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">datetime.date.today()</span>
+</pre>
+</body>
+</html>

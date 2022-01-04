@@ -1,0 +1,209 @@
+<html>
+<head>
+<title>traffic.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+traffic.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">time </span><span class="s0">import </span><span class="s1">mktime</span>
+
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Count</span>
+<span class="s0">from </span><span class="s1">django.utils.text </span><span class="s0">import </span><span class="s1">format_lazy</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext_lazy </span><span class="s0">as </span><span class="s1">_</span>
+
+<span class="s0">from </span><span class="s1">. </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">get_verbose_name</span>
+
+
+<span class="s0">class </span><span class="s1">Modules:</span>
+    <span class="s2">''' 
+    Set of :class:`.Module`. 
+    '''</span>
+    <span class="s0">def </span><span class="s1">load(self):</span>
+        <span class="s2">''' 
+        Import and instanciate modules defined in 
+        ``settings.TRAFFIC_MODULES``. 
+        '''</span>
+        <span class="s0">from </span><span class="s1">importlib </span><span class="s0">import </span><span class="s1">import_module</span>
+
+        <span class="s1">self._modules = ()</span>
+        <span class="s0">for </span><span class="s1">module_path </span><span class="s0">in </span><span class="s1">settings.TRAFFIC_MODULES:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">dot = module_path.rindex(</span><span class="s3">'.'</span><span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s3">'{0} isn</span><span class="s0">\'</span><span class="s3">t a traffic module'</span><span class="s1">.format(module_path))</span>
+            <span class="s1">traffic_module = module_path[:dot]</span>
+            <span class="s1">traffic_classname = module_path[dot + </span><span class="s4">1</span><span class="s1">:]</span>
+
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">mod = import_module(traffic_module)</span>
+            <span class="s0">except </span><span class="s1">ImportError </span><span class="s0">as </span><span class="s1">err:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s3">'Error importing module {0}: &quot;{1}&quot;'</span><span class="s1">.format(traffic_module</span><span class="s0">, </span><span class="s1">err))</span>
+
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">traffic_class = getattr(mod</span><span class="s0">, </span><span class="s1">traffic_classname)</span>
+            <span class="s0">except </span><span class="s1">AttributeError:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s3">'Traffic module &quot;{0}&quot; does not define a &quot;{1}&quot; class'</span><span class="s1">.format(</span>
+                    <span class="s1">traffic_module</span><span class="s0">,</span>
+                    <span class="s1">traffic_classname</span><span class="s0">,</span>
+                <span class="s1">))</span>
+
+            <span class="s1">self._modules += (traffic_class()</span><span class="s0">,</span><span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">modules(self):</span>
+        <span class="s2">''' 
+        Get loaded modules, load them if isn't already made. 
+        '''</span>
+        <span class="s0">if not </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s3">'_modules'</span><span class="s1">):</span>
+            <span class="s1">self.load()</span>
+        <span class="s0">return </span><span class="s1">self._modules</span>
+
+    <span class="s0">def </span><span class="s1">table(self</span><span class="s0">, </span><span class="s1">queries):</span>
+        <span class="s2">''' 
+        Get a list of modules' counters. 
+        '''</span>
+        <span class="s0">return </span><span class="s1">tuple([(</span>
+            <span class="s1">module.verbose_name_plural</span><span class="s0">, </span><span class="s1">[module.count(qs) </span><span class="s0">for </span><span class="s1">qs </span><span class="s0">in </span><span class="s1">queries]</span>
+        <span class="s1">) </span><span class="s0">for </span><span class="s1">module </span><span class="s0">in </span><span class="s1">self.modules])</span>
+
+    <span class="s0">def </span><span class="s1">graph(self</span><span class="s0">, </span><span class="s1">days):</span>
+        <span class="s2">''' 
+        Get a list of modules' counters for all the given days. 
+        '''</span>
+        <span class="s0">return </span><span class="s1">tuple([{</span>
+            <span class="s3">'data'</span><span class="s1">: [(mktime(day.timetuple()) * </span><span class="s4">1000</span><span class="s0">, </span><span class="s1">module.count(qs)) </span><span class="s0">for </span><span class="s1">day</span><span class="s0">, </span><span class="s1">qs </span><span class="s0">in </span><span class="s1">days]</span><span class="s0">,</span>
+            <span class="s3">'label'</span><span class="s1">: str(gettext(module.verbose_name_plural))</span><span class="s0">,</span>
+        <span class="s1">} </span><span class="s0">for </span><span class="s1">module </span><span class="s0">in </span><span class="s1">self.modules])</span>
+
+
+<span class="s1">modules = Modules()</span>
+
+
+<span class="s0">class </span><span class="s1">Module:</span>
+    <span class="s2">''' 
+    Base module class. 
+    '''</span>
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.module_name = self.__class__.__name__</span>
+
+        <span class="s0">if not </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s3">'verbose_name'</span><span class="s1">):</span>
+            <span class="s1">self.verbose_name = get_verbose_name(self.module_name)</span>
+        <span class="s0">if not </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s3">'verbose_name_plural'</span><span class="s1">):</span>
+            <span class="s1">self.verbose_name_plural = format_lazy(</span><span class="s3">'{}{}'</span><span class="s0">, </span><span class="s1">self.verbose_name</span><span class="s0">, </span><span class="s3">'s'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError(</span><span class="s3">'&quot;count&quot; isn</span><span class="s0">\'</span><span class="s3">t defined.'</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">Ajax(Module):</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Ajax'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.filter(is_ajax=</span><span class="s0">True</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">NotAjax(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Not Ajax'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Not Ajax'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.filter(is_ajax=</span><span class="s0">False</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">Error(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Error'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Errors'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.filter(response__gte=</span><span class="s4">400</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">Error404(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Error 404'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Errors 404'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.filter(response=</span><span class="s4">404</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">Hit(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Hit'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Hits'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.count()</span>
+
+
+<span class="s0">class </span><span class="s1">Search(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Search'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Searches'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.search().count()</span>
+
+
+<span class="s0">class </span><span class="s1">Secure(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Secure'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Secure'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.filter(is_secure=</span><span class="s0">True</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">Unsecure(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Unsecure'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Unsecure'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.filter(is_secure=</span><span class="s0">False</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">UniqueVisit(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Unique Visit'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Unique Visits'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.exclude(</span>
+            <span class="s1">referer__startswith=settings.BASE_URL</span><span class="s0">,</span>
+        <span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">UniqueVisitor(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Unique Visitor'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Unique Visitor'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.aggregate(Count(</span><span class="s3">'ip'</span><span class="s0">, </span><span class="s1">distinct=</span><span class="s0">True</span><span class="s1">))[</span><span class="s3">'ip__count'</span><span class="s1">]</span>
+
+
+<span class="s0">class </span><span class="s1">User(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'User'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'User'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.exclude(user__isnull=</span><span class="s0">False</span><span class="s1">).count()</span>
+
+
+<span class="s0">class </span><span class="s1">UniqueUser(Module):</span>
+    <span class="s1">verbose_name = _(</span><span class="s3">'Unique User'</span><span class="s1">)</span>
+    <span class="s1">verbose_name_plural = _(</span><span class="s3">'Unique User'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">count(self</span><span class="s0">, </span><span class="s1">qs):</span>
+        <span class="s0">return </span><span class="s1">qs.aggregate(Count(</span><span class="s3">'user'</span><span class="s0">, </span><span class="s1">distinct=</span><span class="s0">True</span><span class="s1">))[</span><span class="s3">'user__count'</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

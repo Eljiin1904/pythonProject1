@@ -1,0 +1,138 @@
+<html>
+<head>
+<title>streams.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #a5c261;}
+.s6 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+streams.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Generator</span>
+
+
+<span class="s0">class </span><span class="s1">StreamReader:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Generator-based stream reader. 
+ 
+    This class doesn't support concurrent calls to :meth:`read_line()`, 
+    :meth:`read_exact()`, or :meth:`read_to_eof()`. Make sure calls are 
+    serialized. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s1">self.buffer = bytearray()</span>
+        <span class="s1">self.eof = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">read_line(self) -&gt; Generator[</span><span class="s0">None, None, </span><span class="s1">bytes]:</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Read a LF-terminated line from the stream. 
+ 
+        The return value includes the LF character. 
+ 
+        This is a generator-based coroutine. 
+ 
+        :raises EOFError: if the stream ends without a LF 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">n = </span><span class="s3">0  </span><span class="s4"># number of bytes to read</span>
+        <span class="s1">p = </span><span class="s3">0  </span><span class="s4"># number of bytes without a newline</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">n = self.buffer.find(</span><span class="s5">b&quot;</span><span class="s0">\n</span><span class="s5">&quot;</span><span class="s0">, </span><span class="s1">p) + </span><span class="s3">1</span>
+            <span class="s0">if </span><span class="s1">n &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">break</span>
+            <span class="s1">p = len(self.buffer)</span>
+            <span class="s0">if </span><span class="s1">self.eof:</span>
+                <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s6">f&quot;stream ends after </span><span class="s0">{</span><span class="s1">p</span><span class="s0">} </span><span class="s6">bytes, before end of line&quot;</span><span class="s1">)</span>
+            <span class="s0">yield</span>
+        <span class="s1">r = self.buffer[:n]</span>
+        <span class="s0">del </span><span class="s1">self.buffer[:n]</span>
+        <span class="s0">return </span><span class="s1">r</span>
+
+    <span class="s0">def </span><span class="s1">read_exact(self</span><span class="s0">, </span><span class="s1">n: int) -&gt; Generator[</span><span class="s0">None, None, </span><span class="s1">bytes]:</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Read ``n`` bytes from the stream. 
+ 
+        This is a generator-based coroutine. 
+ 
+        :raises EOFError: if the stream ends in less than ``n`` bytes 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">assert </span><span class="s1">n &gt;= </span><span class="s3">0</span>
+        <span class="s0">while </span><span class="s1">len(self.buffer) &lt; n:</span>
+            <span class="s0">if </span><span class="s1">self.eof:</span>
+                <span class="s1">p = len(self.buffer)</span>
+                <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s6">f&quot;stream ends after </span><span class="s0">{</span><span class="s1">p</span><span class="s0">} </span><span class="s6">bytes, expected </span><span class="s0">{</span><span class="s1">n</span><span class="s0">} </span><span class="s6">bytes&quot;</span><span class="s1">)</span>
+            <span class="s0">yield</span>
+        <span class="s1">r = self.buffer[:n]</span>
+        <span class="s0">del </span><span class="s1">self.buffer[:n]</span>
+        <span class="s0">return </span><span class="s1">r</span>
+
+    <span class="s0">def </span><span class="s1">read_to_eof(self) -&gt; Generator[</span><span class="s0">None, None, </span><span class="s1">bytes]:</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Read all bytes from the stream. 
+ 
+        This is a generator-based coroutine. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">while not </span><span class="s1">self.eof:</span>
+            <span class="s0">yield</span>
+        <span class="s1">r = self.buffer[:]</span>
+        <span class="s0">del </span><span class="s1">self.buffer[:]</span>
+        <span class="s0">return </span><span class="s1">r</span>
+
+    <span class="s0">def </span><span class="s1">at_eof(self) -&gt; Generator[</span><span class="s0">None, None, </span><span class="s1">bool]:</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Tell whether the stream has ended and all data was read. 
+ 
+        This is a generator-based coroutine. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">self.buffer:</span>
+                <span class="s0">return False</span>
+            <span class="s0">if </span><span class="s1">self.eof:</span>
+                <span class="s0">return True</span>
+            <span class="s4"># When all data was read but the stream hasn't ended, we can't</span>
+            <span class="s4"># tell if until either feed_data() or feed_eof() is called.</span>
+            <span class="s0">yield</span>
+
+    <span class="s0">def </span><span class="s1">feed_data(self</span><span class="s0">, </span><span class="s1">data: bytes) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Write ``data`` to the stream. 
+ 
+        :meth:`feed_data()` cannot be called after :meth:`feed_eof()`. 
+ 
+        :raises EOFError: if the stream has ended 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.eof:</span>
+            <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s6">&quot;stream ended&quot;</span><span class="s1">)</span>
+        <span class="s1">self.buffer += data</span>
+
+    <span class="s0">def </span><span class="s1">feed_eof(self) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot; 
+        End the stream. 
+ 
+        :meth:`feed_eof()` must be called at must once. 
+ 
+        :raises EOFError: if the stream has ended 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.eof:</span>
+            <span class="s0">raise </span><span class="s1">EOFError(</span><span class="s6">&quot;stream ended&quot;</span><span class="s1">)</span>
+        <span class="s1">self.eof = </span><span class="s0">True</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<html>
+<head>
+<title>middleware.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+middleware.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ValidationError</span>
+<span class="s0">from </span><span class="s1">django.utils.deprecation </span><span class="s0">import </span><span class="s1">MiddlewareMixin</span>
+
+<span class="s0">from </span><span class="s1">. </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">.models </span><span class="s0">import </span><span class="s1">Request</span>
+<span class="s0">from </span><span class="s1">.router </span><span class="s0">import </span><span class="s1">Patterns</span>
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">request_is_ajax</span>
+
+
+<span class="s0">class </span><span class="s1">RequestMiddleware(MiddlewareMixin):</span>
+    <span class="s0">def </span><span class="s1">process_response(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">response):</span>
+        <span class="s0">if </span><span class="s1">request.method.lower() </span><span class="s0">not in </span><span class="s1">settings.VALID_METHOD_NAMES:</span>
+            <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s0">if </span><span class="s1">response.status_code &lt; </span><span class="s2">400 </span><span class="s0">and </span><span class="s1">settings.ONLY_ERRORS:</span>
+            <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s1">ignore = Patterns(</span><span class="s0">False, </span><span class="s1">*settings.IGNORE_PATHS)</span>
+        <span class="s0">if </span><span class="s1">ignore.resolve(request.path[</span><span class="s2">1</span><span class="s1">:]):</span>
+            <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s0">if </span><span class="s1">request_is_ajax(request) </span><span class="s0">and </span><span class="s1">settings.IGNORE_AJAX:</span>
+            <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s0">if </span><span class="s1">request.META.get(</span><span class="s3">'REMOTE_ADDR'</span><span class="s1">) </span><span class="s0">in </span><span class="s1">settings.IGNORE_IP:</span>
+            <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s1">ignore = Patterns(</span><span class="s0">False, </span><span class="s1">*settings.IGNORE_USER_AGENTS)</span>
+        <span class="s0">if </span><span class="s1">ignore.resolve(request.META.get(</span><span class="s3">'HTTP_USER_AGENT'</span><span class="s0">, </span><span class="s3">''</span><span class="s1">)):</span>
+            <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s0">if </span><span class="s1">getattr(request</span><span class="s0">, </span><span class="s3">'user'</span><span class="s0">, False</span><span class="s1">):</span>
+            <span class="s0">if </span><span class="s1">request.user.get_username() </span><span class="s0">in </span><span class="s1">settings.IGNORE_USERNAME:</span>
+                <span class="s0">return </span><span class="s1">response</span>
+
+        <span class="s1">r = Request()</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">r.from_http_request(request</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">commit=</span><span class="s0">False</span><span class="s1">)</span>
+            <span class="s1">r.full_clean()</span>
+        <span class="s0">except </span><span class="s1">ValidationError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">r.save()</span>
+        <span class="s0">return </span><span class="s1">response</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<html>
+<head>
+<title>test_thread_cache.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_thread_cache.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">from </span><span class="s1">queue </span><span class="s0">import </span><span class="s1">Queue</span>
+<span class="s0">import </span><span class="s1">time</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">contextmanager</span>
+
+<span class="s0">from </span><span class="s1">.tutil </span><span class="s0">import </span><span class="s1">slow</span><span class="s0">, </span><span class="s1">gc_collect_harder</span><span class="s0">, </span><span class="s1">disable_threading_excepthook</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_thread_cache</span>
+<span class="s0">from </span><span class="s1">.._thread_cache </span><span class="s0">import </span><span class="s1">start_thread_soon</span><span class="s0">, </span><span class="s1">ThreadCache</span>
+
+
+<span class="s0">def </span><span class="s1">test_thread_cache_basics():</span>
+    <span class="s1">q = Queue()</span>
+
+    <span class="s0">def </span><span class="s1">fn():</span>
+        <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s2">&quot;hi&quot;</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">deliver(outcome):</span>
+        <span class="s1">q.put(outcome)</span>
+
+    <span class="s1">start_thread_soon(fn</span><span class="s0">, </span><span class="s1">deliver)</span>
+
+    <span class="s1">outcome = q.get()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError</span><span class="s0">, </span><span class="s1">match=</span><span class="s2">&quot;hi&quot;</span><span class="s1">):</span>
+        <span class="s1">outcome.unwrap()</span>
+
+
+<span class="s0">def </span><span class="s1">test_thread_cache_deref():</span>
+    <span class="s1">res = [</span><span class="s0">False</span><span class="s1">]</span>
+
+    <span class="s0">class </span><span class="s1">del_me:</span>
+        <span class="s0">def </span><span class="s1">__call__(self):</span>
+            <span class="s0">return </span><span class="s3">42</span>
+
+        <span class="s0">def </span><span class="s1">__del__(self):</span>
+            <span class="s1">res[</span><span class="s3">0</span><span class="s1">] = </span><span class="s0">True</span>
+
+    <span class="s1">q = Queue()</span>
+
+    <span class="s0">def </span><span class="s1">deliver(outcome):</span>
+        <span class="s1">q.put(outcome)</span>
+
+    <span class="s1">start_thread_soon(del_me()</span><span class="s0">, </span><span class="s1">deliver)</span>
+    <span class="s1">outcome = q.get()</span>
+    <span class="s0">assert </span><span class="s1">outcome.unwrap() == </span><span class="s3">42</span>
+
+    <span class="s1">gc_collect_harder()</span>
+    <span class="s0">assert </span><span class="s1">res[</span><span class="s3">0</span><span class="s1">]</span>
+
+
+<span class="s1">@slow</span>
+<span class="s0">def </span><span class="s1">test_spawning_new_thread_from_deliver_reuses_starting_thread():</span>
+    <span class="s4"># We know that no-one else is using the thread cache, so if we keep</span>
+    <span class="s4"># submitting new jobs the instant the previous one is finished, we should</span>
+    <span class="s4"># keep getting the same thread over and over. This tests both that the</span>
+    <span class="s4"># thread cache is LIFO, and that threads can be assigned new work *before*</span>
+    <span class="s4"># deliver exits.</span>
+
+    <span class="s4"># Make sure there are a few threads running, so if we weren't LIFO then we</span>
+    <span class="s4"># could grab the wrong one.</span>
+    <span class="s1">q = Queue()</span>
+    <span class="s1">COUNT = </span><span class="s3">5</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(COUNT):</span>
+        <span class="s1">start_thread_soon(</span><span class="s0">lambda</span><span class="s1">: time.sleep(</span><span class="s3">1</span><span class="s1">)</span><span class="s0">, lambda </span><span class="s1">result: q.put(result))</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(COUNT):</span>
+        <span class="s1">q.get().unwrap()</span>
+
+    <span class="s1">seen_threads = set()</span>
+    <span class="s1">done = threading.Event()</span>
+
+    <span class="s0">def </span><span class="s1">deliver(n</span><span class="s0">, </span><span class="s1">_):</span>
+        <span class="s1">print(n)</span>
+        <span class="s1">seen_threads.add(threading.current_thread())</span>
+        <span class="s0">if </span><span class="s1">n == </span><span class="s3">0</span><span class="s1">:</span>
+            <span class="s1">done.set()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">start_thread_soon(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, lambda </span><span class="s1">_: deliver(n - </span><span class="s3">1</span><span class="s0">, </span><span class="s1">_))</span>
+
+    <span class="s1">start_thread_soon(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, lambda </span><span class="s1">_: deliver(</span><span class="s3">5</span><span class="s0">, </span><span class="s1">_))</span>
+
+    <span class="s1">done.wait()</span>
+
+    <span class="s0">assert </span><span class="s1">len(seen_threads) == </span><span class="s3">1</span>
+
+
+<span class="s1">@slow</span>
+<span class="s0">def </span><span class="s1">test_idle_threads_exit(monkeypatch):</span>
+    <span class="s4"># Temporarily set the idle timeout to something tiny, to speed up the</span>
+    <span class="s4"># test. (But non-zero, so that the worker loop will at least yield the</span>
+    <span class="s4"># CPU.)</span>
+    <span class="s1">monkeypatch.setattr(_thread_cache</span><span class="s0">, </span><span class="s2">&quot;IDLE_TIMEOUT&quot;</span><span class="s0">, </span><span class="s3">0.0001</span><span class="s1">)</span>
+
+    <span class="s1">q = Queue()</span>
+    <span class="s1">start_thread_soon(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, lambda </span><span class="s1">_: q.put(threading.current_thread()))</span>
+    <span class="s1">seen_thread = q.get()</span>
+    <span class="s4"># Since the idle timeout is 0, after sleeping for 1 second, the thread</span>
+    <span class="s4"># should have exited</span>
+    <span class="s1">time.sleep(</span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s0">assert not </span><span class="s1">seen_thread.is_alive()</span>
+
+
+<span class="s1">@contextmanager</span>
+<span class="s0">def </span><span class="s1">_join_started_threads():</span>
+    <span class="s1">before = frozenset(threading.enumerate())</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">yield</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s0">for </span><span class="s1">thread </span><span class="s0">in </span><span class="s1">threading.enumerate():</span>
+            <span class="s0">if </span><span class="s1">thread </span><span class="s0">not in </span><span class="s1">before:</span>
+                <span class="s1">thread.join()</span>
+
+
+<span class="s0">def </span><span class="s1">test_race_between_idle_exit_and_job_assignment(monkeypatch):</span>
+    <span class="s4"># This is a lock where the first few times you try to acquire it with a</span>
+    <span class="s4"># timeout, it waits until the lock is available and then pretends to time</span>
+    <span class="s4"># out. Using this in our thread cache implementation causes the following</span>
+    <span class="s4"># sequence:</span>
+    <span class="s4">#</span>
+    <span class="s4"># 1. start_thread_soon grabs the worker thread, assigns it a job, and</span>
+    <span class="s4">#    releases its lock.</span>
+    <span class="s4"># 2. The worker thread wakes up (because the lock has been released), but</span>
+    <span class="s4">#    the JankyLock lies to it and tells it that the lock timed out. So the</span>
+    <span class="s4">#    worker thread tries to exit.</span>
+    <span class="s4"># 3. The worker thread checks for the race between exiting and being</span>
+    <span class="s4">#    assigned a job, and discovers that it *is* in the process of being</span>
+    <span class="s4">#    assigned a job, so it loops around and tries to acquire the lock</span>
+    <span class="s4">#    again.</span>
+    <span class="s4"># 4. Eventually the JankyLock admits that the lock is available, and</span>
+    <span class="s4">#    everything proceeds as normal.</span>
+
+    <span class="s0">class </span><span class="s1">JankyLock:</span>
+        <span class="s0">def </span><span class="s1">__init__(self):</span>
+            <span class="s1">self._lock = threading.Lock()</span>
+            <span class="s1">self._counter = </span><span class="s3">3</span>
+
+        <span class="s0">def </span><span class="s1">acquire(self</span><span class="s0">, </span><span class="s1">timeout=</span><span class="s0">None</span><span class="s1">):</span>
+            <span class="s1">self._lock.acquire()</span>
+            <span class="s0">if </span><span class="s1">timeout </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s0">return True</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">self._counter &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                    <span class="s1">self._counter -= </span><span class="s3">1</span>
+                    <span class="s1">self._lock.release()</span>
+                    <span class="s0">return False</span>
+                <span class="s0">return True</span>
+
+        <span class="s0">def </span><span class="s1">release(self):</span>
+            <span class="s1">self._lock.release()</span>
+
+    <span class="s1">monkeypatch.setattr(_thread_cache</span><span class="s0">, </span><span class="s2">&quot;Lock&quot;</span><span class="s0">, </span><span class="s1">JankyLock)</span>
+
+    <span class="s0">with </span><span class="s1">disable_threading_excepthook()</span><span class="s0">, </span><span class="s1">_join_started_threads():</span>
+        <span class="s1">tc = ThreadCache()</span>
+        <span class="s1">done = threading.Event()</span>
+        <span class="s1">tc.start_thread_soon(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, lambda </span><span class="s1">_: done.set())</span>
+        <span class="s1">done.wait()</span>
+        <span class="s4"># Let's kill the thread we started, so it doesn't hang around until the</span>
+        <span class="s4"># test suite finishes. Doesn't really do any harm, but it can be confusing</span>
+        <span class="s4"># to see it in debug output. This is hacky, and leaves our ThreadCache</span>
+        <span class="s4"># object in an inconsistent state... but it doesn't matter, because we're</span>
+        <span class="s4"># not going to use it again anyway.</span>
+
+        <span class="s1">tc.start_thread_soon(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, lambda </span><span class="s1">_: sys.exit())</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<html>
+<head>
+<title>kml.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+kml.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.contrib.gis.db.models </span><span class="s0">import </span><span class="s1">GeometryField</span>
+<span class="s0">from </span><span class="s1">django.contrib.sitemaps </span><span class="s0">import </span><span class="s1">Sitemap</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">models</span>
+<span class="s0">from </span><span class="s1">django.urls </span><span class="s0">import </span><span class="s1">reverse</span>
+
+
+<span class="s0">class </span><span class="s1">KMLSitemap(Sitemap):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    A minimal hook to produce KML sitemaps. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">geo_format = </span><span class="s3">'kml'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">locations=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s4"># If no locations specified, then we try to build for</span>
+        <span class="s4"># every model in installed applications.</span>
+        <span class="s1">self.locations = self._build_kml_sources(locations)</span>
+
+    <span class="s0">def </span><span class="s1">_build_kml_sources(self</span><span class="s0">, </span><span class="s1">sources):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Go through the given sources and return a 3-tuple of the application 
+        label, module name, and field name of every GeometryField encountered 
+        in the sources. 
+ 
+        If no sources are provided, then all models. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">kml_sources = []</span>
+        <span class="s0">if </span><span class="s1">sources </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">sources = apps.get_models()</span>
+        <span class="s0">for </span><span class="s1">source </span><span class="s0">in </span><span class="s1">sources:</span>
+            <span class="s0">if </span><span class="s1">isinstance(source</span><span class="s0">, </span><span class="s1">models.base.ModelBase):</span>
+                <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">source._meta.fields:</span>
+                    <span class="s0">if </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">GeometryField):</span>
+                        <span class="s1">kml_sources.append((source._meta.app_label</span><span class="s0">,</span>
+                                            <span class="s1">source._meta.model_name</span><span class="s0">,</span>
+                                            <span class="s1">field.name))</span>
+            <span class="s0">elif </span><span class="s1">isinstance(source</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+                <span class="s0">if </span><span class="s1">len(source) != </span><span class="s5">3</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Must specify a 3-tuple of (app_label, module_name, field_name).'</span><span class="s1">)</span>
+                <span class="s1">kml_sources.append(source)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s3">'KML Sources must be a model or a 3-tuple.'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">kml_sources</span>
+
+    <span class="s0">def </span><span class="s1">get_urls(self</span><span class="s0">, </span><span class="s1">page=</span><span class="s5">1</span><span class="s0">, </span><span class="s1">site=</span><span class="s0">None, </span><span class="s1">protocol=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        This method is overridden so the appropriate `geo_format` attribute 
+        is placed on each URL element. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">urls = Sitemap.get_urls(self</span><span class="s0">, </span><span class="s1">page=page</span><span class="s0">, </span><span class="s1">site=site</span><span class="s0">, </span><span class="s1">protocol=protocol)</span>
+        <span class="s0">for </span><span class="s1">url </span><span class="s0">in </span><span class="s1">urls:</span>
+            <span class="s1">url[</span><span class="s3">'geo_format'</span><span class="s1">] = self.geo_format</span>
+        <span class="s0">return </span><span class="s1">urls</span>
+
+    <span class="s0">def </span><span class="s1">items(self):</span>
+        <span class="s0">return </span><span class="s1">self.locations</span>
+
+    <span class="s0">def </span><span class="s1">location(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s0">return </span><span class="s1">reverse(</span>
+            <span class="s3">'django.contrib.gis.sitemaps.views.%s' </span><span class="s1">% self.geo_format</span><span class="s0">,</span>
+            <span class="s1">kwargs={</span>
+                <span class="s3">'label'</span><span class="s1">: obj[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">,</span>
+                <span class="s3">'model'</span><span class="s1">: obj[</span><span class="s5">1</span><span class="s1">]</span><span class="s0">,</span>
+                <span class="s3">'field_name'</span><span class="s1">: obj[</span><span class="s5">2</span><span class="s1">]</span><span class="s0">,</span>
+            <span class="s1">}</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">KMZSitemap(KMLSitemap):</span>
+    <span class="s1">geo_format = </span><span class="s3">'kmz'</span>
+</pre>
+</body>
+</html>

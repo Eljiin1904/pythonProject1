@@ -1,0 +1,62 @@
+<html>
+<head>
+<title>test_scheduler_determinism.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_scheduler_determinism.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">trio</span>
+
+
+<span class="s0">async def </span><span class="s1">scheduler_trace():</span>
+    <span class="s2">&quot;&quot;&quot;Returns a scheduler-dependent value we can use to check determinism.&quot;&quot;&quot;</span>
+    <span class="s1">trace = []</span>
+
+    <span class="s0">async def </span><span class="s1">tracer(name):</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">50</span><span class="s1">):</span>
+            <span class="s1">trace.append((name</span><span class="s0">, </span><span class="s1">i))</span>
+            <span class="s0">await </span><span class="s1">trio.sleep(</span><span class="s3">0</span><span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">5</span><span class="s1">):</span>
+            <span class="s1">nursery.start_soon(tracer</span><span class="s0">, </span><span class="s1">i)</span>
+
+    <span class="s0">return </span><span class="s1">tuple(trace)</span>
+
+
+<span class="s0">def </span><span class="s1">test_the_trio_scheduler_is_not_deterministic():</span>
+    <span class="s4"># At least, not yet.  See https://github.com/python-trio/trio/issues/32</span>
+    <span class="s1">traces = []</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">10</span><span class="s1">):</span>
+        <span class="s1">traces.append(trio.run(scheduler_trace))</span>
+    <span class="s0">assert </span><span class="s1">len(set(traces)) == len(traces)</span>
+
+
+<span class="s0">def </span><span class="s1">test_the_trio_scheduler_is_deterministic_if_seeded(monkeypatch):</span>
+    <span class="s1">monkeypatch.setattr(trio._core._run</span><span class="s0">, </span><span class="s5">&quot;_ALLOW_DETERMINISTIC_SCHEDULING&quot;</span><span class="s0">, True</span><span class="s1">)</span>
+    <span class="s1">traces = []</span>
+    <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">10</span><span class="s1">):</span>
+        <span class="s1">state = trio._core._run._r.getstate()</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">trio._core._run._r.seed(</span><span class="s3">0</span><span class="s1">)</span>
+            <span class="s1">traces.append(trio.run(scheduler_trace))</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">trio._core._run._r.setstate(state)</span>
+
+    <span class="s0">assert </span><span class="s1">len(traces) == </span><span class="s3">10</span>
+    <span class="s0">assert </span><span class="s1">len(set(traces)) == </span><span class="s3">1</span>
+</pre>
+</body>
+</html>

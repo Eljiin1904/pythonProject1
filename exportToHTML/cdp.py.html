@@ -1,0 +1,505 @@
+<html>
+<head>
+<title>cdp.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cdp.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># The MIT License(MIT)</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright(c) 2018 Hyperion Gray</span>
+<span class="s0">#</span>
+<span class="s0"># Permission is hereby granted, free of charge, to any person obtaining a copy</span>
+<span class="s0"># of this software and associated documentation files(the &quot;Software&quot;), to deal</span>
+<span class="s0"># in the Software without restriction, including without limitation the rights</span>
+<span class="s0"># to use, copy, modify, merge, publish, distribute, sublicense, and / or sell</span>
+<span class="s0"># copies of the Software, and to permit persons to whom the Software is</span>
+<span class="s0"># furnished to do so, subject to the following conditions:</span>
+<span class="s0">#</span>
+<span class="s0"># The above copyright notice and this permission notice shall be included in</span>
+<span class="s0"># all copies or substantial portions of the Software.</span>
+<span class="s0">#</span>
+<span class="s0"># THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</span>
+<span class="s0"># IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</span>
+<span class="s0"># FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE</span>
+<span class="s0"># AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER</span>
+<span class="s0"># LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,</span>
+<span class="s0"># OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN</span>
+<span class="s0"># THE SOFTWARE.</span>
+<span class="s0">#</span>
+<span class="s0"># This code comes from https://github.com/HyperionGray/trio-chrome-devtools-protocol/tree/master/trio_cdp</span>
+
+<span class="s0"># flake8: noqa</span>
+
+<span class="s2">from </span><span class="s1">trio_websocket </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">ConnectionClosed </span><span class="s2">as </span><span class="s1">WsConnectionClosed</span><span class="s2">,</span>
+    <span class="s1">connect_websocket_url</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">import </span><span class="s1">trio</span>
+<span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">defaultdict</span>
+<span class="s2">from </span><span class="s1">contextlib </span><span class="s2">import </span><span class="s1">(contextmanager</span><span class="s2">, </span><span class="s1">asynccontextmanager)</span>
+<span class="s2">from </span><span class="s1">dataclasses </span><span class="s2">import </span><span class="s1">dataclass</span>
+<span class="s2">import </span><span class="s1">contextvars</span>
+<span class="s2">import </span><span class="s1">importlib</span>
+<span class="s2">import </span><span class="s1">itertools</span>
+<span class="s2">import </span><span class="s1">json</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+
+<span class="s1">logger = logging.getLogger(</span><span class="s3">'trio_cdp'</span><span class="s1">)</span>
+<span class="s1">T = typing.TypeVar(</span><span class="s3">'T'</span><span class="s1">)</span>
+<span class="s1">MAX_WS_MESSAGE_SIZE = </span><span class="s4">2</span><span class="s1">**</span><span class="s4">24</span>
+
+<span class="s1">devtools = </span><span class="s2">None</span>
+<span class="s1">version = </span><span class="s2">None</span>
+
+
+<span class="s2">def </span><span class="s1">import_devtools(ver):</span>
+    <span class="s2">global </span><span class="s1">devtools</span>
+    <span class="s2">global </span><span class="s1">version</span>
+    <span class="s1">version = ver</span>
+    <span class="s1">devtools = importlib.import_module(</span><span class="s3">&quot;selenium.webdriver.common.devtools.v{}&quot;</span><span class="s1">.format(version))</span>
+
+
+<span class="s1">_connection_context: contextvars.ContextVar = contextvars.ContextVar(</span><span class="s3">'connection_context'</span><span class="s1">)</span>
+<span class="s1">_session_context: contextvars.ContextVar = contextvars.ContextVar(</span><span class="s3">'session_context'</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">get_connection_context(fn_name):</span>
+    <span class="s5">''' 
+    Look up the current connection. If there is no current connection, raise a 
+    ``RuntimeError`` with a helpful message. 
+    '''</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">_connection_context.get()</span>
+    <span class="s2">except </span><span class="s1">LookupError:</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s3">f'</span><span class="s2">{</span><span class="s1">fn_name</span><span class="s2">}</span><span class="s3">() must be called in a connection context.'</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">get_session_context(fn_name):</span>
+    <span class="s5">''' 
+    Look up the current session. If there is no current session, raise a 
+    ``RuntimeError`` with a helpful message. 
+    '''</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">_session_context.get()</span>
+    <span class="s2">except </span><span class="s1">LookupError:</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s3">f'</span><span class="s2">{</span><span class="s1">fn_name</span><span class="s2">}</span><span class="s3">() must be called in a session context.'</span><span class="s1">)</span>
+
+
+<span class="s1">@contextmanager</span>
+<span class="s2">def </span><span class="s1">connection_context(connection):</span>
+    <span class="s5">''' This context manager installs ``connection`` as the session context for the current 
+    Trio task. '''</span>
+    <span class="s1">token = _connection_context.set(connection)</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">yield</span>
+    <span class="s2">finally</span><span class="s1">:</span>
+        <span class="s1">_connection_context.reset(token)</span>
+
+
+<span class="s1">@contextmanager</span>
+<span class="s2">def </span><span class="s1">session_context(session):</span>
+    <span class="s5">''' This context manager installs ``session`` as the session context for the current 
+    Trio task. '''</span>
+    <span class="s1">token = _session_context.set(session)</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">yield</span>
+    <span class="s2">finally</span><span class="s1">:</span>
+        <span class="s1">_session_context.reset(token)</span>
+
+
+<span class="s2">def </span><span class="s1">set_global_connection(connection):</span>
+    <span class="s5">''' 
+    Install ``connection`` in the root context so that it will become the default 
+    connection for all tasks. This is generally not recommended, except it may be 
+    necessary in certain use cases such as running inside Jupyter notebook. 
+    '''</span>
+    <span class="s2">global </span><span class="s1">_connection_context</span>
+    <span class="s1">_connection_context = contextvars.ContextVar(</span><span class="s3">'_connection_context'</span><span class="s2">,</span>
+                                                 <span class="s1">default=connection)</span>
+
+
+<span class="s2">def </span><span class="s1">set_global_session(session):</span>
+    <span class="s5">''' 
+    Install ``session`` in the root context so that it will become the default 
+    session for all tasks. This is generally not recommended, except it may be 
+    necessary in certain use cases such as running inside Jupyter notebook. 
+    '''</span>
+    <span class="s2">global </span><span class="s1">_session_context</span>
+    <span class="s1">_session_context = contextvars.ContextVar(</span><span class="s3">'_session_context'</span><span class="s2">, </span><span class="s1">default=session)</span>
+
+
+<span class="s2">class </span><span class="s1">BrowserError(Exception):</span>
+    <span class="s5">''' This exception is raised when the browser's response to a command 
+    indicates that an error occurred. '''</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">obj):</span>
+        <span class="s1">self.code = obj[</span><span class="s3">'code'</span><span class="s1">]</span>
+        <span class="s1">self.message = obj[</span><span class="s3">'message'</span><span class="s1">]</span>
+        <span class="s1">self.detail = obj.get(</span><span class="s3">'data'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">return </span><span class="s3">'BrowserError&lt;code={} message={}&gt; {}'</span><span class="s1">.format(self.code</span><span class="s2">,</span>
+                                                            <span class="s1">self.message</span><span class="s2">, </span><span class="s1">self.detail)</span>
+
+
+<span class="s2">class </span><span class="s1">CdpConnectionClosed(WsConnectionClosed):</span>
+    <span class="s5">''' Raised when a public method is called on a closed CDP connection. '''</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">reason):</span>
+        <span class="s5">''' 
+        Constructor. 
+        :param reason: 
+        :type reason: wsproto.frame_protocol.CloseReason 
+        '''</span>
+        <span class="s1">self.reason = reason</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s5">''' Return representation. '''</span>
+        <span class="s2">return </span><span class="s3">'{}&lt;{}&gt;'</span><span class="s1">.format(self.__class__.__name__</span><span class="s2">, </span><span class="s1">self.reason)</span>
+
+
+<span class="s2">class </span><span class="s1">InternalError(Exception):</span>
+    <span class="s5">''' This exception is only raised when there is faulty logic in TrioCDP or 
+    the integration with PyCDP. '''</span>
+
+
+<span class="s1">@dataclass</span>
+<span class="s2">class </span><span class="s1">CmEventProxy:</span>
+    <span class="s5">''' A proxy object returned by :meth:`CdpBase.wait_for()``. After the 
+    context manager executes, this proxy object will have a value set that 
+    contains the returned event. '''</span>
+    <span class="s1">value: typing.Any = </span><span class="s2">None</span>
+
+
+<span class="s2">class </span><span class="s1">CdpBase:</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">ws</span><span class="s2">, </span><span class="s1">session_id</span><span class="s2">, </span><span class="s1">target_id):</span>
+        <span class="s1">self.ws = ws</span>
+        <span class="s1">self.session_id = session_id</span>
+        <span class="s1">self.target_id = target_id</span>
+        <span class="s1">self.channels = defaultdict(set)</span>
+        <span class="s1">self.id_iter = itertools.count()</span>
+        <span class="s1">self.inflight_cmd = dict()</span>
+        <span class="s1">self.inflight_result = dict()</span>
+
+    <span class="s2">async def </span><span class="s1">execute(self</span><span class="s2">, </span><span class="s1">cmd: typing.Generator[dict</span><span class="s2">, </span><span class="s1">T</span><span class="s2">, </span><span class="s1">typing.Any]) -&gt; T:</span>
+        <span class="s5">''' 
+        Execute a command on the server and wait for the result. 
+        :param cmd: any CDP command 
+        :returns: a CDP result 
+        '''</span>
+        <span class="s1">cmd_id = next(self.id_iter)</span>
+        <span class="s1">cmd_event = trio.Event()</span>
+        <span class="s1">self.inflight_cmd[cmd_id] = cmd</span><span class="s2">, </span><span class="s1">cmd_event</span>
+        <span class="s1">request = next(cmd)</span>
+        <span class="s1">request[</span><span class="s3">'id'</span><span class="s1">] = cmd_id</span>
+        <span class="s2">if </span><span class="s1">self.session_id:</span>
+            <span class="s1">request[</span><span class="s3">'sessionId'</span><span class="s1">] = self.session_id</span>
+        <span class="s1">request_str = json.dumps(request)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">await </span><span class="s1">self.ws.send_message(request_str)</span>
+        <span class="s2">except </span><span class="s1">WsConnectionClosed </span><span class="s2">as </span><span class="s1">wcc:</span>
+            <span class="s2">raise </span><span class="s1">CdpConnectionClosed(wcc.reason) </span><span class="s2">from None</span>
+        <span class="s2">await </span><span class="s1">cmd_event.wait()</span>
+        <span class="s1">response = self.inflight_result.pop(cmd_id)</span>
+        <span class="s2">if </span><span class="s1">isinstance(response</span><span class="s2">, </span><span class="s1">Exception):</span>
+            <span class="s2">raise </span><span class="s1">response</span>
+        <span class="s2">return </span><span class="s1">response</span>
+
+    <span class="s2">def </span><span class="s1">listen(self</span><span class="s2">, </span><span class="s1">*event_types</span><span class="s2">, </span><span class="s1">buffer_size=</span><span class="s4">10</span><span class="s1">):</span>
+        <span class="s5">''' Return an async iterator that iterates over events matching the 
+        indicated types. '''</span>
+        <span class="s1">sender</span><span class="s2">, </span><span class="s1">receiver = trio.open_memory_channel(buffer_size)</span>
+        <span class="s2">for </span><span class="s1">event_type </span><span class="s2">in </span><span class="s1">event_types:</span>
+            <span class="s1">self.channels[event_type].add(sender)</span>
+        <span class="s2">return </span><span class="s1">receiver</span>
+
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s2">async def </span><span class="s1">wait_for(self</span><span class="s2">, </span><span class="s1">event_type: typing.Type[T]</span><span class="s2">, </span><span class="s1">buffer_size=</span><span class="s4">10</span><span class="s1">) -&gt; \</span>
+            <span class="s1">typing.AsyncGenerator[CmEventProxy</span><span class="s2">, None</span><span class="s1">]:</span>
+        <span class="s5">''' 
+        Wait for an event of the given type and return it. 
+        This is an async context manager, so you should open it inside an async 
+        with block. The block will not exit until the indicated event is 
+        received. 
+        '''</span>
+        <span class="s1">sender</span><span class="s2">, </span><span class="s1">receiver = trio.open_memory_channel(buffer_size)</span>
+        <span class="s1">self.channels[event_type].add(sender)</span>
+        <span class="s1">proxy = CmEventProxy()</span>
+        <span class="s2">yield </span><span class="s1">proxy</span>
+        <span class="s2">async with </span><span class="s1">receiver:</span>
+            <span class="s1">event = </span><span class="s2">await </span><span class="s1">receiver.receive()</span>
+        <span class="s1">proxy.value = event</span>
+
+    <span class="s2">def </span><span class="s1">_handle_data(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s5">''' 
+        Handle incoming WebSocket data. 
+        :param dict data: a JSON dictionary 
+        '''</span>
+        <span class="s2">if </span><span class="s3">'id' </span><span class="s2">in </span><span class="s1">data:</span>
+            <span class="s1">self._handle_cmd_response(data)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._handle_event(data)</span>
+
+    <span class="s2">def </span><span class="s1">_handle_cmd_response(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s5">''' 
+        Handle a response to a command. This will set an event flag that will 
+        return control to the task that called the command. 
+        :param dict data: response as a JSON dictionary 
+        '''</span>
+        <span class="s1">cmd_id = data[</span><span class="s3">'id'</span><span class="s1">]</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">cmd</span><span class="s2">, </span><span class="s1">event = self.inflight_cmd.pop(cmd_id)</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s1">logger.warning(</span><span class="s3">'Got a message with a command ID that does'</span>
+                           <span class="s3">' not exist: {}'</span><span class="s1">.format(data))</span>
+            <span class="s2">return</span>
+        <span class="s2">if </span><span class="s3">'error' </span><span class="s2">in </span><span class="s1">data:</span>
+            <span class="s0"># If the server reported an error, convert it to an exception and do</span>
+            <span class="s0"># not process the response any further.</span>
+            <span class="s1">self.inflight_result[cmd_id] = BrowserError(data[</span><span class="s3">'error'</span><span class="s1">])</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># Otherwise, continue the generator to parse the JSON result</span>
+            <span class="s0"># into a CDP object.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">response = cmd.send(data[</span><span class="s3">'result'</span><span class="s1">])</span>
+                <span class="s2">raise </span><span class="s1">InternalError(</span><span class="s3">&quot;The command's generator function &quot;</span>
+                                    <span class="s3">&quot;did not exit when expected!&quot;</span><span class="s1">)</span>
+            <span class="s2">except </span><span class="s1">StopIteration </span><span class="s2">as </span><span class="s1">exit:</span>
+                <span class="s1">return_ = exit.value</span>
+            <span class="s1">self.inflight_result[cmd_id] = return_</span>
+        <span class="s1">event.set()</span>
+
+    <span class="s2">def </span><span class="s1">_handle_event(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s5">''' 
+        Handle an event. 
+        :param dict data: event as a JSON dictionary 
+        '''</span>
+        <span class="s2">global </span><span class="s1">devtools</span>
+        <span class="s1">event = devtools.util.parse_json_event(data)</span>
+        <span class="s1">logger.debug(</span><span class="s3">'Received event: %s'</span><span class="s2">, </span><span class="s1">event)</span>
+        <span class="s1">to_remove = set()</span>
+        <span class="s2">for </span><span class="s1">sender </span><span class="s2">in </span><span class="s1">self.channels[type(event)]:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">sender.send_nowait(event)</span>
+            <span class="s2">except </span><span class="s1">trio.WouldBlock:</span>
+                <span class="s1">logger.error(</span><span class="s3">'Unable to send event &quot;%r&quot; due to full channel %s'</span><span class="s2">,</span>
+                             <span class="s1">event</span><span class="s2">, </span><span class="s1">sender)</span>
+            <span class="s2">except </span><span class="s1">trio.BrokenResourceError:</span>
+                <span class="s1">to_remove.add(sender)</span>
+        <span class="s2">if </span><span class="s1">to_remove:</span>
+            <span class="s1">self.channels[type(event)] -= to_remove</span>
+
+
+<span class="s2">class </span><span class="s1">CdpSession(CdpBase):</span>
+    <span class="s5">''' 
+    Contains the state for a CDP session. 
+    Generally you should not instantiate this object yourself; you should call 
+    :meth:`CdpConnection.open_session`. 
+    '''</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">ws</span><span class="s2">, </span><span class="s1">session_id</span><span class="s2">, </span><span class="s1">target_id):</span>
+        <span class="s5">''' 
+        Constructor. 
+        :param trio_websocket.WebSocketConnection ws: 
+        :param devtools.target.SessionID session_id: 
+        :param devtools.target.TargetID target_id: 
+        '''</span>
+        <span class="s1">super().__init__(ws</span><span class="s2">, </span><span class="s1">session_id</span><span class="s2">, </span><span class="s1">target_id)</span>
+
+        <span class="s1">self._dom_enable_count = </span><span class="s4">0</span>
+        <span class="s1">self._dom_enable_lock = trio.Lock()</span>
+        <span class="s1">self._page_enable_count = </span><span class="s4">0</span>
+        <span class="s1">self._page_enable_lock = trio.Lock()</span>
+
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s2">async def </span><span class="s1">dom_enable(self):</span>
+        <span class="s5">''' 
+        A context manager that executes ``dom.enable()`` when it enters and then 
+        calls ``dom.disable()``. 
+        This keeps track of concurrent callers and only disables DOM events when 
+        all callers have exited. 
+        '''</span>
+        <span class="s2">global </span><span class="s1">devtools</span>
+        <span class="s2">async with </span><span class="s1">self._dom_enable_lock:</span>
+            <span class="s1">self._dom_enable_count += </span><span class="s4">1</span>
+            <span class="s2">if </span><span class="s1">self._dom_enable_count == </span><span class="s4">1</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">self.execute(devtools.dom.enable())</span>
+
+        <span class="s2">yield</span>
+
+        <span class="s2">async with </span><span class="s1">self._dom_enable_lock:</span>
+            <span class="s1">self._dom_enable_count -= </span><span class="s4">1</span>
+            <span class="s2">if </span><span class="s1">self._dom_enable_count == </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">self.execute(devtools.dom.disable())</span>
+
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s2">async def </span><span class="s1">page_enable(self):</span>
+        <span class="s5">''' 
+        A context manager that executes ``page.enable()`` when it enters and 
+        then calls ``page.disable()`` when it exits. 
+        This keeps track of concurrent callers and only disables page events 
+        when all callers have exited. 
+        '''</span>
+        <span class="s2">global </span><span class="s1">devtools</span>
+        <span class="s2">async with </span><span class="s1">self._page_enable_lock:</span>
+            <span class="s1">self._page_enable_count += </span><span class="s4">1</span>
+            <span class="s2">if </span><span class="s1">self._page_enable_count == </span><span class="s4">1</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">self.execute(devtools.page.enable())</span>
+
+        <span class="s2">yield</span>
+
+        <span class="s2">async with </span><span class="s1">self._page_enable_lock:</span>
+            <span class="s1">self._page_enable_count -= </span><span class="s4">1</span>
+            <span class="s2">if </span><span class="s1">self._page_enable_count == </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">self.execute(devtools.page.disable())</span>
+
+
+<span class="s2">class </span><span class="s1">CdpConnection(CdpBase</span><span class="s2">, </span><span class="s1">trio.abc.AsyncResource):</span>
+    <span class="s5">''' 
+    Contains the connection state for a Chrome DevTools Protocol server. 
+    CDP can multiplex multiple &quot;sessions&quot; over a single connection. This class 
+    corresponds to the &quot;root&quot; session, i.e. the implicitly created session that 
+    has no session ID. This class is responsible for reading incoming WebSocket 
+    messages and forwarding them to the corresponding session, as well as 
+    handling messages targeted at the root session itself. 
+    You should generally call the :func:`open_cdp()` instead of 
+    instantiating this class directly. 
+    '''</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">ws):</span>
+        <span class="s5">''' 
+        Constructor 
+        :param trio_websocket.WebSocketConnection ws: 
+        '''</span>
+        <span class="s1">super().__init__(ws</span><span class="s2">, </span><span class="s1">session_id=</span><span class="s2">None, </span><span class="s1">target_id=</span><span class="s2">None</span><span class="s1">)</span>
+        <span class="s1">self.sessions = dict()</span>
+
+    <span class="s2">async def </span><span class="s1">aclose(self):</span>
+        <span class="s5">''' 
+        Close the underlying WebSocket connection. 
+        This will cause the reader task to gracefully exit when it tries to read 
+        the next message from the WebSocket. All of the public APIs 
+        (``execute()``, ``listen()``, etc.) will raise 
+        ``CdpConnectionClosed`` after the CDP connection is closed. 
+        It is safe to call this multiple times. 
+        '''</span>
+        <span class="s2">await </span><span class="s1">self.ws.aclose()</span>
+
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s2">async def </span><span class="s1">open_session(self</span><span class="s2">, </span><span class="s1">target_id) -&gt; \</span>
+            <span class="s1">typing.AsyncIterator[CdpSession]:</span>
+        <span class="s5">''' 
+        This context manager opens a session and enables the &quot;simple&quot; style of calling 
+        CDP APIs. 
+        For example, inside a session context, you can call ``await dom.get_document()`` 
+        and it will execute on the current session automatically. 
+        '''</span>
+        <span class="s1">session = </span><span class="s2">await </span><span class="s1">self.connect_session(target_id)</span>
+        <span class="s2">with </span><span class="s1">session_context(session):</span>
+            <span class="s2">yield </span><span class="s1">session</span>
+
+    <span class="s2">async def </span><span class="s1">connect_session(self</span><span class="s2">, </span><span class="s1">target_id) -&gt; </span><span class="s3">'CdpSession'</span><span class="s1">:</span>
+        <span class="s5">''' 
+        Returns a new :class:`CdpSession` connected to the specified target. 
+        '''</span>
+        <span class="s2">global </span><span class="s1">devtools</span>
+        <span class="s1">session_id = </span><span class="s2">await </span><span class="s1">self.execute(devtools.target.attach_to_target(</span>
+            <span class="s1">target_id</span><span class="s2">, True</span><span class="s1">))</span>
+        <span class="s1">session = CdpSession(self.ws</span><span class="s2">, </span><span class="s1">session_id</span><span class="s2">, </span><span class="s1">target_id)</span>
+        <span class="s1">self.sessions[session_id] = session</span>
+        <span class="s2">return </span><span class="s1">session</span>
+
+    <span class="s2">async def </span><span class="s1">_reader_task(self):</span>
+        <span class="s5">''' 
+        Runs in the background and handles incoming messages: dispatching 
+        responses to commands and events to listeners. 
+        '''</span>
+        <span class="s2">global </span><span class="s1">devtools</span>
+        <span class="s2">while True</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">message = </span><span class="s2">await </span><span class="s1">self.ws.get_message()</span>
+            <span class="s2">except </span><span class="s1">WsConnectionClosed:</span>
+                <span class="s0"># If the WebSocket is closed, we don't want to throw an</span>
+                <span class="s0"># exception from the reader task. Instead we will throw</span>
+                <span class="s0"># exceptions from the public API methods, and we can quietly</span>
+                <span class="s0"># exit the reader task here.</span>
+                <span class="s2">break</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">data = json.loads(message)</span>
+            <span class="s2">except </span><span class="s1">json.JSONDecodeError:</span>
+                <span class="s2">raise </span><span class="s1">BrowserError({</span>
+                    <span class="s3">'code'</span><span class="s1">: -</span><span class="s4">32700</span><span class="s2">,</span>
+                    <span class="s3">'message'</span><span class="s1">: </span><span class="s3">'Client received invalid JSON'</span><span class="s2">,</span>
+                    <span class="s3">'data'</span><span class="s1">: message</span>
+                <span class="s1">})</span>
+            <span class="s1">logger.debug(</span><span class="s3">'Received message %r'</span><span class="s2">, </span><span class="s1">data)</span>
+            <span class="s2">if </span><span class="s3">'sessionId' </span><span class="s2">in </span><span class="s1">data:</span>
+                <span class="s1">session_id = devtools.target.SessionID(data[</span><span class="s3">'sessionId'</span><span class="s1">])</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">session = self.sessions[session_id]</span>
+                <span class="s2">except </span><span class="s1">KeyError:</span>
+                    <span class="s2">raise </span><span class="s1">BrowserError(</span><span class="s3">'Browser sent a message for an invalid '</span>
+                                       <span class="s3">'session: {!r}'</span><span class="s1">.format(session_id))</span>
+                <span class="s1">session._handle_data(data)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">self._handle_data(data)</span>
+
+
+<span class="s1">@asynccontextmanager</span>
+<span class="s2">async def </span><span class="s1">open_cdp(url) -&gt; typing.AsyncIterator[CdpConnection]:</span>
+    <span class="s5">''' 
+    This async context manager opens a connection to the browser specified by 
+    ``url`` before entering the block, then closes the connection when the block 
+    exits. 
+    The context manager also sets the connection as the default connection for the 
+    current task, so that commands like ``await target.get_targets()`` will run on this 
+    connection automatically. If you want to use multiple connections concurrently, it 
+    is recommended to open each on in a separate task. 
+    '''</span>
+
+    <span class="s2">async with </span><span class="s1">trio.open_nursery() </span><span class="s2">as </span><span class="s1">nursery:</span>
+        <span class="s1">conn = </span><span class="s2">await </span><span class="s1">connect_cdp(nursery</span><span class="s2">, </span><span class="s1">url)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">with </span><span class="s1">connection_context(conn):</span>
+                <span class="s2">yield </span><span class="s1">conn</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s2">await </span><span class="s1">conn.aclose()</span>
+
+
+<span class="s2">async def </span><span class="s1">connect_cdp(nursery</span><span class="s2">, </span><span class="s1">url) -&gt; CdpConnection:</span>
+    <span class="s5">''' 
+    Connect to the browser specified by ``url`` and spawn a background task in the 
+    specified nursery. 
+    The ``open_cdp()`` context manager is preferred in most situations. You should only 
+    use this function if you need to specify a custom nursery. 
+    This connection is not automatically closed! You can either use the connection 
+    object as a context manager (``async with conn:``) or else call ``await 
+    conn.aclose()`` on it when you are done with it. 
+    If ``set_context`` is True, then the returned connection will be installed as 
+    the default connection for the current task. This argument is for unusual use cases, 
+    such as running inside of a notebook. 
+    '''</span>
+    <span class="s1">ws = </span><span class="s2">await </span><span class="s1">connect_websocket_url(nursery</span><span class="s2">, </span><span class="s1">url</span><span class="s2">,</span>
+                                     <span class="s1">max_message_size=MAX_WS_MESSAGE_SIZE)</span>
+    <span class="s1">cdp_conn = CdpConnection(ws)</span>
+    <span class="s1">nursery.start_soon(cdp_conn._reader_task)</span>
+    <span class="s2">return </span><span class="s1">cdp_conn</span>
+</pre>
+</body>
+</html>

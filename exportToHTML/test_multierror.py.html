@@ -1,0 +1,766 @@
+<html>
+<head>
+<title>test_multierror.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_multierror.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">traceback </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">extract_tb</span><span class="s0">,</span>
+    <span class="s1">print_exception</span><span class="s0">,</span>
+    <span class="s1">format_exception</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">traceback </span><span class="s0">import </span><span class="s1">_cause_message  </span><span class="s2"># type: ignore</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">from </span><span class="s1">pathlib </span><span class="s0">import </span><span class="s1">Path</span>
+<span class="s0">import </span><span class="s1">subprocess</span>
+
+<span class="s0">from </span><span class="s1">.tutil </span><span class="s0">import </span><span class="s1">slow</span>
+
+<span class="s0">from </span><span class="s1">.._multierror </span><span class="s0">import </span><span class="s1">MultiError</span><span class="s0">, </span><span class="s1">concat_tb</span>
+<span class="s0">from </span><span class="s1">..._core </span><span class="s0">import </span><span class="s1">open_nursery</span>
+
+
+<span class="s0">class </span><span class="s1">NotHashableException(Exception):</span>
+    <span class="s1">code = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">code):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self.code = code</span>
+
+    <span class="s0">def </span><span class="s1">__eq__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(other</span><span class="s0">, </span><span class="s1">NotHashableException):</span>
+            <span class="s0">return False</span>
+        <span class="s0">return </span><span class="s1">self.code == other.code</span>
+
+
+<span class="s0">async def </span><span class="s1">raise_nothashable(code):</span>
+    <span class="s0">raise </span><span class="s1">NotHashableException(code)</span>
+
+
+<span class="s0">def </span><span class="s1">raiser1():</span>
+    <span class="s1">raiser1_2()</span>
+
+
+<span class="s0">def </span><span class="s1">raiser1_2():</span>
+    <span class="s1">raiser1_3()</span>
+
+
+<span class="s0">def </span><span class="s1">raiser1_3():</span>
+    <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;raiser1_string&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">raiser2():</span>
+    <span class="s1">raiser2_2()</span>
+
+
+<span class="s0">def </span><span class="s1">raiser2_2():</span>
+    <span class="s0">raise </span><span class="s1">KeyError(</span><span class="s3">&quot;raiser2_string&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">raiser3():</span>
+    <span class="s0">raise </span><span class="s1">NameError</span>
+
+
+<span class="s0">def </span><span class="s1">get_exc(raiser):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">raiser()</span>
+    <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s0">return </span><span class="s1">exc</span>
+
+
+<span class="s0">def </span><span class="s1">get_tb(raiser):</span>
+    <span class="s0">return </span><span class="s1">get_exc(raiser).__traceback__</span>
+
+
+<span class="s0">def </span><span class="s1">einfo(exc):</span>
+    <span class="s0">return </span><span class="s1">(type(exc)</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">exc.__traceback__)</span>
+
+
+<span class="s0">def </span><span class="s1">test_concat_tb():</span>
+
+    <span class="s1">tb1 = get_tb(raiser1)</span>
+    <span class="s1">tb2 = get_tb(raiser2)</span>
+
+    <span class="s2"># These return a list of (filename, lineno, fn name, text) tuples</span>
+    <span class="s2"># https://docs.python.org/3/library/traceback.html#traceback.extract_tb</span>
+    <span class="s1">entries1 = extract_tb(tb1)</span>
+    <span class="s1">entries2 = extract_tb(tb2)</span>
+
+    <span class="s1">tb12 = concat_tb(tb1</span><span class="s0">, </span><span class="s1">tb2)</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(tb12) == entries1 + entries2</span>
+
+    <span class="s1">tb21 = concat_tb(tb2</span><span class="s0">, </span><span class="s1">tb1)</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(tb21) == entries2 + entries1</span>
+
+    <span class="s2"># Check degenerate cases</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(concat_tb(</span><span class="s0">None, </span><span class="s1">tb1)) == entries1</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(concat_tb(tb1</span><span class="s0">, None</span><span class="s1">)) == entries1</span>
+    <span class="s0">assert </span><span class="s1">concat_tb(</span><span class="s0">None, None</span><span class="s1">) </span><span class="s0">is None</span>
+
+    <span class="s2"># Make sure the original tracebacks didn't get mutated by mistake</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(get_tb(raiser1)) == entries1</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(get_tb(raiser2)) == entries2</span>
+
+
+<span class="s0">def </span><span class="s1">test_MultiError():</span>
+    <span class="s1">exc1 = get_exc(raiser1)</span>
+    <span class="s1">exc2 = get_exc(raiser2)</span>
+
+    <span class="s0">assert </span><span class="s1">MultiError([exc1]) </span><span class="s0">is </span><span class="s1">exc1</span>
+    <span class="s1">m = MultiError([exc1</span><span class="s0">, </span><span class="s1">exc2])</span>
+    <span class="s0">assert </span><span class="s1">m.exceptions == [exc1</span><span class="s0">, </span><span class="s1">exc2]</span>
+    <span class="s0">assert </span><span class="s3">&quot;ValueError&quot; </span><span class="s0">in </span><span class="s1">str(m)</span>
+    <span class="s0">assert </span><span class="s3">&quot;ValueError&quot; </span><span class="s0">in </span><span class="s1">repr(m)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">MultiError(object())</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">MultiError([KeyError()</span><span class="s0">, </span><span class="s1">ValueError])</span>
+
+
+<span class="s0">def </span><span class="s1">test_MultiErrorOfSingleMultiError():</span>
+    <span class="s2"># For MultiError([MultiError]), ensure there is no bad recursion by the</span>
+    <span class="s2"># constructor where __init__ is called if __new__ returns a bare MultiError.</span>
+    <span class="s1">exceptions = [KeyError()</span><span class="s0">, </span><span class="s1">ValueError()]</span>
+    <span class="s1">a = MultiError(exceptions)</span>
+    <span class="s1">b = MultiError([a])</span>
+    <span class="s0">assert </span><span class="s1">b == a</span>
+    <span class="s0">assert </span><span class="s1">b.exceptions == exceptions</span>
+
+
+<span class="s0">async def </span><span class="s1">test_MultiErrorNotHashable():</span>
+    <span class="s1">exc1 = NotHashableException(</span><span class="s4">42</span><span class="s1">)</span>
+    <span class="s1">exc2 = NotHashableException(</span><span class="s4">4242</span><span class="s1">)</span>
+    <span class="s1">exc3 = ValueError()</span>
+    <span class="s0">assert </span><span class="s1">exc1 != exc2</span>
+    <span class="s0">assert </span><span class="s1">exc1 != exc3</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(MultiError):</span>
+        <span class="s0">async with </span><span class="s1">open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(raise_nothashable</span><span class="s0">, </span><span class="s4">42</span><span class="s1">)</span>
+            <span class="s1">nursery.start_soon(raise_nothashable</span><span class="s0">, </span><span class="s4">4242</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">test_MultiError_filter_NotHashable():</span>
+    <span class="s1">excs = MultiError([NotHashableException(</span><span class="s4">42</span><span class="s1">)</span><span class="s0">, </span><span class="s1">ValueError()])</span>
+
+    <span class="s0">def </span><span class="s1">handle_ValueError(exc):</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">ValueError):</span>
+            <span class="s0">return None</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">exc</span>
+
+    <span class="s1">filtered_excs = MultiError.filter(handle_ValueError</span><span class="s0">, </span><span class="s1">excs)</span>
+    <span class="s0">assert </span><span class="s1">isinstance(filtered_excs</span><span class="s0">, </span><span class="s1">NotHashableException)</span>
+
+
+<span class="s0">def </span><span class="s1">test_traceback_recursion():</span>
+    <span class="s1">exc1 = RuntimeError()</span>
+    <span class="s1">exc2 = KeyError()</span>
+    <span class="s1">exc3 = NotHashableException(</span><span class="s4">42</span><span class="s1">)</span>
+    <span class="s2"># Note how this creates a loop, where exc1 refers to exc1</span>
+    <span class="s2"># This could trigger an infinite recursion; the 'seen' set is supposed to prevent</span>
+    <span class="s2"># this.</span>
+    <span class="s1">exc1.__cause__ = MultiError([exc1</span><span class="s0">, </span><span class="s1">exc2</span><span class="s0">, </span><span class="s1">exc3])</span>
+    <span class="s2"># python traceback.TracebackException &lt; 3.6.4 does not support unhashable exceptions</span>
+    <span class="s2"># and raises a TypeError exception</span>
+    <span class="s0">if </span><span class="s1">sys.version_info &lt; (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">6</span><span class="s0">, </span><span class="s4">4</span><span class="s1">):</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+            <span class="s1">format_exception(*einfo(exc1))</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">format_exception(*einfo(exc1))</span>
+
+
+<span class="s0">def </span><span class="s1">make_tree():</span>
+    <span class="s2"># Returns an object like:</span>
+    <span class="s2">#   MultiError([</span>
+    <span class="s2">#     MultiError([</span>
+    <span class="s2">#       ValueError,</span>
+    <span class="s2">#       KeyError,</span>
+    <span class="s2">#     ]),</span>
+    <span class="s2">#     NameError,</span>
+    <span class="s2">#   ])</span>
+    <span class="s2"># where all exceptions except the root have a non-trivial traceback.</span>
+    <span class="s1">exc1 = get_exc(raiser1)</span>
+    <span class="s1">exc2 = get_exc(raiser2)</span>
+    <span class="s1">exc3 = get_exc(raiser3)</span>
+
+    <span class="s2"># Give m12 a non-trivial traceback</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">MultiError([exc1</span><span class="s0">, </span><span class="s1">exc2])</span>
+    <span class="s0">except </span><span class="s1">BaseException </span><span class="s0">as </span><span class="s1">m12:</span>
+        <span class="s0">return </span><span class="s1">MultiError([m12</span><span class="s0">, </span><span class="s1">exc3])</span>
+
+
+<span class="s0">def </span><span class="s1">assert_tree_eq(m1</span><span class="s0">, </span><span class="s1">m2):</span>
+    <span class="s0">if </span><span class="s1">m1 </span><span class="s0">is None or </span><span class="s1">m2 </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s0">assert </span><span class="s1">m1 </span><span class="s0">is </span><span class="s1">m2</span>
+        <span class="s0">return</span>
+    <span class="s0">assert </span><span class="s1">type(m1) </span><span class="s0">is </span><span class="s1">type(m2)</span>
+    <span class="s0">assert </span><span class="s1">extract_tb(m1.__traceback__) == extract_tb(m2.__traceback__)</span>
+    <span class="s1">assert_tree_eq(m1.__cause__</span><span class="s0">, </span><span class="s1">m2.__cause__)</span>
+    <span class="s1">assert_tree_eq(m1.__context__</span><span class="s0">, </span><span class="s1">m2.__context__)</span>
+    <span class="s0">if </span><span class="s1">isinstance(m1</span><span class="s0">, </span><span class="s1">MultiError):</span>
+        <span class="s0">assert </span><span class="s1">len(m1.exceptions) == len(m2.exceptions)</span>
+        <span class="s0">for </span><span class="s1">e1</span><span class="s0">, </span><span class="s1">e2 </span><span class="s0">in </span><span class="s1">zip(m1.exceptions</span><span class="s0">, </span><span class="s1">m2.exceptions):</span>
+            <span class="s1">assert_tree_eq(e1</span><span class="s0">, </span><span class="s1">e2)</span>
+
+
+<span class="s0">def </span><span class="s1">test_MultiError_filter():</span>
+    <span class="s0">def </span><span class="s1">null_handler(exc):</span>
+        <span class="s0">return </span><span class="s1">exc</span>
+
+    <span class="s1">m = make_tree()</span>
+    <span class="s1">assert_tree_eq(m</span><span class="s0">, </span><span class="s1">m)</span>
+    <span class="s0">assert </span><span class="s1">MultiError.filter(null_handler</span><span class="s0">, </span><span class="s1">m) </span><span class="s0">is </span><span class="s1">m</span>
+    <span class="s1">assert_tree_eq(m</span><span class="s0">, </span><span class="s1">make_tree())</span>
+
+    <span class="s2"># Make sure we don't pick up any detritus if run in a context where</span>
+    <span class="s2"># implicit exception chaining would like to kick in</span>
+    <span class="s1">m = make_tree()</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span>
+    <span class="s0">except </span><span class="s1">ValueError:</span>
+        <span class="s0">assert </span><span class="s1">MultiError.filter(null_handler</span><span class="s0">, </span><span class="s1">m) </span><span class="s0">is </span><span class="s1">m</span>
+    <span class="s1">assert_tree_eq(m</span><span class="s0">, </span><span class="s1">make_tree())</span>
+
+    <span class="s0">def </span><span class="s1">simple_filter(exc):</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">ValueError):</span>
+            <span class="s0">return None</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">KeyError):</span>
+            <span class="s0">return </span><span class="s1">RuntimeError()</span>
+        <span class="s0">return </span><span class="s1">exc</span>
+
+    <span class="s1">new_m = MultiError.filter(simple_filter</span><span class="s0">, </span><span class="s1">make_tree())</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m</span><span class="s0">, </span><span class="s1">MultiError)</span>
+    <span class="s0">assert </span><span class="s1">len(new_m.exceptions) == </span><span class="s4">2</span>
+    <span class="s2"># was: [[ValueError, KeyError], NameError]</span>
+    <span class="s2"># ValueError disappeared &amp; KeyError became RuntimeError, so now:</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m.exceptions[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">RuntimeError)</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m.exceptions[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">NameError)</span>
+
+    <span class="s2"># implicit chaining:</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m.exceptions[</span><span class="s4">0</span><span class="s1">].__context__</span><span class="s0">, </span><span class="s1">KeyError)</span>
+
+    <span class="s2"># also, the traceback on the KeyError incorporates what used to be the</span>
+    <span class="s2"># traceback on its parent MultiError</span>
+    <span class="s1">orig = make_tree()</span>
+    <span class="s2"># make sure we have the right path</span>
+    <span class="s0">assert </span><span class="s1">isinstance(orig.exceptions[</span><span class="s4">0</span><span class="s1">].exceptions[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">KeyError)</span>
+    <span class="s2"># get original traceback summary</span>
+    <span class="s1">orig_extracted = (</span>
+        <span class="s1">extract_tb(orig.__traceback__)</span>
+        <span class="s1">+ extract_tb(orig.exceptions[</span><span class="s4">0</span><span class="s1">].__traceback__)</span>
+        <span class="s1">+ extract_tb(orig.exceptions[</span><span class="s4">0</span><span class="s1">].exceptions[</span><span class="s4">1</span><span class="s1">].__traceback__)</span>
+    <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">p(exc):</span>
+        <span class="s1">print_exception(type(exc)</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">exc.__traceback__)</span>
+
+    <span class="s1">p(orig)</span>
+    <span class="s1">p(orig.exceptions[</span><span class="s4">0</span><span class="s1">])</span>
+    <span class="s1">p(orig.exceptions[</span><span class="s4">0</span><span class="s1">].exceptions[</span><span class="s4">1</span><span class="s1">])</span>
+    <span class="s1">p(new_m.exceptions[</span><span class="s4">0</span><span class="s1">].__context__)</span>
+    <span class="s2"># compare to the new path</span>
+    <span class="s0">assert </span><span class="s1">new_m.__traceback__ </span><span class="s0">is None</span>
+    <span class="s1">new_extracted = extract_tb(new_m.exceptions[</span><span class="s4">0</span><span class="s1">].__context__.__traceback__)</span>
+    <span class="s0">assert </span><span class="s1">orig_extracted == new_extracted</span>
+
+    <span class="s2"># check preserving partial tree</span>
+    <span class="s0">def </span><span class="s1">filter_NameError(exc):</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">NameError):</span>
+            <span class="s0">return None</span>
+        <span class="s0">return </span><span class="s1">exc</span>
+
+    <span class="s1">m = make_tree()</span>
+    <span class="s1">new_m = MultiError.filter(filter_NameError</span><span class="s0">, </span><span class="s1">m)</span>
+    <span class="s2"># with the NameError gone, the other branch gets promoted</span>
+    <span class="s0">assert </span><span class="s1">new_m </span><span class="s0">is </span><span class="s1">m.exceptions[</span><span class="s4">0</span><span class="s1">]</span>
+
+    <span class="s2"># check fully handling everything</span>
+    <span class="s0">def </span><span class="s1">filter_all(exc):</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">assert </span><span class="s1">MultiError.filter(filter_all</span><span class="s0">, </span><span class="s1">make_tree()) </span><span class="s0">is None</span>
+
+
+<span class="s0">def </span><span class="s1">test_MultiError_catch():</span>
+    <span class="s2"># No exception to catch</span>
+
+    <span class="s0">def </span><span class="s1">noop(_):</span>
+        <span class="s0">pass  </span><span class="s2"># pragma: no cover</span>
+
+    <span class="s0">with </span><span class="s1">MultiError.catch(noop):</span>
+        <span class="s0">pass</span>
+
+    <span class="s2"># Simple pass-through of all exceptions</span>
+    <span class="s1">m = make_tree()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(MultiError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">with </span><span class="s1">MultiError.catch(</span><span class="s0">lambda </span><span class="s1">exc: exc):</span>
+            <span class="s0">raise </span><span class="s1">m</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value </span><span class="s0">is </span><span class="s1">m</span>
+    <span class="s2"># Should be unchanged, except that we added a traceback frame by raising</span>
+    <span class="s2"># it here</span>
+    <span class="s0">assert </span><span class="s1">m.__traceback__ </span><span class="s0">is not None</span>
+    <span class="s0">assert </span><span class="s1">m.__traceback__.tb_frame.f_code.co_name == </span><span class="s3">&quot;test_MultiError_catch&quot;</span>
+    <span class="s0">assert </span><span class="s1">m.__traceback__.tb_next </span><span class="s0">is None</span>
+    <span class="s1">m.__traceback__ = </span><span class="s0">None</span>
+    <span class="s1">assert_tree_eq(m</span><span class="s0">, </span><span class="s1">make_tree())</span>
+
+    <span class="s2"># Swallows everything</span>
+    <span class="s0">with </span><span class="s1">MultiError.catch(</span><span class="s0">lambda </span><span class="s1">_: </span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">raise </span><span class="s1">make_tree()</span>
+
+    <span class="s0">def </span><span class="s1">simple_filter(exc):</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">ValueError):</span>
+            <span class="s0">return None</span>
+        <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">KeyError):</span>
+            <span class="s0">return </span><span class="s1">RuntimeError()</span>
+        <span class="s0">return </span><span class="s1">exc</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(MultiError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">with </span><span class="s1">MultiError.catch(simple_filter):</span>
+            <span class="s0">raise </span><span class="s1">make_tree()</span>
+    <span class="s1">new_m = excinfo.value</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m</span><span class="s0">, </span><span class="s1">MultiError)</span>
+    <span class="s0">assert </span><span class="s1">len(new_m.exceptions) == </span><span class="s4">2</span>
+    <span class="s2"># was: [[ValueError, KeyError], NameError]</span>
+    <span class="s2"># ValueError disappeared &amp; KeyError became RuntimeError, so now:</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m.exceptions[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">RuntimeError)</span>
+    <span class="s0">assert </span><span class="s1">isinstance(new_m.exceptions[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">NameError)</span>
+    <span class="s2"># Make sure that Python did not successfully attach the old MultiError to</span>
+    <span class="s2"># our new MultiError's __context__</span>
+    <span class="s0">assert not </span><span class="s1">new_m.__suppress_context__</span>
+    <span class="s0">assert </span><span class="s1">new_m.__context__ </span><span class="s0">is None</span>
+
+    <span class="s2"># check preservation of __cause__ and __context__</span>
+    <span class="s1">v = ValueError()</span>
+    <span class="s1">v.__cause__ = KeyError()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">with </span><span class="s1">MultiError.catch(</span><span class="s0">lambda </span><span class="s1">exc: exc):</span>
+            <span class="s0">raise </span><span class="s1">v</span>
+    <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">KeyError)</span>
+
+    <span class="s1">v = ValueError()</span>
+    <span class="s1">context = KeyError()</span>
+    <span class="s1">v.__context__ = context</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">with </span><span class="s1">MultiError.catch(</span><span class="s0">lambda </span><span class="s1">exc: exc):</span>
+            <span class="s0">raise </span><span class="s1">v</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.__context__ </span><span class="s0">is </span><span class="s1">context</span>
+    <span class="s0">assert not </span><span class="s1">excinfo.value.__suppress_context__</span>
+
+    <span class="s0">for </span><span class="s1">suppress_context </span><span class="s0">in </span><span class="s1">[</span><span class="s0">True, False</span><span class="s1">]:</span>
+        <span class="s1">v = ValueError()</span>
+        <span class="s1">context = KeyError()</span>
+        <span class="s1">v.__context__ = context</span>
+        <span class="s1">v.__suppress_context__ = suppress_context</span>
+        <span class="s1">distractor = RuntimeError()</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+
+            <span class="s0">def </span><span class="s1">catch_RuntimeError(exc):</span>
+                <span class="s0">if </span><span class="s1">isinstance(exc</span><span class="s0">, </span><span class="s1">RuntimeError):</span>
+                    <span class="s0">return None</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">return </span><span class="s1">exc</span>
+
+            <span class="s0">with </span><span class="s1">MultiError.catch(catch_RuntimeError):</span>
+                <span class="s0">raise </span><span class="s1">MultiError([v</span><span class="s0">, </span><span class="s1">distractor])</span>
+        <span class="s0">assert </span><span class="s1">excinfo.value.__context__ </span><span class="s0">is </span><span class="s1">context</span>
+        <span class="s0">assert </span><span class="s1">excinfo.value.__suppress_context__ == suppress_context</span>
+
+
+<span class="s0">def </span><span class="s1">assert_match_in_seq(pattern_list</span><span class="s0">, </span><span class="s1">string):</span>
+    <span class="s1">offset = </span><span class="s4">0</span>
+    <span class="s1">print(</span><span class="s3">&quot;looking for pattern matches...&quot;</span><span class="s1">)</span>
+    <span class="s0">for </span><span class="s1">pattern </span><span class="s0">in </span><span class="s1">pattern_list:</span>
+        <span class="s1">print(</span><span class="s3">&quot;checking pattern:&quot;</span><span class="s0">, </span><span class="s1">pattern)</span>
+        <span class="s1">reobj = re.compile(pattern)</span>
+        <span class="s1">match = reobj.search(string</span><span class="s0">, </span><span class="s1">offset)</span>
+        <span class="s0">assert </span><span class="s1">match </span><span class="s0">is not None</span>
+        <span class="s1">offset = match.end()</span>
+
+
+<span class="s0">def </span><span class="s1">test_assert_match_in_seq():</span>
+    <span class="s1">assert_match_in_seq([</span><span class="s3">&quot;a&quot;</span><span class="s0">, </span><span class="s3">&quot;b&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s3">&quot;xx a xx b xx&quot;</span><span class="s1">)</span>
+    <span class="s1">assert_match_in_seq([</span><span class="s3">&quot;b&quot;</span><span class="s0">, </span><span class="s3">&quot;a&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s3">&quot;xx b xx a xx&quot;</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(AssertionError):</span>
+        <span class="s1">assert_match_in_seq([</span><span class="s3">&quot;a&quot;</span><span class="s0">, </span><span class="s3">&quot;b&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s3">&quot;xx b xx a xx&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">test_format_exception():</span>
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)))</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_3&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;direct cause&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;During handling&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">exc.__cause__ = get_exc(raiser2)</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)))</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_3&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;direct cause&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;During handling&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s2"># ensure cause included</span>
+    <span class="s0">assert </span><span class="s1">_cause_message </span><span class="s0">in </span><span class="s1">formatted</span>
+
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">exc.__context__ = get_exc(raiser2)</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)))</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_3&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;direct cause&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;During handling&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+
+    <span class="s1">exc.__suppress_context__ = </span><span class="s0">True</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)))</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_3&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;direct cause&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;During handling&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+
+    <span class="s2"># chain=False</span>
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">exc.__context__ = get_exc(raiser2)</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)</span><span class="s0">, </span><span class="s1">chain=</span><span class="s0">False</span><span class="s1">))</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_3&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;direct cause&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;During handling&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+
+    <span class="s2"># limit</span>
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">exc.__context__ = get_exc(raiser2)</span>
+    <span class="s2"># get_exc adds a frame that counts against the limit, so limit=2 means we</span>
+    <span class="s2"># get 1 deep into the raiser stack</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)</span><span class="s0">, </span><span class="s1">limit=</span><span class="s4">2</span><span class="s1">))</span>
+    <span class="s1">print(formatted)</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">exc.__context__ = get_exc(raiser2)</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)</span><span class="s0">, </span><span class="s1">limit=</span><span class="s4">1</span><span class="s1">))</span>
+    <span class="s1">print(formatted)</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+
+    <span class="s2"># handles loops</span>
+    <span class="s1">exc = get_exc(raiser1)</span>
+    <span class="s1">exc.__cause__ = exc</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)))</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser1_string&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser1_3&quot; </span><span class="s0">in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;raiser2_string&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s0">assert </span><span class="s3">&quot;in raiser2_2&quot; </span><span class="s0">not in </span><span class="s1">formatted</span>
+    <span class="s2"># ensure duplicate exception is not included as cause</span>
+    <span class="s0">assert </span><span class="s1">_cause_message </span><span class="s0">not in </span><span class="s1">formatted</span>
+
+    <span class="s2"># MultiError</span>
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(make_tree())))</span>
+    <span class="s1">print(formatted)</span>
+
+    <span class="s1">assert_match_in_seq(</span>
+        <span class="s1">[</span>
+            <span class="s2"># Outer exception is MultiError</span>
+            <span class="s3">r&quot;MultiError:&quot;</span><span class="s0">,</span>
+            <span class="s2"># First embedded exception is the embedded MultiError</span>
+            <span class="s3">r&quot;\nDetails of embedded exception 1&quot;</span><span class="s0">,</span>
+            <span class="s2"># Which has a single stack frame from make_tree raising it</span>
+            <span class="s3">r&quot;in make_tree&quot;</span><span class="s0">,</span>
+            <span class="s2"># Then it has two embedded exceptions</span>
+            <span class="s3">r&quot;  Details of embedded exception 1&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raiser1_2&quot;</span><span class="s0">,</span>
+            <span class="s2"># for some reason ValueError has no quotes</span>
+            <span class="s3">r&quot;ValueError: raiser1_string&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;  Details of embedded exception 2&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raiser2_2&quot;</span><span class="s0">,</span>
+            <span class="s2"># But KeyError does have quotes</span>
+            <span class="s3">r&quot;KeyError: 'raiser2_string'&quot;</span><span class="s0">,</span>
+            <span class="s2"># And finally the NameError, which is a sibling of the embedded</span>
+            <span class="s2"># MultiError</span>
+            <span class="s3">r&quot;\nDetails of embedded exception 2:&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raiser3&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;NameError&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">formatted</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s2"># Prints duplicate exceptions in sub-exceptions</span>
+    <span class="s1">exc1 = get_exc(raiser1)</span>
+
+    <span class="s0">def </span><span class="s1">raise1_raiser1():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">exc1</span>
+        <span class="s0">except</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;foo&quot;</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">raise2_raiser1():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">exc1</span>
+        <span class="s0">except</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">KeyError(</span><span class="s3">&quot;bar&quot;</span><span class="s1">)</span>
+
+    <span class="s1">exc2 = get_exc(raise1_raiser1)</span>
+    <span class="s1">exc3 = get_exc(raise2_raiser1)</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">MultiError([exc2</span><span class="s0">, </span><span class="s1">exc3])</span>
+    <span class="s0">except </span><span class="s1">MultiError </span><span class="s0">as </span><span class="s1">e:</span>
+        <span class="s1">exc = e</span>
+
+    <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(*einfo(exc)))</span>
+    <span class="s1">print(formatted)</span>
+
+    <span class="s1">assert_match_in_seq(</span>
+        <span class="s1">[</span>
+            <span class="s3">r&quot;Traceback&quot;</span><span class="s0">,</span>
+            <span class="s2"># Outer exception is MultiError</span>
+            <span class="s3">r&quot;MultiError:&quot;</span><span class="s0">,</span>
+            <span class="s2"># First embedded exception is the embedded ValueError with cause of raiser1</span>
+            <span class="s3">r&quot;\nDetails of embedded exception 1&quot;</span><span class="s0">,</span>
+            <span class="s2"># Print details of exc1</span>
+            <span class="s3">r&quot;  Traceback&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in get_exc&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raiser1&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;ValueError: raiser1_string&quot;</span><span class="s0">,</span>
+            <span class="s2"># Print details of exc2</span>
+            <span class="s3">r&quot;\n  During handling of the above exception, another exception occurred:&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;  Traceback&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in get_exc&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raise1_raiser1&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;  ValueError: foo&quot;</span><span class="s0">,</span>
+            <span class="s2"># Second embedded exception is the embedded KeyError with cause of raiser1</span>
+            <span class="s3">r&quot;\nDetails of embedded exception 2&quot;</span><span class="s0">,</span>
+            <span class="s2"># Print details of exc1 again</span>
+            <span class="s3">r&quot;  Traceback&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in get_exc&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raiser1&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;ValueError: raiser1_string&quot;</span><span class="s0">,</span>
+            <span class="s2"># Print details of exc3</span>
+            <span class="s3">r&quot;\n  During handling of the above exception, another exception occurred:&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;  Traceback&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in get_exc&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;in raise2_raiser1&quot;</span><span class="s0">,</span>
+            <span class="s3">r&quot;  KeyError: 'bar'&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">formatted</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">test_logging(caplog):</span>
+    <span class="s1">exc1 = get_exc(raiser1)</span>
+    <span class="s1">exc2 = get_exc(raiser2)</span>
+
+    <span class="s1">m = MultiError([exc1</span><span class="s0">, </span><span class="s1">exc2])</span>
+
+    <span class="s1">message = </span><span class="s3">&quot;test test test&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">raise </span><span class="s1">m</span>
+    <span class="s0">except </span><span class="s1">MultiError </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s1">logging.getLogger().exception(message)</span>
+        <span class="s2"># Join lines together</span>
+        <span class="s1">formatted = </span><span class="s3">&quot;&quot;</span><span class="s1">.join(format_exception(type(exc)</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">exc.__traceback__))</span>
+        <span class="s0">assert </span><span class="s1">message </span><span class="s0">in </span><span class="s1">caplog.text</span>
+        <span class="s0">assert </span><span class="s1">formatted </span><span class="s0">in </span><span class="s1">caplog.text</span>
+
+
+<span class="s0">def </span><span class="s1">run_script(name</span><span class="s0">, </span><span class="s1">use_ipython=</span><span class="s0">False</span><span class="s1">):</span>
+    <span class="s0">import </span><span class="s1">trio</span>
+
+    <span class="s1">trio_path = Path(trio.__file__).parent.parent</span>
+    <span class="s1">script_path = Path(__file__).parent / </span><span class="s3">&quot;test_multierror_scripts&quot; </span><span class="s1">/ name</span>
+
+    <span class="s1">env = dict(os.environ)</span>
+    <span class="s1">print(</span><span class="s3">&quot;parent PYTHONPATH:&quot;</span><span class="s0">, </span><span class="s1">env.get(</span><span class="s3">&quot;PYTHONPATH&quot;</span><span class="s1">))</span>
+    <span class="s0">if </span><span class="s3">&quot;PYTHONPATH&quot; </span><span class="s0">in </span><span class="s1">env:  </span><span class="s2"># pragma: no cover</span>
+        <span class="s1">pp = env[</span><span class="s3">&quot;PYTHONPATH&quot;</span><span class="s1">].split(os.pathsep)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">pp = []</span>
+    <span class="s1">pp.insert(</span><span class="s4">0</span><span class="s0">, </span><span class="s1">str(trio_path))</span>
+    <span class="s1">pp.insert(</span><span class="s4">0</span><span class="s0">, </span><span class="s1">str(script_path.parent))</span>
+    <span class="s1">env[</span><span class="s3">&quot;PYTHONPATH&quot;</span><span class="s1">] = os.pathsep.join(pp)</span>
+    <span class="s1">print(</span><span class="s3">&quot;subprocess PYTHONPATH:&quot;</span><span class="s0">, </span><span class="s1">env.get(</span><span class="s3">&quot;PYTHONPATH&quot;</span><span class="s1">))</span>
+
+    <span class="s0">if </span><span class="s1">use_ipython:</span>
+        <span class="s1">lines = [script_path.read_text()</span><span class="s0">, </span><span class="s3">&quot;exit()&quot;</span><span class="s1">]</span>
+
+        <span class="s1">cmd = [</span>
+            <span class="s1">sys.executable</span><span class="s0">,</span>
+            <span class="s3">&quot;-u&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;-m&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;IPython&quot;</span><span class="s0">,</span>
+            <span class="s2"># no startup files</span>
+            <span class="s3">&quot;--quick&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;--TerminalIPythonApp.code_to_run=&quot; </span><span class="s1">+ </span><span class="s3">&quot;</span><span class="s0">\n</span><span class="s3">&quot;</span><span class="s1">.join(lines)</span><span class="s0">,</span>
+        <span class="s1">]</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">cmd = [sys.executable</span><span class="s0">, </span><span class="s3">&quot;-u&quot;</span><span class="s0">, </span><span class="s1">str(script_path)]</span>
+    <span class="s1">print(</span><span class="s3">&quot;running:&quot;</span><span class="s0">, </span><span class="s1">cmd)</span>
+    <span class="s1">completed = subprocess.run(</span>
+        <span class="s1">cmd</span><span class="s0">, </span><span class="s1">env=env</span><span class="s0">, </span><span class="s1">stdout=subprocess.PIPE</span><span class="s0">, </span><span class="s1">stderr=subprocess.STDOUT</span>
+    <span class="s1">)</span>
+    <span class="s1">print(</span><span class="s3">&quot;process output:&quot;</span><span class="s1">)</span>
+    <span class="s1">print(completed.stdout.decode(</span><span class="s3">&quot;utf-8&quot;</span><span class="s1">))</span>
+    <span class="s0">return </span><span class="s1">completed</span>
+
+
+<span class="s0">def </span><span class="s1">check_simple_excepthook(completed):</span>
+    <span class="s1">assert_match_in_seq(</span>
+        <span class="s1">[</span>
+            <span class="s3">&quot;in &lt;module&gt;&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;MultiError&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;Details of embedded exception 1&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;in exc1_fn&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;ValueError&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;Details of embedded exception 2&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;in exc2_fn&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;KeyError&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">completed.stdout.decode(</span><span class="s3">&quot;utf-8&quot;</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">test_simple_excepthook():</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;simple_excepthook.py&quot;</span><span class="s1">)</span>
+    <span class="s1">check_simple_excepthook(completed)</span>
+
+
+<span class="s0">def </span><span class="s1">test_custom_excepthook():</span>
+    <span class="s2"># Check that user-defined excepthooks aren't overridden</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;custom_excepthook.py&quot;</span><span class="s1">)</span>
+    <span class="s1">assert_match_in_seq(</span>
+        <span class="s1">[</span>
+            <span class="s2"># The warning</span>
+            <span class="s3">&quot;RuntimeWarning&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;already have a custom&quot;</span><span class="s0">,</span>
+            <span class="s2"># The message printed by the custom hook, proving we didn't</span>
+            <span class="s2"># override it</span>
+            <span class="s3">&quot;custom running!&quot;</span><span class="s0">,</span>
+            <span class="s2"># The MultiError</span>
+            <span class="s3">&quot;MultiError:&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">completed.stdout.decode(</span><span class="s3">&quot;utf-8&quot;</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s2"># This warning is triggered by ipython 7.5.0 on python 3.8</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s1">warnings.filterwarnings(</span>
+    <span class="s3">&quot;ignore&quot;</span><span class="s0">,</span>
+    <span class="s1">message=</span><span class="s3">'.*&quot;@coroutine&quot; decorator is deprecated'</span><span class="s0">,</span>
+    <span class="s1">category=DeprecationWarning</span><span class="s0">,</span>
+    <span class="s1">module=</span><span class="s3">&quot;IPython.*&quot;</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">IPython</span>
+<span class="s0">except </span><span class="s1">ImportError:  </span><span class="s2"># pragma: no cover</span>
+    <span class="s1">have_ipython = </span><span class="s0">False</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s1">have_ipython = </span><span class="s0">True</span>
+
+<span class="s1">need_ipython = pytest.mark.skipif(</span><span class="s0">not </span><span class="s1">have_ipython</span><span class="s0">, </span><span class="s1">reason=</span><span class="s3">&quot;need IPython&quot;</span><span class="s1">)</span>
+
+
+<span class="s1">@slow</span>
+<span class="s1">@need_ipython</span>
+<span class="s0">def </span><span class="s1">test_ipython_exc_handler():</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;simple_excepthook.py&quot;</span><span class="s0">, </span><span class="s1">use_ipython=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s1">check_simple_excepthook(completed)</span>
+
+
+<span class="s1">@slow</span>
+<span class="s1">@need_ipython</span>
+<span class="s0">def </span><span class="s1">test_ipython_imported_but_unused():</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;simple_excepthook_IPython.py&quot;</span><span class="s1">)</span>
+    <span class="s1">check_simple_excepthook(completed)</span>
+
+
+<span class="s1">@slow</span>
+<span class="s0">def </span><span class="s1">test_partial_imported_but_unused():</span>
+    <span class="s2"># Check that a functools.partial as sys.excepthook doesn't cause an exception when</span>
+    <span class="s2"># importing trio.  This was a problem due to the lack of a .__name__ attribute and</span>
+    <span class="s2"># happens when inside a pytest-qt test case for example.</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;simple_excepthook_partial.py&quot;</span><span class="s1">)</span>
+    <span class="s1">completed.check_returncode()</span>
+
+
+<span class="s1">@slow</span>
+<span class="s1">@need_ipython</span>
+<span class="s0">def </span><span class="s1">test_ipython_custom_exc_handler():</span>
+    <span class="s2"># Check we get a nice warning (but only one!) if the user is using IPython</span>
+    <span class="s2"># and already has some other set_custom_exc handler installed.</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;ipython_custom_exc.py&quot;</span><span class="s0">, </span><span class="s1">use_ipython=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s1">assert_match_in_seq(</span>
+        <span class="s1">[</span>
+            <span class="s2"># The warning</span>
+            <span class="s3">&quot;RuntimeWarning&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;IPython detected&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;skip installing Trio&quot;</span><span class="s0">,</span>
+            <span class="s2"># The MultiError</span>
+            <span class="s3">&quot;MultiError&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;ValueError&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;KeyError&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">completed.stdout.decode(</span><span class="s3">&quot;utf-8&quot;</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">)</span>
+    <span class="s2"># Make sure our other warning doesn't show up</span>
+    <span class="s0">assert </span><span class="s3">&quot;custom sys.excepthook&quot; </span><span class="s0">not in </span><span class="s1">completed.stdout.decode(</span><span class="s3">&quot;utf-8&quot;</span><span class="s1">)</span>
+
+
+<span class="s1">@slow</span>
+<span class="s1">@pytest.mark.skipif(</span>
+    <span class="s0">not </span><span class="s1">Path(</span><span class="s3">&quot;/usr/lib/python3/dist-packages/apport_python_hook.py&quot;</span><span class="s1">).exists()</span><span class="s0">,</span>
+    <span class="s1">reason=</span><span class="s3">&quot;need Ubuntu with python3-apport installed&quot;</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">def </span><span class="s1">test_apport_excepthook_monkeypatch_interaction():</span>
+    <span class="s1">completed = run_script(</span><span class="s3">&quot;apport_excepthook.py&quot;</span><span class="s1">)</span>
+    <span class="s1">stdout = completed.stdout.decode(</span><span class="s3">&quot;utf-8&quot;</span><span class="s1">)</span>
+
+    <span class="s2"># No warning</span>
+    <span class="s0">assert </span><span class="s3">&quot;custom sys.excepthook&quot; </span><span class="s0">not in </span><span class="s1">stdout</span>
+
+    <span class="s2"># Proper traceback</span>
+    <span class="s1">assert_match_in_seq(</span>
+        <span class="s1">[</span><span class="s3">&quot;Details of embedded&quot;</span><span class="s0">, </span><span class="s3">&quot;KeyError&quot;</span><span class="s0">, </span><span class="s3">&quot;Details of embedded&quot;</span><span class="s0">, </span><span class="s3">&quot;ValueError&quot;</span><span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">stdout</span><span class="s0">,</span>
+    <span class="s1">)</span>
+</pre>
+</body>
+</html>

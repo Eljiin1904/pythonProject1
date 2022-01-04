@@ -1,0 +1,179 @@
+<html>
+<head>
+<title>showmigrations.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+showmigrations.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">connections</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.loader </span><span class="s0">import </span><span class="s1">MigrationLoader</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.recorder </span><span class="s0">import </span><span class="s1">MigrationRecorder</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s2">&quot;Shows all available migrations for the current project&quot;</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'app_label'</span><span class="s0">, </span><span class="s1">nargs=</span><span class="s2">'*'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'App labels of applications to limit the output to.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--database'</span><span class="s0">, </span><span class="s1">default=DEFAULT_DB_ALIAS</span><span class="s0">,</span>
+            <span class="s1">help=(</span>
+                <span class="s2">'Nominates a database to show migrations for. Defaults to the '</span>
+                <span class="s2">'&quot;default&quot; database.'</span>
+            <span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+        <span class="s1">formats = parser.add_mutually_exclusive_group()</span>
+        <span class="s1">formats.add_argument(</span>
+            <span class="s2">'--list'</span><span class="s0">, </span><span class="s2">'-l'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_const'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'format'</span><span class="s0">, </span><span class="s1">const=</span><span class="s2">'list'</span><span class="s0">,</span>
+            <span class="s1">help=(</span>
+                <span class="s2">'Shows a list of all migrations and which are applied. '</span>
+                <span class="s2">'With a verbosity level of 2 or above, the applied datetimes '</span>
+                <span class="s2">'will be included.'</span>
+            <span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">formats.add_argument(</span>
+            <span class="s2">'--plan'</span><span class="s0">, </span><span class="s2">'-p'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_const'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'format'</span><span class="s0">, </span><span class="s1">const=</span><span class="s2">'plan'</span><span class="s0">,</span>
+            <span class="s1">help=(</span>
+                <span class="s2">'Shows all migrations in the order they will be applied. '</span>
+                <span class="s2">'With a verbosity level of 2 or above all direct migration dependencies '</span>
+                <span class="s2">'and reverse dependencies (run_before) will be included.'</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+        <span class="s1">parser.set_defaults(format=</span><span class="s2">'list'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">self.verbosity = options[</span><span class="s2">'verbosity'</span><span class="s1">]</span>
+
+        <span class="s3"># Get the database we're operating from</span>
+        <span class="s1">db = options[</span><span class="s2">'database'</span><span class="s1">]</span>
+        <span class="s1">connection = connections[db]</span>
+
+        <span class="s0">if </span><span class="s1">options[</span><span class="s2">'format'</span><span class="s1">] == </span><span class="s2">&quot;plan&quot;</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.show_plan(connection</span><span class="s0">, </span><span class="s1">options[</span><span class="s2">'app_label'</span><span class="s1">])</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.show_list(connection</span><span class="s0">, </span><span class="s1">options[</span><span class="s2">'app_label'</span><span class="s1">])</span>
+
+    <span class="s0">def </span><span class="s1">_validate_app_names(self</span><span class="s0">, </span><span class="s1">loader</span><span class="s0">, </span><span class="s1">app_names):</span>
+        <span class="s1">has_bad_names = </span><span class="s0">False</span>
+        <span class="s0">for </span><span class="s1">app_name </span><span class="s0">in </span><span class="s1">app_names:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">apps.get_app_config(app_name)</span>
+            <span class="s0">except </span><span class="s1">LookupError </span><span class="s0">as </span><span class="s1">err:</span>
+                <span class="s1">self.stderr.write(str(err))</span>
+                <span class="s1">has_bad_names = </span><span class="s0">True</span>
+        <span class="s0">if </span><span class="s1">has_bad_names:</span>
+            <span class="s1">sys.exit(</span><span class="s4">2</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">show_list(self</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">app_names=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Show a list of all migrations on the system, or only those of 
+        some named apps. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Load migrations from disk/DB</span>
+        <span class="s1">loader = MigrationLoader(connection</span><span class="s0">, </span><span class="s1">ignore_no_migrations=</span><span class="s0">True</span><span class="s1">)</span>
+        <span class="s1">recorder = MigrationRecorder(connection)</span>
+        <span class="s1">recorded_migrations = recorder.applied_migrations()</span>
+        <span class="s1">graph = loader.graph</span>
+        <span class="s3"># If we were passed a list of apps, validate it</span>
+        <span class="s0">if </span><span class="s1">app_names:</span>
+            <span class="s1">self._validate_app_names(loader</span><span class="s0">, </span><span class="s1">app_names)</span>
+        <span class="s3"># Otherwise, show all apps in alphabetic order</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">app_names = sorted(loader.migrated_apps)</span>
+        <span class="s3"># For each app, print its migrations in order from oldest (roots) to</span>
+        <span class="s3"># newest (leaves).</span>
+        <span class="s0">for </span><span class="s1">app_name </span><span class="s0">in </span><span class="s1">app_names:</span>
+            <span class="s1">self.stdout.write(app_name</span><span class="s0">, </span><span class="s1">self.style.MIGRATE_LABEL)</span>
+            <span class="s1">shown = set()</span>
+            <span class="s0">for </span><span class="s1">node </span><span class="s0">in </span><span class="s1">graph.leaf_nodes(app_name):</span>
+                <span class="s0">for </span><span class="s1">plan_node </span><span class="s0">in </span><span class="s1">graph.forwards_plan(node):</span>
+                    <span class="s0">if </span><span class="s1">plan_node </span><span class="s0">not in </span><span class="s1">shown </span><span class="s0">and </span><span class="s1">plan_node[</span><span class="s4">0</span><span class="s1">] == app_name:</span>
+                        <span class="s3"># Give it a nice title if it's a squashed one</span>
+                        <span class="s1">title = plan_node[</span><span class="s4">1</span><span class="s1">]</span>
+                        <span class="s0">if </span><span class="s1">graph.nodes[plan_node].replaces:</span>
+                            <span class="s1">title += </span><span class="s2">&quot; (%s squashed migrations)&quot; </span><span class="s1">% len(graph.nodes[plan_node].replaces)</span>
+                        <span class="s1">applied_migration = loader.applied_migrations.get(plan_node)</span>
+                        <span class="s3"># Mark it as applied/unapplied</span>
+                        <span class="s0">if </span><span class="s1">applied_migration:</span>
+                            <span class="s0">if </span><span class="s1">plan_node </span><span class="s0">in </span><span class="s1">recorded_migrations:</span>
+                                <span class="s1">output = </span><span class="s2">' [X] %s' </span><span class="s1">% title</span>
+                            <span class="s0">else</span><span class="s1">:</span>
+                                <span class="s1">title += </span><span class="s2">&quot; Run 'manage.py migrate' to finish recording.&quot;</span>
+                                <span class="s1">output = </span><span class="s2">' [-] %s' </span><span class="s1">% title</span>
+                            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s4">2 </span><span class="s0">and </span><span class="s1">hasattr(applied_migration</span><span class="s0">, </span><span class="s2">'applied'</span><span class="s1">):</span>
+                                <span class="s1">output += </span><span class="s2">' (applied at %s)' </span><span class="s1">% applied_migration.applied.strftime(</span><span class="s2">'%Y-%m-%d %H:%M:%S'</span><span class="s1">)</span>
+                            <span class="s1">self.stdout.write(output)</span>
+                        <span class="s0">else</span><span class="s1">:</span>
+                            <span class="s1">self.stdout.write(</span><span class="s2">&quot; [ ] %s&quot; </span><span class="s1">% title)</span>
+                        <span class="s1">shown.add(plan_node)</span>
+            <span class="s3"># If we didn't print anything, then a small message</span>
+            <span class="s0">if not </span><span class="s1">shown:</span>
+                <span class="s1">self.stdout.write(</span><span class="s2">&quot; (no migrations)&quot;</span><span class="s0">, </span><span class="s1">self.style.ERROR)</span>
+
+    <span class="s0">def </span><span class="s1">show_plan(self</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">app_names=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Show all known migrations (or only those of the specified app_names) 
+        in the order they will be applied. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Load migrations from disk/DB</span>
+        <span class="s1">loader = MigrationLoader(connection)</span>
+        <span class="s1">graph = loader.graph</span>
+        <span class="s0">if </span><span class="s1">app_names:</span>
+            <span class="s1">self._validate_app_names(loader</span><span class="s0">, </span><span class="s1">app_names)</span>
+            <span class="s1">targets = [key </span><span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">graph.leaf_nodes() </span><span class="s0">if </span><span class="s1">key[</span><span class="s4">0</span><span class="s1">] </span><span class="s0">in </span><span class="s1">app_names]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">targets = graph.leaf_nodes()</span>
+        <span class="s1">plan = []</span>
+        <span class="s1">seen = set()</span>
+
+        <span class="s3"># Generate the plan</span>
+        <span class="s0">for </span><span class="s1">target </span><span class="s0">in </span><span class="s1">targets:</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">graph.forwards_plan(target):</span>
+                <span class="s0">if </span><span class="s1">migration </span><span class="s0">not in </span><span class="s1">seen:</span>
+                    <span class="s1">node = graph.node_map[migration]</span>
+                    <span class="s1">plan.append(node)</span>
+                    <span class="s1">seen.add(migration)</span>
+
+        <span class="s3"># Output</span>
+        <span class="s0">def </span><span class="s1">print_deps(node):</span>
+            <span class="s1">out = []</span>
+            <span class="s0">for </span><span class="s1">parent </span><span class="s0">in </span><span class="s1">sorted(node.parents):</span>
+                <span class="s1">out.append(</span><span class="s2">&quot;%s.%s&quot; </span><span class="s1">% parent.key)</span>
+            <span class="s0">if </span><span class="s1">out:</span>
+                <span class="s0">return </span><span class="s2">&quot; ... (%s)&quot; </span><span class="s1">% </span><span class="s2">&quot;, &quot;</span><span class="s1">.join(out)</span>
+            <span class="s0">return </span><span class="s2">&quot;&quot;</span>
+
+        <span class="s0">for </span><span class="s1">node </span><span class="s0">in </span><span class="s1">plan:</span>
+            <span class="s1">deps = </span><span class="s2">&quot;&quot;</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s4">2</span><span class="s1">:</span>
+                <span class="s1">deps = print_deps(node)</span>
+            <span class="s0">if </span><span class="s1">node.key </span><span class="s0">in </span><span class="s1">loader.applied_migrations:</span>
+                <span class="s1">self.stdout.write(</span><span class="s2">&quot;[X]  %s.%s%s&quot; </span><span class="s1">% (node.key[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">node.key[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">deps))</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span><span class="s2">&quot;[ ]  %s.%s%s&quot; </span><span class="s1">% (node.key[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">node.key[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">deps))</span>
+        <span class="s0">if not </span><span class="s1">plan:</span>
+            <span class="s1">self.stdout.write(</span><span class="s2">'(no migrations)'</span><span class="s0">, </span><span class="s1">self.style.ERROR)</span>
+</pre>
+</body>
+</html>

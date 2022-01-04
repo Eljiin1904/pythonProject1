@@ -1,0 +1,504 @@
+<html>
+<head>
+<title>test_subprocess.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_subprocess.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">signal</span>
+<span class="s0">import </span><span class="s1">subprocess</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">pytest</span>
+<span class="s0">import </span><span class="s1">random</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">partial</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">_core</span><span class="s0">,</span>
+    <span class="s1">move_on_after</span><span class="s0">,</span>
+    <span class="s1">fail_after</span><span class="s0">,</span>
+    <span class="s1">sleep</span><span class="s0">,</span>
+    <span class="s1">sleep_forever</span><span class="s0">,</span>
+    <span class="s1">Process</span><span class="s0">,</span>
+    <span class="s1">open_process</span><span class="s0">,</span>
+    <span class="s1">run_process</span><span class="s0">,</span>
+    <span class="s1">TrioDeprecationWarning</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">.._core.tests.tutil </span><span class="s0">import </span><span class="s1">slow</span><span class="s0">, </span><span class="s1">skip_if_fbsd_pipes_broken</span>
+<span class="s0">from </span><span class="s1">..testing </span><span class="s0">import </span><span class="s1">wait_all_tasks_blocked</span>
+
+<span class="s1">posix = os.name == </span><span class="s2">&quot;posix&quot;</span>
+<span class="s0">if </span><span class="s1">posix:</span>
+    <span class="s0">from </span><span class="s1">signal </span><span class="s0">import </span><span class="s1">SIGKILL</span><span class="s0">, </span><span class="s1">SIGTERM</span><span class="s0">, </span><span class="s1">SIGUSR1</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s1">SIGKILL</span><span class="s0">, </span><span class="s1">SIGTERM</span><span class="s0">, </span><span class="s1">SIGUSR1 = </span><span class="s0">None, None, None</span>
+
+
+<span class="s3"># Since Windows has very few command-line utilities generally available,</span>
+<span class="s3"># all of our subprocesses are Python processes running short bits of</span>
+<span class="s3"># (mostly) cross-platform code.</span>
+<span class="s0">def </span><span class="s1">python(code):</span>
+    <span class="s0">return </span><span class="s1">[sys.executable</span><span class="s0">, </span><span class="s2">&quot;-u&quot;</span><span class="s0">, </span><span class="s2">&quot;-c&quot;</span><span class="s0">, </span><span class="s2">&quot;import sys; &quot; </span><span class="s1">+ code]</span>
+
+
+<span class="s1">EXIT_TRUE = python(</span><span class="s2">&quot;sys.exit(0)&quot;</span><span class="s1">)</span>
+<span class="s1">EXIT_FALSE = python(</span><span class="s2">&quot;sys.exit(1)&quot;</span><span class="s1">)</span>
+<span class="s1">CAT = python(</span><span class="s2">&quot;sys.stdout.buffer.write(sys.stdin.buffer.read())&quot;</span><span class="s1">)</span>
+<span class="s1">SLEEP = </span><span class="s0">lambda </span><span class="s1">seconds: python(</span><span class="s2">&quot;import time; time.sleep({})&quot;</span><span class="s1">.format(seconds))</span>
+
+
+<span class="s0">def </span><span class="s1">got_signal(proc</span><span class="s0">, </span><span class="s1">sig):</span>
+    <span class="s0">if </span><span class="s1">posix:</span>
+        <span class="s0">return </span><span class="s1">proc.returncode == -sig</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">proc.returncode != </span><span class="s4">0</span>
+
+
+<span class="s0">async def </span><span class="s1">test_basic():</span>
+    <span class="s0">async with await </span><span class="s1">open_process(EXIT_TRUE) </span><span class="s0">as </span><span class="s1">proc:</span>
+        <span class="s0">pass</span>
+    <span class="s0">assert </span><span class="s1">isinstance(proc</span><span class="s0">, </span><span class="s1">Process)</span>
+    <span class="s0">assert </span><span class="s1">proc._pidfd </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s1">proc.returncode == </span><span class="s4">0</span>
+    <span class="s0">assert </span><span class="s1">repr(proc) == </span><span class="s2">f&quot;&lt;trio.Process </span><span class="s0">{</span><span class="s1">EXIT_TRUE</span><span class="s0">}</span><span class="s2">: exited with status 0&gt;&quot;</span>
+
+    <span class="s0">async with await </span><span class="s1">open_process(EXIT_FALSE) </span><span class="s0">as </span><span class="s1">proc:</span>
+        <span class="s0">pass</span>
+    <span class="s0">assert </span><span class="s1">proc.returncode == </span><span class="s4">1</span>
+    <span class="s0">assert </span><span class="s1">repr(proc) == </span><span class="s2">&quot;&lt;trio.Process {!r}: {}&gt;&quot;</span><span class="s1">.format(</span>
+        <span class="s1">EXIT_FALSE</span><span class="s0">, </span><span class="s2">&quot;exited with status 1&quot;</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_auto_update_returncode():</span>
+    <span class="s1">p = </span><span class="s0">await </span><span class="s1">open_process(SLEEP(</span><span class="s4">9999</span><span class="s1">))</span>
+    <span class="s0">assert </span><span class="s1">p.returncode </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s2">&quot;running&quot; </span><span class="s0">in </span><span class="s1">repr(p)</span>
+    <span class="s1">p.kill()</span>
+    <span class="s1">p._proc.wait()</span>
+    <span class="s0">assert </span><span class="s1">p.returncode </span><span class="s0">is not None</span>
+    <span class="s0">assert </span><span class="s2">&quot;exited&quot; </span><span class="s0">in </span><span class="s1">repr(p)</span>
+    <span class="s0">assert </span><span class="s1">p._pidfd </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s1">p.returncode </span><span class="s0">is not None</span>
+
+
+<span class="s0">async def </span><span class="s1">test_multi_wait():</span>
+    <span class="s0">async with await </span><span class="s1">open_process(SLEEP(</span><span class="s4">10</span><span class="s1">)) </span><span class="s0">as </span><span class="s1">proc:</span>
+        <span class="s3"># Check that wait (including multi-wait) tolerates being cancelled</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(proc.wait)</span>
+            <span class="s1">nursery.start_soon(proc.wait)</span>
+            <span class="s1">nursery.start_soon(proc.wait)</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">nursery.cancel_scope.cancel()</span>
+
+        <span class="s3"># Now try waiting for real</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(proc.wait)</span>
+            <span class="s1">nursery.start_soon(proc.wait)</span>
+            <span class="s1">nursery.start_soon(proc.wait)</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">proc.kill()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_kill_when_context_cancelled():</span>
+    <span class="s0">with </span><span class="s1">move_on_after(</span><span class="s4">100</span><span class="s1">) </span><span class="s0">as </span><span class="s1">scope:</span>
+        <span class="s0">async with await </span><span class="s1">open_process(SLEEP(</span><span class="s4">10</span><span class="s1">)) </span><span class="s0">as </span><span class="s1">proc:</span>
+            <span class="s0">assert </span><span class="s1">proc.poll() </span><span class="s0">is None</span>
+            <span class="s1">scope.cancel()</span>
+            <span class="s0">await </span><span class="s1">sleep_forever()</span>
+    <span class="s0">assert </span><span class="s1">scope.cancelled_caught</span>
+    <span class="s0">assert </span><span class="s1">got_signal(proc</span><span class="s0">, </span><span class="s1">SIGKILL)</span>
+    <span class="s0">assert </span><span class="s1">repr(proc) == </span><span class="s2">&quot;&lt;trio.Process {!r}: {}&gt;&quot;</span><span class="s1">.format(</span>
+        <span class="s1">SLEEP(</span><span class="s4">10</span><span class="s1">)</span><span class="s0">, </span><span class="s2">&quot;exited with signal 9&quot; </span><span class="s0">if </span><span class="s1">posix </span><span class="s0">else </span><span class="s2">&quot;exited with status 1&quot;</span>
+    <span class="s1">)</span>
+
+
+<span class="s1">COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR = python(</span>
+    <span class="s2">&quot;data = sys.stdin.buffer.read(); &quot;</span>
+    <span class="s2">&quot;sys.stdout.buffer.write(data); &quot;</span>
+    <span class="s2">&quot;sys.stderr.buffer.write(data[::-1])&quot;</span>
+<span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_pipes():</span>
+    <span class="s0">async with await </span><span class="s1">open_process(</span>
+        <span class="s1">COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR</span><span class="s0">,</span>
+        <span class="s1">stdin=subprocess.PIPE</span><span class="s0">,</span>
+        <span class="s1">stdout=subprocess.PIPE</span><span class="s0">,</span>
+        <span class="s1">stderr=subprocess.PIPE</span><span class="s0">,</span>
+    <span class="s1">) </span><span class="s0">as </span><span class="s1">proc:</span>
+        <span class="s1">msg = </span><span class="s5">b&quot;the quick brown fox jumps over the lazy dog&quot;</span>
+
+        <span class="s0">async def </span><span class="s1">feed_input():</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(msg)</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.aclose()</span>
+
+        <span class="s0">async def </span><span class="s1">check_output(stream</span><span class="s0">, </span><span class="s1">expected):</span>
+            <span class="s1">seen = bytearray()</span>
+            <span class="s0">async for </span><span class="s1">chunk </span><span class="s0">in </span><span class="s1">stream:</span>
+                <span class="s1">seen += chunk</span>
+            <span class="s0">assert </span><span class="s1">seen == expected</span>
+
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s3"># fail eventually if something is broken</span>
+            <span class="s1">nursery.cancel_scope.deadline = _core.current_time() + </span><span class="s4">30.0</span>
+            <span class="s1">nursery.start_soon(feed_input)</span>
+            <span class="s1">nursery.start_soon(check_output</span><span class="s0">, </span><span class="s1">proc.stdout</span><span class="s0">, </span><span class="s1">msg)</span>
+            <span class="s1">nursery.start_soon(check_output</span><span class="s0">, </span><span class="s1">proc.stderr</span><span class="s0">, </span><span class="s1">msg[::-</span><span class="s4">1</span><span class="s1">])</span>
+
+        <span class="s0">assert not </span><span class="s1">nursery.cancel_scope.cancelled_caught</span>
+        <span class="s0">assert </span><span class="s4">0 </span><span class="s1">== </span><span class="s0">await </span><span class="s1">proc.wait()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_interactive():</span>
+    <span class="s3"># Test some back-and-forth with a subprocess. This one works like so:</span>
+    <span class="s3"># in: 32\n</span>
+    <span class="s3"># out: 0000...0000\n (32 zeroes)</span>
+    <span class="s3"># err: 1111...1111\n (64 ones)</span>
+    <span class="s3"># in: 10\n</span>
+    <span class="s3"># out: 2222222222\n (10 twos)</span>
+    <span class="s3"># err: 3333....3333\n (20 threes)</span>
+    <span class="s3"># in: EOF</span>
+    <span class="s3"># out: EOF</span>
+    <span class="s3"># err: EOF</span>
+
+    <span class="s0">async with await </span><span class="s1">open_process(</span>
+        <span class="s1">python(</span>
+            <span class="s2">&quot;idx = 0</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;while True:</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;    line = sys.stdin.readline()</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;    if line == '': break</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;    request = int(line.strip())</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;    print(str(idx * 2) * request)</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;    print(str(idx * 2 + 1) * request * 2, file=sys.stderr)</span><span class="s0">\n</span><span class="s2">&quot;</span>
+            <span class="s2">&quot;    idx += 1</span><span class="s0">\n</span><span class="s2">&quot;</span>
+        <span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">stdin=subprocess.PIPE</span><span class="s0">,</span>
+        <span class="s1">stdout=subprocess.PIPE</span><span class="s0">,</span>
+        <span class="s1">stderr=subprocess.PIPE</span><span class="s0">,</span>
+    <span class="s1">) </span><span class="s0">as </span><span class="s1">proc:</span>
+
+        <span class="s1">newline = </span><span class="s5">b&quot;</span><span class="s0">\n</span><span class="s5">&quot; </span><span class="s0">if </span><span class="s1">posix </span><span class="s0">else </span><span class="s5">b&quot;</span><span class="s0">\r\n</span><span class="s5">&quot;</span>
+
+        <span class="s0">async def </span><span class="s1">expect(idx</span><span class="s0">, </span><span class="s1">request):</span>
+            <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+
+                <span class="s0">async def </span><span class="s1">drain_one(stream</span><span class="s0">, </span><span class="s1">count</span><span class="s0">, </span><span class="s1">digit):</span>
+                    <span class="s0">while </span><span class="s1">count &gt; </span><span class="s4">0</span><span class="s1">:</span>
+                        <span class="s1">result = </span><span class="s0">await </span><span class="s1">stream.receive_some(count)</span>
+                        <span class="s0">assert </span><span class="s1">result == (</span>
+                            <span class="s2">&quot;{}&quot;</span><span class="s1">.format(digit).encode(</span><span class="s2">&quot;utf-8&quot;</span><span class="s1">) * len(result)</span>
+                        <span class="s1">)</span>
+                        <span class="s1">count -= len(result)</span>
+                    <span class="s0">assert </span><span class="s1">count == </span><span class="s4">0</span>
+                    <span class="s0">assert await </span><span class="s1">stream.receive_some(len(newline)) == newline</span>
+
+                <span class="s1">nursery.start_soon(drain_one</span><span class="s0">, </span><span class="s1">proc.stdout</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">idx * </span><span class="s4">2</span><span class="s1">)</span>
+                <span class="s1">nursery.start_soon(drain_one</span><span class="s0">, </span><span class="s1">proc.stderr</span><span class="s0">, </span><span class="s1">request * </span><span class="s4">2</span><span class="s0">, </span><span class="s1">idx * </span><span class="s4">2 </span><span class="s1">+ </span><span class="s4">1</span><span class="s1">)</span>
+
+        <span class="s0">with </span><span class="s1">fail_after(</span><span class="s4">5</span><span class="s1">):</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(</span><span class="s5">b&quot;12&quot;</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">sleep(</span><span class="s4">0.1</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(</span><span class="s5">b&quot;345&quot; </span><span class="s1">+ newline)</span>
+            <span class="s0">await </span><span class="s1">expect(</span><span class="s4">0</span><span class="s0">, </span><span class="s4">12345</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(</span><span class="s5">b&quot;100&quot; </span><span class="s1">+ newline + </span><span class="s5">b&quot;200&quot; </span><span class="s1">+ newline)</span>
+            <span class="s0">await </span><span class="s1">expect(</span><span class="s4">1</span><span class="s0">, </span><span class="s4">100</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">expect(</span><span class="s4">2</span><span class="s0">, </span><span class="s4">200</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(</span><span class="s5">b&quot;0&quot; </span><span class="s1">+ newline)</span>
+            <span class="s0">await </span><span class="s1">expect(</span><span class="s4">3</span><span class="s0">, </span><span class="s4">0</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(</span><span class="s5">b&quot;999999&quot;</span><span class="s1">)</span>
+            <span class="s0">with </span><span class="s1">move_on_after(</span><span class="s4">0.1</span><span class="s1">) </span><span class="s0">as </span><span class="s1">scope:</span>
+                <span class="s0">await </span><span class="s1">expect(</span><span class="s4">4</span><span class="s0">, </span><span class="s4">0</span><span class="s1">)</span>
+            <span class="s0">assert </span><span class="s1">scope.cancelled_caught</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.send_all(newline)</span>
+            <span class="s0">await </span><span class="s1">expect(</span><span class="s4">4</span><span class="s0">, </span><span class="s4">999999</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">proc.stdin.aclose()</span>
+            <span class="s0">assert await </span><span class="s1">proc.stdout.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+            <span class="s0">assert await </span><span class="s1">proc.stderr.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+    <span class="s0">assert </span><span class="s1">proc.returncode == </span><span class="s4">0</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run():</span>
+    <span class="s1">data = bytes(random.randint(</span><span class="s4">0</span><span class="s0">, </span><span class="s4">255</span><span class="s1">) </span><span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">2 </span><span class="s1">** </span><span class="s4">18</span><span class="s1">))</span>
+
+    <span class="s1">result = </span><span class="s0">await </span><span class="s1">run_process(</span>
+        <span class="s1">CAT</span><span class="s0">, </span><span class="s1">stdin=data</span><span class="s0">, </span><span class="s1">capture_stdout=</span><span class="s0">True, </span><span class="s1">capture_stderr=</span><span class="s0">True</span>
+    <span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">result.args == CAT</span>
+    <span class="s0">assert </span><span class="s1">result.returncode == </span><span class="s4">0</span>
+    <span class="s0">assert </span><span class="s1">result.stdout == data</span>
+    <span class="s0">assert </span><span class="s1">result.stderr == </span><span class="s5">b&quot;&quot;</span>
+
+    <span class="s1">result = </span><span class="s0">await </span><span class="s1">run_process(CAT</span><span class="s0">, </span><span class="s1">capture_stdout=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">result.args == CAT</span>
+    <span class="s0">assert </span><span class="s1">result.returncode == </span><span class="s4">0</span>
+    <span class="s0">assert </span><span class="s1">result.stdout == </span><span class="s5">b&quot;&quot;</span>
+    <span class="s0">assert </span><span class="s1">result.stderr </span><span class="s0">is None</span>
+
+    <span class="s1">result = </span><span class="s0">await </span><span class="s1">run_process(</span>
+        <span class="s1">COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR</span><span class="s0">,</span>
+        <span class="s1">stdin=data</span><span class="s0">,</span>
+        <span class="s1">capture_stdout=</span><span class="s0">True,</span>
+        <span class="s1">capture_stderr=</span><span class="s0">True,</span>
+    <span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">result.args == COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR</span>
+    <span class="s0">assert </span><span class="s1">result.returncode == </span><span class="s4">0</span>
+    <span class="s0">assert </span><span class="s1">result.stdout == data</span>
+    <span class="s0">assert </span><span class="s1">result.stderr == data[::-</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s3"># invalid combinations</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(UnicodeError):</span>
+        <span class="s0">await </span><span class="s1">run_process(CAT</span><span class="s0">, </span><span class="s1">stdin=</span><span class="s2">&quot;oh no, it's text&quot;</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">await </span><span class="s1">run_process(CAT</span><span class="s0">, </span><span class="s1">stdin=subprocess.PIPE)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">await </span><span class="s1">run_process(CAT</span><span class="s0">, </span><span class="s1">capture_stdout=</span><span class="s0">True, </span><span class="s1">stdout=subprocess.DEVNULL)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">await </span><span class="s1">run_process(CAT</span><span class="s0">, </span><span class="s1">capture_stderr=</span><span class="s0">True, </span><span class="s1">stderr=</span><span class="s0">None</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run_check():</span>
+    <span class="s1">cmd = python(</span><span class="s2">&quot;sys.stderr.buffer.write(b'test</span><span class="s0">\\</span><span class="s2">n'); sys.exit(1)&quot;</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(subprocess.CalledProcessError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">run_process(cmd</span><span class="s0">, </span><span class="s1">stdin=subprocess.DEVNULL</span><span class="s0">, </span><span class="s1">capture_stderr=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.cmd == cmd</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.returncode == </span><span class="s4">1</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.stderr == </span><span class="s5">b&quot;test</span><span class="s0">\n</span><span class="s5">&quot;</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.stdout </span><span class="s0">is None</span>
+
+    <span class="s1">result = </span><span class="s0">await </span><span class="s1">run_process(</span>
+        <span class="s1">cmd</span><span class="s0">, </span><span class="s1">capture_stdout=</span><span class="s0">True, </span><span class="s1">capture_stderr=</span><span class="s0">True, </span><span class="s1">check=</span><span class="s0">False</span>
+    <span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">result.args == cmd</span>
+    <span class="s0">assert </span><span class="s1">result.stdout == </span><span class="s5">b&quot;&quot;</span>
+    <span class="s0">assert </span><span class="s1">result.stderr == </span><span class="s5">b&quot;test</span><span class="s0">\n</span><span class="s5">&quot;</span>
+    <span class="s0">assert </span><span class="s1">result.returncode == </span><span class="s4">1</span>
+
+
+<span class="s1">@skip_if_fbsd_pipes_broken</span>
+<span class="s0">async def </span><span class="s1">test_run_with_broken_pipe():</span>
+    <span class="s1">result = </span><span class="s0">await </span><span class="s1">run_process(</span>
+        <span class="s1">[sys.executable</span><span class="s0">, </span><span class="s2">&quot;-c&quot;</span><span class="s0">, </span><span class="s2">&quot;import sys; sys.stdin.close()&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s1">stdin=</span><span class="s5">b&quot;x&quot; </span><span class="s1">* </span><span class="s4">131072</span>
+    <span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">result.returncode == </span><span class="s4">0</span>
+    <span class="s0">assert </span><span class="s1">result.stdout </span><span class="s0">is </span><span class="s1">result.stderr </span><span class="s0">is None</span>
+
+
+<span class="s0">async def </span><span class="s1">test_stderr_stdout():</span>
+    <span class="s0">async with await </span><span class="s1">open_process(</span>
+        <span class="s1">COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR</span><span class="s0">,</span>
+        <span class="s1">stdin=subprocess.PIPE</span><span class="s0">,</span>
+        <span class="s1">stdout=subprocess.PIPE</span><span class="s0">,</span>
+        <span class="s1">stderr=subprocess.STDOUT</span><span class="s0">,</span>
+    <span class="s1">) </span><span class="s0">as </span><span class="s1">proc:</span>
+        <span class="s0">assert </span><span class="s1">proc.stdout </span><span class="s0">is not None</span>
+        <span class="s0">assert </span><span class="s1">proc.stderr </span><span class="s0">is None</span>
+        <span class="s0">await </span><span class="s1">proc.stdio.send_all(</span><span class="s5">b&quot;1234&quot;</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">proc.stdio.send_eof()</span>
+
+        <span class="s1">output = []</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">chunk = </span><span class="s0">await </span><span class="s1">proc.stdio.receive_some(</span><span class="s4">16</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">chunk == </span><span class="s5">b&quot;&quot;</span><span class="s1">:</span>
+                <span class="s0">break</span>
+            <span class="s1">output.append(chunk)</span>
+        <span class="s0">assert </span><span class="s5">b&quot;&quot;</span><span class="s1">.join(output) == </span><span class="s5">b&quot;12344321&quot;</span>
+    <span class="s0">assert </span><span class="s1">proc.returncode == </span><span class="s4">0</span>
+
+    <span class="s3"># equivalent test with run_process()</span>
+    <span class="s1">result = </span><span class="s0">await </span><span class="s1">run_process(</span>
+        <span class="s1">COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR</span><span class="s0">,</span>
+        <span class="s1">stdin=</span><span class="s5">b&quot;1234&quot;</span><span class="s0">,</span>
+        <span class="s1">capture_stdout=</span><span class="s0">True,</span>
+        <span class="s1">stderr=subprocess.STDOUT</span><span class="s0">,</span>
+    <span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">result.returncode == </span><span class="s4">0</span>
+    <span class="s0">assert </span><span class="s1">result.stdout == </span><span class="s5">b&quot;12344321&quot;</span>
+    <span class="s0">assert </span><span class="s1">result.stderr </span><span class="s0">is None</span>
+
+    <span class="s3"># this one hits the branch where stderr=STDOUT but stdout</span>
+    <span class="s3"># is not redirected</span>
+    <span class="s0">async with await </span><span class="s1">open_process(</span>
+        <span class="s1">CAT</span><span class="s0">, </span><span class="s1">stdin=subprocess.PIPE</span><span class="s0">, </span><span class="s1">stderr=subprocess.STDOUT</span>
+    <span class="s1">) </span><span class="s0">as </span><span class="s1">proc:</span>
+        <span class="s0">assert </span><span class="s1">proc.stdout </span><span class="s0">is None</span>
+        <span class="s0">assert </span><span class="s1">proc.stderr </span><span class="s0">is None</span>
+        <span class="s0">await </span><span class="s1">proc.stdin.aclose()</span>
+    <span class="s0">assert </span><span class="s1">proc.returncode == </span><span class="s4">0</span>
+
+    <span class="s0">if </span><span class="s1">posix:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">r</span><span class="s0">, </span><span class="s1">w = os.pipe()</span>
+
+            <span class="s0">async with await </span><span class="s1">open_process(</span>
+                <span class="s1">COPY_STDIN_TO_STDOUT_AND_BACKWARD_TO_STDERR</span><span class="s0">,</span>
+                <span class="s1">stdin=subprocess.PIPE</span><span class="s0">,</span>
+                <span class="s1">stdout=w</span><span class="s0">,</span>
+                <span class="s1">stderr=subprocess.STDOUT</span><span class="s0">,</span>
+            <span class="s1">) </span><span class="s0">as </span><span class="s1">proc:</span>
+                <span class="s1">os.close(w)</span>
+                <span class="s0">assert </span><span class="s1">proc.stdio </span><span class="s0">is None</span>
+                <span class="s0">assert </span><span class="s1">proc.stdout </span><span class="s0">is None</span>
+                <span class="s0">assert </span><span class="s1">proc.stderr </span><span class="s0">is None</span>
+                <span class="s0">await </span><span class="s1">proc.stdin.send_all(</span><span class="s5">b&quot;1234&quot;</span><span class="s1">)</span>
+                <span class="s0">await </span><span class="s1">proc.stdin.aclose()</span>
+                <span class="s0">assert await </span><span class="s1">proc.wait() == </span><span class="s4">0</span>
+                <span class="s0">assert </span><span class="s1">os.read(r</span><span class="s0">, </span><span class="s4">4096</span><span class="s1">) == </span><span class="s5">b&quot;12344321&quot;</span>
+                <span class="s0">assert </span><span class="s1">os.read(r</span><span class="s0">, </span><span class="s4">4096</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">os.close(r)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_errors():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">open_process([</span><span class="s2">&quot;ls&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s2">&quot;utf-8&quot;</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s2">&quot;unbuffered byte streams&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+    <span class="s0">assert </span><span class="s2">&quot;the 'encoding' option is not supported&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s0">if </span><span class="s1">posix:</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(TypeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">open_process([</span><span class="s2">&quot;ls&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s1">shell=</span><span class="s0">True</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(TypeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">open_process(</span><span class="s2">&quot;ls&quot;</span><span class="s0">, </span><span class="s1">shell=</span><span class="s0">False</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_signals():</span>
+    <span class="s0">async def </span><span class="s1">test_one_signal(send_it</span><span class="s0">, </span><span class="s1">signum):</span>
+        <span class="s0">with </span><span class="s1">move_on_after(</span><span class="s4">1.0</span><span class="s1">) </span><span class="s0">as </span><span class="s1">scope:</span>
+            <span class="s0">async with await </span><span class="s1">open_process(SLEEP(</span><span class="s4">3600</span><span class="s1">)) </span><span class="s0">as </span><span class="s1">proc:</span>
+                <span class="s1">send_it(proc)</span>
+        <span class="s0">assert not </span><span class="s1">scope.cancelled_caught</span>
+        <span class="s0">if </span><span class="s1">posix:</span>
+            <span class="s0">assert </span><span class="s1">proc.returncode == -signum</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">assert </span><span class="s1">proc.returncode != </span><span class="s4">0</span>
+
+    <span class="s0">await </span><span class="s1">test_one_signal(Process.kill</span><span class="s0">, </span><span class="s1">SIGKILL)</span>
+    <span class="s0">await </span><span class="s1">test_one_signal(Process.terminate</span><span class="s0">, </span><span class="s1">SIGTERM)</span>
+    <span class="s3"># Test that we can send arbitrary signals.</span>
+    <span class="s3">#</span>
+    <span class="s3"># We used to use SIGINT here, but it turns out that the Python interpreter</span>
+    <span class="s3"># has race conditions that can cause it to explode in weird ways if it</span>
+    <span class="s3"># tries to handle SIGINT during startup. SIGUSR1's default disposition is</span>
+    <span class="s3"># to terminate the target process, and Python doesn't try to do anything</span>
+    <span class="s3"># clever to handle it.</span>
+    <span class="s0">if </span><span class="s1">posix:</span>
+        <span class="s0">await </span><span class="s1">test_one_signal(</span><span class="s0">lambda </span><span class="s1">proc: proc.send_signal(SIGUSR1)</span><span class="s0">, </span><span class="s1">SIGUSR1)</span>
+
+
+<span class="s1">@pytest.mark.skipif(</span><span class="s0">not </span><span class="s1">posix</span><span class="s0">, </span><span class="s1">reason=</span><span class="s2">&quot;POSIX specific&quot;</span><span class="s1">)</span>
+<span class="s0">async def </span><span class="s1">test_wait_reapable_fails():</span>
+    <span class="s1">old_sigchld = signal.signal(signal.SIGCHLD</span><span class="s0">, </span><span class="s1">signal.SIG_IGN)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s3"># With SIGCHLD disabled, the wait() syscall will wait for the</span>
+        <span class="s3"># process to exit but then fail with ECHILD. Make sure we</span>
+        <span class="s3"># support this case as the stdlib subprocess module does.</span>
+        <span class="s0">async with await </span><span class="s1">open_process(SLEEP(</span><span class="s4">3600</span><span class="s1">)) </span><span class="s0">as </span><span class="s1">proc:</span>
+            <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+                <span class="s1">nursery.start_soon(proc.wait)</span>
+                <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+                <span class="s1">proc.kill()</span>
+                <span class="s1">nursery.cancel_scope.deadline = _core.current_time() + </span><span class="s4">1.0</span>
+            <span class="s0">assert not </span><span class="s1">nursery.cancel_scope.cancelled_caught</span>
+            <span class="s0">assert </span><span class="s1">proc.returncode == </span><span class="s4">0  </span><span class="s3"># exit status unknowable, so...</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s1">signal.signal(signal.SIGCHLD</span><span class="s0">, </span><span class="s1">old_sigchld)</span>
+
+
+<span class="s1">@slow</span>
+<span class="s0">def </span><span class="s1">test_waitid_eintr():</span>
+    <span class="s3"># This only matters on PyPy (where we're coding EINTR handling</span>
+    <span class="s3"># ourselves) but the test works on all waitid platforms.</span>
+    <span class="s0">from </span><span class="s1">.._subprocess_platform </span><span class="s0">import </span><span class="s1">wait_child_exiting</span>
+
+    <span class="s0">if not </span><span class="s1">wait_child_exiting.__module__.endswith(</span><span class="s2">&quot;waitid&quot;</span><span class="s1">):</span>
+        <span class="s1">pytest.skip(</span><span class="s2">&quot;waitid only&quot;</span><span class="s1">)</span>
+    <span class="s0">from </span><span class="s1">.._subprocess_platform.waitid </span><span class="s0">import </span><span class="s1">sync_wait_reapable</span>
+
+    <span class="s1">got_alarm = </span><span class="s0">False</span>
+    <span class="s1">sleeper = subprocess.Popen([</span><span class="s2">&quot;sleep&quot;</span><span class="s0">, </span><span class="s2">&quot;3600&quot;</span><span class="s1">])</span>
+
+    <span class="s0">def </span><span class="s1">on_alarm(sig</span><span class="s0">, </span><span class="s1">frame):</span>
+        <span class="s0">nonlocal </span><span class="s1">got_alarm</span>
+        <span class="s1">got_alarm = </span><span class="s0">True</span>
+        <span class="s1">sleeper.kill()</span>
+
+    <span class="s1">old_sigalrm = signal.signal(signal.SIGALRM</span><span class="s0">, </span><span class="s1">on_alarm)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">signal.alarm(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s1">sync_wait_reapable(sleeper.pid)</span>
+        <span class="s0">assert </span><span class="s1">sleeper.wait(timeout=</span><span class="s4">1</span><span class="s1">) == -</span><span class="s4">9</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s0">if </span><span class="s1">sleeper.returncode </span><span class="s0">is None</span><span class="s1">:  </span><span class="s3"># pragma: no cover</span>
+            <span class="s3"># We only get here if something fails in the above;</span>
+            <span class="s3"># if the test passes, wait() will reap the process</span>
+            <span class="s1">sleeper.kill()</span>
+            <span class="s1">sleeper.wait()</span>
+        <span class="s1">signal.signal(signal.SIGALRM</span><span class="s0">, </span><span class="s1">old_sigalrm)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_custom_deliver_cancel():</span>
+    <span class="s1">custom_deliver_cancel_called = </span><span class="s0">False</span>
+
+    <span class="s0">async def </span><span class="s1">custom_deliver_cancel(proc):</span>
+        <span class="s0">nonlocal </span><span class="s1">custom_deliver_cancel_called</span>
+        <span class="s1">custom_deliver_cancel_called = </span><span class="s0">True</span>
+        <span class="s1">proc.terminate()</span>
+        <span class="s3"># Make sure this does get cancelled when the process exits, and that</span>
+        <span class="s3"># the process really exited.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">sleep_forever()</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">assert </span><span class="s1">proc.returncode </span><span class="s0">is not None</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(</span>
+            <span class="s1">partial(run_process</span><span class="s0">, </span><span class="s1">SLEEP(</span><span class="s4">9999</span><span class="s1">)</span><span class="s0">, </span><span class="s1">deliver_cancel=custom_deliver_cancel)</span>
+        <span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.cancel_scope.cancel()</span>
+
+    <span class="s0">assert </span><span class="s1">custom_deliver_cancel_called</span>
+
+
+<span class="s0">async def </span><span class="s1">test_warn_on_failed_cancel_terminate(monkeypatch):</span>
+    <span class="s1">original_terminate = Process.terminate</span>
+
+    <span class="s0">def </span><span class="s1">broken_terminate(self):</span>
+        <span class="s1">original_terminate(self)</span>
+        <span class="s0">raise </span><span class="s1">OSError(</span><span class="s2">&quot;whoops&quot;</span><span class="s1">)</span>
+
+    <span class="s1">monkeypatch.setattr(Process</span><span class="s0">, </span><span class="s2">&quot;terminate&quot;</span><span class="s0">, </span><span class="s1">broken_terminate)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.warns(RuntimeWarning</span><span class="s0">, </span><span class="s1">match=</span><span class="s2">&quot;.*whoops.*&quot;</span><span class="s1">):</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(run_process</span><span class="s0">, </span><span class="s1">SLEEP(</span><span class="s4">9999</span><span class="s1">))</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">nursery.cancel_scope.cancel()</span>
+
+
+<span class="s1">@pytest.mark.skipif(os.name != </span><span class="s2">&quot;posix&quot;</span><span class="s0">, </span><span class="s1">reason=</span><span class="s2">&quot;posix only&quot;</span><span class="s1">)</span>
+<span class="s0">async def </span><span class="s1">test_warn_on_cancel_SIGKILL_escalation(autojump_clock</span><span class="s0">, </span><span class="s1">monkeypatch):</span>
+    <span class="s1">monkeypatch.setattr(Process</span><span class="s0">, </span><span class="s2">&quot;terminate&quot;</span><span class="s0">, lambda </span><span class="s1">*args: </span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.warns(RuntimeWarning</span><span class="s0">, </span><span class="s1">match=</span><span class="s2">&quot;.*ignored SIGTERM.*&quot;</span><span class="s1">):</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(run_process</span><span class="s0">, </span><span class="s1">SLEEP(</span><span class="s4">9999</span><span class="s1">))</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">nursery.cancel_scope.cancel()</span>
+</pre>
+</body>
+</html>

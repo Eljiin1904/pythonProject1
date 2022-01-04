@@ -1,0 +1,109 @@
+<html>
+<head>
+<title>views.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+views.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.contrib.contenttypes.models </span><span class="s0">import </span><span class="s1">ContentType</span>
+<span class="s0">from </span><span class="s1">django.contrib.sites.shortcuts </span><span class="s0">import </span><span class="s1">get_current_site</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ObjectDoesNotExist</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">Http404</span><span class="s0">, </span><span class="s1">HttpResponseRedirect</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext </span><span class="s0">as </span><span class="s1">_</span>
+
+
+<span class="s0">def </span><span class="s1">shortcut(request</span><span class="s0">, </span><span class="s1">content_type_id</span><span class="s0">, </span><span class="s1">object_id):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Redirect to an object's page based on a content-type ID and an object ID. 
+    &quot;&quot;&quot;</span>
+    <span class="s3"># Look up the object, making sure it's got a get_absolute_url() function.</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">content_type = ContentType.objects.get(pk=content_type_id)</span>
+        <span class="s0">if not </span><span class="s1">content_type.model_class():</span>
+            <span class="s0">raise </span><span class="s1">Http404(</span>
+                <span class="s1">_(</span><span class="s4">&quot;Content type %(ct_id)s object has no associated model&quot;</span><span class="s1">) %</span>
+                <span class="s1">{</span><span class="s4">'ct_id'</span><span class="s1">: content_type_id}</span>
+            <span class="s1">)</span>
+        <span class="s1">obj = content_type.get_object_for_this_type(pk=object_id)</span>
+    <span class="s0">except </span><span class="s1">(ObjectDoesNotExist</span><span class="s0">, </span><span class="s1">ValueError):</span>
+        <span class="s0">raise </span><span class="s1">Http404(</span>
+            <span class="s1">_(</span><span class="s4">'Content type %(ct_id)s object %(obj_id)s doesn’t exist'</span><span class="s1">) %</span>
+            <span class="s1">{</span><span class="s4">'ct_id'</span><span class="s1">: content_type_id</span><span class="s0">, </span><span class="s4">'obj_id'</span><span class="s1">: object_id}</span>
+        <span class="s1">)</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">get_absolute_url = obj.get_absolute_url</span>
+    <span class="s0">except </span><span class="s1">AttributeError:</span>
+        <span class="s0">raise </span><span class="s1">Http404(</span>
+            <span class="s1">_(</span><span class="s4">'%(ct_name)s objects don’t have a get_absolute_url() method'</span><span class="s1">) %</span>
+            <span class="s1">{</span><span class="s4">'ct_name'</span><span class="s1">: content_type.name}</span>
+        <span class="s1">)</span>
+    <span class="s1">absurl = get_absolute_url()</span>
+
+    <span class="s3"># Try to figure out the object's domain, so we can do a cross-site redirect</span>
+    <span class="s3"># if necessary.</span>
+
+    <span class="s3"># If the object actually defines a domain, we're done.</span>
+    <span class="s0">if </span><span class="s1">absurl.startswith((</span><span class="s4">'http://'</span><span class="s0">, </span><span class="s4">'https://'</span><span class="s0">, </span><span class="s4">'//'</span><span class="s1">)):</span>
+        <span class="s0">return </span><span class="s1">HttpResponseRedirect(absurl)</span>
+
+    <span class="s3"># Otherwise, we need to introspect the object's relationships for a</span>
+    <span class="s3"># relation to the Site object</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">object_domain = get_current_site(request).domain</span>
+    <span class="s0">except </span><span class="s1">ObjectDoesNotExist:</span>
+        <span class="s1">object_domain = </span><span class="s0">None</span>
+
+    <span class="s0">if </span><span class="s1">apps.is_installed(</span><span class="s4">'django.contrib.sites'</span><span class="s1">):</span>
+        <span class="s1">Site = apps.get_model(</span><span class="s4">'sites.Site'</span><span class="s1">)</span>
+        <span class="s1">opts = obj._meta</span>
+
+        <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">opts.many_to_many:</span>
+            <span class="s3"># Look for a many-to-many relationship to Site.</span>
+            <span class="s0">if </span><span class="s1">field.remote_field.model </span><span class="s0">is </span><span class="s1">Site:</span>
+                <span class="s1">site_qs = getattr(obj</span><span class="s0">, </span><span class="s1">field.name).all()</span>
+                <span class="s0">if </span><span class="s1">object_domain </span><span class="s0">and </span><span class="s1">site_qs.filter(domain=object_domain).exists():</span>
+                    <span class="s3"># The current site's domain matches a site attached to the</span>
+                    <span class="s3"># object.</span>
+                    <span class="s0">break</span>
+                <span class="s3"># Caveat: In the case of multiple related Sites, this just</span>
+                <span class="s3"># selects the *first* one, which is arbitrary.</span>
+                <span class="s1">site = site_qs.first()</span>
+                <span class="s0">if </span><span class="s1">site:</span>
+                    <span class="s1">object_domain = site.domain</span>
+                    <span class="s0">break</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s3"># No many-to-many relationship to Site found. Look for a</span>
+            <span class="s3"># many-to-one relationship to Site.</span>
+            <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">obj._meta.fields:</span>
+                <span class="s0">if </span><span class="s1">field.remote_field </span><span class="s0">and </span><span class="s1">field.remote_field.model </span><span class="s0">is </span><span class="s1">Site:</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">site = getattr(obj</span><span class="s0">, </span><span class="s1">field.name)</span>
+                    <span class="s0">except </span><span class="s1">Site.DoesNotExist:</span>
+                        <span class="s0">continue</span>
+                    <span class="s0">if </span><span class="s1">site </span><span class="s0">is not None</span><span class="s1">:</span>
+                        <span class="s1">object_domain = site.domain</span>
+                        <span class="s0">break</span>
+
+    <span class="s3"># If all that malarkey found an object domain, use it. Otherwise, fall back</span>
+    <span class="s3"># to whatever get_absolute_url() returned.</span>
+    <span class="s0">if </span><span class="s1">object_domain </span><span class="s0">is not None</span><span class="s1">:</span>
+        <span class="s1">protocol = request.scheme</span>
+        <span class="s0">return </span><span class="s1">HttpResponseRedirect(</span><span class="s4">'%s://%s%s' </span><span class="s1">% (protocol</span><span class="s0">, </span><span class="s1">object_domain</span><span class="s0">, </span><span class="s1">absurl))</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">HttpResponseRedirect(absurl)</span>
+</pre>
+</body>
+</html>

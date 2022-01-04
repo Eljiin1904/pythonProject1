@@ -1,0 +1,62 @@
+<html>
+<head>
+<title>kqueue.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+kqueue.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">select</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">TYPE_CHECKING</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span><span class="s0">, </span><span class="s1">_subprocess</span>
+
+<span class="s0">assert </span><span class="s1">(sys.platform != </span><span class="s2">&quot;win32&quot; </span><span class="s0">and </span><span class="s1">sys.platform != </span><span class="s2">&quot;linux&quot;</span><span class="s1">) </span><span class="s0">or not </span><span class="s1">TYPE_CHECKING</span>
+
+
+<span class="s0">async def </span><span class="s1">wait_child_exiting(process: </span><span class="s2">&quot;_subprocess.Process&quot;</span><span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s1">kqueue = _core.current_kqueue()</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">from </span><span class="s1">select </span><span class="s0">import </span><span class="s1">KQ_NOTE_EXIT</span>
+    <span class="s0">except </span><span class="s1">ImportError:  </span><span class="s3"># pragma: no cover</span>
+        <span class="s3"># pypy doesn't define KQ_NOTE_EXIT:</span>
+        <span class="s3"># https://bitbucket.org/pypy/pypy/issues/2921/</span>
+        <span class="s3"># I verified this value against both Darwin and FreeBSD</span>
+        <span class="s1">KQ_NOTE_EXIT = </span><span class="s4">0x80000000</span>
+
+    <span class="s1">make_event = </span><span class="s0">lambda </span><span class="s1">flags: select.kevent(</span>
+        <span class="s1">process.pid</span><span class="s0">, </span><span class="s1">filter=select.KQ_FILTER_PROC</span><span class="s0">, </span><span class="s1">flags=flags</span><span class="s0">, </span><span class="s1">fflags=KQ_NOTE_EXIT</span>
+    <span class="s1">)</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">kqueue.control([make_event(select.KQ_EV_ADD | select.KQ_EV_ONESHOT)]</span><span class="s0">, </span><span class="s4">0</span><span class="s1">)</span>
+    <span class="s0">except </span><span class="s1">ProcessLookupError:  </span><span class="s3"># pragma: no cover</span>
+        <span class="s3"># This can supposedly happen if the process is in the process</span>
+        <span class="s3"># of exiting, and it can even be the case that kqueue says the</span>
+        <span class="s3"># process doesn't exist before waitpid(WNOHANG) says it hasn't</span>
+        <span class="s3"># exited yet. See the discussion in https://chromium.googlesource.com/</span>
+        <span class="s3"># chromium/src/base/+/master/process/kill_mac.cc .</span>
+        <span class="s3"># We haven't actually seen this error occur since we added</span>
+        <span class="s3"># locking to prevent multiple calls to wait_child_exiting()</span>
+        <span class="s3"># for the same process simultaneously, but given the explanation</span>
+        <span class="s3"># in Chromium it seems we should still keep the check.</span>
+        <span class="s0">return</span>
+
+    <span class="s0">def </span><span class="s1">abort(_):</span>
+        <span class="s1">kqueue.control([make_event(select.KQ_EV_DELETE)]</span><span class="s0">, </span><span class="s4">0</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">_core.Abort.SUCCEEDED</span>
+
+    <span class="s0">await </span><span class="s1">_core.wait_kevent(process.pid</span><span class="s0">, </span><span class="s1">select.KQ_FILTER_PROC</span><span class="s0">, </span><span class="s1">abort)</span>
+</pre>
+</body>
+</html>

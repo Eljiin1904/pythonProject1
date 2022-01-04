@@ -1,0 +1,162 @@
+<html>
+<head>
+<title>feeds.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+feeds.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.contrib.syndication.views </span><span class="s0">import </span><span class="s1">Feed </span><span class="s0">as </span><span class="s1">BaseFeed</span>
+<span class="s0">from </span><span class="s1">django.utils.feedgenerator </span><span class="s0">import </span><span class="s1">Atom1Feed</span><span class="s0">, </span><span class="s1">Rss201rev2Feed</span>
+
+
+<span class="s0">class </span><span class="s1">GeoFeedMixin:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    This mixin provides the necessary routines for SyndicationFeed subclasses 
+    to produce simple GeoRSS or W3C Geo elements. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">georss_coords(self</span><span class="s0">, </span><span class="s1">coords):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        In GeoRSS coordinate pairs are ordered by lat/lon and separated by 
+        a single white space. Given a tuple of coordinates, return a string 
+        GeoRSS representation. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s3">' '</span><span class="s1">.join(</span><span class="s3">'%f %f' </span><span class="s1">% (coord[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">coord[</span><span class="s4">0</span><span class="s1">]) </span><span class="s0">for </span><span class="s1">coord </span><span class="s0">in </span><span class="s1">coords)</span>
+
+    <span class="s0">def </span><span class="s1">add_georss_point(self</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">coords</span><span class="s0">, </span><span class="s1">w3c_geo=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Adds a GeoRSS point with the given coords using the given handler. 
+        Handles the differences between simple GeoRSS and the more popular 
+        W3C Geo specification. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">w3c_geo:</span>
+            <span class="s1">lon</span><span class="s0">, </span><span class="s1">lat = coords[:</span><span class="s4">2</span><span class="s1">]</span>
+            <span class="s1">handler.addQuickElement(</span><span class="s3">'geo:lat'</span><span class="s0">, </span><span class="s3">'%f' </span><span class="s1">% lat)</span>
+            <span class="s1">handler.addQuickElement(</span><span class="s3">'geo:lon'</span><span class="s0">, </span><span class="s3">'%f' </span><span class="s1">% lon)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">handler.addQuickElement(</span><span class="s3">'georss:point'</span><span class="s0">, </span><span class="s1">self.georss_coords((coords</span><span class="s0">,</span><span class="s1">)))</span>
+
+    <span class="s0">def </span><span class="s1">add_georss_element(self</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">item</span><span class="s0">, </span><span class="s1">w3c_geo=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Add a GeoRSS XML element using the given item and handler.&quot;&quot;&quot;</span>
+        <span class="s5"># Getting the Geometry object.</span>
+        <span class="s1">geom = item.get(</span><span class="s3">'geometry'</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">geom </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">isinstance(geom</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+                <span class="s5"># Special case if a tuple/list was passed in.  The tuple may be</span>
+                <span class="s5"># a point or a box</span>
+                <span class="s1">box_coords = </span><span class="s0">None</span>
+                <span class="s0">if </span><span class="s1">isinstance(geom[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+                    <span class="s5"># Box: ( (X0, Y0), (X1, Y1) )</span>
+                    <span class="s0">if </span><span class="s1">len(geom) == </span><span class="s4">2</span><span class="s1">:</span>
+                        <span class="s1">box_coords = geom</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Only should be two sets of coordinates.'</span><span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">len(geom) == </span><span class="s4">2</span><span class="s1">:</span>
+                        <span class="s5"># Point: (X, Y)</span>
+                        <span class="s1">self.add_georss_point(handler</span><span class="s0">, </span><span class="s1">geom</span><span class="s0">, </span><span class="s1">w3c_geo=w3c_geo)</span>
+                    <span class="s0">elif </span><span class="s1">len(geom) == </span><span class="s4">4</span><span class="s1">:</span>
+                        <span class="s5"># Box: (X0, Y0, X1, Y1)</span>
+                        <span class="s1">box_coords = (geom[:</span><span class="s4">2</span><span class="s1">]</span><span class="s0">, </span><span class="s1">geom[</span><span class="s4">2</span><span class="s1">:])</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Only should be 2 or 4 numeric elements.'</span><span class="s1">)</span>
+                <span class="s5"># If a GeoRSS box was given via tuple.</span>
+                <span class="s0">if </span><span class="s1">box_coords </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">w3c_geo:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Cannot use simple GeoRSS box in W3C Geo feeds.'</span><span class="s1">)</span>
+                    <span class="s1">handler.addQuickElement(</span><span class="s3">'georss:box'</span><span class="s0">, </span><span class="s1">self.georss_coords(box_coords))</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s5"># Getting the lowercase geometry type.</span>
+                <span class="s1">gtype = str(geom.geom_type).lower()</span>
+                <span class="s0">if </span><span class="s1">gtype == </span><span class="s3">'point'</span><span class="s1">:</span>
+                    <span class="s1">self.add_georss_point(handler</span><span class="s0">, </span><span class="s1">geom.coords</span><span class="s0">, </span><span class="s1">w3c_geo=w3c_geo)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">w3c_geo:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'W3C Geo only supports Point geometries.'</span><span class="s1">)</span>
+                    <span class="s5"># For formatting consistent w/the GeoRSS simple standard:</span>
+                    <span class="s5"># http://georss.org/1.0#simple</span>
+                    <span class="s0">if </span><span class="s1">gtype </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'linestring'</span><span class="s0">, </span><span class="s3">'linearring'</span><span class="s1">):</span>
+                        <span class="s1">handler.addQuickElement(</span><span class="s3">'georss:line'</span><span class="s0">, </span><span class="s1">self.georss_coords(geom.coords))</span>
+                    <span class="s0">elif </span><span class="s1">gtype </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'polygon'</span><span class="s0">,</span><span class="s1">):</span>
+                        <span class="s5"># Only support the exterior ring.</span>
+                        <span class="s1">handler.addQuickElement(</span><span class="s3">'georss:polygon'</span><span class="s0">, </span><span class="s1">self.georss_coords(geom[</span><span class="s4">0</span><span class="s1">].coords))</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Geometry type &quot;%s&quot; not supported.' </span><span class="s1">% geom.geom_type)</span>
+
+
+<span class="s5"># ### SyndicationFeed subclasses ###</span>
+<span class="s0">class </span><span class="s1">GeoRSSFeed(Rss201rev2Feed</span><span class="s0">, </span><span class="s1">GeoFeedMixin):</span>
+    <span class="s0">def </span><span class="s1">rss_attributes(self):</span>
+        <span class="s1">attrs = super().rss_attributes()</span>
+        <span class="s1">attrs[</span><span class="s3">'xmlns:georss'</span><span class="s1">] = </span><span class="s3">'http://www.georss.org/georss'</span>
+        <span class="s0">return </span><span class="s1">attrs</span>
+
+    <span class="s0">def </span><span class="s1">add_item_elements(self</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">item):</span>
+        <span class="s1">super().add_item_elements(handler</span><span class="s0">, </span><span class="s1">item)</span>
+        <span class="s1">self.add_georss_element(handler</span><span class="s0">, </span><span class="s1">item)</span>
+
+    <span class="s0">def </span><span class="s1">add_root_elements(self</span><span class="s0">, </span><span class="s1">handler):</span>
+        <span class="s1">super().add_root_elements(handler)</span>
+        <span class="s1">self.add_georss_element(handler</span><span class="s0">, </span><span class="s1">self.feed)</span>
+
+
+<span class="s0">class </span><span class="s1">GeoAtom1Feed(Atom1Feed</span><span class="s0">, </span><span class="s1">GeoFeedMixin):</span>
+    <span class="s0">def </span><span class="s1">root_attributes(self):</span>
+        <span class="s1">attrs = super().root_attributes()</span>
+        <span class="s1">attrs[</span><span class="s3">'xmlns:georss'</span><span class="s1">] = </span><span class="s3">'http://www.georss.org/georss'</span>
+        <span class="s0">return </span><span class="s1">attrs</span>
+
+    <span class="s0">def </span><span class="s1">add_item_elements(self</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">item):</span>
+        <span class="s1">super().add_item_elements(handler</span><span class="s0">, </span><span class="s1">item)</span>
+        <span class="s1">self.add_georss_element(handler</span><span class="s0">, </span><span class="s1">item)</span>
+
+    <span class="s0">def </span><span class="s1">add_root_elements(self</span><span class="s0">, </span><span class="s1">handler):</span>
+        <span class="s1">super().add_root_elements(handler)</span>
+        <span class="s1">self.add_georss_element(handler</span><span class="s0">, </span><span class="s1">self.feed)</span>
+
+
+<span class="s0">class </span><span class="s1">W3CGeoFeed(Rss201rev2Feed</span><span class="s0">, </span><span class="s1">GeoFeedMixin):</span>
+    <span class="s0">def </span><span class="s1">rss_attributes(self):</span>
+        <span class="s1">attrs = super().rss_attributes()</span>
+        <span class="s1">attrs[</span><span class="s3">'xmlns:geo'</span><span class="s1">] = </span><span class="s3">'http://www.w3.org/2003/01/geo/wgs84_pos#'</span>
+        <span class="s0">return </span><span class="s1">attrs</span>
+
+    <span class="s0">def </span><span class="s1">add_item_elements(self</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">item):</span>
+        <span class="s1">super().add_item_elements(handler</span><span class="s0">, </span><span class="s1">item)</span>
+        <span class="s1">self.add_georss_element(handler</span><span class="s0">, </span><span class="s1">item</span><span class="s0">, </span><span class="s1">w3c_geo=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">add_root_elements(self</span><span class="s0">, </span><span class="s1">handler):</span>
+        <span class="s1">super().add_root_elements(handler)</span>
+        <span class="s1">self.add_georss_element(handler</span><span class="s0">, </span><span class="s1">self.feed</span><span class="s0">, </span><span class="s1">w3c_geo=</span><span class="s0">True</span><span class="s1">)</span>
+
+
+<span class="s5"># ### Feed subclass ###</span>
+<span class="s0">class </span><span class="s1">Feed(BaseFeed):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    This is a subclass of the `Feed` from `django.contrib.syndication`. 
+    This allows users to define a `geometry(obj)` and/or `item_geometry(item)` 
+    methods on their own subclasses so that geo-referenced information may 
+    placed in the feed. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">feed_type = GeoRSSFeed</span>
+
+    <span class="s0">def </span><span class="s1">feed_extra_kwargs(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s0">return </span><span class="s1">{</span><span class="s3">'geometry'</span><span class="s1">: self._get_dynamic_attr(</span><span class="s3">'geometry'</span><span class="s0">, </span><span class="s1">obj)}</span>
+
+    <span class="s0">def </span><span class="s1">item_extra_kwargs(self</span><span class="s0">, </span><span class="s1">item):</span>
+        <span class="s0">return </span><span class="s1">{</span><span class="s3">'geometry'</span><span class="s1">: self._get_dynamic_attr(</span><span class="s3">'item_geometry'</span><span class="s0">, </span><span class="s1">item)}</span>
+</pre>
+</body>
+</html>

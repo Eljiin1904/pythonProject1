@@ -1,0 +1,236 @@
+<html>
+<head>
+<title>aead.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+aead.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">exceptions</span><span class="s2">, </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl </span><span class="s2">import </span><span class="s1">aead</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl.backend </span><span class="s2">import </span><span class="s1">backend</span>
+
+
+<span class="s2">class </span><span class="s1">ChaCha20Poly1305(object):</span>
+    <span class="s1">_MAX_SIZE = </span><span class="s3">2 </span><span class="s1">** </span><span class="s3">32</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">key: bytes):</span>
+        <span class="s2">if not </span><span class="s1">backend.aead_cipher_supported(self):</span>
+            <span class="s2">raise </span><span class="s1">exceptions.UnsupportedAlgorithm(</span>
+                <span class="s4">&quot;ChaCha20Poly1305 is not supported by this version of OpenSSL&quot;</span><span class="s2">,</span>
+                <span class="s1">exceptions._Reasons.UNSUPPORTED_CIPHER</span><span class="s2">,</span>
+            <span class="s1">)</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;key&quot;</span><span class="s2">, </span><span class="s1">key)</span>
+
+        <span class="s2">if </span><span class="s1">len(key) != </span><span class="s3">32</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;ChaCha20Poly1305 key must be 32 bytes.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._key = key</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">generate_key(cls) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">os.urandom(</span><span class="s3">32</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">encrypt(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">associated_data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">associated_data = </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s2">if </span><span class="s1">len(data) &gt; self._MAX_SIZE </span><span class="s2">or </span><span class="s1">len(associated_data) &gt; self._MAX_SIZE:</span>
+            <span class="s0"># This is OverflowError to match what cffi would raise</span>
+            <span class="s2">raise </span><span class="s1">OverflowError(</span>
+                <span class="s4">&quot;Data or associated data too long. Max 2**32 bytes&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._check_params(nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">return </span><span class="s1">aead._encrypt(backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data</span><span class="s2">, </span><span class="s3">16</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">decrypt(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">associated_data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">associated_data = </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s1">self._check_params(nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">return </span><span class="s1">aead._decrypt(backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data</span><span class="s2">, </span><span class="s3">16</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_check_params(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: bytes</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;nonce&quot;</span><span class="s2">, </span><span class="s1">nonce)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;associated_data&quot;</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">if </span><span class="s1">len(nonce) != </span><span class="s3">12</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Nonce must be 12 bytes&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">AESCCM(object):</span>
+    <span class="s1">_MAX_SIZE = </span><span class="s3">2 </span><span class="s1">** </span><span class="s3">32</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">key: bytes</span><span class="s2">, </span><span class="s1">tag_length: int = </span><span class="s3">16</span><span class="s1">):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;key&quot;</span><span class="s2">, </span><span class="s1">key)</span>
+        <span class="s2">if </span><span class="s1">len(key) </span><span class="s2">not in </span><span class="s1">(</span><span class="s3">16</span><span class="s2">, </span><span class="s3">24</span><span class="s2">, </span><span class="s3">32</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;AESCCM key must be 128, 192, or 256 bits.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._key = key</span>
+        <span class="s2">if not </span><span class="s1">isinstance(tag_length</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;tag_length must be an integer&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">tag_length </span><span class="s2">not in </span><span class="s1">(</span><span class="s3">4</span><span class="s2">, </span><span class="s3">6</span><span class="s2">, </span><span class="s3">8</span><span class="s2">, </span><span class="s3">10</span><span class="s2">, </span><span class="s3">12</span><span class="s2">, </span><span class="s3">14</span><span class="s2">, </span><span class="s3">16</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid tag_length&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._tag_length = tag_length</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">generate_key(cls</span><span class="s2">, </span><span class="s1">bit_length: int) -&gt; bytes:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(bit_length</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;bit_length must be an integer&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">bit_length </span><span class="s2">not in </span><span class="s1">(</span><span class="s3">128</span><span class="s2">, </span><span class="s3">192</span><span class="s2">, </span><span class="s3">256</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;bit_length must be 128, 192, or 256&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">os.urandom(bit_length // </span><span class="s3">8</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">encrypt(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">associated_data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">associated_data = </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s2">if </span><span class="s1">len(data) &gt; self._MAX_SIZE </span><span class="s2">or </span><span class="s1">len(associated_data) &gt; self._MAX_SIZE:</span>
+            <span class="s0"># This is OverflowError to match what cffi would raise</span>
+            <span class="s2">raise </span><span class="s1">OverflowError(</span>
+                <span class="s4">&quot;Data or associated data too long. Max 2**32 bytes&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._check_params(nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s1">self._validate_lengths(nonce</span><span class="s2">, </span><span class="s1">len(data))</span>
+        <span class="s2">return </span><span class="s1">aead._encrypt(</span>
+            <span class="s1">backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data</span><span class="s2">, </span><span class="s1">self._tag_length</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">decrypt(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">associated_data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">associated_data = </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s1">self._check_params(nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">return </span><span class="s1">aead._decrypt(</span>
+            <span class="s1">backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data</span><span class="s2">, </span><span class="s1">self._tag_length</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_validate_lengths(self</span><span class="s2">, </span><span class="s1">nonce: bytes</span><span class="s2">, </span><span class="s1">data_len: int):</span>
+        <span class="s0"># For information about computing this, see</span>
+        <span class="s0"># https://tools.ietf.org/html/rfc3610#section-2.1</span>
+        <span class="s1">l_val = </span><span class="s3">15 </span><span class="s1">- len(nonce)</span>
+        <span class="s2">if </span><span class="s3">2 </span><span class="s1">** (</span><span class="s3">8 </span><span class="s1">* l_val) &lt; data_len:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Data too long for nonce&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_check_params(self</span><span class="s2">, </span><span class="s1">nonce: bytes</span><span class="s2">, </span><span class="s1">data: bytes</span><span class="s2">, </span><span class="s1">associated_data: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;nonce&quot;</span><span class="s2">, </span><span class="s1">nonce)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;associated_data&quot;</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">if not </span><span class="s3">7 </span><span class="s1">&lt;= len(nonce) &lt;= </span><span class="s3">13</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Nonce must be between 7 and 13 bytes&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">AESGCM(object):</span>
+    <span class="s1">_MAX_SIZE = </span><span class="s3">2 </span><span class="s1">** </span><span class="s3">32</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">key: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;key&quot;</span><span class="s2">, </span><span class="s1">key)</span>
+        <span class="s2">if </span><span class="s1">len(key) </span><span class="s2">not in </span><span class="s1">(</span><span class="s3">16</span><span class="s2">, </span><span class="s3">24</span><span class="s2">, </span><span class="s3">32</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;AESGCM key must be 128, 192, or 256 bits.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._key = key</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">generate_key(cls</span><span class="s2">, </span><span class="s1">bit_length: int) -&gt; bytes:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(bit_length</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;bit_length must be an integer&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">bit_length </span><span class="s2">not in </span><span class="s1">(</span><span class="s3">128</span><span class="s2">, </span><span class="s3">192</span><span class="s2">, </span><span class="s3">256</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;bit_length must be 128, 192, or 256&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">os.urandom(bit_length // </span><span class="s3">8</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">encrypt(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">associated_data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">associated_data = </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s2">if </span><span class="s1">len(data) &gt; self._MAX_SIZE </span><span class="s2">or </span><span class="s1">len(associated_data) &gt; self._MAX_SIZE:</span>
+            <span class="s0"># This is OverflowError to match what cffi would raise</span>
+            <span class="s2">raise </span><span class="s1">OverflowError(</span>
+                <span class="s4">&quot;Data or associated data too long. Max 2**32 bytes&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._check_params(nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">return </span><span class="s1">aead._encrypt(backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data</span><span class="s2">, </span><span class="s3">16</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">decrypt(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">associated_data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">associated_data = </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s1">self._check_params(nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">return </span><span class="s1">aead._decrypt(backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">nonce</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">associated_data</span><span class="s2">, </span><span class="s3">16</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_check_params(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">nonce: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">associated_data: bytes</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;nonce&quot;</span><span class="s2">, </span><span class="s1">nonce)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;associated_data&quot;</span><span class="s2">, </span><span class="s1">associated_data)</span>
+        <span class="s2">if </span><span class="s1">len(nonce) &lt; </span><span class="s3">8 </span><span class="s2">or </span><span class="s1">len(nonce) &gt; </span><span class="s3">128</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Nonce must be between 8 and 128 bytes&quot;</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

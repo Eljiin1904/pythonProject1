@@ -1,0 +1,116 @@
+<html>
+<head>
+<title>_local.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_local.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Runvar implementations</span>
+<span class="s2">import </span><span class="s1">attr</span>
+
+<span class="s2">from </span><span class="s1">. </span><span class="s2">import </span><span class="s1">_run</span>
+
+<span class="s2">from </span><span class="s1">.._util </span><span class="s2">import </span><span class="s1">Final</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">_RunVarToken:</span>
+    <span class="s1">_no_value = object()</span>
+
+    <span class="s1">_var = attr.ib()</span>
+    <span class="s1">previous_value = attr.ib(default=_no_value)</span>
+    <span class="s1">redeemed = attr.ib(default=</span><span class="s2">False, </span><span class="s1">init=</span><span class="s2">False</span><span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">empty(cls</span><span class="s2">, </span><span class="s1">var):</span>
+        <span class="s2">return </span><span class="s1">cls(var)</span>
+
+
+<span class="s1">@attr.s(eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False, </span><span class="s1">slots=</span><span class="s2">True</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">RunVar(metaclass=Final):</span>
+    <span class="s3">&quot;&quot;&quot;The run-local variant of a context variable. 
+ 
+    :class:`RunVar` objects are similar to context variable objects, 
+    except that they are shared across a single call to :func:`trio.run` 
+    rather than a single task. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">_NO_DEFAULT = object()</span>
+    <span class="s1">_name = attr.ib()</span>
+    <span class="s1">_default = attr.ib(default=_NO_DEFAULT)</span>
+
+    <span class="s2">def </span><span class="s1">get(self</span><span class="s2">, </span><span class="s1">default=_NO_DEFAULT):</span>
+        <span class="s3">&quot;&quot;&quot;Gets the value of this :class:`RunVar` for the current run call.&quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_run.GLOBAL_RUN_CONTEXT.runner._locals[self]</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;Cannot be used outside of a run context&quot;</span><span class="s1">) </span><span class="s2">from None</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s0"># contextvars consistency</span>
+            <span class="s2">if </span><span class="s1">default </span><span class="s2">is not </span><span class="s1">self._NO_DEFAULT:</span>
+                <span class="s2">return </span><span class="s1">default</span>
+
+            <span class="s2">if </span><span class="s1">self._default </span><span class="s2">is not </span><span class="s1">self._NO_DEFAULT:</span>
+                <span class="s2">return </span><span class="s1">self._default</span>
+
+            <span class="s2">raise </span><span class="s1">LookupError(self) </span><span class="s2">from None</span>
+
+    <span class="s2">def </span><span class="s1">set(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;Sets the value of this :class:`RunVar` for this current run 
+        call. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">old_value = self.get()</span>
+        <span class="s2">except </span><span class="s1">LookupError:</span>
+            <span class="s1">token = _RunVarToken.empty(self)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">token = _RunVarToken(self</span><span class="s2">, </span><span class="s1">old_value)</span>
+
+        <span class="s0"># This can't fail, because if we weren't in Trio context then the</span>
+        <span class="s0"># get() above would have failed.</span>
+        <span class="s1">_run.GLOBAL_RUN_CONTEXT.runner._locals[self] = value</span>
+        <span class="s2">return </span><span class="s1">token</span>
+
+    <span class="s2">def </span><span class="s1">reset(self</span><span class="s2">, </span><span class="s1">token):</span>
+        <span class="s3">&quot;&quot;&quot;Resets the value of this :class:`RunVar` to what it was 
+        previously specified by the token. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">token </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;token must not be none&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">token.redeemed:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;token has already been used&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">token._var </span><span class="s2">is not </span><span class="s1">self:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;token is not for us&quot;</span><span class="s1">)</span>
+
+        <span class="s1">previous = token.previous_value</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">previous </span><span class="s2">is </span><span class="s1">_RunVarToken._no_value:</span>
+                <span class="s1">_run.GLOBAL_RUN_CONTEXT.runner._locals.pop(self)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">_run.GLOBAL_RUN_CONTEXT.runner._locals[self] = previous</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;Cannot be used outside of a run context&quot;</span><span class="s1">)</span>
+
+        <span class="s1">token.redeemed = </span><span class="s2">True</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;RunVar name={!r}&gt;&quot;</span><span class="s1">.format(self._name)</span>
+</pre>
+</body>
+</html>

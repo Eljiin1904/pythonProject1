@@ -1,0 +1,106 @@
+<html>
+<head>
+<title>conf.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+conf.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Functions for use in URLsconfs.&quot;&quot;&quot;</span>
+<span class="s2">from </span><span class="s1">functools </span><span class="s2">import </span><span class="s1">partial</span>
+<span class="s2">from </span><span class="s1">importlib </span><span class="s2">import </span><span class="s1">import_module</span>
+
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">ImproperlyConfigured</span>
+
+<span class="s2">from </span><span class="s1">.resolvers </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">LocalePrefixPattern</span><span class="s2">, </span><span class="s1">RegexPattern</span><span class="s2">, </span><span class="s1">RoutePattern</span><span class="s2">, </span><span class="s1">URLPattern</span><span class="s2">, </span><span class="s1">URLResolver</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">include(arg</span><span class="s2">, </span><span class="s1">namespace=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s1">app_name = </span><span class="s2">None</span>
+    <span class="s2">if </span><span class="s1">isinstance(arg</span><span class="s2">, </span><span class="s1">tuple):</span>
+        <span class="s3"># Callable returning a namespace hint.</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">urlconf_module</span><span class="s2">, </span><span class="s1">app_name = arg</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">if </span><span class="s1">namespace:</span>
+                <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s4">'Cannot override the namespace for a dynamic module that '</span>
+                    <span class="s4">'provides a namespace.'</span>
+                <span class="s1">)</span>
+            <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s4">'Passing a %d-tuple to include() is not supported. Pass a '</span>
+                <span class="s4">'2-tuple containing the list of patterns and app_name, and '</span>
+                <span class="s4">'provide the namespace argument to include() instead.' </span><span class="s1">% len(arg)</span>
+            <span class="s1">)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s3"># No namespace hint - use manually provided namespace.</span>
+        <span class="s1">urlconf_module = arg</span>
+
+    <span class="s2">if </span><span class="s1">isinstance(urlconf_module</span><span class="s2">, </span><span class="s1">str):</span>
+        <span class="s1">urlconf_module = import_module(urlconf_module)</span>
+    <span class="s1">patterns = getattr(urlconf_module</span><span class="s2">, </span><span class="s4">'urlpatterns'</span><span class="s2">, </span><span class="s1">urlconf_module)</span>
+    <span class="s1">app_name = getattr(urlconf_module</span><span class="s2">, </span><span class="s4">'app_name'</span><span class="s2">, </span><span class="s1">app_name)</span>
+    <span class="s2">if </span><span class="s1">namespace </span><span class="s2">and not </span><span class="s1">app_name:</span>
+        <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+            <span class="s4">'Specifying a namespace in include() without providing an app_name '</span>
+            <span class="s4">'is not supported. Set the app_name attribute in the included '</span>
+            <span class="s4">'module, or pass a 2-tuple containing the list of patterns and '</span>
+            <span class="s4">'app_name instead.'</span><span class="s2">,</span>
+        <span class="s1">)</span>
+    <span class="s1">namespace = namespace </span><span class="s2">or </span><span class="s1">app_name</span>
+    <span class="s3"># Make sure the patterns can be iterated through (without this, some</span>
+    <span class="s3"># testcases will break).</span>
+    <span class="s2">if </span><span class="s1">isinstance(patterns</span><span class="s2">, </span><span class="s1">(list</span><span class="s2">, </span><span class="s1">tuple)):</span>
+        <span class="s2">for </span><span class="s1">url_pattern </span><span class="s2">in </span><span class="s1">patterns:</span>
+            <span class="s1">pattern = getattr(url_pattern</span><span class="s2">, </span><span class="s4">'pattern'</span><span class="s2">, None</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">isinstance(pattern</span><span class="s2">, </span><span class="s1">LocalePrefixPattern):</span>
+                <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s4">'Using i18n_patterns in an included URLconf is not allowed.'</span>
+                <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">(urlconf_module</span><span class="s2">, </span><span class="s1">app_name</span><span class="s2">, </span><span class="s1">namespace)</span>
+
+
+<span class="s2">def </span><span class="s1">_path(route</span><span class="s2">, </span><span class="s1">view</span><span class="s2">, </span><span class="s1">kwargs=</span><span class="s2">None, </span><span class="s1">name=</span><span class="s2">None, </span><span class="s1">Pattern=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s2">from </span><span class="s1">django.views </span><span class="s2">import </span><span class="s1">View</span>
+
+    <span class="s2">if </span><span class="s1">isinstance(view</span><span class="s2">, </span><span class="s1">(list</span><span class="s2">, </span><span class="s1">tuple)):</span>
+        <span class="s3"># For include(...) processing.</span>
+        <span class="s1">pattern = Pattern(route</span><span class="s2">, </span><span class="s1">is_endpoint=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">urlconf_module</span><span class="s2">, </span><span class="s1">app_name</span><span class="s2">, </span><span class="s1">namespace = view</span>
+        <span class="s2">return </span><span class="s1">URLResolver(</span>
+            <span class="s1">pattern</span><span class="s2">,</span>
+            <span class="s1">urlconf_module</span><span class="s2">,</span>
+            <span class="s1">kwargs</span><span class="s2">,</span>
+            <span class="s1">app_name=app_name</span><span class="s2">,</span>
+            <span class="s1">namespace=namespace</span><span class="s2">,</span>
+        <span class="s1">)</span>
+    <span class="s2">elif </span><span class="s1">callable(view):</span>
+        <span class="s1">pattern = Pattern(route</span><span class="s2">, </span><span class="s1">name=name</span><span class="s2">, </span><span class="s1">is_endpoint=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">URLPattern(pattern</span><span class="s2">, </span><span class="s1">view</span><span class="s2">, </span><span class="s1">kwargs</span><span class="s2">, </span><span class="s1">name)</span>
+    <span class="s2">elif </span><span class="s1">isinstance(view</span><span class="s2">, </span><span class="s1">View):</span>
+        <span class="s1">view_cls_name = view.__class__.__name__</span>
+        <span class="s2">raise </span><span class="s1">TypeError(</span>
+            <span class="s4">f'view must be a callable, pass </span><span class="s2">{</span><span class="s1">view_cls_name</span><span class="s2">}</span><span class="s4">.as_view(), not '</span>
+            <span class="s4">f'</span><span class="s2">{</span><span class="s1">view_cls_name</span><span class="s2">}</span><span class="s4">().'</span>
+        <span class="s1">)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">'view must be a callable or a list/tuple in the case of include().'</span><span class="s1">)</span>
+
+
+<span class="s1">path = partial(_path</span><span class="s2">, </span><span class="s1">Pattern=RoutePattern)</span>
+<span class="s1">re_path = partial(_path</span><span class="s2">, </span><span class="s1">Pattern=RegexPattern)</span>
+</pre>
+</body>
+</html>

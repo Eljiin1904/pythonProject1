@@ -1,0 +1,226 @@
+<html>
+<head>
+<title>fernet.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+fernet.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">base64</span>
+<span class="s2">import </span><span class="s1">binascii</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">struct</span>
+<span class="s2">import </span><span class="s1">time</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">InvalidSignature</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">hashes</span><span class="s2">, </span><span class="s1">padding</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.ciphers </span><span class="s2">import </span><span class="s1">Cipher</span><span class="s2">, </span><span class="s1">algorithms</span><span class="s2">, </span><span class="s1">modes</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.hmac </span><span class="s2">import </span><span class="s1">HMAC</span>
+
+
+<span class="s2">class </span><span class="s1">InvalidToken(Exception):</span>
+    <span class="s2">pass</span>
+
+
+<span class="s1">_MAX_CLOCK_SKEW = </span><span class="s3">60</span>
+
+
+<span class="s2">class </span><span class="s1">Fernet(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">key: bytes</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+
+        <span class="s1">key = base64.urlsafe_b64decode(key)</span>
+        <span class="s2">if </span><span class="s1">len(key) != </span><span class="s3">32</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">&quot;Fernet key must be 32 url-safe base64-encoded bytes.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._signing_key = key[:</span><span class="s3">16</span><span class="s1">]</span>
+        <span class="s1">self._encryption_key = key[</span><span class="s3">16</span><span class="s1">:]</span>
+        <span class="s1">self._backend = backend</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">generate_key(cls) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">base64.urlsafe_b64encode(os.urandom(</span><span class="s3">32</span><span class="s1">))</span>
+
+    <span class="s2">def </span><span class="s1">encrypt(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">self.encrypt_at_time(data</span><span class="s2">, </span><span class="s1">int(time.time()))</span>
+
+    <span class="s2">def </span><span class="s1">encrypt_at_time(self</span><span class="s2">, </span><span class="s1">data: bytes</span><span class="s2">, </span><span class="s1">current_time: int) -&gt; bytes:</span>
+        <span class="s1">iv = os.urandom(</span><span class="s3">16</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._encrypt_from_parts(data</span><span class="s2">, </span><span class="s1">current_time</span><span class="s2">, </span><span class="s1">iv)</span>
+
+    <span class="s2">def </span><span class="s1">_encrypt_from_parts(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">data: bytes</span><span class="s2">, </span><span class="s1">current_time: int</span><span class="s2">, </span><span class="s1">iv: bytes</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+
+        <span class="s1">padder = padding.PKCS7(algorithms.AES.block_size).padder()</span>
+        <span class="s1">padded_data = padder.update(data) + padder.finalize()</span>
+        <span class="s1">encryptor = Cipher(</span>
+            <span class="s1">algorithms.AES(self._encryption_key)</span><span class="s2">, </span><span class="s1">modes.CBC(iv)</span><span class="s2">, </span><span class="s1">self._backend</span>
+        <span class="s1">).encryptor()</span>
+        <span class="s1">ciphertext = encryptor.update(padded_data) + encryptor.finalize()</span>
+
+        <span class="s1">basic_parts = (</span>
+            <span class="s5">b&quot;</span><span class="s2">\x80</span><span class="s5">&quot; </span><span class="s1">+ struct.pack(</span><span class="s4">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">current_time) + iv + ciphertext</span>
+        <span class="s1">)</span>
+
+        <span class="s1">h = HMAC(self._signing_key</span><span class="s2">, </span><span class="s1">hashes.SHA256()</span><span class="s2">, </span><span class="s1">backend=self._backend)</span>
+        <span class="s1">h.update(basic_parts)</span>
+        <span class="s1">hmac = h.finalize()</span>
+        <span class="s2">return </span><span class="s1">base64.urlsafe_b64encode(basic_parts + hmac)</span>
+
+    <span class="s2">def </span><span class="s1">decrypt(self</span><span class="s2">, </span><span class="s1">token: bytes</span><span class="s2">, </span><span class="s1">ttl: typing.Optional[int] = </span><span class="s2">None</span><span class="s1">) -&gt; bytes:</span>
+        <span class="s1">timestamp</span><span class="s2">, </span><span class="s1">data = Fernet._get_unverified_token_data(token)</span>
+        <span class="s2">if </span><span class="s1">ttl </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">time_info = </span><span class="s2">None</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">time_info = (ttl</span><span class="s2">, </span><span class="s1">int(time.time()))</span>
+        <span class="s2">return </span><span class="s1">self._decrypt_data(data</span><span class="s2">, </span><span class="s1">timestamp</span><span class="s2">, </span><span class="s1">time_info)</span>
+
+    <span class="s2">def </span><span class="s1">decrypt_at_time(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">token: bytes</span><span class="s2">, </span><span class="s1">ttl: int</span><span class="s2">, </span><span class="s1">current_time: int</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">ttl </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">&quot;decrypt_at_time() can only be used with a non-None ttl&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">timestamp</span><span class="s2">, </span><span class="s1">data = Fernet._get_unverified_token_data(token)</span>
+        <span class="s2">return </span><span class="s1">self._decrypt_data(data</span><span class="s2">, </span><span class="s1">timestamp</span><span class="s2">, </span><span class="s1">(ttl</span><span class="s2">, </span><span class="s1">current_time))</span>
+
+    <span class="s2">def </span><span class="s1">extract_timestamp(self</span><span class="s2">, </span><span class="s1">token: bytes) -&gt; int:</span>
+        <span class="s1">timestamp</span><span class="s2">, </span><span class="s1">data = Fernet._get_unverified_token_data(token)</span>
+        <span class="s0"># Verify the token was not tampered with.</span>
+        <span class="s1">self._verify_signature(data)</span>
+        <span class="s2">return </span><span class="s1">timestamp</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_get_unverified_token_data(token: bytes) -&gt; typing.Tuple[int</span><span class="s2">, </span><span class="s1">bytes]:</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;token&quot;</span><span class="s2">, </span><span class="s1">token)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">data = base64.urlsafe_b64decode(token)</span>
+        <span class="s2">except </span><span class="s1">(TypeError</span><span class="s2">, </span><span class="s1">binascii.Error):</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+        <span class="s2">if not </span><span class="s1">data </span><span class="s2">or </span><span class="s1">data[</span><span class="s3">0</span><span class="s1">] != </span><span class="s3">0x80</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">(timestamp</span><span class="s2">,</span><span class="s1">) = struct.unpack(</span><span class="s4">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">data[</span><span class="s3">1</span><span class="s1">:</span><span class="s3">9</span><span class="s1">])</span>
+        <span class="s2">except </span><span class="s1">struct.error:</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+        <span class="s2">return </span><span class="s1">timestamp</span><span class="s2">, </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">_verify_signature(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">h = HMAC(self._signing_key</span><span class="s2">, </span><span class="s1">hashes.SHA256()</span><span class="s2">, </span><span class="s1">backend=self._backend)</span>
+        <span class="s1">h.update(data[:-</span><span class="s3">32</span><span class="s1">])</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">h.verify(data[-</span><span class="s3">32</span><span class="s1">:])</span>
+        <span class="s2">except </span><span class="s1">InvalidSignature:</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+    <span class="s2">def </span><span class="s1">_decrypt_data(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">timestamp: int</span><span class="s2">,</span>
+        <span class="s1">time_info: typing.Optional[typing.Tuple[int</span><span class="s2">, </span><span class="s1">int]]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">time_info </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">ttl</span><span class="s2">, </span><span class="s1">current_time = time_info</span>
+            <span class="s2">if </span><span class="s1">timestamp + ttl &lt; current_time:</span>
+                <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+            <span class="s2">if </span><span class="s1">current_time + _MAX_CLOCK_SKEW &lt; timestamp:</span>
+                <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+        <span class="s1">self._verify_signature(data)</span>
+
+        <span class="s1">iv = data[</span><span class="s3">9</span><span class="s1">:</span><span class="s3">25</span><span class="s1">]</span>
+        <span class="s1">ciphertext = data[</span><span class="s3">25</span><span class="s1">:-</span><span class="s3">32</span><span class="s1">]</span>
+        <span class="s1">decryptor = Cipher(</span>
+            <span class="s1">algorithms.AES(self._encryption_key)</span><span class="s2">, </span><span class="s1">modes.CBC(iv)</span><span class="s2">, </span><span class="s1">self._backend</span>
+        <span class="s1">).decryptor()</span>
+        <span class="s1">plaintext_padded = decryptor.update(ciphertext)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">plaintext_padded += decryptor.finalize()</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+        <span class="s1">unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()</span>
+
+        <span class="s1">unpadded = unpadder.update(plaintext_padded)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">unpadded += unpadder.finalize()</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+        <span class="s2">return </span><span class="s1">unpadded</span>
+
+
+<span class="s2">class </span><span class="s1">MultiFernet(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">fernets: typing.Iterable[Fernet]):</span>
+        <span class="s1">fernets = list(fernets)</span>
+        <span class="s2">if not </span><span class="s1">fernets:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">&quot;MultiFernet requires at least one Fernet instance&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">self._fernets = fernets</span>
+
+    <span class="s2">def </span><span class="s1">encrypt(self</span><span class="s2">, </span><span class="s1">msg: bytes) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">self.encrypt_at_time(msg</span><span class="s2">, </span><span class="s1">int(time.time()))</span>
+
+    <span class="s2">def </span><span class="s1">encrypt_at_time(self</span><span class="s2">, </span><span class="s1">msg: bytes</span><span class="s2">, </span><span class="s1">current_time: int) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">self._fernets[</span><span class="s3">0</span><span class="s1">].encrypt_at_time(msg</span><span class="s2">, </span><span class="s1">current_time)</span>
+
+    <span class="s2">def </span><span class="s1">rotate(self</span><span class="s2">, </span><span class="s1">msg: bytes) -&gt; bytes:</span>
+        <span class="s1">timestamp</span><span class="s2">, </span><span class="s1">data = Fernet._get_unverified_token_data(msg)</span>
+        <span class="s2">for </span><span class="s1">f </span><span class="s2">in </span><span class="s1">self._fernets:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">p = f._decrypt_data(data</span><span class="s2">, </span><span class="s1">timestamp</span><span class="s2">, None</span><span class="s1">)</span>
+                <span class="s2">break</span>
+            <span class="s2">except </span><span class="s1">InvalidToken:</span>
+                <span class="s2">pass</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+        <span class="s1">iv = os.urandom(</span><span class="s3">16</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._fernets[</span><span class="s3">0</span><span class="s1">]._encrypt_from_parts(p</span><span class="s2">, </span><span class="s1">timestamp</span><span class="s2">, </span><span class="s1">iv)</span>
+
+    <span class="s2">def </span><span class="s1">decrypt(self</span><span class="s2">, </span><span class="s1">msg: bytes</span><span class="s2">, </span><span class="s1">ttl: typing.Optional[int] = </span><span class="s2">None</span><span class="s1">) -&gt; bytes:</span>
+        <span class="s2">for </span><span class="s1">f </span><span class="s2">in </span><span class="s1">self._fernets:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">f.decrypt(msg</span><span class="s2">, </span><span class="s1">ttl)</span>
+            <span class="s2">except </span><span class="s1">InvalidToken:</span>
+                <span class="s2">pass</span>
+        <span class="s2">raise </span><span class="s1">InvalidToken</span>
+
+    <span class="s2">def </span><span class="s1">decrypt_at_time(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">msg: bytes</span><span class="s2">, </span><span class="s1">ttl: int</span><span class="s2">, </span><span class="s1">current_time: int</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">for </span><span class="s1">f </span><span class="s2">in </span><span class="s1">self._fernets:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">f.decrypt_at_time(msg</span><span class="s2">, </span><span class="s1">ttl</span><span class="s2">, </span><span class="s1">current_time)</span>
+            <span class="s2">except </span><span class="s1">InvalidToken:</span>
+                <span class="s2">pass</span>
+        <span class="s2">raise </span><span class="s1">InvalidToken</span>
+</pre>
+</body>
+</html>

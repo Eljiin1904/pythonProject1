@@ -1,0 +1,254 @@
+<html>
+<head>
+<title>ddl_references.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+ddl_references.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Helpers to manipulate deferred DDL statements that might need to be adjusted or 
+discarded within when executing a migration. 
+&quot;&quot;&quot;</span>
+<span class="s2">from </span><span class="s1">copy </span><span class="s2">import </span><span class="s1">deepcopy</span>
+
+
+<span class="s2">class </span><span class="s1">Reference:</span>
+    <span class="s0">&quot;&quot;&quot;Base class that defines the reference interface.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">references_table(self</span><span class="s2">, </span><span class="s1">table):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return whether or not this instance references the specified table. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">references_column(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">column):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return whether or not this instance references the specified column. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">rename_table_references(self</span><span class="s2">, </span><span class="s1">old_table</span><span class="s2">, </span><span class="s1">new_table):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Rename all references to the old_name to the new_table. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">pass</span>
+
+    <span class="s2">def </span><span class="s1">rename_column_references(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Rename all references to the old_column to the new_column. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">pass</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s3">'&lt;%s %r&gt;' </span><span class="s1">% (self.__class__.__name__</span><span class="s2">, </span><span class="s1">str(self))</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s3">'Subclasses must define how they should be converted to string.'</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">Table(Reference):</span>
+    <span class="s0">&quot;&quot;&quot;Hold a reference to a table.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">quote_name):</span>
+        <span class="s1">self.table = table</span>
+        <span class="s1">self.quote_name = quote_name</span>
+
+    <span class="s2">def </span><span class="s1">references_table(self</span><span class="s2">, </span><span class="s1">table):</span>
+        <span class="s2">return </span><span class="s1">self.table == table</span>
+
+    <span class="s2">def </span><span class="s1">rename_table_references(self</span><span class="s2">, </span><span class="s1">old_table</span><span class="s2">, </span><span class="s1">new_table):</span>
+        <span class="s2">if </span><span class="s1">self.table == old_table:</span>
+            <span class="s1">self.table = new_table</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">return </span><span class="s1">self.quote_name(self.table)</span>
+
+
+<span class="s2">class </span><span class="s1">TableColumns(Table):</span>
+    <span class="s0">&quot;&quot;&quot;Base class for references to multiple columns of a table.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">columns):</span>
+        <span class="s1">self.table = table</span>
+        <span class="s1">self.columns = columns</span>
+
+    <span class="s2">def </span><span class="s1">references_column(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">column):</span>
+        <span class="s2">return </span><span class="s1">self.table == table </span><span class="s2">and </span><span class="s1">column </span><span class="s2">in </span><span class="s1">self.columns</span>
+
+    <span class="s2">def </span><span class="s1">rename_column_references(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column):</span>
+        <span class="s2">if </span><span class="s1">self.table == table:</span>
+            <span class="s2">for </span><span class="s1">index</span><span class="s2">, </span><span class="s1">column </span><span class="s2">in </span><span class="s1">enumerate(self.columns):</span>
+                <span class="s2">if </span><span class="s1">column == old_column:</span>
+                    <span class="s1">self.columns[index] = new_column</span>
+
+
+<span class="s2">class </span><span class="s1">Columns(TableColumns):</span>
+    <span class="s0">&quot;&quot;&quot;Hold a reference to one or many columns.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">columns</span><span class="s2">, </span><span class="s1">quote_name</span><span class="s2">, </span><span class="s1">col_suffixes=()):</span>
+        <span class="s1">self.quote_name = quote_name</span>
+        <span class="s1">self.col_suffixes = col_suffixes</span>
+        <span class="s1">super().__init__(table</span><span class="s2">, </span><span class="s1">columns)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">def </span><span class="s1">col_str(column</span><span class="s2">, </span><span class="s1">idx):</span>
+            <span class="s1">col = self.quote_name(column)</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">suffix = self.col_suffixes[idx]</span>
+                <span class="s2">if </span><span class="s1">suffix:</span>
+                    <span class="s1">col = </span><span class="s3">'{} {}'</span><span class="s1">.format(col</span><span class="s2">, </span><span class="s1">suffix)</span>
+            <span class="s2">except </span><span class="s1">IndexError:</span>
+                <span class="s2">pass</span>
+            <span class="s2">return </span><span class="s1">col</span>
+
+        <span class="s2">return </span><span class="s3">', '</span><span class="s1">.join(col_str(column</span><span class="s2">, </span><span class="s1">idx) </span><span class="s2">for </span><span class="s1">idx</span><span class="s2">, </span><span class="s1">column </span><span class="s2">in </span><span class="s1">enumerate(self.columns))</span>
+
+
+<span class="s2">class </span><span class="s1">IndexName(TableColumns):</span>
+    <span class="s0">&quot;&quot;&quot;Hold a reference to an index name.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">columns</span><span class="s2">, </span><span class="s1">suffix</span><span class="s2">, </span><span class="s1">create_index_name):</span>
+        <span class="s1">self.suffix = suffix</span>
+        <span class="s1">self.create_index_name = create_index_name</span>
+        <span class="s1">super().__init__(table</span><span class="s2">, </span><span class="s1">columns)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">return </span><span class="s1">self.create_index_name(self.table</span><span class="s2">, </span><span class="s1">self.columns</span><span class="s2">, </span><span class="s1">self.suffix)</span>
+
+
+<span class="s2">class </span><span class="s1">IndexColumns(Columns):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">columns</span><span class="s2">, </span><span class="s1">quote_name</span><span class="s2">, </span><span class="s1">col_suffixes=()</span><span class="s2">, </span><span class="s1">opclasses=()):</span>
+        <span class="s1">self.opclasses = opclasses</span>
+        <span class="s1">super().__init__(table</span><span class="s2">, </span><span class="s1">columns</span><span class="s2">, </span><span class="s1">quote_name</span><span class="s2">, </span><span class="s1">col_suffixes)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">def </span><span class="s1">col_str(column</span><span class="s2">, </span><span class="s1">idx):</span>
+            <span class="s4"># Index.__init__() guarantees that self.opclasses is the same</span>
+            <span class="s4"># length as self.columns.</span>
+            <span class="s1">col = </span><span class="s3">'{} {}'</span><span class="s1">.format(self.quote_name(column)</span><span class="s2">, </span><span class="s1">self.opclasses[idx])</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">suffix = self.col_suffixes[idx]</span>
+                <span class="s2">if </span><span class="s1">suffix:</span>
+                    <span class="s1">col = </span><span class="s3">'{} {}'</span><span class="s1">.format(col</span><span class="s2">, </span><span class="s1">suffix)</span>
+            <span class="s2">except </span><span class="s1">IndexError:</span>
+                <span class="s2">pass</span>
+            <span class="s2">return </span><span class="s1">col</span>
+
+        <span class="s2">return </span><span class="s3">', '</span><span class="s1">.join(col_str(column</span><span class="s2">, </span><span class="s1">idx) </span><span class="s2">for </span><span class="s1">idx</span><span class="s2">, </span><span class="s1">column </span><span class="s2">in </span><span class="s1">enumerate(self.columns))</span>
+
+
+<span class="s2">class </span><span class="s1">ForeignKeyName(TableColumns):</span>
+    <span class="s0">&quot;&quot;&quot;Hold a reference to a foreign key name.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">from_table</span><span class="s2">, </span><span class="s1">from_columns</span><span class="s2">, </span><span class="s1">to_table</span><span class="s2">, </span><span class="s1">to_columns</span><span class="s2">, </span><span class="s1">suffix_template</span><span class="s2">, </span><span class="s1">create_fk_name):</span>
+        <span class="s1">self.to_reference = TableColumns(to_table</span><span class="s2">, </span><span class="s1">to_columns)</span>
+        <span class="s1">self.suffix_template = suffix_template</span>
+        <span class="s1">self.create_fk_name = create_fk_name</span>
+        <span class="s1">super().__init__(from_table</span><span class="s2">, </span><span class="s1">from_columns</span><span class="s2">,</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">references_table(self</span><span class="s2">, </span><span class="s1">table):</span>
+        <span class="s2">return </span><span class="s1">super().references_table(table) </span><span class="s2">or </span><span class="s1">self.to_reference.references_table(table)</span>
+
+    <span class="s2">def </span><span class="s1">references_column(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">column):</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">super().references_column(table</span><span class="s2">, </span><span class="s1">column) </span><span class="s2">or</span>
+            <span class="s1">self.to_reference.references_column(table</span><span class="s2">, </span><span class="s1">column)</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">rename_table_references(self</span><span class="s2">, </span><span class="s1">old_table</span><span class="s2">, </span><span class="s1">new_table):</span>
+        <span class="s1">super().rename_table_references(old_table</span><span class="s2">, </span><span class="s1">new_table)</span>
+        <span class="s1">self.to_reference.rename_table_references(old_table</span><span class="s2">, </span><span class="s1">new_table)</span>
+
+    <span class="s2">def </span><span class="s1">rename_column_references(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column):</span>
+        <span class="s1">super().rename_column_references(table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column)</span>
+        <span class="s1">self.to_reference.rename_column_references(table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s1">suffix = self.suffix_template % {</span>
+            <span class="s3">'to_table'</span><span class="s1">: self.to_reference.table</span><span class="s2">,</span>
+            <span class="s3">'to_column'</span><span class="s1">: self.to_reference.columns[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">,</span>
+        <span class="s1">}</span>
+        <span class="s2">return </span><span class="s1">self.create_fk_name(self.table</span><span class="s2">, </span><span class="s1">self.columns</span><span class="s2">, </span><span class="s1">suffix)</span>
+
+
+<span class="s2">class </span><span class="s1">Statement(Reference):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Statement template and formatting parameters container. 
+ 
+    Allows keeping a reference to a statement without interpolating identifiers 
+    that might have to be adjusted if they're referencing a table or column 
+    that is removed 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">template</span><span class="s2">, </span><span class="s1">**parts):</span>
+        <span class="s1">self.template = template</span>
+        <span class="s1">self.parts = parts</span>
+
+    <span class="s2">def </span><span class="s1">references_table(self</span><span class="s2">, </span><span class="s1">table):</span>
+        <span class="s2">return </span><span class="s1">any(</span>
+            <span class="s1">hasattr(part</span><span class="s2">, </span><span class="s3">'references_table'</span><span class="s1">) </span><span class="s2">and </span><span class="s1">part.references_table(table)</span>
+            <span class="s2">for </span><span class="s1">part </span><span class="s2">in </span><span class="s1">self.parts.values()</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">references_column(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">column):</span>
+        <span class="s2">return </span><span class="s1">any(</span>
+            <span class="s1">hasattr(part</span><span class="s2">, </span><span class="s3">'references_column'</span><span class="s1">) </span><span class="s2">and </span><span class="s1">part.references_column(table</span><span class="s2">, </span><span class="s1">column)</span>
+            <span class="s2">for </span><span class="s1">part </span><span class="s2">in </span><span class="s1">self.parts.values()</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">rename_table_references(self</span><span class="s2">, </span><span class="s1">old_table</span><span class="s2">, </span><span class="s1">new_table):</span>
+        <span class="s2">for </span><span class="s1">part </span><span class="s2">in </span><span class="s1">self.parts.values():</span>
+            <span class="s2">if </span><span class="s1">hasattr(part</span><span class="s2">, </span><span class="s3">'rename_table_references'</span><span class="s1">):</span>
+                <span class="s1">part.rename_table_references(old_table</span><span class="s2">, </span><span class="s1">new_table)</span>
+
+    <span class="s2">def </span><span class="s1">rename_column_references(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column):</span>
+        <span class="s2">for </span><span class="s1">part </span><span class="s2">in </span><span class="s1">self.parts.values():</span>
+            <span class="s2">if </span><span class="s1">hasattr(part</span><span class="s2">, </span><span class="s3">'rename_column_references'</span><span class="s1">):</span>
+                <span class="s1">part.rename_column_references(table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">return </span><span class="s1">self.template % self.parts</span>
+
+
+<span class="s2">class </span><span class="s1">Expressions(TableColumns):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">expressions</span><span class="s2">, </span><span class="s1">compiler</span><span class="s2">, </span><span class="s1">quote_value):</span>
+        <span class="s1">self.compiler = compiler</span>
+        <span class="s1">self.expressions = expressions</span>
+        <span class="s1">self.quote_value = quote_value</span>
+        <span class="s1">columns = [col.target.column </span><span class="s2">for </span><span class="s1">col </span><span class="s2">in </span><span class="s1">self.compiler.query._gen_cols([self.expressions])]</span>
+        <span class="s1">super().__init__(table</span><span class="s2">, </span><span class="s1">columns)</span>
+
+    <span class="s2">def </span><span class="s1">rename_table_references(self</span><span class="s2">, </span><span class="s1">old_table</span><span class="s2">, </span><span class="s1">new_table):</span>
+        <span class="s2">if </span><span class="s1">self.table != old_table:</span>
+            <span class="s2">return</span>
+        <span class="s1">self.expressions = self.expressions.relabeled_clone({old_table: new_table})</span>
+        <span class="s1">super().rename_table_references(old_table</span><span class="s2">, </span><span class="s1">new_table)</span>
+
+    <span class="s2">def </span><span class="s1">rename_column_references(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">old_column</span><span class="s2">, </span><span class="s1">new_column):</span>
+        <span class="s2">if </span><span class="s1">self.table != table:</span>
+            <span class="s2">return</span>
+        <span class="s1">expressions = deepcopy(self.expressions)</span>
+        <span class="s1">self.columns = []</span>
+        <span class="s2">for </span><span class="s1">col </span><span class="s2">in </span><span class="s1">self.compiler.query._gen_cols([expressions]):</span>
+            <span class="s2">if </span><span class="s1">col.target.column == old_column:</span>
+                <span class="s1">col.target.column = new_column</span>
+            <span class="s1">self.columns.append(col.target.column)</span>
+        <span class="s1">self.expressions = expressions</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s1">sql</span><span class="s2">, </span><span class="s1">params = self.compiler.compile(self.expressions)</span>
+        <span class="s1">params = map(self.quote_value</span><span class="s2">, </span><span class="s1">params)</span>
+        <span class="s2">return </span><span class="s1">sql % tuple(params)</span>
+</pre>
+</body>
+</html>

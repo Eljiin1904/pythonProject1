@@ -1,0 +1,206 @@
+<html>
+<head>
+<title>_stepimport.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_stepimport.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+This module provides low-level helper functionality during step imports. 
+ 
+.. warn:: Do not use directly 
+ 
+    It should not be used directly except in behave Runner classes 
+    that need to provide the correct context (step_registry, matchers, etc.) 
+    instead of using the global module specific variables. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">from </span><span class="s1">contextlib </span><span class="s3">import </span><span class="s1">contextmanager</span>
+<span class="s3">from </span><span class="s1">threading </span><span class="s3">import </span><span class="s1">Lock</span>
+<span class="s3">from </span><span class="s1">types </span><span class="s3">import </span><span class="s1">ModuleType</span>
+<span class="s3">import </span><span class="s1">os.path</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">from </span><span class="s1">behave </span><span class="s3">import </span><span class="s1">step_registry </span><span class="s3">as </span><span class="s1">_step_registry</span>
+<span class="s0"># from behave import matchers as _matchers</span>
+<span class="s3">import </span><span class="s1">six</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># UTILITY FUNCTIONS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">setup_api_with_step_decorators(module</span><span class="s3">, </span><span class="s1">step_registry):</span>
+    <span class="s1">_step_registry.setup_step_decorators(module</span><span class="s3">, </span><span class="s1">step_registry)</span>
+
+<span class="s3">def </span><span class="s1">setup_api_with_matcher_functions(module</span><span class="s3">, </span><span class="s1">matcher_factory):</span>
+    <span class="s1">module.use_step_matcher = matcher_factory.use_step_matcher</span>
+    <span class="s1">module.step_matcher = matcher_factory.use_step_matcher</span>
+    <span class="s1">module.register_type = matcher_factory.register_type</span>
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># FAKE MODULE CLASSES: For step imports</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># class FakeModule(object):</span>
+<span class="s3">class </span><span class="s1">FakeModule(ModuleType):</span>
+    <span class="s1">ensure_fake = </span><span class="s3">True</span>
+
+    <span class="s0"># -- SUPPORT FOR: behave.step_registry.setup_step_decorators()</span>
+    <span class="s3">def </span><span class="s1">__setitem__(self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s3">assert </span><span class="s4">&quot;.&quot; </span><span class="s3">not in </span><span class="s1">name</span>
+        <span class="s1">setattr(self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value)</span>
+
+
+<span class="s3">class </span><span class="s1">StepRegistryModule(FakeModule):</span>
+    <span class="s2">&quot;&quot;&quot;Provides a fake :mod:`behave.step_registry` module 
+    that can be used during step imports. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">__all__ = [</span>
+        <span class="s4">&quot;given&quot;</span><span class="s3">, </span><span class="s4">&quot;when&quot;</span><span class="s3">, </span><span class="s4">&quot;then&quot;</span><span class="s3">, </span><span class="s4">&quot;step&quot;</span><span class="s3">,</span>
+        <span class="s4">&quot;Given&quot;</span><span class="s3">, </span><span class="s4">&quot;When&quot;</span><span class="s3">, </span><span class="s4">&quot;Then&quot;</span><span class="s3">, </span><span class="s4">&quot;Step&quot;</span><span class="s3">,</span>
+    <span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">step_registry):</span>
+        <span class="s1">super(StepRegistryModule</span><span class="s3">, </span><span class="s1">self).__init__(</span><span class="s4">&quot;behave.step_registry&quot;</span><span class="s1">)</span>
+        <span class="s1">self.registry = step_registry</span>
+        <span class="s1">setup_api_with_step_decorators(self</span><span class="s3">, </span><span class="s1">step_registry)</span>
+
+
+<span class="s3">class </span><span class="s1">StepMatchersModule(FakeModule):</span>
+    <span class="s1">__all__ = [</span><span class="s4">&quot;use_step_matcher&quot;</span><span class="s3">, </span><span class="s4">&quot;register_type&quot;</span><span class="s3">, </span><span class="s4">&quot;step_matcher&quot;</span><span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">matcher_factory):</span>
+        <span class="s1">super(StepMatchersModule</span><span class="s3">, </span><span class="s1">self).__init__(</span><span class="s4">&quot;behave.matchers&quot;</span><span class="s1">)</span>
+        <span class="s1">self.matcher_factory = matcher_factory</span>
+        <span class="s1">setup_api_with_matcher_functions(self</span><span class="s3">, </span><span class="s1">matcher_factory)</span>
+        <span class="s1">self.use_default_step_matcher = matcher_factory.use_default_step_matcher</span>
+        <span class="s1">self.get_matcher = matcher_factory.make_matcher</span>
+        <span class="s0"># self.matcher_mapping = matcher_mapping or _matchers.matcher_mapping.copy()</span>
+        <span class="s0"># self.current_matcher = current_matcher or _matchers.current_matcher</span>
+
+        <span class="s0"># -- INJECT PYTHON PACKAGE META-DATA:</span>
+        <span class="s0"># REQUIRED-FOR: Non-fake submodule imports (__path__).</span>
+        <span class="s1">here = os.path.dirname(__file__)</span>
+        <span class="s1">self.__file__ = os.path.abspath(os.path.join(here</span><span class="s3">, </span><span class="s4">&quot;matchers.py&quot;</span><span class="s1">))</span>
+        <span class="s1">self.__name__ = </span><span class="s4">&quot;behave.matchers&quot;</span>
+        <span class="s0"># self.__path__ = [os.path.abspath(here)]</span>
+
+    <span class="s0"># def use_step_matcher(self, name):</span>
+    <span class="s0">#     self.matcher_factory.use_step_matcher(name)</span>
+    <span class="s0">#     # self.current_matcher = self.matcher_mapping[name]</span>
+    <span class="s0">#</span>
+    <span class="s0"># def use_default_step_matcher(self, name=None):</span>
+    <span class="s0">#     self.matcher_factory.use_default_step_matcher(name=None)</span>
+    <span class="s0">#</span>
+    <span class="s0"># def get_matcher(self, func, pattern):</span>
+    <span class="s0">#     # return self.current_matcher</span>
+    <span class="s0">#     return self.matcher_factory.make_matcher(func, pattern)</span>
+    <span class="s0">#</span>
+    <span class="s0"># def register_type(self, **kwargs):</span>
+    <span class="s0">#     # _matchers.register_type(**kwargs)</span>
+    <span class="s0">#     self.matcher_factory.register_type(**kwargs)</span>
+    <span class="s0">#</span>
+    <span class="s0"># step_matcher = use_step_matcher</span>
+
+
+<span class="s3">class </span><span class="s1">BehaveModule(FakeModule):</span>
+    <span class="s1">__all__ = StepRegistryModule.__all__ + StepMatchersModule.__all__</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">step_registry</span><span class="s3">, </span><span class="s1">matcher_factory=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">if </span><span class="s1">matcher_factory </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">matcher_factory = step_registry.step_matcher_factory</span>
+        <span class="s3">assert </span><span class="s1">matcher_factory </span><span class="s3">is not None</span>
+        <span class="s1">super(BehaveModule</span><span class="s3">, </span><span class="s1">self).__init__(</span><span class="s4">&quot;behave&quot;</span><span class="s1">)</span>
+        <span class="s1">setup_api_with_step_decorators(self</span><span class="s3">, </span><span class="s1">step_registry)</span>
+        <span class="s1">setup_api_with_matcher_functions(self</span><span class="s3">, </span><span class="s1">matcher_factory)</span>
+        <span class="s1">self.use_default_step_matcher = matcher_factory.use_default_step_matcher</span>
+        <span class="s3">assert </span><span class="s1">step_registry.matcher_factory == matcher_factory</span>
+
+        <span class="s0"># -- INJECT PYTHON PACKAGE META-DATA:</span>
+        <span class="s0"># REQUIRED-FOR: Non-fake submodule imports (__path__).</span>
+        <span class="s1">here = os.path.dirname(__file__)</span>
+        <span class="s1">self.__file__ = os.path.abspath(os.path.join(here</span><span class="s3">, </span><span class="s4">&quot;__init__.py&quot;</span><span class="s1">))</span>
+        <span class="s1">self.__name__ = </span><span class="s4">&quot;behave&quot;</span>
+        <span class="s1">self.__path__ = [os.path.abspath(here)]</span>
+        <span class="s1">self.__package__ = </span><span class="s3">None</span>
+
+
+<span class="s3">class </span><span class="s1">StepImportModuleContext(object):</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">step_container):</span>
+        <span class="s1">self.step_registry = step_container.step_registry</span>
+        <span class="s1">self.matcher_factory = step_container.matcher_factory</span>
+        <span class="s3">assert </span><span class="s1">self.step_registry.matcher_factory == self.matcher_factory</span>
+        <span class="s1">self.step_registry.matcher_factory = self.matcher_factory</span>
+
+        <span class="s1">step_registry_module = StepRegistryModule(self.step_registry)</span>
+        <span class="s1">step_matchers_module = StepMatchersModule(self.matcher_factory)</span>
+        <span class="s1">behave_module = BehaveModule(self.step_registry</span><span class="s3">, </span><span class="s1">self.matcher_factory)</span>
+        <span class="s1">self.modules = {</span>
+            <span class="s4">&quot;behave&quot;</span><span class="s1">: behave_module</span><span class="s3">,</span>
+            <span class="s4">&quot;behave.matchers&quot;</span><span class="s1">: step_matchers_module</span><span class="s3">,</span>
+            <span class="s4">&quot;behave.step_registry&quot;</span><span class="s1">: step_registry_module</span><span class="s3">,</span>
+        <span class="s1">}</span>
+        <span class="s0"># self.default_matcher = self.step_matchers_module.current_matcher</span>
+
+    <span class="s3">def </span><span class="s1">reset_current_matcher(self):</span>
+        <span class="s1">self.matcher_factory.use_default_step_matcher()</span>
+
+<span class="s1">_step_import_lock = Lock()</span>
+<span class="s1">unknown = object()</span>
+
+<span class="s1">@contextmanager</span>
+<span class="s3">def </span><span class="s1">use_step_import_modules(step_container):</span>
+    <span class="s2">&quot;&quot;&quot;Redirect any step/type registration to the runner's step-context object 
+    during step imports by using fake modules (instead of using module-globals). 
+ 
+    This allows that multiple runners can be used without polluting the 
+    global variables in problematic modules 
+    (:mod:`behave.step_registry`, mod:`behave.matchers`). 
+ 
+    .. sourcecode:: python 
+ 
+        # -- RUNNER-IMPLEMENTATION: 
+        def load_step_definitions(self, ...): 
+            step_container = self.step_container 
+            with use_step_import_modules(step_container) as import_context: 
+                # -- USE: Fake modules during step imports 
+                ... 
+                import_context.reset_current_matcher() 
+ 
+    :param step_container:  Step context object with step_registry, matcher_factory. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">orig_modules = {}</span>
+    <span class="s1">import_context = StepImportModuleContext(step_container)</span>
+    <span class="s3">with </span><span class="s1">_step_import_lock:</span>
+        <span class="s0"># -- CRITICAL-SECTION (multi-threading protected)</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s0"># -- SCOPE-GUARD SETUP: Replace original modules with fake ones.</span>
+            <span class="s3">for </span><span class="s1">module_name</span><span class="s3">, </span><span class="s1">fake_module </span><span class="s3">in </span><span class="s1">six.iteritems(import_context.modules):</span>
+                <span class="s1">orig_module = sys.modules.get(module_name</span><span class="s3">, </span><span class="s1">unknown)</span>
+                <span class="s1">orig_modules[module_name] = orig_module</span>
+                <span class="s1">sys.modules[module_name] = fake_module</span>
+
+            <span class="s0"># -- USE: Fake modules for step imports.</span>
+            <span class="s3">yield </span><span class="s1">import_context</span>
+        <span class="s3">finally</span><span class="s1">:</span>
+            <span class="s0"># -- SCOPE-GUARD CLEANUP: Restore original modules.</span>
+            <span class="s3">for </span><span class="s1">module_name</span><span class="s3">, </span><span class="s1">orig_module </span><span class="s3">in </span><span class="s1">six.iteritems(orig_modules):</span>
+                <span class="s3">if </span><span class="s1">orig_module </span><span class="s3">is </span><span class="s1">unknown:</span>
+                    <span class="s3">del </span><span class="s1">sys.modules[module_name]</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s1">sys.modules[module_name] = orig_module</span>
+</pre>
+</body>
+</html>

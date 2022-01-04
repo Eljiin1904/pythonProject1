@@ -1,0 +1,116 @@
+<html>
+<head>
+<title>admin.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+admin.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+<span class="s0">from </span><span class="s1">datetime </span><span class="s0">import </span><span class="s1">date</span><span class="s0">, </span><span class="s1">timedelta</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">update_wrapper</span>
+
+<span class="s0">from </span><span class="s1">django.contrib </span><span class="s0">import </span><span class="s1">admin</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">HttpResponse</span>
+<span class="s0">from </span><span class="s1">django.shortcuts </span><span class="s0">import </span><span class="s1">render</span>
+<span class="s0">from </span><span class="s1">django.urls </span><span class="s0">import </span><span class="s1">path</span>
+<span class="s0">from </span><span class="s1">django.utils.html </span><span class="s0">import </span><span class="s1">format_html</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext_lazy </span><span class="s0">as </span><span class="s1">_</span>
+
+<span class="s0">from </span><span class="s1">.models </span><span class="s0">import </span><span class="s1">Request</span>
+<span class="s0">from </span><span class="s1">.plugins </span><span class="s0">import </span><span class="s1">plugins</span>
+<span class="s0">from </span><span class="s1">.traffic </span><span class="s0">import </span><span class="s1">modules</span>
+
+
+<span class="s0">class </span><span class="s1">RequestAdmin(admin.ModelAdmin):</span>
+    <span class="s1">list_display = (</span><span class="s2">'time'</span><span class="s0">, </span><span class="s2">'path'</span><span class="s0">, </span><span class="s2">'response'</span><span class="s0">, </span><span class="s2">'method'</span><span class="s0">, </span><span class="s2">'request_from'</span><span class="s1">)</span>
+    <span class="s1">fieldsets = (</span>
+        <span class="s1">(_(</span><span class="s2">'Request'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s2">'fields'</span><span class="s1">: (</span><span class="s2">'method'</span><span class="s0">, </span><span class="s2">'path'</span><span class="s0">, </span><span class="s2">'time'</span><span class="s0">, </span><span class="s2">'is_secure'</span><span class="s0">, </span><span class="s2">'is_ajax'</span><span class="s1">)</span>
+        <span class="s1">})</span><span class="s0">,</span>
+        <span class="s1">(_(</span><span class="s2">'Response'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s2">'fields'</span><span class="s1">: (</span><span class="s2">'response'</span><span class="s0">,</span><span class="s1">)</span>
+        <span class="s1">})</span><span class="s0">,</span>
+        <span class="s1">(_(</span><span class="s2">'User info'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s2">'fields'</span><span class="s1">: (</span><span class="s2">'referer'</span><span class="s0">, </span><span class="s2">'user_agent'</span><span class="s0">, </span><span class="s2">'ip'</span><span class="s0">, </span><span class="s2">'user'</span><span class="s0">, </span><span class="s2">'language'</span><span class="s1">)</span>
+        <span class="s1">})</span>
+    <span class="s1">)</span>
+    <span class="s1">raw_id_fields = (</span><span class="s2">'user'</span><span class="s0">,</span><span class="s1">)</span>
+    <span class="s1">readonly_fields = (</span><span class="s2">'time'</span><span class="s0">,</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_queryset(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s0">return </span><span class="s1">super().get_queryset(request).select_related(</span><span class="s2">'user'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">request_from(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s0">if </span><span class="s1">obj.user_id:</span>
+            <span class="s0">return </span><span class="s1">format_html(</span>
+                <span class="s2">'&lt;a href=&quot;?user={0}&quot; title=&quot;{1}&quot;&gt;{2}&lt;/a&gt;'</span><span class="s0">,</span>
+                <span class="s1">obj.user_id</span><span class="s0">,</span>
+                <span class="s1">_(</span><span class="s2">'Show only requests from this user.'</span><span class="s1">)</span><span class="s0">,</span>
+                <span class="s1">obj.user</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">format_html(</span>
+            <span class="s2">'&lt;a href=&quot;?ip={0}&quot; title=&quot;{1}&quot;&gt;{0}&lt;/a&gt;'</span><span class="s0">,</span>
+            <span class="s1">obj.ip</span><span class="s0">,</span>
+            <span class="s1">_(</span><span class="s2">'Show only requests from this IP address.'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+    <span class="s1">request_from.short_description = </span><span class="s2">'From'</span>
+    <span class="s1">request_from.allow_tags = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">get_urls(self):</span>
+        <span class="s0">def </span><span class="s1">wrap(view):</span>
+            <span class="s0">def </span><span class="s1">wrapper(*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+                <span class="s0">return </span><span class="s1">self.admin_site.admin_view(view)(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s0">return </span><span class="s1">update_wrapper(wrapper</span><span class="s0">, </span><span class="s1">view)</span>
+
+        <span class="s1">info = (self.model._meta.app_label</span><span class="s0">, </span><span class="s1">self.model._meta.model_name)</span>
+        <span class="s0">return </span><span class="s1">[</span>
+            <span class="s1">path(</span><span class="s2">'overview/'</span><span class="s0">, </span><span class="s1">wrap(self.overview)</span><span class="s0">, </span><span class="s1">name=</span><span class="s2">'{0}_{1}_overview'</span><span class="s1">.format(*info))</span><span class="s0">,</span>
+            <span class="s1">path(</span><span class="s2">'overview/traffic/'</span><span class="s0">, </span><span class="s1">wrap(self.traffic)</span><span class="s0">, </span><span class="s1">name=</span><span class="s2">'{0}_{1}_traffic'</span><span class="s1">.format(*info))</span><span class="s0">,</span>
+        <span class="s1">] + super().get_urls()</span>
+
+    <span class="s0">def </span><span class="s1">overview(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s1">qs = Request.objects.this_month()</span>
+        <span class="s0">for </span><span class="s1">plugin </span><span class="s0">in </span><span class="s1">plugins.plugins:</span>
+            <span class="s1">plugin.qs = qs</span>
+
+        <span class="s0">return </span><span class="s1">render(</span>
+            <span class="s1">request</span><span class="s0">,</span>
+            <span class="s2">'admin/request/request/overview.html'</span><span class="s0">,</span>
+            <span class="s1">{</span>
+                <span class="s2">'title'</span><span class="s1">: _(</span><span class="s2">'Request overview'</span><span class="s1">)</span><span class="s0">,</span>
+                <span class="s2">'plugins'</span><span class="s1">: plugins.plugins</span><span class="s0">,</span>
+            <span class="s1">}</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">traffic(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">days_count = int(request.GET.get(</span><span class="s2">'days'</span><span class="s0">, </span><span class="s3">30</span><span class="s1">))</span>
+        <span class="s0">except </span><span class="s1">ValueError:</span>
+            <span class="s1">days_count = </span><span class="s3">30</span>
+
+        <span class="s0">if </span><span class="s1">days_count &lt; </span><span class="s3">10</span><span class="s1">:</span>
+            <span class="s1">days_step = </span><span class="s3">1</span>
+        <span class="s0">elif </span><span class="s1">days_count &lt; </span><span class="s3">60</span><span class="s1">:</span>
+            <span class="s1">days_step = </span><span class="s3">2</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">days_step = </span><span class="s3">30</span>
+
+        <span class="s1">days = [date.today() - timedelta(day) </span><span class="s0">for </span><span class="s1">day </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">0</span><span class="s0">, </span><span class="s1">days_count + </span><span class="s3">1</span><span class="s0">, </span><span class="s1">days_step)]</span>
+        <span class="s1">days_qs = [(day</span><span class="s0">, </span><span class="s1">Request.objects.day(date=day)) </span><span class="s0">for </span><span class="s1">day </span><span class="s0">in </span><span class="s1">days]</span>
+        <span class="s0">return </span><span class="s1">HttpResponse(json.dumps(modules.graph(days_qs))</span><span class="s0">, </span><span class="s1">content_type=</span><span class="s2">'text/javascript'</span><span class="s1">)</span>
+
+
+<span class="s1">admin.site.register(Request</span><span class="s0">, </span><span class="s1">RequestAdmin)</span>
+</pre>
+</body>
+</html>

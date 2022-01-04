@@ -1,0 +1,350 @@
+<html>
+<head>
+<title>operations.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+operations.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.contrib.postgres.signals </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">get_citext_oids</span><span class="s0">, </span><span class="s1">get_hstore_oids</span><span class="s0">, </span><span class="s1">register_type_handlers</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">NotSupportedError</span><span class="s0">, </span><span class="s1">router</span>
+<span class="s0">from </span><span class="s1">django.db.migrations </span><span class="s0">import </span><span class="s1">AddConstraint</span><span class="s0">, </span><span class="s1">AddIndex</span><span class="s0">, </span><span class="s1">RemoveIndex</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.operations.base </span><span class="s0">import </span><span class="s1">Operation</span>
+<span class="s0">from </span><span class="s1">django.db.models.constraints </span><span class="s0">import </span><span class="s1">CheckConstraint</span>
+
+
+<span class="s0">class </span><span class="s1">CreateExtension(Operation):</span>
+    <span class="s1">reversible = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">self.name = name</span>
+
+    <span class="s0">def </span><span class="s1">state_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">state):</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s0">if </span><span class="s1">(</span>
+            <span class="s1">schema_editor.connection.vendor != </span><span class="s2">'postgresql' </span><span class="s0">or</span>
+            <span class="s0">not </span><span class="s1">router.allow_migrate(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">app_label)</span>
+        <span class="s1">):</span>
+            <span class="s0">return</span>
+        <span class="s0">if not </span><span class="s1">self.extension_exists(schema_editor</span><span class="s0">, </span><span class="s1">self.name):</span>
+            <span class="s1">schema_editor.execute(</span>
+                <span class="s2">'CREATE EXTENSION IF NOT EXISTS %s' </span><span class="s1">% schema_editor.quote_name(self.name)</span>
+            <span class="s1">)</span>
+        <span class="s3"># Clear cached, stale oids.</span>
+        <span class="s1">get_hstore_oids.cache_clear()</span>
+        <span class="s1">get_citext_oids.cache_clear()</span>
+        <span class="s3"># Registering new type handlers cannot be done before the extension is</span>
+        <span class="s3"># installed, otherwise a subsequent data migration would use the same</span>
+        <span class="s3"># connection.</span>
+        <span class="s1">register_type_handlers(schema_editor.connection)</span>
+
+    <span class="s0">def </span><span class="s1">database_backwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s0">if not </span><span class="s1">router.allow_migrate(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">app_label):</span>
+            <span class="s0">return</span>
+        <span class="s0">if </span><span class="s1">self.extension_exists(schema_editor</span><span class="s0">, </span><span class="s1">self.name):</span>
+            <span class="s1">schema_editor.execute(</span>
+                <span class="s2">'DROP EXTENSION IF EXISTS %s' </span><span class="s1">% schema_editor.quote_name(self.name)</span>
+            <span class="s1">)</span>
+        <span class="s3"># Clear cached, stale oids.</span>
+        <span class="s1">get_hstore_oids.cache_clear()</span>
+        <span class="s1">get_citext_oids.cache_clear()</span>
+
+    <span class="s0">def </span><span class="s1">extension_exists(self</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">extension):</span>
+        <span class="s0">with </span><span class="s1">schema_editor.connection.cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+            <span class="s1">cursor.execute(</span>
+                <span class="s2">'SELECT 1 FROM pg_extension WHERE extname = %s'</span><span class="s0">,</span>
+                <span class="s1">[extension]</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">bool(cursor.fetchone())</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">&quot;Creates extension %s&quot; </span><span class="s1">% self.name</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">migration_name_fragment(self):</span>
+        <span class="s0">return </span><span class="s2">'create_extension_%s' </span><span class="s1">% self.name</span>
+
+
+<span class="s0">class </span><span class="s1">BloomExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'bloom'</span>
+
+
+<span class="s0">class </span><span class="s1">BtreeGinExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'btree_gin'</span>
+
+
+<span class="s0">class </span><span class="s1">BtreeGistExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'btree_gist'</span>
+
+
+<span class="s0">class </span><span class="s1">CITextExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'citext'</span>
+
+
+<span class="s0">class </span><span class="s1">CryptoExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'pgcrypto'</span>
+
+
+<span class="s0">class </span><span class="s1">HStoreExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'hstore'</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'pg_trgm'</span>
+
+
+<span class="s0">class </span><span class="s1">UnaccentExtension(CreateExtension):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.name = </span><span class="s2">'unaccent'</span>
+
+
+<span class="s0">class </span><span class="s1">NotInTransactionMixin:</span>
+    <span class="s0">def </span><span class="s1">_ensure_not_in_transaction(self</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s0">if </span><span class="s1">schema_editor.connection.in_atomic_block:</span>
+            <span class="s0">raise </span><span class="s1">NotSupportedError(</span>
+                <span class="s2">'The %s operation cannot be executed inside a transaction '</span>
+                <span class="s2">'(set atomic = False on the migration).'</span>
+                <span class="s1">% self.__class__.__name__</span>
+            <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">AddIndexConcurrently(NotInTransactionMixin</span><span class="s0">, </span><span class="s1">AddIndex):</span>
+    <span class="s4">&quot;&quot;&quot;Create an index using PostgreSQL's CREATE INDEX CONCURRENTLY syntax.&quot;&quot;&quot;</span>
+    <span class="s1">atomic = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">'Concurrently create index %s on field(s) %s of model %s' </span><span class="s1">% (</span>
+            <span class="s1">self.index.name</span><span class="s0">,</span>
+            <span class="s2">', '</span><span class="s1">.join(self.index.fields)</span><span class="s0">,</span>
+            <span class="s1">self.model_name</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s1">self._ensure_not_in_transaction(schema_editor)</span>
+        <span class="s1">model = to_state.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+        <span class="s0">if </span><span class="s1">self.allow_migrate_model(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">model):</span>
+            <span class="s1">schema_editor.add_index(model</span><span class="s0">, </span><span class="s1">self.index</span><span class="s0">, </span><span class="s1">concurrently=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">database_backwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s1">self._ensure_not_in_transaction(schema_editor)</span>
+        <span class="s1">model = from_state.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+        <span class="s0">if </span><span class="s1">self.allow_migrate_model(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">model):</span>
+            <span class="s1">schema_editor.remove_index(model</span><span class="s0">, </span><span class="s1">self.index</span><span class="s0">, </span><span class="s1">concurrently=</span><span class="s0">True</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">RemoveIndexConcurrently(NotInTransactionMixin</span><span class="s0">, </span><span class="s1">RemoveIndex):</span>
+    <span class="s4">&quot;&quot;&quot;Remove an index using PostgreSQL's DROP INDEX CONCURRENTLY syntax.&quot;&quot;&quot;</span>
+    <span class="s1">atomic = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">'Concurrently remove index %s from %s' </span><span class="s1">% (self.name</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s1">self._ensure_not_in_transaction(schema_editor)</span>
+        <span class="s1">model = from_state.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+        <span class="s0">if </span><span class="s1">self.allow_migrate_model(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">model):</span>
+            <span class="s1">from_model_state = from_state.models[app_label</span><span class="s0">, </span><span class="s1">self.model_name_lower]</span>
+            <span class="s1">index = from_model_state.get_index_by_name(self.name)</span>
+            <span class="s1">schema_editor.remove_index(model</span><span class="s0">, </span><span class="s1">index</span><span class="s0">, </span><span class="s1">concurrently=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">database_backwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s1">self._ensure_not_in_transaction(schema_editor)</span>
+        <span class="s1">model = to_state.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+        <span class="s0">if </span><span class="s1">self.allow_migrate_model(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">model):</span>
+            <span class="s1">to_model_state = to_state.models[app_label</span><span class="s0">, </span><span class="s1">self.model_name_lower]</span>
+            <span class="s1">index = to_model_state.get_index_by_name(self.name)</span>
+            <span class="s1">schema_editor.add_index(model</span><span class="s0">, </span><span class="s1">index</span><span class="s0">, </span><span class="s1">concurrently=</span><span class="s0">True</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">CollationOperation(Operation):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">locale</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">provider=</span><span class="s2">'libc'</span><span class="s0">, </span><span class="s1">deterministic=</span><span class="s0">True</span><span class="s1">):</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.locale = locale</span>
+        <span class="s1">self.provider = provider</span>
+        <span class="s1">self.deterministic = deterministic</span>
+
+    <span class="s0">def </span><span class="s1">state_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">state):</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">kwargs = {</span><span class="s2">'name'</span><span class="s1">: self.name</span><span class="s0">, </span><span class="s2">'locale'</span><span class="s1">: self.locale}</span>
+        <span class="s0">if </span><span class="s1">self.provider </span><span class="s0">and </span><span class="s1">self.provider != </span><span class="s2">'libc'</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'provider'</span><span class="s1">] = self.provider</span>
+        <span class="s0">if </span><span class="s1">self.deterministic </span><span class="s0">is False</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'deterministic'</span><span class="s1">] = self.deterministic</span>
+        <span class="s0">return </span><span class="s1">(</span>
+            <span class="s1">self.__class__.__qualname__</span><span class="s0">,</span>
+            <span class="s1">[]</span><span class="s0">,</span>
+            <span class="s1">kwargs</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">create_collation(self</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s0">if </span><span class="s1">(</span>
+            <span class="s1">self.deterministic </span><span class="s0">is False and</span>
+            <span class="s0">not </span><span class="s1">schema_editor.connection.features.supports_non_deterministic_collations</span>
+        <span class="s1">):</span>
+            <span class="s0">raise </span><span class="s1">NotSupportedError(</span>
+                <span class="s2">'Non-deterministic collations require PostgreSQL 12+.'</span>
+            <span class="s1">)</span>
+        <span class="s1">args = {</span><span class="s2">'locale'</span><span class="s1">: schema_editor.quote_name(self.locale)}</span>
+        <span class="s0">if </span><span class="s1">self.provider != </span><span class="s2">'libc'</span><span class="s1">:</span>
+            <span class="s1">args[</span><span class="s2">'provider'</span><span class="s1">] = schema_editor.quote_name(self.provider)</span>
+        <span class="s0">if </span><span class="s1">self.deterministic </span><span class="s0">is False</span><span class="s1">:</span>
+            <span class="s1">args[</span><span class="s2">'deterministic'</span><span class="s1">] = </span><span class="s2">'false'</span>
+        <span class="s1">schema_editor.execute(</span><span class="s2">'CREATE COLLATION %(name)s (%(args)s)' </span><span class="s1">% {</span>
+            <span class="s2">'name'</span><span class="s1">: schema_editor.quote_name(self.name)</span><span class="s0">,</span>
+            <span class="s2">'args'</span><span class="s1">: </span><span class="s2">', '</span><span class="s1">.join(</span><span class="s2">f'</span><span class="s0">{</span><span class="s1">option</span><span class="s0">}</span><span class="s2">=</span><span class="s0">{</span><span class="s1">value</span><span class="s0">}</span><span class="s2">' </span><span class="s0">for </span><span class="s1">option</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">args.items())</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+    <span class="s0">def </span><span class="s1">remove_collation(self</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s1">schema_editor.execute(</span>
+            <span class="s2">'DROP COLLATION %s' </span><span class="s1">% schema_editor.quote_name(self.name)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">CreateCollation(CollationOperation):</span>
+    <span class="s4">&quot;&quot;&quot;Create a collation.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s0">if </span><span class="s1">(</span>
+            <span class="s1">schema_editor.connection.vendor != </span><span class="s2">'postgresql' </span><span class="s0">or</span>
+            <span class="s0">not </span><span class="s1">router.allow_migrate(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">app_label)</span>
+        <span class="s1">):</span>
+            <span class="s0">return</span>
+        <span class="s1">self.create_collation(schema_editor)</span>
+
+    <span class="s0">def </span><span class="s1">database_backwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s0">if not </span><span class="s1">router.allow_migrate(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">app_label):</span>
+            <span class="s0">return</span>
+        <span class="s1">self.remove_collation(schema_editor)</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">f'Create collation </span><span class="s0">{</span><span class="s1">self.name</span><span class="s0">}</span><span class="s2">'</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">migration_name_fragment(self):</span>
+        <span class="s0">return </span><span class="s2">'create_collation_%s' </span><span class="s1">% self.name.lower()</span>
+
+
+<span class="s0">class </span><span class="s1">RemoveCollation(CollationOperation):</span>
+    <span class="s4">&quot;&quot;&quot;Remove a collation.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s0">if </span><span class="s1">(</span>
+            <span class="s1">schema_editor.connection.vendor != </span><span class="s2">'postgresql' </span><span class="s0">or</span>
+            <span class="s0">not </span><span class="s1">router.allow_migrate(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">app_label)</span>
+        <span class="s1">):</span>
+            <span class="s0">return</span>
+        <span class="s1">self.remove_collation(schema_editor)</span>
+
+    <span class="s0">def </span><span class="s1">database_backwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s0">if not </span><span class="s1">router.allow_migrate(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">app_label):</span>
+            <span class="s0">return</span>
+        <span class="s1">self.create_collation(schema_editor)</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">f'Remove collation </span><span class="s0">{</span><span class="s1">self.name</span><span class="s0">}</span><span class="s2">'</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">migration_name_fragment(self):</span>
+        <span class="s0">return </span><span class="s2">'remove_collation_%s' </span><span class="s1">% self.name.lower()</span>
+
+
+<span class="s0">class </span><span class="s1">AddConstraintNotValid(AddConstraint):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Add a table constraint without enforcing validation, using PostgreSQL's 
+    NOT VALID syntax. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">constraint):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(constraint</span><span class="s0">, </span><span class="s1">CheckConstraint):</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span>
+                <span class="s2">'AddConstraintNotValid.constraint must be a check constraint.'</span>
+            <span class="s1">)</span>
+        <span class="s1">super().__init__(model_name</span><span class="s0">, </span><span class="s1">constraint)</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">'Create not valid constraint %s on model %s' </span><span class="s1">% (</span>
+            <span class="s1">self.constraint.name</span><span class="s0">,</span>
+            <span class="s1">self.model_name</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s1">model = from_state.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+        <span class="s0">if </span><span class="s1">self.allow_migrate_model(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">model):</span>
+            <span class="s1">constraint_sql = self.constraint.create_sql(model</span><span class="s0">, </span><span class="s1">schema_editor)</span>
+            <span class="s0">if </span><span class="s1">constraint_sql:</span>
+                <span class="s3"># Constraint.create_sql returns interpolated SQL which makes</span>
+                <span class="s3"># params=None a necessity to avoid escaping attempts on</span>
+                <span class="s3"># execution.</span>
+                <span class="s1">schema_editor.execute(str(constraint_sql) + </span><span class="s2">' NOT VALID'</span><span class="s0">, </span><span class="s1">params=</span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">migration_name_fragment(self):</span>
+        <span class="s0">return </span><span class="s1">super().migration_name_fragment + </span><span class="s2">'_not_valid'</span>
+
+
+<span class="s0">class </span><span class="s1">ValidateConstraint(Operation):</span>
+    <span class="s4">&quot;&quot;&quot;Validate a table NOT VALID constraint.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">self.model_name = model_name</span>
+        <span class="s1">self.name = name</span>
+
+    <span class="s0">def </span><span class="s1">describe(self):</span>
+        <span class="s0">return </span><span class="s2">'Validate constraint %s on model %s' </span><span class="s1">% (self.name</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+
+    <span class="s0">def </span><span class="s1">database_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s1">model = from_state.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">self.model_name)</span>
+        <span class="s0">if </span><span class="s1">self.allow_migrate_model(schema_editor.connection.alias</span><span class="s0">, </span><span class="s1">model):</span>
+            <span class="s1">schema_editor.execute(</span><span class="s2">'ALTER TABLE %s VALIDATE CONSTRAINT %s' </span><span class="s1">% (</span>
+                <span class="s1">schema_editor.quote_name(model._meta.db_table)</span><span class="s0">,</span>
+                <span class="s1">schema_editor.quote_name(self.name)</span><span class="s0">,</span>
+            <span class="s1">))</span>
+
+    <span class="s0">def </span><span class="s1">database_backwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state):</span>
+        <span class="s3"># PostgreSQL does not provide a way to make a constraint invalid.</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">state_forwards(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">state):</span>
+        <span class="s0">pass</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">migration_name_fragment(self):</span>
+        <span class="s0">return </span><span class="s2">'%s_validate_%s' </span><span class="s1">% (self.model_name.lower()</span><span class="s0">, </span><span class="s1">self.name.lower())</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s0">return </span><span class="s1">self.__class__.__name__</span><span class="s0">, </span><span class="s1">[]</span><span class="s0">, </span><span class="s1">{</span>
+            <span class="s2">'model_name'</span><span class="s1">: self.model_name</span><span class="s0">,</span>
+            <span class="s2">'name'</span><span class="s1">: self.name</span><span class="s0">,</span>
+        <span class="s1">}</span>
+</pre>
+</body>
+</html>

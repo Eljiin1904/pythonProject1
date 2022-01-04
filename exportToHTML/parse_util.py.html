@@ -1,0 +1,220 @@
+<html>
+<head>
+<title>parse_util.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parse_util.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s0"># pylint: disable=missing-docstring</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides generic utility classes for the :class:`parse.Parser` class. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">from </span><span class="s1">collections </span><span class="s3">import </span><span class="s1">namedtuple</span>
+<span class="s3">import </span><span class="s1">parse</span>
+<span class="s3">import </span><span class="s1">six</span>
+
+
+<span class="s0"># -- HELPER-CLASS: For format part in a Field.</span>
+<span class="s0"># REQUIRES: Python 2.6 or newer.</span>
+<span class="s0"># pylint: disable=redefined-builtin, too-many-arguments</span>
+<span class="s1">FormatSpec = namedtuple(</span><span class="s4">&quot;FormatSpec&quot;</span><span class="s3">,</span>
+                        <span class="s1">[</span><span class="s4">&quot;type&quot;</span><span class="s3">, </span><span class="s4">&quot;width&quot;</span><span class="s3">, </span><span class="s4">&quot;zero&quot;</span><span class="s3">, </span><span class="s4">&quot;align&quot;</span><span class="s3">, </span><span class="s4">&quot;fill&quot;</span><span class="s3">, </span><span class="s4">&quot;precision&quot;</span><span class="s1">])</span>
+
+<span class="s3">def </span><span class="s1">make_format_spec(type=</span><span class="s3">None, </span><span class="s1">width=</span><span class="s4">&quot;&quot;</span><span class="s3">, </span><span class="s1">zero=</span><span class="s3">False, </span><span class="s1">align=</span><span class="s3">None, </span><span class="s1">fill=</span><span class="s3">None,</span>
+                     <span class="s1">precision=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s3">return </span><span class="s1">FormatSpec(type</span><span class="s3">, </span><span class="s1">width</span><span class="s3">, </span><span class="s1">zero</span><span class="s3">, </span><span class="s1">align</span><span class="s3">, </span><span class="s1">fill</span><span class="s3">, </span><span class="s1">precision)</span>
+<span class="s0"># pylint: enable=redefined-builtin</span>
+
+<span class="s3">class </span><span class="s1">Field(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Provides a ValueObject for a Field in a parse expression. 
+ 
+    Examples: 
+        * &quot;{}&quot; 
+        * &quot;{name}&quot; 
+        * &quot;{:format}&quot; 
+        * &quot;{name:format}&quot; 
+ 
+    Format specification: [[fill]align][0][width][.precision][type] 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># pylint: disable=redefined-builtin</span>
+    <span class="s1">ALIGN_CHARS = </span><span class="s4">'&lt;&gt;=^'</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">name=</span><span class="s4">&quot;&quot;</span><span class="s3">, </span><span class="s1">format=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.format = format</span>
+        <span class="s1">self._format_spec = </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">set_format(self</span><span class="s3">, </span><span class="s1">format):</span>
+        <span class="s1">self.format = format</span>
+        <span class="s1">self._format_spec = </span><span class="s3">None</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">has_format(self):</span>
+        <span class="s3">return </span><span class="s1">bool(self.format)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">format_spec(self):</span>
+        <span class="s3">if not </span><span class="s1">self._format_spec </span><span class="s3">and </span><span class="s1">self.format:</span>
+            <span class="s1">self._format_spec = self.extract_format_spec(self.format)</span>
+        <span class="s3">return </span><span class="s1">self._format_spec</span>
+
+    <span class="s3">def </span><span class="s1">__str__(self):</span>
+        <span class="s1">name = self.name </span><span class="s3">or </span><span class="s4">&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.has_format:</span>
+            <span class="s3">return </span><span class="s4">&quot;{%s:%s}&quot; </span><span class="s1">% (name</span><span class="s3">, </span><span class="s1">self.format)</span>
+        <span class="s3">return </span><span class="s4">&quot;{%s}&quot; </span><span class="s1">% name</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">if </span><span class="s1">isinstance(other</span><span class="s3">, </span><span class="s1">Field):</span>
+            <span class="s1">format1 = self.format </span><span class="s3">or </span><span class="s4">&quot;&quot;</span>
+            <span class="s1">format2 = other.format </span><span class="s3">or </span><span class="s4">&quot;&quot;</span>
+            <span class="s3">return </span><span class="s1">(self.name == other.name) </span><span class="s3">and </span><span class="s1">(format1 == format2)</span>
+        <span class="s3">elif </span><span class="s1">isinstance(other</span><span class="s3">, </span><span class="s1">six.string_types):</span>
+            <span class="s3">return </span><span class="s1">str(self) == other</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError(other)</span>
+
+    <span class="s3">def </span><span class="s1">__ne__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">return not </span><span class="s1">self.__eq__(other)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">make_format(format_spec):</span>
+        <span class="s2">&quot;&quot;&quot;Build format string from a format specification. 
+ 
+        :param format_spec:     Format specification (as FormatSpec object). 
+        :return: Composed format (as string). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">fill = </span><span class="s4">''</span>
+        <span class="s1">align = </span><span class="s4">''</span>
+        <span class="s1">zero = </span><span class="s4">''</span>
+        <span class="s1">width = format_spec.width</span>
+        <span class="s3">if </span><span class="s1">format_spec.align:</span>
+            <span class="s1">align = format_spec.align[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s3">if </span><span class="s1">format_spec.fill:</span>
+                <span class="s1">fill = format_spec.fill[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">format_spec.zero:</span>
+            <span class="s1">zero = </span><span class="s4">'0'</span>
+
+        <span class="s1">precision_part = </span><span class="s4">&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">format_spec.precision:</span>
+            <span class="s1">precision_part = </span><span class="s4">&quot;.%s&quot; </span><span class="s1">% format_spec.precision</span>
+
+        <span class="s0"># -- FORMAT-SPEC: [[fill]align][0][width][.precision][type]</span>
+        <span class="s3">return </span><span class="s4">&quot;%s%s%s%s%s%s&quot; </span><span class="s1">% (fill</span><span class="s3">, </span><span class="s1">align</span><span class="s3">, </span><span class="s1">zero</span><span class="s3">, </span><span class="s1">width</span><span class="s3">,</span>
+                                 <span class="s1">precision_part</span><span class="s3">, </span><span class="s1">format_spec.type)</span>
+
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">extract_format_spec(cls</span><span class="s3">, </span><span class="s1">format):</span>
+        <span class="s2">&quot;&quot;&quot;Pull apart the format: [[fill]align][0][width][.precision][type]&quot;&quot;&quot;</span>
+        <span class="s0"># -- BASED-ON: parse.extract_format()</span>
+        <span class="s0"># pylint: disable=redefined-builtin, unsubscriptable-object</span>
+        <span class="s3">if not </span><span class="s1">format:</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;INVALID-FORMAT: %s (empty-string)&quot; </span><span class="s1">% format)</span>
+
+        <span class="s1">orig_format = format</span>
+        <span class="s1">fill = align = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">] </span><span class="s3">in </span><span class="s1">cls.ALIGN_CHARS:</span>
+            <span class="s1">align = format[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+        <span class="s3">elif </span><span class="s1">len(format) &gt; </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">format[</span><span class="s5">1</span><span class="s1">] </span><span class="s3">in </span><span class="s1">cls.ALIGN_CHARS:</span>
+            <span class="s1">fill = format[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">align = format[</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s1">format = format[</span><span class="s5">2</span><span class="s1">:]</span>
+
+        <span class="s1">zero = </span><span class="s3">False</span>
+        <span class="s3">if </span><span class="s1">format </span><span class="s3">and </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">'0'</span><span class="s1">:</span>
+            <span class="s1">zero = </span><span class="s3">True</span>
+            <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+
+        <span class="s1">width = </span><span class="s4">''</span>
+        <span class="s3">while </span><span class="s1">format:</span>
+            <span class="s3">if not </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">].isdigit():</span>
+                <span class="s3">break</span>
+            <span class="s1">width += format[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+
+        <span class="s1">precision = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">format.startswith(</span><span class="s4">'.'</span><span class="s1">):</span>
+            <span class="s0"># Precision isn't needed but we need to capture it so that</span>
+            <span class="s0"># the ValueError isn't raised.</span>
+            <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]  </span><span class="s0"># drop the '.'</span>
+            <span class="s1">precision = </span><span class="s4">''</span>
+            <span class="s3">while </span><span class="s1">format:</span>
+                <span class="s3">if not </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">].isdigit():</span>
+                    <span class="s3">break</span>
+                <span class="s1">precision += format[</span><span class="s5">0</span><span class="s1">]</span>
+                <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+
+        <span class="s0"># the rest is the type, if present</span>
+        <span class="s1">type = format</span>
+        <span class="s3">if not </span><span class="s1">type:</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;INVALID-FORMAT: %s (without type)&quot; </span><span class="s1">% orig_format)</span>
+        <span class="s3">return </span><span class="s1">FormatSpec(type</span><span class="s3">, </span><span class="s1">width</span><span class="s3">, </span><span class="s1">zero</span><span class="s3">, </span><span class="s1">align</span><span class="s3">, </span><span class="s1">fill</span><span class="s3">, </span><span class="s1">precision)</span>
+
+
+<span class="s3">class </span><span class="s1">FieldParser(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Utility class that parses/extracts fields in parse expressions. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">parse(cls</span><span class="s3">, </span><span class="s1">text):</span>
+        <span class="s3">if not </span><span class="s1">(text.startswith(</span><span class="s4">'{'</span><span class="s1">) </span><span class="s3">and </span><span class="s1">text.endswith(</span><span class="s4">'}'</span><span class="s1">)):</span>
+            <span class="s1">message = </span><span class="s4">&quot;FIELD-SCHEMA MISMATCH: text='%s' (missing braces)&quot; </span><span class="s1">% text</span>
+            <span class="s3">raise </span><span class="s1">ValueError(message)</span>
+
+        <span class="s0"># first: lose the braces</span>
+        <span class="s1">text = text[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s4">':' </span><span class="s3">in </span><span class="s1">text:</span>
+            <span class="s0"># -- CASE: Typed field with format.</span>
+            <span class="s1">name</span><span class="s3">, </span><span class="s1">format_ = text.split(</span><span class="s4">':'</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">name = text</span>
+            <span class="s1">format_ = </span><span class="s3">None</span>
+        <span class="s3">return </span><span class="s1">Field(name</span><span class="s3">, </span><span class="s1">format_)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">extract_fields(cls</span><span class="s3">, </span><span class="s1">schema):</span>
+        <span class="s2">&quot;&quot;&quot;Extract fields in a parse expression schema. 
+ 
+        :param schema: Parse expression schema/format to use (as string). 
+        :return: Generator for fields in schema (as Field objects). 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># -- BASED-ON: parse.Parser._generate_expression()</span>
+        <span class="s3">for </span><span class="s1">part </span><span class="s3">in </span><span class="s1">parse.PARSE_RE.split(schema):</span>
+            <span class="s3">if not </span><span class="s1">part </span><span class="s3">or </span><span class="s1">part == </span><span class="s4">'{{' </span><span class="s3">or </span><span class="s1">part == </span><span class="s4">'}}'</span><span class="s1">:</span>
+                <span class="s3">continue</span>
+            <span class="s3">elif </span><span class="s1">part[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">'{'</span><span class="s1">:</span>
+                <span class="s0"># this will be a braces-delimited field to handle</span>
+                <span class="s3">yield </span><span class="s1">cls.parse(part)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">extract_types(cls</span><span class="s3">, </span><span class="s1">schema):</span>
+        <span class="s2">&quot;&quot;&quot;Extract types (names) for typed fields (with format/type part). 
+ 
+        :param schema: Parser schema/format to use. 
+        :return: Generator for type names (as string). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">field </span><span class="s3">in </span><span class="s1">cls.extract_fields(schema):</span>
+            <span class="s3">if </span><span class="s1">field.has_format:</span>
+                <span class="s3">yield </span><span class="s1">field.format_spec.type</span>
+</pre>
+</body>
+</html>

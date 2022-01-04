@@ -1,0 +1,1392 @@
+<html>
+<head>
+<title>autodetector.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+autodetector.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">from </span><span class="s1">itertools </span><span class="s0">import </span><span class="s1">chain</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">models</span>
+<span class="s0">from </span><span class="s1">django.db.migrations </span><span class="s0">import </span><span class="s1">operations</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.migration </span><span class="s0">import </span><span class="s1">Migration</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.operations.models </span><span class="s0">import </span><span class="s1">AlterModelOptions</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.optimizer </span><span class="s0">import </span><span class="s1">MigrationOptimizer</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.questioner </span><span class="s0">import </span><span class="s1">MigrationQuestioner</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.utils </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">COMPILED_REGEX_TYPE</span><span class="s0">, </span><span class="s1">RegexObject</span><span class="s0">, </span><span class="s1">resolve_relation</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.utils.topological_sort </span><span class="s0">import </span><span class="s1">stable_topological_sort</span>
+
+
+<span class="s0">class </span><span class="s1">MigrationAutodetector:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Take a pair of ProjectStates and compare them to see what the first would 
+    need doing to make it match the second (the second usually being the 
+    project's current state). 
+ 
+    Note that this naturally operates on entire projects at a time, 
+    as it's likely that changes interact (for example, you can't 
+    add a ForeignKey without having a migration to add the table it 
+    depends on first). A user interface may offer single-app usage 
+    if it wishes, with the caveat that it may not always be possible. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">from_state</span><span class="s0">, </span><span class="s1">to_state</span><span class="s0">, </span><span class="s1">questioner=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.from_state = from_state</span>
+        <span class="s1">self.to_state = to_state</span>
+        <span class="s1">self.questioner = questioner </span><span class="s0">or </span><span class="s1">MigrationQuestioner()</span>
+        <span class="s1">self.existing_apps = {app </span><span class="s0">for </span><span class="s1">app</span><span class="s0">, </span><span class="s1">model </span><span class="s0">in </span><span class="s1">from_state.models}</span>
+
+    <span class="s0">def </span><span class="s1">changes(self</span><span class="s0">, </span><span class="s1">graph</span><span class="s0">, </span><span class="s1">trim_to_apps=</span><span class="s0">None, </span><span class="s1">convert_apps=</span><span class="s0">None, </span><span class="s1">migration_name=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Main entry point to produce a list of applicable changes. 
+        Take a graph to base names on and an optional set of apps 
+        to try and restrict to (restriction is not guaranteed) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">changes = self._detect_changes(convert_apps</span><span class="s0">, </span><span class="s1">graph)</span>
+        <span class="s1">changes = self.arrange_for_graph(changes</span><span class="s0">, </span><span class="s1">graph</span><span class="s0">, </span><span class="s1">migration_name)</span>
+        <span class="s0">if </span><span class="s1">trim_to_apps:</span>
+            <span class="s1">changes = self._trim_to_apps(changes</span><span class="s0">, </span><span class="s1">trim_to_apps)</span>
+        <span class="s0">return </span><span class="s1">changes</span>
+
+    <span class="s0">def </span><span class="s1">deep_deconstruct(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Recursive deconstruction for a field and its arguments. 
+        Used for full comparison for rename/alter; sometimes a single-level 
+        deconstruction will not compare correctly. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">list):</span>
+            <span class="s0">return </span><span class="s1">[self.deep_deconstruct(value) </span><span class="s0">for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">obj]</span>
+        <span class="s0">elif </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">tuple):</span>
+            <span class="s0">return </span><span class="s1">tuple(self.deep_deconstruct(value) </span><span class="s0">for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">obj)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">dict):</span>
+            <span class="s0">return </span><span class="s1">{</span>
+                <span class="s1">key: self.deep_deconstruct(value)</span>
+                <span class="s0">for </span><span class="s1">key</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">obj.items()</span>
+            <span class="s1">}</span>
+        <span class="s0">elif </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">functools.partial):</span>
+            <span class="s0">return </span><span class="s1">(obj.func</span><span class="s0">, </span><span class="s1">self.deep_deconstruct(obj.args)</span><span class="s0">, </span><span class="s1">self.deep_deconstruct(obj.keywords))</span>
+        <span class="s0">elif </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">COMPILED_REGEX_TYPE):</span>
+            <span class="s0">return </span><span class="s1">RegexObject(obj)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">type):</span>
+            <span class="s3"># If this is a type that implements 'deconstruct' as an instance method,</span>
+            <span class="s3"># avoid treating this as being deconstructible itself - see #22951</span>
+            <span class="s0">return </span><span class="s1">obj</span>
+        <span class="s0">elif </span><span class="s1">hasattr(obj</span><span class="s0">, </span><span class="s4">'deconstruct'</span><span class="s1">):</span>
+            <span class="s1">deconstructed = obj.deconstruct()</span>
+            <span class="s0">if </span><span class="s1">isinstance(obj</span><span class="s0">, </span><span class="s1">models.Field):</span>
+                <span class="s3"># we have a field which also returns a name</span>
+                <span class="s1">deconstructed = deconstructed[</span><span class="s5">1</span><span class="s1">:]</span>
+            <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = deconstructed</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">path</span><span class="s0">,</span>
+                <span class="s1">[self.deep_deconstruct(value) </span><span class="s0">for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">args]</span><span class="s0">,</span>
+                <span class="s1">{</span>
+                    <span class="s1">key: self.deep_deconstruct(value)</span>
+                    <span class="s0">for </span><span class="s1">key</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">kwargs.items()</span>
+                <span class="s1">}</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">obj</span>
+
+    <span class="s0">def </span><span class="s1">only_relation_agnostic_fields(self</span><span class="s0">, </span><span class="s1">fields):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return a definition of the fields that ignores field names and 
+        what related fields actually relate to. Used for detecting renames (as 
+        the related fields change during renames). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">fields_def = []</span>
+        <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">sorted(fields.items()):</span>
+            <span class="s1">deconstruction = self.deep_deconstruct(field)</span>
+            <span class="s0">if </span><span class="s1">field.remote_field </span><span class="s0">and </span><span class="s1">field.remote_field.model:</span>
+                <span class="s0">del </span><span class="s1">deconstruction[</span><span class="s5">2</span><span class="s1">][</span><span class="s4">'to'</span><span class="s1">]</span>
+            <span class="s1">fields_def.append(deconstruction)</span>
+        <span class="s0">return </span><span class="s1">fields_def</span>
+
+    <span class="s0">def </span><span class="s1">_detect_changes(self</span><span class="s0">, </span><span class="s1">convert_apps=</span><span class="s0">None, </span><span class="s1">graph=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return a dict of migration plans which will achieve the 
+        change from from_state to to_state. The dict has app labels 
+        as keys and a list of migrations as values. 
+ 
+        The resulting migrations aren't specially named, but the names 
+        do matter for dependencies inside the set. 
+ 
+        convert_apps is the list of apps to convert to use migrations 
+        (i.e. to make initial migrations for, in the usual case) 
+ 
+        graph is an optional argument that, if provided, can help improve 
+        dependency generation and avoid potential circular dependencies. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># The first phase is generating all the operations for each app</span>
+        <span class="s3"># and gathering them into a big per-app list.</span>
+        <span class="s3"># Then go through that list, order it, and split into migrations to</span>
+        <span class="s3"># resolve dependencies caused by M2Ms and FKs.</span>
+        <span class="s1">self.generated_operations = {}</span>
+        <span class="s1">self.altered_indexes = {}</span>
+        <span class="s1">self.altered_constraints = {}</span>
+
+        <span class="s3"># Prepare some old/new state and model lists, separating</span>
+        <span class="s3"># proxy models and ignoring unmigrated apps.</span>
+        <span class="s1">self.old_model_keys = set()</span>
+        <span class="s1">self.old_proxy_keys = set()</span>
+        <span class="s1">self.old_unmanaged_keys = set()</span>
+        <span class="s1">self.new_model_keys = set()</span>
+        <span class="s1">self.new_proxy_keys = set()</span>
+        <span class="s1">self.new_unmanaged_keys = set()</span>
+        <span class="s0">for </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_state </span><span class="s0">in </span><span class="s1">self.from_state.models.items():</span>
+            <span class="s0">if not </span><span class="s1">model_state.options.get(</span><span class="s4">'managed'</span><span class="s0">, True</span><span class="s1">):</span>
+                <span class="s1">self.old_unmanaged_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+            <span class="s0">elif </span><span class="s1">app_label </span><span class="s0">not in </span><span class="s1">self.from_state.real_apps:</span>
+                <span class="s0">if </span><span class="s1">model_state.options.get(</span><span class="s4">'proxy'</span><span class="s1">):</span>
+                    <span class="s1">self.old_proxy_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self.old_model_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+
+        <span class="s0">for </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_state </span><span class="s0">in </span><span class="s1">self.to_state.models.items():</span>
+            <span class="s0">if not </span><span class="s1">model_state.options.get(</span><span class="s4">'managed'</span><span class="s0">, True</span><span class="s1">):</span>
+                <span class="s1">self.new_unmanaged_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+            <span class="s0">elif </span><span class="s1">(</span>
+                <span class="s1">app_label </span><span class="s0">not in </span><span class="s1">self.from_state.real_apps </span><span class="s0">or</span>
+                <span class="s1">(convert_apps </span><span class="s0">and </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">convert_apps)</span>
+            <span class="s1">):</span>
+                <span class="s0">if </span><span class="s1">model_state.options.get(</span><span class="s4">'proxy'</span><span class="s1">):</span>
+                    <span class="s1">self.new_proxy_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self.new_model_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+
+        <span class="s1">self.from_state.resolve_fields_and_relations()</span>
+        <span class="s1">self.to_state.resolve_fields_and_relations()</span>
+
+        <span class="s3"># Renames have to come first</span>
+        <span class="s1">self.generate_renamed_models()</span>
+
+        <span class="s3"># Prepare lists of fields and generate through model map</span>
+        <span class="s1">self._prepare_field_lists()</span>
+        <span class="s1">self._generate_through_model_map()</span>
+
+        <span class="s3"># Generate non-rename model operations</span>
+        <span class="s1">self.generate_deleted_models()</span>
+        <span class="s1">self.generate_created_models()</span>
+        <span class="s1">self.generate_deleted_proxies()</span>
+        <span class="s1">self.generate_created_proxies()</span>
+        <span class="s1">self.generate_altered_options()</span>
+        <span class="s1">self.generate_altered_managers()</span>
+
+        <span class="s3"># Create the altered indexes and store them in self.altered_indexes.</span>
+        <span class="s3"># This avoids the same computation in generate_removed_indexes()</span>
+        <span class="s3"># and generate_added_indexes().</span>
+        <span class="s1">self.create_altered_indexes()</span>
+        <span class="s1">self.create_altered_constraints()</span>
+        <span class="s3"># Generate index removal operations before field is removed</span>
+        <span class="s1">self.generate_removed_constraints()</span>
+        <span class="s1">self.generate_removed_indexes()</span>
+        <span class="s3"># Generate field renaming operations.</span>
+        <span class="s1">self.generate_renamed_fields()</span>
+        <span class="s3"># Generate removal of foo together.</span>
+        <span class="s1">self.generate_removed_altered_unique_together()</span>
+        <span class="s1">self.generate_removed_altered_index_together()</span>
+        <span class="s3"># Generate field operations.</span>
+        <span class="s1">self.generate_removed_fields()</span>
+        <span class="s1">self.generate_added_fields()</span>
+        <span class="s1">self.generate_altered_fields()</span>
+        <span class="s1">self.generate_altered_order_with_respect_to()</span>
+        <span class="s1">self.generate_altered_unique_together()</span>
+        <span class="s1">self.generate_altered_index_together()</span>
+        <span class="s1">self.generate_added_indexes()</span>
+        <span class="s1">self.generate_added_constraints()</span>
+        <span class="s1">self.generate_altered_db_table()</span>
+
+        <span class="s1">self._sort_migrations()</span>
+        <span class="s1">self._build_migration_list(graph)</span>
+        <span class="s1">self._optimize_migrations()</span>
+
+        <span class="s0">return </span><span class="s1">self.migrations</span>
+
+    <span class="s0">def </span><span class="s1">_prepare_field_lists(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Prepare field lists and a list of the fields that used through models 
+        in the old state so dependencies can be made from the through model 
+        deletion to the field that uses it. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.kept_model_keys = self.old_model_keys &amp; self.new_model_keys</span>
+        <span class="s1">self.kept_proxy_keys = self.old_proxy_keys &amp; self.new_proxy_keys</span>
+        <span class="s1">self.kept_unmanaged_keys = self.old_unmanaged_keys &amp; self.new_unmanaged_keys</span>
+        <span class="s1">self.through_users = {}</span>
+        <span class="s1">self.old_field_keys = {</span>
+            <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+            <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">self.kept_model_keys</span>
+            <span class="s0">for </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">self.from_state.models[</span>
+                <span class="s1">app_label</span><span class="s0">,</span>
+                <span class="s1">self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">].fields</span>
+        <span class="s1">}</span>
+        <span class="s1">self.new_field_keys = {</span>
+            <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+            <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">self.kept_model_keys</span>
+            <span class="s0">for </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name].fields</span>
+        <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">_generate_through_model_map(self):</span>
+        <span class="s2">&quot;&quot;&quot;Through model map generation.&quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(self.old_model_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s0">for </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">old_model_state.fields.items():</span>
+                <span class="s0">if </span><span class="s1">hasattr(field</span><span class="s0">, </span><span class="s4">'remote_field'</span><span class="s1">) </span><span class="s0">and </span><span class="s1">getattr(field.remote_field</span><span class="s0">, </span><span class="s4">'through'</span><span class="s0">, None</span><span class="s1">):</span>
+                    <span class="s1">through_key = resolve_relation(field.remote_field.through</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name)</span>
+                    <span class="s1">self.through_users[through_key] = (app_label</span><span class="s0">, </span><span class="s1">old_model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s0">def </span><span class="s1">_resolve_dependency(dependency):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the resolved dependency and a boolean denoting whether or not 
+        it was swappable. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">dependency[</span><span class="s5">0</span><span class="s1">] != </span><span class="s4">'__setting__'</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">dependency</span><span class="s0">, False</span>
+        <span class="s1">resolved_app_label</span><span class="s0">, </span><span class="s1">resolved_object_name = getattr(settings</span><span class="s0">, </span><span class="s1">dependency[</span><span class="s5">1</span><span class="s1">]).split(</span><span class="s4">'.'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">(resolved_app_label</span><span class="s0">, </span><span class="s1">resolved_object_name.lower()) + dependency[</span><span class="s5">2</span><span class="s1">:]</span><span class="s0">, True</span>
+
+    <span class="s0">def </span><span class="s1">_build_migration_list(self</span><span class="s0">, </span><span class="s1">graph=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Chop the lists of operations up into migrations with dependencies on 
+        each other. Do this by going through an app's list of operations until 
+        one is found that has an outgoing dependency that isn't in another 
+        app's migration yet (hasn't been chopped off its list). Then chop off 
+        the operations before it into a migration and move onto the next app. 
+        If the loops completes without doing anything, there's a circular 
+        dependency (which _should_ be impossible as the operations are 
+        all split at this point so they can't depend and be depended on). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.migrations = {}</span>
+        <span class="s1">num_ops = sum(len(x) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">self.generated_operations.values())</span>
+        <span class="s1">chop_mode = </span><span class="s0">False</span>
+        <span class="s0">while </span><span class="s1">num_ops:</span>
+            <span class="s3"># On every iteration, we step through all the apps and see if there</span>
+            <span class="s3"># is a completed set of operations.</span>
+            <span class="s3"># If we find that a subset of the operations are complete we can</span>
+            <span class="s3"># try to chop it off from the rest and continue, but we only</span>
+            <span class="s3"># do this if we've already been through the list once before</span>
+            <span class="s3"># without any chopping and nothing has changed.</span>
+            <span class="s0">for </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">sorted(self.generated_operations):</span>
+                <span class="s1">chopped = []</span>
+                <span class="s1">dependencies = set()</span>
+                <span class="s0">for </span><span class="s1">operation </span><span class="s0">in </span><span class="s1">list(self.generated_operations[app_label]):</span>
+                    <span class="s1">deps_satisfied = </span><span class="s0">True</span>
+                    <span class="s1">operation_dependencies = set()</span>
+                    <span class="s0">for </span><span class="s1">dep </span><span class="s0">in </span><span class="s1">operation._auto_deps:</span>
+                        <span class="s3"># Temporarily resolve the swappable dependency to</span>
+                        <span class="s3"># prevent circular references. While keeping the</span>
+                        <span class="s3"># dependency checks on the resolved model, add the</span>
+                        <span class="s3"># swappable dependencies.</span>
+                        <span class="s1">original_dep = dep</span>
+                        <span class="s1">dep</span><span class="s0">, </span><span class="s1">is_swappable_dep = self._resolve_dependency(dep)</span>
+                        <span class="s0">if </span><span class="s1">dep[</span><span class="s5">0</span><span class="s1">] != app_label:</span>
+                            <span class="s3"># External app dependency. See if it's not yet</span>
+                            <span class="s3"># satisfied.</span>
+                            <span class="s0">for </span><span class="s1">other_operation </span><span class="s0">in </span><span class="s1">self.generated_operations.get(dep[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">[]):</span>
+                                <span class="s0">if </span><span class="s1">self.check_dependency(other_operation</span><span class="s0">, </span><span class="s1">dep):</span>
+                                    <span class="s1">deps_satisfied = </span><span class="s0">False</span>
+                                    <span class="s0">break</span>
+                            <span class="s0">if not </span><span class="s1">deps_satisfied:</span>
+                                <span class="s0">break</span>
+                            <span class="s0">else</span><span class="s1">:</span>
+                                <span class="s0">if </span><span class="s1">is_swappable_dep:</span>
+                                    <span class="s1">operation_dependencies.add((original_dep[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">original_dep[</span><span class="s5">1</span><span class="s1">]))</span>
+                                <span class="s0">elif </span><span class="s1">dep[</span><span class="s5">0</span><span class="s1">] </span><span class="s0">in </span><span class="s1">self.migrations:</span>
+                                    <span class="s1">operation_dependencies.add((dep[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">self.migrations[dep[</span><span class="s5">0</span><span class="s1">]][-</span><span class="s5">1</span><span class="s1">].name))</span>
+                                <span class="s0">else</span><span class="s1">:</span>
+                                    <span class="s3"># If we can't find the other app, we add a first/last dependency,</span>
+                                    <span class="s3"># but only if we've already been through once and checked everything</span>
+                                    <span class="s0">if </span><span class="s1">chop_mode:</span>
+                                        <span class="s3"># If the app already exists, we add a dependency on the last migration,</span>
+                                        <span class="s3"># as we don't know which migration contains the target field.</span>
+                                        <span class="s3"># If it's not yet migrated or has no migrations, we use __first__</span>
+                                        <span class="s0">if </span><span class="s1">graph </span><span class="s0">and </span><span class="s1">graph.leaf_nodes(dep[</span><span class="s5">0</span><span class="s1">]):</span>
+                                            <span class="s1">operation_dependencies.add(graph.leaf_nodes(dep[</span><span class="s5">0</span><span class="s1">])[</span><span class="s5">0</span><span class="s1">])</span>
+                                        <span class="s0">else</span><span class="s1">:</span>
+                                            <span class="s1">operation_dependencies.add((dep[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s4">&quot;__first__&quot;</span><span class="s1">))</span>
+                                    <span class="s0">else</span><span class="s1">:</span>
+                                        <span class="s1">deps_satisfied = </span><span class="s0">False</span>
+                    <span class="s0">if </span><span class="s1">deps_satisfied:</span>
+                        <span class="s1">chopped.append(operation)</span>
+                        <span class="s1">dependencies.update(operation_dependencies)</span>
+                        <span class="s0">del </span><span class="s1">self.generated_operations[app_label][</span><span class="s5">0</span><span class="s1">]</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">break</span>
+                <span class="s3"># Make a migration! Well, only if there's stuff to put in it</span>
+                <span class="s0">if </span><span class="s1">dependencies </span><span class="s0">or </span><span class="s1">chopped:</span>
+                    <span class="s0">if not </span><span class="s1">self.generated_operations[app_label] </span><span class="s0">or </span><span class="s1">chop_mode:</span>
+                        <span class="s1">subclass = type(</span><span class="s4">&quot;Migration&quot;</span><span class="s0">, </span><span class="s1">(Migration</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">{</span><span class="s4">&quot;operations&quot;</span><span class="s1">: []</span><span class="s0">, </span><span class="s4">&quot;dependencies&quot;</span><span class="s1">: []})</span>
+                        <span class="s1">instance = subclass(</span><span class="s4">&quot;auto_%i&quot; </span><span class="s1">% (len(self.migrations.get(app_label</span><span class="s0">, </span><span class="s1">[])) + </span><span class="s5">1</span><span class="s1">)</span><span class="s0">, </span><span class="s1">app_label)</span>
+                        <span class="s1">instance.dependencies = list(dependencies)</span>
+                        <span class="s1">instance.operations = chopped</span>
+                        <span class="s1">instance.initial = app_label </span><span class="s0">not in </span><span class="s1">self.existing_apps</span>
+                        <span class="s1">self.migrations.setdefault(app_label</span><span class="s0">, </span><span class="s1">[]).append(instance)</span>
+                        <span class="s1">chop_mode = </span><span class="s0">False</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">self.generated_operations[app_label] = chopped + self.generated_operations[app_label]</span>
+            <span class="s1">new_num_ops = sum(len(x) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">self.generated_operations.values())</span>
+            <span class="s0">if </span><span class="s1">new_num_ops == num_ops:</span>
+                <span class="s0">if not </span><span class="s1">chop_mode:</span>
+                    <span class="s1">chop_mode = </span><span class="s0">True</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Cannot resolve operation dependencies: %r&quot; </span><span class="s1">% self.generated_operations)</span>
+            <span class="s1">num_ops = new_num_ops</span>
+
+    <span class="s0">def </span><span class="s1">_sort_migrations(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Reorder to make things possible. Reordering may be needed so FKs work 
+        nicely inside the same app. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">ops </span><span class="s0">in </span><span class="s1">sorted(self.generated_operations.items()):</span>
+            <span class="s3"># construct a dependency graph for intra-app dependencies</span>
+            <span class="s1">dependency_graph = {op: set() </span><span class="s0">for </span><span class="s1">op </span><span class="s0">in </span><span class="s1">ops}</span>
+            <span class="s0">for </span><span class="s1">op </span><span class="s0">in </span><span class="s1">ops:</span>
+                <span class="s0">for </span><span class="s1">dep </span><span class="s0">in </span><span class="s1">op._auto_deps:</span>
+                    <span class="s3"># Resolve intra-app dependencies to handle circular</span>
+                    <span class="s3"># references involving a swappable model.</span>
+                    <span class="s1">dep = self._resolve_dependency(dep)[</span><span class="s5">0</span><span class="s1">]</span>
+                    <span class="s0">if </span><span class="s1">dep[</span><span class="s5">0</span><span class="s1">] == app_label:</span>
+                        <span class="s0">for </span><span class="s1">op2 </span><span class="s0">in </span><span class="s1">ops:</span>
+                            <span class="s0">if </span><span class="s1">self.check_dependency(op2</span><span class="s0">, </span><span class="s1">dep):</span>
+                                <span class="s1">dependency_graph[op].add(op2)</span>
+
+            <span class="s3"># we use a stable sort for deterministic tests &amp; general behavior</span>
+            <span class="s1">self.generated_operations[app_label] = stable_topological_sort(ops</span><span class="s0">, </span><span class="s1">dependency_graph)</span>
+
+    <span class="s0">def </span><span class="s1">_optimize_migrations(self):</span>
+        <span class="s3"># Add in internal dependencies among the migrations</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">migrations </span><span class="s0">in </span><span class="s1">self.migrations.items():</span>
+            <span class="s0">for </span><span class="s1">m1</span><span class="s0">, </span><span class="s1">m2 </span><span class="s0">in </span><span class="s1">zip(migrations</span><span class="s0">, </span><span class="s1">migrations[</span><span class="s5">1</span><span class="s1">:]):</span>
+                <span class="s1">m2.dependencies.append((app_label</span><span class="s0">, </span><span class="s1">m1.name))</span>
+
+        <span class="s3"># De-dupe dependencies</span>
+        <span class="s0">for </span><span class="s1">migrations </span><span class="s0">in </span><span class="s1">self.migrations.values():</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">migrations:</span>
+                <span class="s1">migration.dependencies = list(set(migration.dependencies))</span>
+
+        <span class="s3"># Optimize migrations</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">migrations </span><span class="s0">in </span><span class="s1">self.migrations.items():</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">migrations:</span>
+                <span class="s1">migration.operations = MigrationOptimizer().optimize(migration.operations</span><span class="s0">, </span><span class="s1">app_label)</span>
+
+    <span class="s0">def </span><span class="s1">check_dependency(self</span><span class="s0">, </span><span class="s1">operation</span><span class="s0">, </span><span class="s1">dependency):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return True if the given operation depends on the given dependency, 
+        False otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Created model</span>
+        <span class="s0">if </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] </span><span class="s0">is True</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.CreateModel) </span><span class="s0">and</span>
+                <span class="s1">operation.name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower()</span>
+            <span class="s1">)</span>
+        <span class="s3"># Created field</span>
+        <span class="s0">elif </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is not None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] </span><span class="s0">is True</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">(</span>
+                    <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.CreateModel) </span><span class="s0">and</span>
+                    <span class="s1">operation.name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower() </span><span class="s0">and</span>
+                    <span class="s1">any(dependency[</span><span class="s5">2</span><span class="s1">] == x </span><span class="s0">for </span><span class="s1">x</span><span class="s0">, </span><span class="s1">y </span><span class="s0">in </span><span class="s1">operation.fields)</span>
+                <span class="s1">) </span><span class="s0">or</span>
+                <span class="s1">(</span>
+                    <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.AddField) </span><span class="s0">and</span>
+                    <span class="s1">operation.model_name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower() </span><span class="s0">and</span>
+                    <span class="s1">operation.name_lower == dependency[</span><span class="s5">2</span><span class="s1">].lower()</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s3"># Removed field</span>
+        <span class="s0">elif </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is not None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] </span><span class="s0">is False</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.RemoveField) </span><span class="s0">and</span>
+                <span class="s1">operation.model_name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower() </span><span class="s0">and</span>
+                <span class="s1">operation.name_lower == dependency[</span><span class="s5">2</span><span class="s1">].lower()</span>
+            <span class="s1">)</span>
+        <span class="s3"># Removed model</span>
+        <span class="s0">elif </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] </span><span class="s0">is False</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.DeleteModel) </span><span class="s0">and</span>
+                <span class="s1">operation.name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower()</span>
+            <span class="s1">)</span>
+        <span class="s3"># Field being altered</span>
+        <span class="s0">elif </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is not None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] == </span><span class="s4">&quot;alter&quot;</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.AlterField) </span><span class="s0">and</span>
+                <span class="s1">operation.model_name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower() </span><span class="s0">and</span>
+                <span class="s1">operation.name_lower == dependency[</span><span class="s5">2</span><span class="s1">].lower()</span>
+            <span class="s1">)</span>
+        <span class="s3"># order_with_respect_to being unset for a field</span>
+        <span class="s0">elif </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is not None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] == </span><span class="s4">&quot;order_wrt_unset&quot;</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">operations.AlterOrderWithRespectTo) </span><span class="s0">and</span>
+                <span class="s1">operation.name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower() </span><span class="s0">and</span>
+                <span class="s1">(operation.order_with_respect_to </span><span class="s0">or </span><span class="s4">&quot;&quot;</span><span class="s1">).lower() != dependency[</span><span class="s5">2</span><span class="s1">].lower()</span>
+            <span class="s1">)</span>
+        <span class="s3"># Field is removed and part of an index/unique_together</span>
+        <span class="s0">elif </span><span class="s1">dependency[</span><span class="s5">2</span><span class="s1">] </span><span class="s0">is not None and </span><span class="s1">dependency[</span><span class="s5">3</span><span class="s1">] == </span><span class="s4">&quot;foo_together_change&quot;</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">isinstance(operation</span><span class="s0">, </span><span class="s1">(operations.AlterUniqueTogether</span><span class="s0">,</span>
+                                       <span class="s1">operations.AlterIndexTogether)) </span><span class="s0">and</span>
+                <span class="s1">operation.name_lower == dependency[</span><span class="s5">1</span><span class="s1">].lower()</span>
+            <span class="s1">)</span>
+        <span class="s3"># Unknown dependency. Raise an error.</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Can't handle dependency %r&quot; </span><span class="s1">% (dependency</span><span class="s0">,</span><span class="s1">))</span>
+
+    <span class="s0">def </span><span class="s1">add_operation(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">operation</span><span class="s0">, </span><span class="s1">dependencies=</span><span class="s0">None, </span><span class="s1">beginning=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3"># Dependencies are (app_label, model_name, field_name, create/delete as True/False)</span>
+        <span class="s1">operation._auto_deps = dependencies </span><span class="s0">or </span><span class="s1">[]</span>
+        <span class="s0">if </span><span class="s1">beginning:</span>
+            <span class="s1">self.generated_operations.setdefault(app_label</span><span class="s0">, </span><span class="s1">[]).insert(</span><span class="s5">0</span><span class="s0">, </span><span class="s1">operation)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.generated_operations.setdefault(app_label</span><span class="s0">, </span><span class="s1">[]).append(operation)</span>
+
+    <span class="s0">def </span><span class="s1">swappable_first_key(self</span><span class="s0">, </span><span class="s1">item):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Place potential swappable models first in lists of created models (only 
+        real way to solve #22783). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">model_state = self.to_state.models[item]</span>
+            <span class="s1">base_names = {</span>
+                <span class="s1">base </span><span class="s0">if </span><span class="s1">isinstance(base</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">else </span><span class="s1">base.__name__</span>
+                <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">model_state.bases</span>
+            <span class="s1">}</span>
+            <span class="s1">string_version = </span><span class="s4">&quot;%s.%s&quot; </span><span class="s1">% (item[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">item[</span><span class="s5">1</span><span class="s1">])</span>
+            <span class="s0">if </span><span class="s1">(</span>
+                <span class="s1">model_state.options.get(</span><span class="s4">'swappable'</span><span class="s1">) </span><span class="s0">or</span>
+                <span class="s4">&quot;AbstractUser&quot; </span><span class="s0">in </span><span class="s1">base_names </span><span class="s0">or</span>
+                <span class="s4">&quot;AbstractBaseUser&quot; </span><span class="s0">in </span><span class="s1">base_names </span><span class="s0">or</span>
+                <span class="s1">settings.AUTH_USER_MODEL.lower() == string_version.lower()</span>
+            <span class="s1">):</span>
+                <span class="s0">return </span><span class="s1">(</span><span class="s4">&quot;___&quot; </span><span class="s1">+ item[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s4">&quot;___&quot; </span><span class="s1">+ item[</span><span class="s5">1</span><span class="s1">])</span>
+        <span class="s0">except </span><span class="s1">LookupError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">return </span><span class="s1">item</span>
+
+    <span class="s0">def </span><span class="s1">generate_renamed_models(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Find any renamed models, generate the operations for them, and remove 
+        the old entry from the model lists. Must be run before other 
+        model-level generation. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.renamed_models = {}</span>
+        <span class="s1">self.renamed_models_rel = {}</span>
+        <span class="s1">added_models = self.new_model_keys - self.old_model_keys</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(added_models):</span>
+            <span class="s1">model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s1">model_fields_def = self.only_relation_agnostic_fields(model_state.fields)</span>
+
+            <span class="s1">removed_models = self.old_model_keys - self.new_model_keys</span>
+            <span class="s0">for </span><span class="s1">rem_app_label</span><span class="s0">, </span><span class="s1">rem_model_name </span><span class="s0">in </span><span class="s1">removed_models:</span>
+                <span class="s0">if </span><span class="s1">rem_app_label == app_label:</span>
+                    <span class="s1">rem_model_state = self.from_state.models[rem_app_label</span><span class="s0">, </span><span class="s1">rem_model_name]</span>
+                    <span class="s1">rem_model_fields_def = self.only_relation_agnostic_fields(rem_model_state.fields)</span>
+                    <span class="s0">if </span><span class="s1">model_fields_def == rem_model_fields_def:</span>
+                        <span class="s0">if </span><span class="s1">self.questioner.ask_rename_model(rem_model_state</span><span class="s0">, </span><span class="s1">model_state):</span>
+                            <span class="s1">dependencies = []</span>
+                            <span class="s1">fields = list(model_state.fields.values()) + [</span>
+                                <span class="s1">field.remote_field</span>
+                                <span class="s0">for </span><span class="s1">relations </span><span class="s0">in </span><span class="s1">self.to_state.relations[app_label</span><span class="s0">, </span><span class="s1">model_name].values()</span>
+                                <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">relations.values()</span>
+                            <span class="s1">]</span>
+                            <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">fields:</span>
+                                <span class="s0">if </span><span class="s1">field.is_relation:</span>
+                                    <span class="s1">dependencies.extend(</span>
+                                        <span class="s1">self._get_dependencies_for_foreign_key(</span>
+                                            <span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">self.to_state</span><span class="s0">,</span>
+                                        <span class="s1">)</span>
+                                    <span class="s1">)</span>
+                            <span class="s1">self.add_operation(</span>
+                                <span class="s1">app_label</span><span class="s0">,</span>
+                                <span class="s1">operations.RenameModel(</span>
+                                    <span class="s1">old_name=rem_model_state.name</span><span class="s0">,</span>
+                                    <span class="s1">new_name=model_state.name</span><span class="s0">,</span>
+                                <span class="s1">)</span><span class="s0">,</span>
+                                <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+                            <span class="s1">)</span>
+                            <span class="s1">self.renamed_models[app_label</span><span class="s0">, </span><span class="s1">model_name] = rem_model_name</span>
+                            <span class="s1">renamed_models_rel_key = </span><span class="s4">'%s.%s' </span><span class="s1">% (</span>
+                                <span class="s1">rem_model_state.app_label</span><span class="s0">,</span>
+                                <span class="s1">rem_model_state.name_lower</span><span class="s0">,</span>
+                            <span class="s1">)</span>
+                            <span class="s1">self.renamed_models_rel[renamed_models_rel_key] = </span><span class="s4">'%s.%s' </span><span class="s1">% (</span>
+                                <span class="s1">model_state.app_label</span><span class="s0">,</span>
+                                <span class="s1">model_state.name_lower</span><span class="s0">,</span>
+                            <span class="s1">)</span>
+                            <span class="s1">self.old_model_keys.remove((rem_app_label</span><span class="s0">, </span><span class="s1">rem_model_name))</span>
+                            <span class="s1">self.old_model_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+                            <span class="s0">break</span>
+
+    <span class="s0">def </span><span class="s1">generate_created_models(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Find all new models (both managed and unmanaged) and make create 
+        operations for them as well as separate operations to create any 
+        foreign key or M2M relationships (these are optimized later, if 
+        possible). 
+ 
+        Defer any model options that refer to collections of fields that might 
+        be deferred (e.g. unique_together, index_together). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">old_keys = self.old_model_keys | self.old_unmanaged_keys</span>
+        <span class="s1">added_models = self.new_model_keys - old_keys</span>
+        <span class="s1">added_unmanaged_models = self.new_unmanaged_keys - old_keys</span>
+        <span class="s1">all_added_models = chain(</span>
+            <span class="s1">sorted(added_models</span><span class="s0">, </span><span class="s1">key=self.swappable_first_key</span><span class="s0">, </span><span class="s1">reverse=</span><span class="s0">True</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">sorted(added_unmanaged_models</span><span class="s0">, </span><span class="s1">key=self.swappable_first_key</span><span class="s0">, </span><span class="s1">reverse=</span><span class="s0">True</span><span class="s1">)</span>
+        <span class="s1">)</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">all_added_models:</span>
+            <span class="s1">model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s3"># Gather related fields</span>
+            <span class="s1">related_fields = {}</span>
+            <span class="s1">primary_key_rel = </span><span class="s0">None</span>
+            <span class="s0">for </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model_state.fields.items():</span>
+                <span class="s0">if </span><span class="s1">field.remote_field:</span>
+                    <span class="s0">if </span><span class="s1">field.remote_field.model:</span>
+                        <span class="s0">if </span><span class="s1">field.primary_key:</span>
+                            <span class="s1">primary_key_rel = field.remote_field.model</span>
+                        <span class="s0">elif not </span><span class="s1">field.remote_field.parent_link:</span>
+                            <span class="s1">related_fields[field_name] = field</span>
+                    <span class="s0">if </span><span class="s1">getattr(field.remote_field</span><span class="s0">, </span><span class="s4">'through'</span><span class="s0">, None</span><span class="s1">):</span>
+                        <span class="s1">related_fields[field_name] = field</span>
+
+            <span class="s3"># Are there indexes/unique|index_together to defer?</span>
+            <span class="s1">indexes = model_state.options.pop(</span><span class="s4">'indexes'</span><span class="s1">)</span>
+            <span class="s1">constraints = model_state.options.pop(</span><span class="s4">'constraints'</span><span class="s1">)</span>
+            <span class="s1">unique_together = model_state.options.pop(</span><span class="s4">'unique_together'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s1">index_together = model_state.options.pop(</span><span class="s4">'index_together'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s1">order_with_respect_to = model_state.options.pop(</span><span class="s4">'order_with_respect_to'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s3"># Depend on the deletion of any possible proxy version of us</span>
+            <span class="s1">dependencies = [</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, None, False</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">]</span>
+            <span class="s3"># Depend on all bases</span>
+            <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">model_state.bases:</span>
+                <span class="s0">if </span><span class="s1">isinstance(base</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">and </span><span class="s4">&quot;.&quot; </span><span class="s0">in </span><span class="s1">base:</span>
+                    <span class="s1">base_app_label</span><span class="s0">, </span><span class="s1">base_name = base.split(</span><span class="s4">&quot;.&quot;</span><span class="s0">, </span><span class="s5">1</span><span class="s1">)</span>
+                    <span class="s1">dependencies.append((base_app_label</span><span class="s0">, </span><span class="s1">base_name</span><span class="s0">, None, True</span><span class="s1">))</span>
+                    <span class="s3"># Depend on the removal of base fields if the new model has</span>
+                    <span class="s3"># a field with the same name.</span>
+                    <span class="s1">old_base_model_state = self.from_state.models.get((base_app_label</span><span class="s0">, </span><span class="s1">base_name))</span>
+                    <span class="s1">new_base_model_state = self.to_state.models.get((base_app_label</span><span class="s0">, </span><span class="s1">base_name))</span>
+                    <span class="s0">if </span><span class="s1">old_base_model_state </span><span class="s0">and </span><span class="s1">new_base_model_state:</span>
+                        <span class="s1">removed_base_fields = set(old_base_model_state.fields).difference(</span>
+                            <span class="s1">new_base_model_state.fields</span><span class="s0">,</span>
+                        <span class="s1">).intersection(model_state.fields)</span>
+                        <span class="s0">for </span><span class="s1">removed_base_field </span><span class="s0">in </span><span class="s1">removed_base_fields:</span>
+                            <span class="s1">dependencies.append((base_app_label</span><span class="s0">, </span><span class="s1">base_name</span><span class="s0">, </span><span class="s1">removed_base_field</span><span class="s0">, False</span><span class="s1">))</span>
+            <span class="s3"># Depend on the other end of the primary key if it's a relation</span>
+            <span class="s0">if </span><span class="s1">primary_key_rel:</span>
+                <span class="s1">dependencies.append(</span>
+                    <span class="s1">resolve_relation(</span>
+                        <span class="s1">primary_key_rel</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">,</span>
+                    <span class="s1">) + (</span><span class="s0">None, True</span><span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s3"># Generate creation operation</span>
+            <span class="s1">self.add_operation(</span>
+                <span class="s1">app_label</span><span class="s0">,</span>
+                <span class="s1">operations.CreateModel(</span>
+                    <span class="s1">name=model_state.name</span><span class="s0">,</span>
+                    <span class="s1">fields=[d </span><span class="s0">for </span><span class="s1">d </span><span class="s0">in </span><span class="s1">model_state.fields.items() </span><span class="s0">if </span><span class="s1">d[</span><span class="s5">0</span><span class="s1">] </span><span class="s0">not in </span><span class="s1">related_fields]</span><span class="s0">,</span>
+                    <span class="s1">options=model_state.options</span><span class="s0">,</span>
+                    <span class="s1">bases=model_state.bases</span><span class="s0">,</span>
+                    <span class="s1">managers=model_state.managers</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+                <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+                <span class="s1">beginning=</span><span class="s0">True,</span>
+            <span class="s1">)</span>
+
+            <span class="s3"># Don't add operations which modify the database for unmanaged models</span>
+            <span class="s0">if not </span><span class="s1">model_state.options.get(</span><span class="s4">'managed'</span><span class="s0">, True</span><span class="s1">):</span>
+                <span class="s0">continue</span>
+
+            <span class="s3"># Generate operations for each related field</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">sorted(related_fields.items()):</span>
+                <span class="s1">dependencies = self._get_dependencies_for_foreign_key(</span>
+                    <span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">self.to_state</span><span class="s0">,</span>
+                <span class="s1">)</span>
+                <span class="s3"># Depend on our own model being created</span>
+                <span class="s1">dependencies.append((app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, None, True</span><span class="s1">))</span>
+                <span class="s3"># Make operation</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AddField(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">name=name</span><span class="s0">,</span>
+                        <span class="s1">field=field</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=list(set(dependencies))</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s3"># Generate other opns</span>
+            <span class="s0">if </span><span class="s1">order_with_respect_to:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterOrderWithRespectTo(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">order_with_respect_to=order_with_respect_to</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=[</span>
+                        <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">order_with_respect_to</span><span class="s0">, True</span><span class="s1">)</span><span class="s0">,</span>
+                        <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, None, True</span><span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">]</span>
+                <span class="s1">)</span>
+            <span class="s1">related_dependencies = [</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, True</span><span class="s1">)</span>
+                <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">sorted(related_fields)</span>
+            <span class="s1">]</span>
+            <span class="s1">related_dependencies.append((app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, None, True</span><span class="s1">))</span>
+            <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">indexes:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AddIndex(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">index=index</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=related_dependencies</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s0">for </span><span class="s1">constraint </span><span class="s0">in </span><span class="s1">constraints:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AddConstraint(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">constraint=constraint</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=related_dependencies</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">unique_together:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterUniqueTogether(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">unique_together=unique_together</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=related_dependencies</span>
+                <span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">index_together:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterIndexTogether(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">index_together=index_together</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=related_dependencies</span>
+                <span class="s1">)</span>
+            <span class="s3"># Fix relationships if the model changed from a proxy model to a</span>
+            <span class="s3"># concrete model.</span>
+            <span class="s1">relations = self.to_state.relations</span>
+            <span class="s0">if </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name) </span><span class="s0">in </span><span class="s1">self.old_proxy_keys:</span>
+                <span class="s0">for </span><span class="s1">related_model_key</span><span class="s0">, </span><span class="s1">related_fields </span><span class="s0">in </span><span class="s1">relations[app_label</span><span class="s0">, </span><span class="s1">model_name].items():</span>
+                    <span class="s1">related_model_state = self.to_state.models[related_model_key]</span>
+                    <span class="s0">for </span><span class="s1">related_field_name</span><span class="s0">, </span><span class="s1">related_field </span><span class="s0">in </span><span class="s1">related_fields.items():</span>
+                        <span class="s1">self.add_operation(</span>
+                            <span class="s1">related_model_state.app_label</span><span class="s0">,</span>
+                            <span class="s1">operations.AlterField(</span>
+                                <span class="s1">model_name=related_model_state.name</span><span class="s0">,</span>
+                                <span class="s1">name=related_field_name</span><span class="s0">,</span>
+                                <span class="s1">field=related_field</span><span class="s0">,</span>
+                            <span class="s1">)</span><span class="s0">,</span>
+                            <span class="s1">dependencies=[(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, None, True</span><span class="s1">)]</span><span class="s0">,</span>
+                        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_created_proxies(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Make CreateModel statements for proxy models. Use the same statements 
+        as that way there's less code duplication, but for proxy models it's 
+        safe to skip all the pointless field stuff and chuck out an operation. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">added = self.new_proxy_keys - self.old_proxy_keys</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(added):</span>
+            <span class="s1">model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s0">assert </span><span class="s1">model_state.options.get(</span><span class="s4">&quot;proxy&quot;</span><span class="s1">)</span>
+            <span class="s3"># Depend on the deletion of any possible non-proxy version of us</span>
+            <span class="s1">dependencies = [</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, None, False</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">]</span>
+            <span class="s3"># Depend on all bases</span>
+            <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">model_state.bases:</span>
+                <span class="s0">if </span><span class="s1">isinstance(base</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">and </span><span class="s4">&quot;.&quot; </span><span class="s0">in </span><span class="s1">base:</span>
+                    <span class="s1">base_app_label</span><span class="s0">, </span><span class="s1">base_name = base.split(</span><span class="s4">&quot;.&quot;</span><span class="s0">, </span><span class="s5">1</span><span class="s1">)</span>
+                    <span class="s1">dependencies.append((base_app_label</span><span class="s0">, </span><span class="s1">base_name</span><span class="s0">, None, True</span><span class="s1">))</span>
+            <span class="s3"># Generate creation operation</span>
+            <span class="s1">self.add_operation(</span>
+                <span class="s1">app_label</span><span class="s0">,</span>
+                <span class="s1">operations.CreateModel(</span>
+                    <span class="s1">name=model_state.name</span><span class="s0">,</span>
+                    <span class="s1">fields=[]</span><span class="s0">,</span>
+                    <span class="s1">options=model_state.options</span><span class="s0">,</span>
+                    <span class="s1">bases=model_state.bases</span><span class="s0">,</span>
+                    <span class="s1">managers=model_state.managers</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+                <span class="s3"># Depend on the deletion of any possible non-proxy version of us</span>
+                <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_deleted_models(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Find all deleted models (managed and unmanaged) and make delete 
+        operations for them as well as separate operations to delete any 
+        foreign key or M2M relationships (these are optimized later, if 
+        possible). 
+ 
+        Also bring forward removal of any model options that refer to 
+        collections of fields - the inverse of generate_created_models(). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">new_keys = self.new_model_keys | self.new_unmanaged_keys</span>
+        <span class="s1">deleted_models = self.old_model_keys - new_keys</span>
+        <span class="s1">deleted_unmanaged_models = self.old_unmanaged_keys - new_keys</span>
+        <span class="s1">all_deleted_models = chain(sorted(deleted_models)</span><span class="s0">, </span><span class="s1">sorted(deleted_unmanaged_models))</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">all_deleted_models:</span>
+            <span class="s1">model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s3"># Gather related fields</span>
+            <span class="s1">related_fields = {}</span>
+            <span class="s0">for </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model_state.fields.items():</span>
+                <span class="s0">if </span><span class="s1">field.remote_field:</span>
+                    <span class="s0">if </span><span class="s1">field.remote_field.model:</span>
+                        <span class="s1">related_fields[field_name] = field</span>
+                    <span class="s0">if </span><span class="s1">getattr(field.remote_field</span><span class="s0">, </span><span class="s4">'through'</span><span class="s0">, None</span><span class="s1">):</span>
+                        <span class="s1">related_fields[field_name] = field</span>
+            <span class="s3"># Generate option removal first</span>
+            <span class="s1">unique_together = model_state.options.pop(</span><span class="s4">'unique_together'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s1">index_together = model_state.options.pop(</span><span class="s4">'index_together'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">unique_together:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterUniqueTogether(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">unique_together=</span><span class="s0">None,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">index_together:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterIndexTogether(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">index_together=</span><span class="s0">None,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s3"># Then remove each related field</span>
+            <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">sorted(related_fields):</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.RemoveField(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">name=name</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s3"># Finally, remove the model.</span>
+            <span class="s3"># This depends on both the removal/alteration of all incoming fields</span>
+            <span class="s3"># and the removal of all its own related fields, and if it's</span>
+            <span class="s3"># a through model the field that references it.</span>
+            <span class="s1">dependencies = []</span>
+            <span class="s1">relations = self.from_state.relations</span>
+            <span class="s0">for </span><span class="s1">(related_object_app_label</span><span class="s0">, </span><span class="s1">object_name)</span><span class="s0">, </span><span class="s1">relation_related_fields </span><span class="s0">in </span><span class="s1">(</span>
+                <span class="s1">relations[app_label</span><span class="s0">, </span><span class="s1">model_name].items()</span>
+            <span class="s1">):</span>
+                <span class="s0">for </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">relation_related_fields.items():</span>
+                    <span class="s1">dependencies.append(</span>
+                        <span class="s1">(related_object_app_label</span><span class="s0">, </span><span class="s1">object_name</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, False</span><span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                    <span class="s0">if not </span><span class="s1">field.many_to_many:</span>
+                        <span class="s1">dependencies.append(</span>
+                            <span class="s1">(related_object_app_label</span><span class="s0">, </span><span class="s1">object_name</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s4">'alter'</span><span class="s1">)</span><span class="s0">,</span>
+                        <span class="s1">)</span>
+
+            <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">sorted(related_fields):</span>
+                <span class="s1">dependencies.append((app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, False</span><span class="s1">))</span>
+            <span class="s3"># We're referenced in another field's through=</span>
+            <span class="s1">through_user = self.through_users.get((app_label</span><span class="s0">, </span><span class="s1">model_state.name_lower))</span>
+            <span class="s0">if </span><span class="s1">through_user:</span>
+                <span class="s1">dependencies.append((through_user[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">through_user[</span><span class="s5">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">through_user[</span><span class="s5">2</span><span class="s1">]</span><span class="s0">, False</span><span class="s1">))</span>
+            <span class="s3"># Finally, make the operation, deduping any dependencies</span>
+            <span class="s1">self.add_operation(</span>
+                <span class="s1">app_label</span><span class="s0">,</span>
+                <span class="s1">operations.DeleteModel(</span>
+                    <span class="s1">name=model_state.name</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+                <span class="s1">dependencies=list(set(dependencies))</span><span class="s0">,</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_deleted_proxies(self):</span>
+        <span class="s2">&quot;&quot;&quot;Make DeleteModel options for proxy models.&quot;&quot;&quot;</span>
+        <span class="s1">deleted = self.old_proxy_keys - self.new_proxy_keys</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(deleted):</span>
+            <span class="s1">model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s0">assert </span><span class="s1">model_state.options.get(</span><span class="s4">&quot;proxy&quot;</span><span class="s1">)</span>
+            <span class="s1">self.add_operation(</span>
+                <span class="s1">app_label</span><span class="s0">,</span>
+                <span class="s1">operations.DeleteModel(</span>
+                    <span class="s1">name=model_state.name</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_renamed_fields(self):</span>
+        <span class="s2">&quot;&quot;&quot;Work out renamed fields.&quot;&quot;&quot;</span>
+        <span class="s1">self.renamed_fields = {}</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">sorted(self.new_field_keys - self.old_field_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">field = new_model_state.get_field(field_name)</span>
+            <span class="s3"># Scan to see if this is actually a rename!</span>
+            <span class="s1">field_dec = self.deep_deconstruct(field)</span>
+            <span class="s0">for </span><span class="s1">rem_app_label</span><span class="s0">, </span><span class="s1">rem_model_name</span><span class="s0">, </span><span class="s1">rem_field_name </span><span class="s0">in </span><span class="s1">sorted(self.old_field_keys - self.new_field_keys):</span>
+                <span class="s0">if </span><span class="s1">rem_app_label == app_label </span><span class="s0">and </span><span class="s1">rem_model_name == model_name:</span>
+                    <span class="s1">old_field = old_model_state.get_field(rem_field_name)</span>
+                    <span class="s1">old_field_dec = self.deep_deconstruct(old_field)</span>
+                    <span class="s0">if </span><span class="s1">field.remote_field </span><span class="s0">and </span><span class="s1">field.remote_field.model </span><span class="s0">and </span><span class="s4">'to' </span><span class="s0">in </span><span class="s1">old_field_dec[</span><span class="s5">2</span><span class="s1">]:</span>
+                        <span class="s1">old_rel_to = old_field_dec[</span><span class="s5">2</span><span class="s1">][</span><span class="s4">'to'</span><span class="s1">]</span>
+                        <span class="s0">if </span><span class="s1">old_rel_to </span><span class="s0">in </span><span class="s1">self.renamed_models_rel:</span>
+                            <span class="s1">old_field_dec[</span><span class="s5">2</span><span class="s1">][</span><span class="s4">'to'</span><span class="s1">] = self.renamed_models_rel[old_rel_to]</span>
+                    <span class="s1">old_field.set_attributes_from_name(rem_field_name)</span>
+                    <span class="s1">old_db_column = old_field.get_attname_column()[</span><span class="s5">1</span><span class="s1">]</span>
+                    <span class="s0">if </span><span class="s1">(old_field_dec == field_dec </span><span class="s0">or </span><span class="s1">(</span>
+                            <span class="s3"># Was the field renamed and db_column equal to the</span>
+                            <span class="s3"># old field's column added?</span>
+                            <span class="s1">old_field_dec[</span><span class="s5">0</span><span class="s1">:</span><span class="s5">2</span><span class="s1">] == field_dec[</span><span class="s5">0</span><span class="s1">:</span><span class="s5">2</span><span class="s1">] </span><span class="s0">and</span>
+                            <span class="s1">dict(old_field_dec[</span><span class="s5">2</span><span class="s1">]</span><span class="s0">, </span><span class="s1">db_column=old_db_column) == field_dec[</span><span class="s5">2</span><span class="s1">])):</span>
+                        <span class="s0">if </span><span class="s1">self.questioner.ask_rename(model_name</span><span class="s0">, </span><span class="s1">rem_field_name</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field):</span>
+                            <span class="s1">self.add_operation(</span>
+                                <span class="s1">app_label</span><span class="s0">,</span>
+                                <span class="s1">operations.RenameField(</span>
+                                    <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                                    <span class="s1">old_name=rem_field_name</span><span class="s0">,</span>
+                                    <span class="s1">new_name=field_name</span><span class="s0">,</span>
+                                <span class="s1">)</span>
+                            <span class="s1">)</span>
+                            <span class="s1">self.old_field_keys.remove((rem_app_label</span><span class="s0">, </span><span class="s1">rem_model_name</span><span class="s0">, </span><span class="s1">rem_field_name))</span>
+                            <span class="s1">self.old_field_keys.add((app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name))</span>
+                            <span class="s1">self.renamed_fields[app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name] = rem_field_name</span>
+                            <span class="s0">break</span>
+
+    <span class="s0">def </span><span class="s1">generate_added_fields(self):</span>
+        <span class="s2">&quot;&quot;&quot;Make AddField operations.&quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">sorted(self.new_field_keys - self.old_field_keys):</span>
+            <span class="s1">self._generate_added_field(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+
+    <span class="s0">def </span><span class="s1">_generate_added_field(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name):</span>
+        <span class="s1">field = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name].get_field(field_name)</span>
+        <span class="s3"># Fields that are foreignkeys/m2ms depend on stuff</span>
+        <span class="s1">dependencies = []</span>
+        <span class="s0">if </span><span class="s1">field.remote_field </span><span class="s0">and </span><span class="s1">field.remote_field.model:</span>
+            <span class="s1">dependencies.extend(self._get_dependencies_for_foreign_key(</span>
+                <span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">self.to_state</span><span class="s0">,</span>
+            <span class="s1">))</span>
+        <span class="s3"># You can't just add NOT NULL fields with no default or fields</span>
+        <span class="s3"># which don't allow empty strings as default.</span>
+        <span class="s1">time_fields = (models.DateField</span><span class="s0">, </span><span class="s1">models.DateTimeField</span><span class="s0">, </span><span class="s1">models.TimeField)</span>
+        <span class="s1">preserve_default = (</span>
+            <span class="s1">field.null </span><span class="s0">or </span><span class="s1">field.has_default() </span><span class="s0">or </span><span class="s1">field.many_to_many </span><span class="s0">or</span>
+            <span class="s1">(field.blank </span><span class="s0">and </span><span class="s1">field.empty_strings_allowed) </span><span class="s0">or</span>
+            <span class="s1">(isinstance(field</span><span class="s0">, </span><span class="s1">time_fields) </span><span class="s0">and </span><span class="s1">field.auto_now)</span>
+        <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">preserve_default:</span>
+            <span class="s1">field = field.clone()</span>
+            <span class="s0">if </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">time_fields) </span><span class="s0">and </span><span class="s1">field.auto_now_add:</span>
+                <span class="s1">field.default = self.questioner.ask_auto_now_add_addition(field_name</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">field.default = self.questioner.ask_not_null_addition(field_name</span><span class="s0">, </span><span class="s1">model_name)</span>
+        <span class="s1">self.add_operation(</span>
+            <span class="s1">app_label</span><span class="s0">,</span>
+            <span class="s1">operations.AddField(</span>
+                <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                <span class="s1">name=field_name</span><span class="s0">,</span>
+                <span class="s1">field=field</span><span class="s0">,</span>
+                <span class="s1">preserve_default=preserve_default</span><span class="s0">,</span>
+            <span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_removed_fields(self):</span>
+        <span class="s2">&quot;&quot;&quot;Make RemoveField operations.&quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">sorted(self.old_field_keys - self.new_field_keys):</span>
+            <span class="s1">self._generate_removed_field(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+
+    <span class="s0">def </span><span class="s1">_generate_removed_field(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name):</span>
+        <span class="s1">self.add_operation(</span>
+            <span class="s1">app_label</span><span class="s0">,</span>
+            <span class="s1">operations.RemoveField(</span>
+                <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                <span class="s1">name=field_name</span><span class="s0">,</span>
+            <span class="s1">)</span><span class="s0">,</span>
+            <span class="s3"># We might need to depend on the removal of an</span>
+            <span class="s3"># order_with_respect_to or index/unique_together operation;</span>
+            <span class="s3"># this is safely ignored if there isn't one</span>
+            <span class="s1">dependencies=[</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s4">&quot;order_wrt_unset&quot;</span><span class="s1">)</span><span class="s0">,</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s4">&quot;foo_together_change&quot;</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">]</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_fields(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Make AlterField operations, or possibly RemovedField/AddField if alter 
+        isn't possible. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">sorted(self.old_field_keys &amp; self.new_field_keys):</span>
+            <span class="s3"># Did the field change?</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_field_name = self.renamed_fields.get((app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span><span class="s0">, </span><span class="s1">field_name)</span>
+            <span class="s1">old_field = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name].get_field(old_field_name)</span>
+            <span class="s1">new_field = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name].get_field(field_name)</span>
+            <span class="s1">dependencies = []</span>
+            <span class="s3"># Implement any model renames on relations; these are handled by RenameModel</span>
+            <span class="s3"># so we need to exclude them from the comparison</span>
+            <span class="s0">if </span><span class="s1">hasattr(new_field</span><span class="s0">, </span><span class="s4">&quot;remote_field&quot;</span><span class="s1">) </span><span class="s0">and </span><span class="s1">getattr(new_field.remote_field</span><span class="s0">, </span><span class="s4">&quot;model&quot;</span><span class="s0">, None</span><span class="s1">):</span>
+                <span class="s1">rename_key = resolve_relation(new_field.remote_field.model</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name)</span>
+                <span class="s0">if </span><span class="s1">rename_key </span><span class="s0">in </span><span class="s1">self.renamed_models:</span>
+                    <span class="s1">new_field.remote_field.model = old_field.remote_field.model</span>
+                <span class="s3"># Handle ForeignKey which can only have a single to_field.</span>
+                <span class="s1">remote_field_name = getattr(new_field.remote_field</span><span class="s0">, </span><span class="s4">'field_name'</span><span class="s0">, None</span><span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">remote_field_name:</span>
+                    <span class="s1">to_field_rename_key = rename_key + (remote_field_name</span><span class="s0">,</span><span class="s1">)</span>
+                    <span class="s0">if </span><span class="s1">to_field_rename_key </span><span class="s0">in </span><span class="s1">self.renamed_fields:</span>
+                        <span class="s3"># Repoint both model and field name because to_field</span>
+                        <span class="s3"># inclusion in ForeignKey.deconstruct() is based on</span>
+                        <span class="s3"># both.</span>
+                        <span class="s1">new_field.remote_field.model = old_field.remote_field.model</span>
+                        <span class="s1">new_field.remote_field.field_name = old_field.remote_field.field_name</span>
+                <span class="s3"># Handle ForeignObjects which can have multiple from_fields/to_fields.</span>
+                <span class="s1">from_fields = getattr(new_field</span><span class="s0">, </span><span class="s4">'from_fields'</span><span class="s0">, None</span><span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">from_fields:</span>
+                    <span class="s1">from_rename_key = (app_label</span><span class="s0">, </span><span class="s1">model_name)</span>
+                    <span class="s1">new_field.from_fields = tuple([</span>
+                        <span class="s1">self.renamed_fields.get(from_rename_key + (from_field</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">from_field)</span>
+                        <span class="s0">for </span><span class="s1">from_field </span><span class="s0">in </span><span class="s1">from_fields</span>
+                    <span class="s1">])</span>
+                    <span class="s1">new_field.to_fields = tuple([</span>
+                        <span class="s1">self.renamed_fields.get(rename_key + (to_field</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">to_field)</span>
+                        <span class="s0">for </span><span class="s1">to_field </span><span class="s0">in </span><span class="s1">new_field.to_fields</span>
+                    <span class="s1">])</span>
+                <span class="s1">dependencies.extend(self._get_dependencies_for_foreign_key(</span>
+                    <span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">new_field</span><span class="s0">, </span><span class="s1">self.to_state</span><span class="s0">,</span>
+                <span class="s1">))</span>
+            <span class="s0">if </span><span class="s1">(</span>
+                <span class="s1">hasattr(new_field</span><span class="s0">, </span><span class="s4">'remote_field'</span><span class="s1">) </span><span class="s0">and</span>
+                <span class="s1">getattr(new_field.remote_field</span><span class="s0">, </span><span class="s4">'through'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s1">):</span>
+                <span class="s1">rename_key = resolve_relation(new_field.remote_field.through</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name)</span>
+                <span class="s0">if </span><span class="s1">rename_key </span><span class="s0">in </span><span class="s1">self.renamed_models:</span>
+                    <span class="s1">new_field.remote_field.through = old_field.remote_field.through</span>
+            <span class="s1">old_field_dec = self.deep_deconstruct(old_field)</span>
+            <span class="s1">new_field_dec = self.deep_deconstruct(new_field)</span>
+            <span class="s0">if </span><span class="s1">old_field_dec != new_field_dec:</span>
+                <span class="s1">both_m2m = old_field.many_to_many </span><span class="s0">and </span><span class="s1">new_field.many_to_many</span>
+                <span class="s1">neither_m2m = </span><span class="s0">not </span><span class="s1">old_field.many_to_many </span><span class="s0">and not </span><span class="s1">new_field.many_to_many</span>
+                <span class="s0">if </span><span class="s1">both_m2m </span><span class="s0">or </span><span class="s1">neither_m2m:</span>
+                    <span class="s3"># Either both fields are m2m or neither is</span>
+                    <span class="s1">preserve_default = </span><span class="s0">True</span>
+                    <span class="s0">if </span><span class="s1">(old_field.null </span><span class="s0">and not </span><span class="s1">new_field.null </span><span class="s0">and not </span><span class="s1">new_field.has_default() </span><span class="s0">and</span>
+                            <span class="s0">not </span><span class="s1">new_field.many_to_many):</span>
+                        <span class="s1">field = new_field.clone()</span>
+                        <span class="s1">new_default = self.questioner.ask_not_null_alteration(field_name</span><span class="s0">, </span><span class="s1">model_name)</span>
+                        <span class="s0">if </span><span class="s1">new_default </span><span class="s0">is not </span><span class="s1">models.NOT_PROVIDED:</span>
+                            <span class="s1">field.default = new_default</span>
+                            <span class="s1">preserve_default = </span><span class="s0">False</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">field = new_field</span>
+                    <span class="s1">self.add_operation(</span>
+                        <span class="s1">app_label</span><span class="s0">,</span>
+                        <span class="s1">operations.AlterField(</span>
+                            <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                            <span class="s1">name=field_name</span><span class="s0">,</span>
+                            <span class="s1">field=field</span><span class="s0">,</span>
+                            <span class="s1">preserve_default=preserve_default</span><span class="s0">,</span>
+                        <span class="s1">)</span><span class="s0">,</span>
+                        <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s3"># We cannot alter between m2m and concrete fields</span>
+                    <span class="s1">self._generate_removed_field(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+                    <span class="s1">self._generate_added_field(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field_name)</span>
+
+    <span class="s0">def </span><span class="s1">create_altered_indexes(self):</span>
+        <span class="s1">option_name = operations.AddIndex.option_name</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(self.kept_model_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+
+            <span class="s1">old_indexes = old_model_state.options[option_name]</span>
+            <span class="s1">new_indexes = new_model_state.options[option_name]</span>
+            <span class="s1">add_idx = [idx </span><span class="s0">for </span><span class="s1">idx </span><span class="s0">in </span><span class="s1">new_indexes </span><span class="s0">if </span><span class="s1">idx </span><span class="s0">not in </span><span class="s1">old_indexes]</span>
+            <span class="s1">rem_idx = [idx </span><span class="s0">for </span><span class="s1">idx </span><span class="s0">in </span><span class="s1">old_indexes </span><span class="s0">if </span><span class="s1">idx </span><span class="s0">not in </span><span class="s1">new_indexes]</span>
+
+            <span class="s1">self.altered_indexes.update({</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name): {</span>
+                    <span class="s4">'added_indexes'</span><span class="s1">: add_idx</span><span class="s0">, </span><span class="s4">'removed_indexes'</span><span class="s1">: rem_idx</span><span class="s0">,</span>
+                <span class="s1">}</span>
+            <span class="s1">})</span>
+
+    <span class="s0">def </span><span class="s1">generate_added_indexes(self):</span>
+        <span class="s0">for </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">alt_indexes </span><span class="s0">in </span><span class="s1">self.altered_indexes.items():</span>
+            <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">alt_indexes[</span><span class="s4">'added_indexes'</span><span class="s1">]:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AddIndex(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">index=index</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_removed_indexes(self):</span>
+        <span class="s0">for </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">alt_indexes </span><span class="s0">in </span><span class="s1">self.altered_indexes.items():</span>
+            <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">alt_indexes[</span><span class="s4">'removed_indexes'</span><span class="s1">]:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.RemoveIndex(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">name=index.name</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">create_altered_constraints(self):</span>
+        <span class="s1">option_name = operations.AddConstraint.option_name</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(self.kept_model_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+
+            <span class="s1">old_constraints = old_model_state.options[option_name]</span>
+            <span class="s1">new_constraints = new_model_state.options[option_name]</span>
+            <span class="s1">add_constraints = [c </span><span class="s0">for </span><span class="s1">c </span><span class="s0">in </span><span class="s1">new_constraints </span><span class="s0">if </span><span class="s1">c </span><span class="s0">not in </span><span class="s1">old_constraints]</span>
+            <span class="s1">rem_constraints = [c </span><span class="s0">for </span><span class="s1">c </span><span class="s0">in </span><span class="s1">old_constraints </span><span class="s0">if </span><span class="s1">c </span><span class="s0">not in </span><span class="s1">new_constraints]</span>
+
+            <span class="s1">self.altered_constraints.update({</span>
+                <span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name): {</span>
+                    <span class="s4">'added_constraints'</span><span class="s1">: add_constraints</span><span class="s0">, </span><span class="s4">'removed_constraints'</span><span class="s1">: rem_constraints</span><span class="s0">,</span>
+                <span class="s1">}</span>
+            <span class="s1">})</span>
+
+    <span class="s0">def </span><span class="s1">generate_added_constraints(self):</span>
+        <span class="s0">for </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">alt_constraints </span><span class="s0">in </span><span class="s1">self.altered_constraints.items():</span>
+            <span class="s0">for </span><span class="s1">constraint </span><span class="s0">in </span><span class="s1">alt_constraints[</span><span class="s4">'added_constraints'</span><span class="s1">]:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AddConstraint(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">constraint=constraint</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_removed_constraints(self):</span>
+        <span class="s0">for </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">alt_constraints </span><span class="s0">in </span><span class="s1">self.altered_constraints.items():</span>
+            <span class="s0">for </span><span class="s1">constraint </span><span class="s0">in </span><span class="s1">alt_constraints[</span><span class="s4">'removed_constraints'</span><span class="s1">]:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.RemoveConstraint(</span>
+                        <span class="s1">model_name=model_name</span><span class="s0">,</span>
+                        <span class="s1">name=constraint.name</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s0">def </span><span class="s1">_get_dependencies_for_foreign_key(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">project_state):</span>
+        <span class="s1">remote_field_model = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">hasattr(field.remote_field</span><span class="s0">, </span><span class="s4">'model'</span><span class="s1">):</span>
+            <span class="s1">remote_field_model = field.remote_field.model</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">relations = project_state.relations[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s0">for </span><span class="s1">(remote_app_label</span><span class="s0">, </span><span class="s1">remote_model_name)</span><span class="s0">, </span><span class="s1">fields </span><span class="s0">in </span><span class="s1">relations.items():</span>
+                <span class="s0">if </span><span class="s1">any(</span>
+                    <span class="s1">field == related_field.remote_field</span>
+                    <span class="s0">for </span><span class="s1">related_field </span><span class="s0">in </span><span class="s1">fields.values()</span>
+                <span class="s1">):</span>
+                    <span class="s1">remote_field_model = </span><span class="s4">f'</span><span class="s0">{</span><span class="s1">remote_app_label</span><span class="s0">}</span><span class="s4">.</span><span class="s0">{</span><span class="s1">remote_model_name</span><span class="s0">}</span><span class="s4">'</span>
+                    <span class="s0">break</span>
+        <span class="s3"># Account for FKs to swappable models</span>
+        <span class="s1">swappable_setting = getattr(field</span><span class="s0">, </span><span class="s4">'swappable_setting'</span><span class="s0">, None</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">swappable_setting </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">dep_app_label = </span><span class="s4">&quot;__setting__&quot;</span>
+            <span class="s1">dep_object_name = swappable_setting</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">dep_app_label</span><span class="s0">, </span><span class="s1">dep_object_name = resolve_relation(</span>
+                <span class="s1">remote_field_model</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s1">dependencies = [(dep_app_label</span><span class="s0">, </span><span class="s1">dep_object_name</span><span class="s0">, None, True</span><span class="s1">)]</span>
+        <span class="s0">if </span><span class="s1">getattr(field.remote_field</span><span class="s0">, </span><span class="s4">'through'</span><span class="s0">, None</span><span class="s1">):</span>
+            <span class="s1">through_app_label</span><span class="s0">, </span><span class="s1">through_object_name = resolve_relation(</span>
+                <span class="s1">remote_field_model</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s1">dependencies.append((through_app_label</span><span class="s0">, </span><span class="s1">through_object_name</span><span class="s0">, None, True</span><span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">dependencies</span>
+
+    <span class="s0">def </span><span class="s1">_get_altered_foo_together_operations(self</span><span class="s0">, </span><span class="s1">option_name):</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(self.kept_model_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+
+            <span class="s3"># We run the old version through the field renames to account for those</span>
+            <span class="s1">old_value = old_model_state.options.get(option_name)</span>
+            <span class="s1">old_value = {</span>
+                <span class="s1">tuple(</span>
+                    <span class="s1">self.renamed_fields.get((app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">n)</span><span class="s0">, </span><span class="s1">n)</span>
+                    <span class="s0">for </span><span class="s1">n </span><span class="s0">in </span><span class="s1">unique</span>
+                <span class="s1">)</span>
+                <span class="s0">for </span><span class="s1">unique </span><span class="s0">in </span><span class="s1">old_value</span>
+            <span class="s1">} </span><span class="s0">if </span><span class="s1">old_value </span><span class="s0">else </span><span class="s1">set()</span>
+
+            <span class="s1">new_value = new_model_state.options.get(option_name)</span>
+            <span class="s1">new_value = set(new_value) </span><span class="s0">if </span><span class="s1">new_value </span><span class="s0">else </span><span class="s1">set()</span>
+
+            <span class="s0">if </span><span class="s1">old_value != new_value:</span>
+                <span class="s1">dependencies = []</span>
+                <span class="s0">for </span><span class="s1">foo_togethers </span><span class="s0">in </span><span class="s1">new_value:</span>
+                    <span class="s0">for </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">foo_togethers:</span>
+                        <span class="s1">field = new_model_state.get_field(field_name)</span>
+                        <span class="s0">if </span><span class="s1">field.remote_field </span><span class="s0">and </span><span class="s1">field.remote_field.model:</span>
+                            <span class="s1">dependencies.extend(self._get_dependencies_for_foreign_key(</span>
+                                <span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">self.to_state</span><span class="s0">,</span>
+                            <span class="s1">))</span>
+                <span class="s0">yield </span><span class="s1">(</span>
+                    <span class="s1">old_value</span><span class="s0">,</span>
+                    <span class="s1">new_value</span><span class="s0">,</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">model_name</span><span class="s0">,</span>
+                    <span class="s1">dependencies</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_generate_removed_altered_foo_together(self</span><span class="s0">, </span><span class="s1">operation):</span>
+        <span class="s0">for </span><span class="s1">(</span>
+            <span class="s1">old_value</span><span class="s0">,</span>
+            <span class="s1">new_value</span><span class="s0">,</span>
+            <span class="s1">app_label</span><span class="s0">,</span>
+            <span class="s1">model_name</span><span class="s0">,</span>
+            <span class="s1">dependencies</span><span class="s0">,</span>
+        <span class="s1">) </span><span class="s0">in </span><span class="s1">self._get_altered_foo_together_operations(operation.option_name):</span>
+            <span class="s1">removal_value = new_value.intersection(old_value)</span>
+            <span class="s0">if </span><span class="s1">removal_value </span><span class="s0">or </span><span class="s1">old_value:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operation(name=model_name</span><span class="s0">, </span><span class="s1">**{operation.option_name: removal_value})</span><span class="s0">,</span>
+                    <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_removed_altered_unique_together(self):</span>
+        <span class="s1">self._generate_removed_altered_foo_together(operations.AlterUniqueTogether)</span>
+
+    <span class="s0">def </span><span class="s1">generate_removed_altered_index_together(self):</span>
+        <span class="s1">self._generate_removed_altered_foo_together(operations.AlterIndexTogether)</span>
+
+    <span class="s0">def </span><span class="s1">_generate_altered_foo_together(self</span><span class="s0">, </span><span class="s1">operation):</span>
+        <span class="s0">for </span><span class="s1">(</span>
+            <span class="s1">old_value</span><span class="s0">,</span>
+            <span class="s1">new_value</span><span class="s0">,</span>
+            <span class="s1">app_label</span><span class="s0">,</span>
+            <span class="s1">model_name</span><span class="s0">,</span>
+            <span class="s1">dependencies</span><span class="s0">,</span>
+        <span class="s1">) </span><span class="s0">in </span><span class="s1">self._get_altered_foo_together_operations(operation.option_name):</span>
+            <span class="s1">removal_value = new_value.intersection(old_value)</span>
+            <span class="s0">if </span><span class="s1">new_value != removal_value:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operation(name=model_name</span><span class="s0">, </span><span class="s1">**{operation.option_name: new_value})</span><span class="s0">,</span>
+                    <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_unique_together(self):</span>
+        <span class="s1">self._generate_altered_foo_together(operations.AlterUniqueTogether)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_index_together(self):</span>
+        <span class="s1">self._generate_altered_foo_together(operations.AlterIndexTogether)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_db_table(self):</span>
+        <span class="s1">models_to_check = self.kept_model_keys.union(self.kept_proxy_keys</span><span class="s0">, </span><span class="s1">self.kept_unmanaged_keys)</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(models_to_check):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s1">old_db_table_name = old_model_state.options.get(</span><span class="s4">'db_table'</span><span class="s1">)</span>
+            <span class="s1">new_db_table_name = new_model_state.options.get(</span><span class="s4">'db_table'</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">old_db_table_name != new_db_table_name:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterModelTable(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">table=new_db_table_name</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_options(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Work out if any non-schema-affecting options have changed and make an 
+        operation to represent them in state changes (in case Python code in 
+        migrations needs them). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">models_to_check = self.kept_model_keys.union(</span>
+            <span class="s1">self.kept_proxy_keys</span><span class="s0">,</span>
+            <span class="s1">self.kept_unmanaged_keys</span><span class="s0">,</span>
+            <span class="s3"># unmanaged converted to managed</span>
+            <span class="s1">self.old_unmanaged_keys &amp; self.new_model_keys</span><span class="s0">,</span>
+            <span class="s3"># managed converted to unmanaged</span>
+            <span class="s1">self.old_model_keys &amp; self.new_unmanaged_keys</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(models_to_check):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s1">old_options = {</span>
+                <span class="s1">key: value </span><span class="s0">for </span><span class="s1">key</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">old_model_state.options.items()</span>
+                <span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s1">AlterModelOptions.ALTER_OPTION_KEYS</span>
+            <span class="s1">}</span>
+            <span class="s1">new_options = {</span>
+                <span class="s1">key: value </span><span class="s0">for </span><span class="s1">key</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">new_model_state.options.items()</span>
+                <span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s1">AlterModelOptions.ALTER_OPTION_KEYS</span>
+            <span class="s1">}</span>
+            <span class="s0">if </span><span class="s1">old_options != new_options:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterModelOptions(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">options=new_options</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_order_with_respect_to(self):</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(self.kept_model_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s0">if </span><span class="s1">(old_model_state.options.get(</span><span class="s4">&quot;order_with_respect_to&quot;</span><span class="s1">) !=</span>
+                    <span class="s1">new_model_state.options.get(</span><span class="s4">&quot;order_with_respect_to&quot;</span><span class="s1">)):</span>
+                <span class="s3"># Make sure it comes second if we're adding</span>
+                <span class="s3"># (removal dependency is part of RemoveField)</span>
+                <span class="s1">dependencies = []</span>
+                <span class="s0">if </span><span class="s1">new_model_state.options.get(</span><span class="s4">&quot;order_with_respect_to&quot;</span><span class="s1">):</span>
+                    <span class="s1">dependencies.append((</span>
+                        <span class="s1">app_label</span><span class="s0">,</span>
+                        <span class="s1">model_name</span><span class="s0">,</span>
+                        <span class="s1">new_model_state.options[</span><span class="s4">&quot;order_with_respect_to&quot;</span><span class="s1">]</span><span class="s0">,</span>
+                        <span class="s0">True,</span>
+                    <span class="s1">))</span>
+                <span class="s3"># Actually generate the operation</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterOrderWithRespectTo(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">order_with_respect_to=new_model_state.options.get(</span><span class="s4">'order_with_respect_to'</span><span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">dependencies=dependencies</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">generate_altered_managers(self):</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">sorted(self.kept_model_keys):</span>
+            <span class="s1">old_model_name = self.renamed_models.get((app_label</span><span class="s0">, </span><span class="s1">model_name)</span><span class="s0">, </span><span class="s1">model_name)</span>
+            <span class="s1">old_model_state = self.from_state.models[app_label</span><span class="s0">, </span><span class="s1">old_model_name]</span>
+            <span class="s1">new_model_state = self.to_state.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+            <span class="s0">if </span><span class="s1">old_model_state.managers != new_model_state.managers:</span>
+                <span class="s1">self.add_operation(</span>
+                    <span class="s1">app_label</span><span class="s0">,</span>
+                    <span class="s1">operations.AlterModelManagers(</span>
+                        <span class="s1">name=model_name</span><span class="s0">,</span>
+                        <span class="s1">managers=new_model_state.managers</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">arrange_for_graph(self</span><span class="s0">, </span><span class="s1">changes</span><span class="s0">, </span><span class="s1">graph</span><span class="s0">, </span><span class="s1">migration_name=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Take a result from changes() and a MigrationGraph, and fix the names 
+        and dependencies of the changes so they extend the graph from the leaf 
+        nodes for each app. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">leaves = graph.leaf_nodes()</span>
+        <span class="s1">name_map = {}</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">migrations </span><span class="s0">in </span><span class="s1">list(changes.items()):</span>
+            <span class="s0">if not </span><span class="s1">migrations:</span>
+                <span class="s0">continue</span>
+            <span class="s3"># Find the app label's current leaf node</span>
+            <span class="s1">app_leaf = </span><span class="s0">None</span>
+            <span class="s0">for </span><span class="s1">leaf </span><span class="s0">in </span><span class="s1">leaves:</span>
+                <span class="s0">if </span><span class="s1">leaf[</span><span class="s5">0</span><span class="s1">] == app_label:</span>
+                    <span class="s1">app_leaf = leaf</span>
+                    <span class="s0">break</span>
+            <span class="s3"># Do they want an initial migration for this app?</span>
+            <span class="s0">if </span><span class="s1">app_leaf </span><span class="s0">is None and not </span><span class="s1">self.questioner.ask_initial(app_label):</span>
+                <span class="s3"># They don't.</span>
+                <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">migrations:</span>
+                    <span class="s1">name_map[(app_label</span><span class="s0">, </span><span class="s1">migration.name)] = (app_label</span><span class="s0">, </span><span class="s4">&quot;__first__&quot;</span><span class="s1">)</span>
+                <span class="s0">del </span><span class="s1">changes[app_label]</span>
+                <span class="s0">continue</span>
+            <span class="s3"># Work out the next number in the sequence</span>
+            <span class="s0">if </span><span class="s1">app_leaf </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s1">next_number = </span><span class="s5">1</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">next_number = (self.parse_number(app_leaf[</span><span class="s5">1</span><span class="s1">]) </span><span class="s0">or </span><span class="s5">0</span><span class="s1">) + </span><span class="s5">1</span>
+            <span class="s3"># Name each migration</span>
+            <span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">enumerate(migrations):</span>
+                <span class="s0">if </span><span class="s1">i == </span><span class="s5">0 </span><span class="s0">and </span><span class="s1">app_leaf:</span>
+                    <span class="s1">migration.dependencies.append(app_leaf)</span>
+                <span class="s1">new_name_parts = [</span><span class="s4">'%04i' </span><span class="s1">% next_number]</span>
+                <span class="s0">if </span><span class="s1">migration_name:</span>
+                    <span class="s1">new_name_parts.append(migration_name)</span>
+                <span class="s0">elif </span><span class="s1">i == </span><span class="s5">0 </span><span class="s0">and not </span><span class="s1">app_leaf:</span>
+                    <span class="s1">new_name_parts.append(</span><span class="s4">'initial'</span><span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">new_name_parts.append(migration.suggest_name()[:</span><span class="s5">100</span><span class="s1">])</span>
+                <span class="s1">new_name = </span><span class="s4">'_'</span><span class="s1">.join(new_name_parts)</span>
+                <span class="s1">name_map[(app_label</span><span class="s0">, </span><span class="s1">migration.name)] = (app_label</span><span class="s0">, </span><span class="s1">new_name)</span>
+                <span class="s1">next_number += </span><span class="s5">1</span>
+                <span class="s1">migration.name = new_name</span>
+        <span class="s3"># Now fix dependencies</span>
+        <span class="s0">for </span><span class="s1">migrations </span><span class="s0">in </span><span class="s1">changes.values():</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">migrations:</span>
+                <span class="s1">migration.dependencies = [name_map.get(d</span><span class="s0">, </span><span class="s1">d) </span><span class="s0">for </span><span class="s1">d </span><span class="s0">in </span><span class="s1">migration.dependencies]</span>
+        <span class="s0">return </span><span class="s1">changes</span>
+
+    <span class="s0">def </span><span class="s1">_trim_to_apps(self</span><span class="s0">, </span><span class="s1">changes</span><span class="s0">, </span><span class="s1">app_labels):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Take changes from arrange_for_graph() and set of app labels, and return 
+        a modified set of changes which trims out as many migrations that are 
+        not in app_labels as possible. Note that some other migrations may 
+        still be present as they may be required dependencies. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Gather other app dependencies in a first pass</span>
+        <span class="s1">app_dependencies = {}</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">migrations </span><span class="s0">in </span><span class="s1">changes.items():</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">migrations:</span>
+                <span class="s0">for </span><span class="s1">dep_app_label</span><span class="s0">, </span><span class="s1">name </span><span class="s0">in </span><span class="s1">migration.dependencies:</span>
+                    <span class="s1">app_dependencies.setdefault(app_label</span><span class="s0">, </span><span class="s1">set()).add(dep_app_label)</span>
+        <span class="s1">required_apps = set(app_labels)</span>
+        <span class="s3"># Keep resolving till there's no change</span>
+        <span class="s1">old_required_apps = </span><span class="s0">None</span>
+        <span class="s0">while </span><span class="s1">old_required_apps != required_apps:</span>
+            <span class="s1">old_required_apps = set(required_apps)</span>
+            <span class="s1">required_apps.update(*[app_dependencies.get(app_label</span><span class="s0">, </span><span class="s1">()) </span><span class="s0">for </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">required_apps])</span>
+        <span class="s3"># Remove all migrations that aren't needed</span>
+        <span class="s0">for </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">list(changes):</span>
+            <span class="s0">if </span><span class="s1">app_label </span><span class="s0">not in </span><span class="s1">required_apps:</span>
+                <span class="s0">del </span><span class="s1">changes[app_label]</span>
+        <span class="s0">return </span><span class="s1">changes</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">parse_number(cls</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Given a migration name, try to extract a number from the beginning of 
+        it. If no number is found, return None. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">match = re.match(</span><span class="s4">r'^\d+'</span><span class="s0">, </span><span class="s1">name)</span>
+        <span class="s0">if </span><span class="s1">match:</span>
+            <span class="s0">return </span><span class="s1">int(match[</span><span class="s5">0</span><span class="s1">])</span>
+        <span class="s0">return None</span>
+</pre>
+</body>
+</html>

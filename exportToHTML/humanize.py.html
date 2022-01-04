@@ -1,0 +1,281 @@
+<html>
+<head>
+<title>humanize.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+humanize.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">re</span>
+<span class="s0">from </span><span class="s1">datetime </span><span class="s0">import </span><span class="s1">date</span><span class="s0">, </span><span class="s1">datetime</span>
+<span class="s0">from </span><span class="s1">decimal </span><span class="s0">import </span><span class="s1">Decimal</span>
+
+<span class="s0">from </span><span class="s1">django </span><span class="s0">import </span><span class="s1">template</span>
+<span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">defaultfilters</span>
+<span class="s0">from </span><span class="s1">django.utils.formats </span><span class="s0">import </span><span class="s1">number_format</span>
+<span class="s0">from </span><span class="s1">django.utils.safestring </span><span class="s0">import </span><span class="s1">mark_safe</span>
+<span class="s0">from </span><span class="s1">django.utils.timezone </span><span class="s0">import </span><span class="s1">is_aware</span><span class="s0">, </span><span class="s1">utc</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">gettext </span><span class="s0">as </span><span class="s1">_</span><span class="s0">, </span><span class="s1">gettext_lazy</span><span class="s0">, </span><span class="s1">ngettext</span><span class="s0">, </span><span class="s1">ngettext_lazy</span><span class="s0">, </span><span class="s1">npgettext_lazy</span><span class="s0">,</span>
+    <span class="s1">pgettext</span><span class="s0">, </span><span class="s1">round_away_from_one</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+<span class="s1">register = template.Library()</span>
+
+
+<span class="s1">@register.filter(is_safe=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">ordinal(value):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Convert an integer to its ordinal as a string. 1 is '1st', 2 is '2nd', 
+    3 is '3rd', etc. Works for any integer. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">value = int(value)</span>
+    <span class="s0">except </span><span class="s1">(TypeError</span><span class="s0">, </span><span class="s1">ValueError):</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s0">if </span><span class="s1">value % </span><span class="s3">100 </span><span class="s0">in </span><span class="s1">(</span><span class="s3">11</span><span class="s0">, </span><span class="s3">12</span><span class="s0">, </span><span class="s3">13</span><span class="s1">):</span>
+        <span class="s4"># Translators: Ordinal format for 11 (11th), 12 (12th), and 13 (13th).</span>
+        <span class="s1">value = pgettext(</span><span class="s5">'ordinal 11, 12, 13'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">).format(value)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">templates = (</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 0, e.g. 80th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 0'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 1, e.g. 81st, except 11.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 1'</span><span class="s0">, </span><span class="s5">'{}st'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 2, e.g. 82nd, except 12.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 2'</span><span class="s0">, </span><span class="s5">'{}nd'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 3, e.g. 83th, except 13.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 3'</span><span class="s0">, </span><span class="s5">'{}rd'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 4, e.g. 84th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 4'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 5, e.g. 85th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 5'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 6, e.g. 86th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 6'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 7, e.g. 87th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 7'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 8, e.g. 88th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 8'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4"># Translators: Ordinal format when value ends with 9, e.g. 89th.</span>
+            <span class="s1">pgettext(</span><span class="s5">'ordinal 9'</span><span class="s0">, </span><span class="s5">'{}th'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">value = templates[value % </span><span class="s3">10</span><span class="s1">].format(value)</span>
+    <span class="s4"># Mark value safe so i18n does not break with &lt;sup&gt; or &lt;sub&gt; see #19988</span>
+    <span class="s0">return </span><span class="s1">mark_safe(value)</span>
+
+
+<span class="s1">@register.filter(is_safe=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">intcomma(value</span><span class="s0">, </span><span class="s1">use_l10n=</span><span class="s0">True</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Convert an integer to a string containing commas every three digits. 
+    For example, 3000 becomes '3,000' and 45000 becomes '45,000'. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">use_l10n:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">if not </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(float</span><span class="s0">, </span><span class="s1">Decimal)):</span>
+                <span class="s1">value = int(value)</span>
+        <span class="s0">except </span><span class="s1">(TypeError</span><span class="s0">, </span><span class="s1">ValueError):</span>
+            <span class="s0">return </span><span class="s1">intcomma(value</span><span class="s0">, False</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">number_format(value</span><span class="s0">, </span><span class="s1">use_l10n=</span><span class="s0">True, </span><span class="s1">force_grouping=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s1">orig = str(value)</span>
+    <span class="s1">new = re.sub(</span><span class="s5">r&quot;^(-?\d+)(\d{3})&quot;</span><span class="s0">, </span><span class="s5">r'\g&lt;1&gt;,\g&lt;2&gt;'</span><span class="s0">, </span><span class="s1">orig)</span>
+    <span class="s0">if </span><span class="s1">orig == new:</span>
+        <span class="s0">return </span><span class="s1">new</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">intcomma(new</span><span class="s0">, </span><span class="s1">use_l10n)</span>
+
+
+<span class="s4"># A tuple of standard large number to their converters</span>
+<span class="s1">intword_converters = (</span>
+    <span class="s1">(</span><span class="s3">6</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s million'</span><span class="s0">, </span><span class="s5">'%(value)s million'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">9</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s billion'</span><span class="s0">, </span><span class="s5">'%(value)s billion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">12</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s trillion'</span><span class="s0">, </span><span class="s5">'%(value)s trillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">15</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s quadrillion'</span><span class="s0">, </span><span class="s5">'%(value)s quadrillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">18</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s quintillion'</span><span class="s0">, </span><span class="s5">'%(value)s quintillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">21</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s sextillion'</span><span class="s0">, </span><span class="s5">'%(value)s sextillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">24</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s septillion'</span><span class="s0">, </span><span class="s5">'%(value)s septillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">27</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s octillion'</span><span class="s0">, </span><span class="s5">'%(value)s octillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">30</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s nonillion'</span><span class="s0">, </span><span class="s5">'%(value)s nonillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">33</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s decillion'</span><span class="s0">, </span><span class="s5">'%(value)s decillion'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s3">100</span><span class="s0">, lambda </span><span class="s1">number: ngettext(</span><span class="s5">'%(value)s googol'</span><span class="s0">, </span><span class="s5">'%(value)s googol'</span><span class="s0">, </span><span class="s1">number))</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s1">@register.filter(is_safe=</span><span class="s0">False</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">intword(value):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Convert a large integer to a friendly text representation. Works best 
+    for numbers over 1 million. For example, 1000000 becomes '1.0 million', 
+    1200000 becomes '1.2 million' and '1200000000' becomes '1.2 billion'. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">value = int(value)</span>
+    <span class="s0">except </span><span class="s1">(TypeError</span><span class="s0">, </span><span class="s1">ValueError):</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+    <span class="s1">abs_value = abs(value)</span>
+    <span class="s0">if </span><span class="s1">abs_value &lt; </span><span class="s3">1000000</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+    <span class="s0">for </span><span class="s1">exponent</span><span class="s0">, </span><span class="s1">converter </span><span class="s0">in </span><span class="s1">intword_converters:</span>
+        <span class="s1">large_number = </span><span class="s3">10 </span><span class="s1">** exponent</span>
+        <span class="s0">if </span><span class="s1">abs_value &lt; large_number * </span><span class="s3">1000</span><span class="s1">:</span>
+            <span class="s1">new_value = value / large_number</span>
+            <span class="s1">rounded_value = round_away_from_one(new_value)</span>
+            <span class="s0">return </span><span class="s1">converter(abs(rounded_value)) % {</span>
+                <span class="s5">'value'</span><span class="s1">: defaultfilters.floatformat(new_value</span><span class="s0">, </span><span class="s3">1</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">}</span>
+    <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s1">@register.filter(is_safe=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">apnumber(value):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    For numbers 1-9, return the number spelled out. Otherwise, return the 
+    number. This follows Associated Press style. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">value = int(value)</span>
+    <span class="s0">except </span><span class="s1">(TypeError</span><span class="s0">, </span><span class="s1">ValueError):</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s0">if not </span><span class="s3">0 </span><span class="s1">&lt; value &lt; </span><span class="s3">10</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s0">return </span><span class="s1">(_(</span><span class="s5">'one'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'two'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'three'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'four'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'five'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">_(</span><span class="s5">'six'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'seven'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'eight'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">_(</span><span class="s5">'nine'</span><span class="s1">))[value - </span><span class="s3">1</span><span class="s1">]</span>
+
+
+<span class="s4"># Perform the comparison in the default time zone when USE_TZ = True</span>
+<span class="s4"># (unless a specific time zone has been applied with the |timezone filter).</span>
+<span class="s1">@register.filter(expects_localtime=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">naturalday(value</span><span class="s0">, </span><span class="s1">arg=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    For date values that are tomorrow, today or yesterday compared to 
+    present day return representing string. Otherwise, return a string 
+    formatted according to settings.DATE_FORMAT. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">tzinfo = getattr(value</span><span class="s0">, </span><span class="s5">'tzinfo'</span><span class="s0">, None</span><span class="s1">)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">value = date(value.year</span><span class="s0">, </span><span class="s1">value.month</span><span class="s0">, </span><span class="s1">value.day)</span>
+    <span class="s0">except </span><span class="s1">AttributeError:</span>
+        <span class="s4"># Passed value wasn't a date object</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s1">today = datetime.now(tzinfo).date()</span>
+    <span class="s1">delta = value - today</span>
+    <span class="s0">if </span><span class="s1">delta.days == </span><span class="s3">0</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">_(</span><span class="s5">'today'</span><span class="s1">)</span>
+    <span class="s0">elif </span><span class="s1">delta.days == </span><span class="s3">1</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">_(</span><span class="s5">'tomorrow'</span><span class="s1">)</span>
+    <span class="s0">elif </span><span class="s1">delta.days == -</span><span class="s3">1</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">_(</span><span class="s5">'yesterday'</span><span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">defaultfilters.date(value</span><span class="s0">, </span><span class="s1">arg)</span>
+
+
+<span class="s4"># This filter doesn't require expects_localtime=True because it deals properly</span>
+<span class="s4"># with both naive and aware datetimes. Therefore avoid the cost of conversion.</span>
+<span class="s1">@register.filter</span>
+<span class="s0">def </span><span class="s1">naturaltime(value):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    For date and time values show how many seconds, minutes, or hours ago 
+    compared to current timestamp return representing string. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">NaturalTimeFormatter.string_for(value)</span>
+
+
+<span class="s0">class </span><span class="s1">NaturalTimeFormatter:</span>
+    <span class="s1">time_strings = {</span>
+        <span class="s4"># Translators: delta will contain a string like '2 months' or '1 month, 2 weeks'</span>
+        <span class="s5">'past-day'</span><span class="s1">: gettext_lazy(</span><span class="s5">'%(delta)s ago'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: please keep a non-breaking space (U+00A0) between count</span>
+        <span class="s4"># and time unit.</span>
+        <span class="s5">'past-hour'</span><span class="s1">: ngettext_lazy(</span><span class="s5">'an hour ago'</span><span class="s0">, </span><span class="s5">'%(count)s hours ago'</span><span class="s0">, </span><span class="s5">'count'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: please keep a non-breaking space (U+00A0) between count</span>
+        <span class="s4"># and time unit.</span>
+        <span class="s5">'past-minute'</span><span class="s1">: ngettext_lazy(</span><span class="s5">'a minute ago'</span><span class="s0">, </span><span class="s5">'%(count)s minutes ago'</span><span class="s0">, </span><span class="s5">'count'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: please keep a non-breaking space (U+00A0) between count</span>
+        <span class="s4"># and time unit.</span>
+        <span class="s5">'past-second'</span><span class="s1">: ngettext_lazy(</span><span class="s5">'a second ago'</span><span class="s0">, </span><span class="s5">'%(count)s seconds ago'</span><span class="s0">, </span><span class="s5">'count'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'now'</span><span class="s1">: gettext_lazy(</span><span class="s5">'now'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: please keep a non-breaking space (U+00A0) between count</span>
+        <span class="s4"># and time unit.</span>
+        <span class="s5">'future-second'</span><span class="s1">: ngettext_lazy(</span><span class="s5">'a second from now'</span><span class="s0">, </span><span class="s5">'%(count)s seconds from now'</span><span class="s0">, </span><span class="s5">'count'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: please keep a non-breaking space (U+00A0) between count</span>
+        <span class="s4"># and time unit.</span>
+        <span class="s5">'future-minute'</span><span class="s1">: ngettext_lazy(</span><span class="s5">'a minute from now'</span><span class="s0">, </span><span class="s5">'%(count)s minutes from now'</span><span class="s0">, </span><span class="s5">'count'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: please keep a non-breaking space (U+00A0) between count</span>
+        <span class="s4"># and time unit.</span>
+        <span class="s5">'future-hour'</span><span class="s1">: ngettext_lazy(</span><span class="s5">'an hour from now'</span><span class="s0">, </span><span class="s5">'%(count)s hours from now'</span><span class="s0">, </span><span class="s5">'count'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s4"># Translators: delta will contain a string like '2 months' or '1 month, 2 weeks'</span>
+        <span class="s5">'future-day'</span><span class="s1">: gettext_lazy(</span><span class="s5">'%(delta)s from now'</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">}</span>
+    <span class="s1">past_substrings = {</span>
+        <span class="s4"># Translators: 'naturaltime-past' strings will be included in '%(delta)s ago'</span>
+        <span class="s5">'year'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-past'</span><span class="s0">, </span><span class="s5">'%(num)d year'</span><span class="s0">, </span><span class="s5">'%(num)d years'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'month'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-past'</span><span class="s0">, </span><span class="s5">'%(num)d month'</span><span class="s0">, </span><span class="s5">'%(num)d months'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'week'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-past'</span><span class="s0">, </span><span class="s5">'%(num)d week'</span><span class="s0">, </span><span class="s5">'%(num)d weeks'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'day'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-past'</span><span class="s0">, </span><span class="s5">'%(num)d day'</span><span class="s0">, </span><span class="s5">'%(num)d days'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'hour'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-past'</span><span class="s0">, </span><span class="s5">'%(num)d hour'</span><span class="s0">, </span><span class="s5">'%(num)d hours'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'minute'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-past'</span><span class="s0">, </span><span class="s5">'%(num)d minute'</span><span class="s0">, </span><span class="s5">'%(num)d minutes'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">}</span>
+    <span class="s1">future_substrings = {</span>
+        <span class="s4"># Translators: 'naturaltime-future' strings will be included in '%(delta)s from now'</span>
+        <span class="s5">'year'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-future'</span><span class="s0">, </span><span class="s5">'%(num)d year'</span><span class="s0">, </span><span class="s5">'%(num)d years'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'month'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-future'</span><span class="s0">, </span><span class="s5">'%(num)d month'</span><span class="s0">, </span><span class="s5">'%(num)d months'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'week'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-future'</span><span class="s0">, </span><span class="s5">'%(num)d week'</span><span class="s0">, </span><span class="s5">'%(num)d weeks'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'day'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-future'</span><span class="s0">, </span><span class="s5">'%(num)d day'</span><span class="s0">, </span><span class="s5">'%(num)d days'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'hour'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-future'</span><span class="s0">, </span><span class="s5">'%(num)d hour'</span><span class="s0">, </span><span class="s5">'%(num)d hours'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s5">'minute'</span><span class="s1">: npgettext_lazy(</span><span class="s5">'naturaltime-future'</span><span class="s0">, </span><span class="s5">'%(num)d minute'</span><span class="s0">, </span><span class="s5">'%(num)d minutes'</span><span class="s0">, </span><span class="s5">'num'</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">}</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">string_for(cls</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">date):  </span><span class="s4"># datetime is a subclass of date</span>
+            <span class="s0">return </span><span class="s1">value</span>
+
+        <span class="s1">now = datetime.now(utc </span><span class="s0">if </span><span class="s1">is_aware(value) </span><span class="s0">else None</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">value &lt; now:</span>
+            <span class="s1">delta = now - value</span>
+            <span class="s0">if </span><span class="s1">delta.days != </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'past-day'</span><span class="s1">] % {</span>
+                    <span class="s5">'delta'</span><span class="s1">: defaultfilters.timesince(value</span><span class="s0">, </span><span class="s1">now</span><span class="s0">, </span><span class="s1">time_strings=cls.past_substrings)</span><span class="s0">,</span>
+                <span class="s1">}</span>
+            <span class="s0">elif </span><span class="s1">delta.seconds == </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'now'</span><span class="s1">]</span>
+            <span class="s0">elif </span><span class="s1">delta.seconds &lt; </span><span class="s3">60</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'past-second'</span><span class="s1">] % {</span><span class="s5">'count'</span><span class="s1">: delta.seconds}</span>
+            <span class="s0">elif </span><span class="s1">delta.seconds // </span><span class="s3">60 </span><span class="s1">&lt; </span><span class="s3">60</span><span class="s1">:</span>
+                <span class="s1">count = delta.seconds // </span><span class="s3">60</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'past-minute'</span><span class="s1">] % {</span><span class="s5">'count'</span><span class="s1">: count}</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">count = delta.seconds // </span><span class="s3">60 </span><span class="s1">// </span><span class="s3">60</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'past-hour'</span><span class="s1">] % {</span><span class="s5">'count'</span><span class="s1">: count}</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">delta = value - now</span>
+            <span class="s0">if </span><span class="s1">delta.days != </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'future-day'</span><span class="s1">] % {</span>
+                    <span class="s5">'delta'</span><span class="s1">: defaultfilters.timeuntil(value</span><span class="s0">, </span><span class="s1">now</span><span class="s0">, </span><span class="s1">time_strings=cls.future_substrings)</span><span class="s0">,</span>
+                <span class="s1">}</span>
+            <span class="s0">elif </span><span class="s1">delta.seconds == </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'now'</span><span class="s1">]</span>
+            <span class="s0">elif </span><span class="s1">delta.seconds &lt; </span><span class="s3">60</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'future-second'</span><span class="s1">] % {</span><span class="s5">'count'</span><span class="s1">: delta.seconds}</span>
+            <span class="s0">elif </span><span class="s1">delta.seconds // </span><span class="s3">60 </span><span class="s1">&lt; </span><span class="s3">60</span><span class="s1">:</span>
+                <span class="s1">count = delta.seconds // </span><span class="s3">60</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'future-minute'</span><span class="s1">] % {</span><span class="s5">'count'</span><span class="s1">: count}</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">count = delta.seconds // </span><span class="s3">60 </span><span class="s1">// </span><span class="s3">60</span>
+                <span class="s0">return </span><span class="s1">cls.time_strings[</span><span class="s5">'future-hour'</span><span class="s1">] % {</span><span class="s5">'count'</span><span class="s1">: count}</span>
+</pre>
+</body>
+</html>

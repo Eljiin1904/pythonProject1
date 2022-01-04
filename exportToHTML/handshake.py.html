@@ -1,0 +1,201 @@
+<html>
+<head>
+<title>handshake.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+handshake.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+:mod:`websockets.legacy.handshake` provides helpers for the WebSocket handshake. 
+ 
+See `section 4 of RFC 6455`_. 
+ 
+.. _section 4 of RFC 6455: http://tools.ietf.org/html/rfc6455#section-4 
+ 
+Some checks cannot be performed because they depend too much on the 
+context; instead, they're documented below. 
+ 
+To accept a connection, a server must: 
+ 
+- Read the request, check that the method is GET, and check the headers with 
+  :func:`check_request`, 
+- Send a 101 response to the client with the headers created by 
+  :func:`build_response` if the request is valid; otherwise, send an 
+  appropriate HTTP error code. 
+ 
+To open a connection, a client must: 
+ 
+- Send a GET request to the server with the headers created by 
+  :func:`build_request`, 
+- Read the response, check that the status code is 101, and check the headers 
+  with :func:`check_response`. 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">base64</span>
+<span class="s2">import </span><span class="s1">binascii</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">List</span>
+
+<span class="s2">from </span><span class="s1">..datastructures </span><span class="s2">import </span><span class="s1">Headers</span><span class="s2">, </span><span class="s1">MultipleValuesError</span>
+<span class="s2">from </span><span class="s1">..exceptions </span><span class="s2">import </span><span class="s1">InvalidHeader</span><span class="s2">, </span><span class="s1">InvalidHeaderValue</span><span class="s2">, </span><span class="s1">InvalidUpgrade</span>
+<span class="s2">from </span><span class="s1">..headers </span><span class="s2">import </span><span class="s1">parse_connection</span><span class="s2">, </span><span class="s1">parse_upgrade</span>
+<span class="s2">from </span><span class="s1">..typing </span><span class="s2">import </span><span class="s1">ConnectionOption</span><span class="s2">, </span><span class="s1">UpgradeProtocol</span>
+<span class="s2">from </span><span class="s1">..utils </span><span class="s2">import </span><span class="s1">accept_key </span><span class="s2">as </span><span class="s1">accept</span><span class="s2">, </span><span class="s1">generate_key</span>
+
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;build_request&quot;</span><span class="s2">, </span><span class="s3">&quot;check_request&quot;</span><span class="s2">, </span><span class="s3">&quot;build_response&quot;</span><span class="s2">, </span><span class="s3">&quot;check_response&quot;</span><span class="s1">]</span>
+
+
+<span class="s2">def </span><span class="s1">build_request(headers: Headers) -&gt; str:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Build a handshake request to send to the server. 
+ 
+    Update request headers passed in argument. 
+ 
+    :param headers: request headers 
+    :returns: ``key`` which must be passed to :func:`check_response` 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">key = generate_key()</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Upgrade&quot;</span><span class="s1">] = </span><span class="s3">&quot;websocket&quot;</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Connection&quot;</span><span class="s1">] = </span><span class="s3">&quot;Upgrade&quot;</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Sec-WebSocket-Key&quot;</span><span class="s1">] = key</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Sec-WebSocket-Version&quot;</span><span class="s1">] = </span><span class="s3">&quot;13&quot;</span>
+    <span class="s2">return </span><span class="s1">key</span>
+
+
+<span class="s2">def </span><span class="s1">check_request(headers: Headers) -&gt; str:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Check a handshake request received from the client. 
+ 
+    This function doesn't verify that the request is an HTTP/1.1 or higher GET 
+    request and doesn't perform ``Host`` and ``Origin`` checks. These controls 
+    are usually performed earlier in the HTTP request handling code. They're 
+    the responsibility of the caller. 
+ 
+    :param headers: request headers 
+    :returns: ``key`` which must be passed to :func:`build_response` 
+    :raises ~websockets.exceptions.InvalidHandshake: if the handshake request 
+        is invalid; then the server must return 400 Bad Request error 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">connection: List[ConnectionOption] = sum(</span>
+        <span class="s1">[parse_connection(value) </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">headers.get_all(</span><span class="s3">&quot;Connection&quot;</span><span class="s1">)]</span><span class="s2">, </span><span class="s1">[]</span>
+    <span class="s1">)</span>
+
+    <span class="s2">if not </span><span class="s1">any(value.lower() == </span><span class="s3">&quot;upgrade&quot; </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">connection):</span>
+        <span class="s2">raise </span><span class="s1">InvalidUpgrade(</span><span class="s3">&quot;Connection&quot;</span><span class="s2">, </span><span class="s3">&quot;, &quot;</span><span class="s1">.join(connection))</span>
+
+    <span class="s1">upgrade: List[UpgradeProtocol] = sum(</span>
+        <span class="s1">[parse_upgrade(value) </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">headers.get_all(</span><span class="s3">&quot;Upgrade&quot;</span><span class="s1">)]</span><span class="s2">, </span><span class="s1">[]</span>
+    <span class="s1">)</span>
+
+    <span class="s4"># For compatibility with non-strict implementations, ignore case when</span>
+    <span class="s4"># checking the Upgrade header. The RFC always uses &quot;websocket&quot;, except</span>
+    <span class="s4"># in section 11.2. (IANA registration) where it uses &quot;WebSocket&quot;.</span>
+    <span class="s2">if not </span><span class="s1">(len(upgrade) == </span><span class="s5">1 </span><span class="s2">and </span><span class="s1">upgrade[</span><span class="s5">0</span><span class="s1">].lower() == </span><span class="s3">&quot;websocket&quot;</span><span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">InvalidUpgrade(</span><span class="s3">&quot;Upgrade&quot;</span><span class="s2">, </span><span class="s3">&quot;, &quot;</span><span class="s1">.join(upgrade))</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">s_w_key = headers[</span><span class="s3">&quot;Sec-WebSocket-Key&quot;</span><span class="s1">]</span>
+    <span class="s2">except </span><span class="s1">KeyError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeader(</span><span class="s3">&quot;Sec-WebSocket-Key&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+    <span class="s2">except </span><span class="s1">MultipleValuesError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeader(</span>
+            <span class="s3">&quot;Sec-WebSocket-Key&quot;</span><span class="s2">, </span><span class="s3">&quot;more than one Sec-WebSocket-Key header found&quot;</span>
+        <span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">raw_key = base64.b64decode(s_w_key.encode()</span><span class="s2">, </span><span class="s1">validate=</span><span class="s2">True</span><span class="s1">)</span>
+    <span class="s2">except </span><span class="s1">binascii.Error </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeaderValue(</span><span class="s3">&quot;Sec-WebSocket-Key&quot;</span><span class="s2">, </span><span class="s1">s_w_key) </span><span class="s2">from </span><span class="s1">exc</span>
+    <span class="s2">if </span><span class="s1">len(raw_key) != </span><span class="s5">16</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeaderValue(</span><span class="s3">&quot;Sec-WebSocket-Key&quot;</span><span class="s2">, </span><span class="s1">s_w_key)</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">s_w_version = headers[</span><span class="s3">&quot;Sec-WebSocket-Version&quot;</span><span class="s1">]</span>
+    <span class="s2">except </span><span class="s1">KeyError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeader(</span><span class="s3">&quot;Sec-WebSocket-Version&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+    <span class="s2">except </span><span class="s1">MultipleValuesError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeader(</span>
+            <span class="s3">&quot;Sec-WebSocket-Version&quot;</span><span class="s2">, </span><span class="s3">&quot;more than one Sec-WebSocket-Version header found&quot;</span>
+        <span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+
+    <span class="s2">if </span><span class="s1">s_w_version != </span><span class="s3">&quot;13&quot;</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeaderValue(</span><span class="s3">&quot;Sec-WebSocket-Version&quot;</span><span class="s2">, </span><span class="s1">s_w_version)</span>
+
+    <span class="s2">return </span><span class="s1">s_w_key</span>
+
+
+<span class="s2">def </span><span class="s1">build_response(headers: Headers</span><span class="s2">, </span><span class="s1">key: str) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Build a handshake response to send to the client. 
+ 
+    Update response headers passed in argument. 
+ 
+    :param headers: response headers 
+    :param key: comes from :func:`check_request` 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Upgrade&quot;</span><span class="s1">] = </span><span class="s3">&quot;websocket&quot;</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Connection&quot;</span><span class="s1">] = </span><span class="s3">&quot;Upgrade&quot;</span>
+    <span class="s1">headers[</span><span class="s3">&quot;Sec-WebSocket-Accept&quot;</span><span class="s1">] = accept(key)</span>
+
+
+<span class="s2">def </span><span class="s1">check_response(headers: Headers</span><span class="s2">, </span><span class="s1">key: str) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Check a handshake response received from the server. 
+ 
+    This function doesn't verify that the response is an HTTP/1.1 or higher 
+    response with a 101 status code. These controls are the responsibility of 
+    the caller. 
+ 
+    :param headers: response headers 
+    :param key: comes from :func:`build_request` 
+    :raises ~websockets.exceptions.InvalidHandshake: if the handshake response 
+        is invalid 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">connection: List[ConnectionOption] = sum(</span>
+        <span class="s1">[parse_connection(value) </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">headers.get_all(</span><span class="s3">&quot;Connection&quot;</span><span class="s1">)]</span><span class="s2">, </span><span class="s1">[]</span>
+    <span class="s1">)</span>
+
+    <span class="s2">if not </span><span class="s1">any(value.lower() == </span><span class="s3">&quot;upgrade&quot; </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">connection):</span>
+        <span class="s2">raise </span><span class="s1">InvalidUpgrade(</span><span class="s3">&quot;Connection&quot;</span><span class="s2">, </span><span class="s3">&quot; &quot;</span><span class="s1">.join(connection))</span>
+
+    <span class="s1">upgrade: List[UpgradeProtocol] = sum(</span>
+        <span class="s1">[parse_upgrade(value) </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">headers.get_all(</span><span class="s3">&quot;Upgrade&quot;</span><span class="s1">)]</span><span class="s2">, </span><span class="s1">[]</span>
+    <span class="s1">)</span>
+
+    <span class="s4"># For compatibility with non-strict implementations, ignore case when</span>
+    <span class="s4"># checking the Upgrade header. The RFC always uses &quot;websocket&quot;, except</span>
+    <span class="s4"># in section 11.2. (IANA registration) where it uses &quot;WebSocket&quot;.</span>
+    <span class="s2">if not </span><span class="s1">(len(upgrade) == </span><span class="s5">1 </span><span class="s2">and </span><span class="s1">upgrade[</span><span class="s5">0</span><span class="s1">].lower() == </span><span class="s3">&quot;websocket&quot;</span><span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">InvalidUpgrade(</span><span class="s3">&quot;Upgrade&quot;</span><span class="s2">, </span><span class="s3">&quot;, &quot;</span><span class="s1">.join(upgrade))</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">s_w_accept = headers[</span><span class="s3">&quot;Sec-WebSocket-Accept&quot;</span><span class="s1">]</span>
+    <span class="s2">except </span><span class="s1">KeyError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeader(</span><span class="s3">&quot;Sec-WebSocket-Accept&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+    <span class="s2">except </span><span class="s1">MultipleValuesError </span><span class="s2">as </span><span class="s1">exc:</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeader(</span>
+            <span class="s3">&quot;Sec-WebSocket-Accept&quot;</span><span class="s2">, </span><span class="s3">&quot;more than one Sec-WebSocket-Accept header found&quot;</span>
+        <span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+
+    <span class="s2">if </span><span class="s1">s_w_accept != accept(key):</span>
+        <span class="s2">raise </span><span class="s1">InvalidHeaderValue(</span><span class="s3">&quot;Sec-WebSocket-Accept&quot;</span><span class="s2">, </span><span class="s1">s_w_accept)</span>
+</pre>
+</body>
+</html>

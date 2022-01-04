@@ -1,0 +1,70 @@
+<html>
+<head>
+<title>_highlevel_open_unix_stream.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_highlevel_open_unix_stream.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">os</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">contextmanager</span>
+
+<span class="s0">import </span><span class="s1">trio</span>
+<span class="s0">from </span><span class="s1">trio.socket </span><span class="s0">import </span><span class="s1">socket</span><span class="s0">, </span><span class="s1">SOCK_STREAM</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">from </span><span class="s1">trio.socket </span><span class="s0">import </span><span class="s1">AF_UNIX</span>
+
+    <span class="s1">has_unix = </span><span class="s0">True</span>
+<span class="s0">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_unix = </span><span class="s0">False</span>
+
+
+<span class="s1">@contextmanager</span>
+<span class="s0">def </span><span class="s1">close_on_error(obj):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">yield </span><span class="s1">obj</span>
+    <span class="s0">except</span><span class="s1">:</span>
+        <span class="s1">obj.close()</span>
+        <span class="s0">raise</span>
+
+
+<span class="s0">async def </span><span class="s1">open_unix_socket(filename):</span>
+    <span class="s2">&quot;&quot;&quot;Opens a connection to the specified 
+    `Unix domain socket &lt;https://en.wikipedia.org/wiki/Unix_domain_socket&gt;`__. 
+ 
+    You must have read/write permission on the specified file to connect. 
+ 
+    Args: 
+      filename (str or bytes): The filename to open the connection to. 
+ 
+    Returns: 
+      SocketStream: a :class:`~trio.abc.Stream` connected to the given file. 
+ 
+    Raises: 
+      OSError: If the socket file could not be connected to. 
+      RuntimeError: If AF_UNIX sockets are not supported. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">has_unix:</span>
+        <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s3">&quot;Unix sockets are not supported on this platform&quot;</span><span class="s1">)</span>
+
+    <span class="s4"># much more simplified logic vs tcp sockets - one socket type and only one</span>
+    <span class="s4"># possible location to connect to</span>
+    <span class="s1">sock = socket(AF_UNIX</span><span class="s0">, </span><span class="s1">SOCK_STREAM)</span>
+    <span class="s0">with </span><span class="s1">close_on_error(sock):</span>
+        <span class="s0">await </span><span class="s1">sock.connect(os.fspath(filename))</span>
+
+    <span class="s0">return </span><span class="s1">trio.SocketStream(sock)</span>
+</pre>
+</body>
+</html>

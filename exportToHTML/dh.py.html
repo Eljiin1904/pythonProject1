@@ -1,0 +1,253 @@
+<html>
+<head>
+<title>dh.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dh.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">abc</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">serialization</span>
+
+
+<span class="s1">_MIN_MODULUS_SIZE = </span><span class="s3">512</span>
+
+
+<span class="s2">def </span><span class="s1">generate_parameters(generator</span><span class="s2">, </span><span class="s1">key_size</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; </span><span class="s4">&quot;DHParameters&quot;</span><span class="s1">:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">return </span><span class="s1">backend.generate_dh_parameters(generator</span><span class="s2">, </span><span class="s1">key_size)</span>
+
+
+<span class="s2">class </span><span class="s1">DHParameterNumbers(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">p: int</span><span class="s2">, </span><span class="s1">g: int</span><span class="s2">, </span><span class="s1">q: typing.Optional[int] = </span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(p</span><span class="s2">, </span><span class="s1">int) </span><span class="s2">or not </span><span class="s1">isinstance(g</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;p and g must be integers&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">q </span><span class="s2">is not None and not </span><span class="s1">isinstance(q</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;q must be integer or None&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">g &lt; </span><span class="s3">2</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;DH generator must be 2 or greater&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">p.bit_length() &lt; _MIN_MODULUS_SIZE:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">&quot;p (modulus) must be at least {}-bit&quot;</span><span class="s1">.format(_MIN_MODULUS_SIZE)</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._p = p</span>
+        <span class="s1">self._g = g</span>
+        <span class="s1">self._q = q</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">DHParameterNumbers):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">self._p == other._p </span><span class="s2">and </span><span class="s1">self._g == other._g </span><span class="s2">and </span><span class="s1">self._q == other._q</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">parameters(self</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.load_dh_parameter_numbers(self)</span>
+
+    <span class="s1">p = utils.read_only_property(</span><span class="s4">&quot;_p&quot;</span><span class="s1">)</span>
+    <span class="s1">g = utils.read_only_property(</span><span class="s4">&quot;_g&quot;</span><span class="s1">)</span>
+    <span class="s1">q = utils.read_only_property(</span><span class="s4">&quot;_q&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">DHPublicNumbers(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">parameter_numbers: DHParameterNumbers):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(y</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;y must be an integer.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(parameter_numbers</span><span class="s2">, </span><span class="s1">DHParameterNumbers):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;parameters must be an instance of DHParameterNumbers.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._y = y</span>
+        <span class="s1">self._parameter_numbers = parameter_numbers</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">DHPublicNumbers):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">self._y == other._y</span>
+            <span class="s2">and </span><span class="s1">self._parameter_numbers == other._parameter_numbers</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">public_key(self</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; </span><span class="s4">&quot;DHPublicKey&quot;</span><span class="s1">:</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.load_dh_public_numbers(self)</span>
+
+    <span class="s1">y = utils.read_only_property(</span><span class="s4">&quot;_y&quot;</span><span class="s1">)</span>
+    <span class="s1">parameter_numbers = utils.read_only_property(</span><span class="s4">&quot;_parameter_numbers&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">DHPrivateNumbers(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">public_numbers: DHPublicNumbers):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(x</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;x must be an integer.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(public_numbers</span><span class="s2">, </span><span class="s1">DHPublicNumbers):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;public_numbers must be an instance of &quot; &quot;DHPublicNumbers.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._x = x</span>
+        <span class="s1">self._public_numbers = public_numbers</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">DHPrivateNumbers):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">self._x == other._x</span>
+            <span class="s2">and </span><span class="s1">self._public_numbers == other._public_numbers</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">private_key(self</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; </span><span class="s4">&quot;DHPrivateKey&quot;</span><span class="s1">:</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.load_dh_private_numbers(self)</span>
+
+    <span class="s1">public_numbers = utils.read_only_property(</span><span class="s4">&quot;_public_numbers&quot;</span><span class="s1">)</span>
+    <span class="s1">x = utils.read_only_property(</span><span class="s4">&quot;_x&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">DHParameters(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">generate_private_key(self) -&gt; </span><span class="s4">&quot;DHPrivateKey&quot;</span><span class="s1">:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Generates and returns a DHPrivateKey. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">parameter_bytes(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">encoding: </span><span class="s4">&quot;serialization.Encoding&quot;</span><span class="s2">,</span>
+        <span class="s1">format: </span><span class="s4">&quot;serialization.ParameterFormat&quot;</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Returns the parameters serialized as bytes. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">parameter_numbers(self) -&gt; DHParameterNumbers:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Returns a DHParameterNumbers. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s1">DHParametersWithSerialization = DHParameters</span>
+
+
+<span class="s2">class </span><span class="s1">DHPublicKey(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">key_size(self) -&gt; int:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        The bit length of the prime modulus. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">parameters(self) -&gt; DHParameters:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        The DHParameters object associated with this public key. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">public_numbers(self) -&gt; DHPublicNumbers:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Returns a DHPublicNumbers. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">public_bytes(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">encoding: </span><span class="s4">&quot;serialization.Encoding&quot;</span><span class="s2">,</span>
+        <span class="s1">format: </span><span class="s4">&quot;serialization.PublicFormat&quot;</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Returns the key serialized as bytes. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s1">DHPublicKeyWithSerialization = DHPublicKey</span>
+
+
+<span class="s2">class </span><span class="s1">DHPrivateKey(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">key_size(self) -&gt; int:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        The bit length of the prime modulus. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">public_key(self) -&gt; DHPublicKey:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        The DHPublicKey associated with this private key. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">parameters(self) -&gt; DHParameters:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        The DHParameters object associated with this private key. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">exchange(self</span><span class="s2">, </span><span class="s1">peer_public_key: DHPublicKey) -&gt; bytes:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Given peer's DHPublicKey, carry out the key exchange and 
+        return shared key as bytes. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">private_numbers(self) -&gt; DHPrivateNumbers:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Returns a DHPrivateNumbers. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">private_bytes(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">encoding: </span><span class="s4">&quot;serialization.Encoding&quot;</span><span class="s2">,</span>
+        <span class="s1">format: </span><span class="s4">&quot;serialization.PrivateFormat&quot;</span><span class="s2">,</span>
+        <span class="s1">encryption_algorithm: </span><span class="s4">&quot;serialization.KeySerializationEncryption&quot;</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Returns the key serialized as bytes. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s1">DHPrivateKeyWithSerialization = DHPrivateKey</span>
+</pre>
+</body>
+</html>

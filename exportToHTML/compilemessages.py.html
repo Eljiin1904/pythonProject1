@@ -1,0 +1,190 @@
+<html>
+<head>
+<title>compilemessages.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+compilemessages.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">codecs</span>
+<span class="s0">import </span><span class="s1">concurrent.futures</span>
+<span class="s0">import </span><span class="s1">glob</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">from </span><span class="s1">pathlib </span><span class="s0">import </span><span class="s1">Path</span>
+
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span>
+<span class="s0">from </span><span class="s1">django.core.management.utils </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">find_command</span><span class="s0">, </span><span class="s1">is_ignored_path</span><span class="s0">, </span><span class="s1">popen_wrapper</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">has_bom(fn):</span>
+    <span class="s0">with </span><span class="s1">fn.open(</span><span class="s2">'rb'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">f:</span>
+        <span class="s1">sample = f.read(</span><span class="s3">4</span><span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">sample.startswith((codecs.BOM_UTF8</span><span class="s0">, </span><span class="s1">codecs.BOM_UTF16_LE</span><span class="s0">, </span><span class="s1">codecs.BOM_UTF16_BE))</span>
+
+
+<span class="s0">def </span><span class="s1">is_writable(path):</span>
+    <span class="s4"># Known side effect: updating file access/modified time to current time if</span>
+    <span class="s4"># it is writable.</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">with </span><span class="s1">open(path</span><span class="s0">, </span><span class="s2">'a'</span><span class="s1">):</span>
+            <span class="s1">os.utime(path</span><span class="s0">, None</span><span class="s1">)</span>
+    <span class="s0">except </span><span class="s1">OSError:</span>
+        <span class="s0">return False</span>
+    <span class="s0">return True</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s2">'Compiles .po files to .mo files for use with builtin gettext support.'</span>
+
+    <span class="s1">requires_system_checks = []</span>
+
+    <span class="s1">program = </span><span class="s2">'msgfmt'</span>
+    <span class="s1">program_options = [</span><span class="s2">'--check-format'</span><span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--locale'</span><span class="s0">, </span><span class="s2">'-l'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'append'</span><span class="s0">, </span><span class="s1">default=[]</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Locale(s) to process (e.g. de_AT). Default is to process all. '</span>
+                 <span class="s2">'Can be used multiple times.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--exclude'</span><span class="s0">, </span><span class="s2">'-x'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'append'</span><span class="s0">, </span><span class="s1">default=[]</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Locales to exclude. Default is none. Can be used multiple times.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--use-fuzzy'</span><span class="s0">, </span><span class="s2">'-f'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'fuzzy'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Use fuzzy translations.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--ignore'</span><span class="s0">, </span><span class="s2">'-i'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'append'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'ignore_patterns'</span><span class="s0">,</span>
+            <span class="s1">default=[]</span><span class="s0">, </span><span class="s1">metavar=</span><span class="s2">'PATTERN'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Ignore directories matching this glob-style pattern. '</span>
+                 <span class="s2">'Use multiple times to ignore more.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">locale = options[</span><span class="s2">'locale'</span><span class="s1">]</span>
+        <span class="s1">exclude = options[</span><span class="s2">'exclude'</span><span class="s1">]</span>
+        <span class="s1">ignore_patterns = set(options[</span><span class="s2">'ignore_patterns'</span><span class="s1">])</span>
+        <span class="s1">self.verbosity = options[</span><span class="s2">'verbosity'</span><span class="s1">]</span>
+        <span class="s0">if </span><span class="s1">options[</span><span class="s2">'fuzzy'</span><span class="s1">]:</span>
+            <span class="s1">self.program_options = self.program_options + [</span><span class="s2">'-f'</span><span class="s1">]</span>
+
+        <span class="s0">if </span><span class="s1">find_command(self.program) </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;Can't find %s. Make sure you have GNU gettext &quot;</span>
+                               <span class="s2">&quot;tools 0.15 or newer installed.&quot; </span><span class="s1">% self.program)</span>
+
+        <span class="s1">basedirs = [os.path.join(</span><span class="s2">'conf'</span><span class="s0">, </span><span class="s2">'locale'</span><span class="s1">)</span><span class="s0">, </span><span class="s2">'locale'</span><span class="s1">]</span>
+        <span class="s0">if </span><span class="s1">os.environ.get(</span><span class="s2">'DJANGO_SETTINGS_MODULE'</span><span class="s1">):</span>
+            <span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+            <span class="s1">basedirs.extend(settings.LOCALE_PATHS)</span>
+
+        <span class="s4"># Walk entire tree, looking for locale directories</span>
+        <span class="s0">for </span><span class="s1">dirpath</span><span class="s0">, </span><span class="s1">dirnames</span><span class="s0">, </span><span class="s1">filenames </span><span class="s0">in </span><span class="s1">os.walk(</span><span class="s2">'.'</span><span class="s0">, </span><span class="s1">topdown=</span><span class="s0">True</span><span class="s1">):</span>
+            <span class="s0">for </span><span class="s1">dirname </span><span class="s0">in </span><span class="s1">dirnames:</span>
+                <span class="s0">if </span><span class="s1">is_ignored_path(os.path.normpath(os.path.join(dirpath</span><span class="s0">, </span><span class="s1">dirname))</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+                    <span class="s1">dirnames.remove(dirname)</span>
+                <span class="s0">elif </span><span class="s1">dirname == </span><span class="s2">'locale'</span><span class="s1">:</span>
+                    <span class="s1">basedirs.append(os.path.join(dirpath</span><span class="s0">, </span><span class="s1">dirname))</span>
+
+        <span class="s4"># Gather existing directories.</span>
+        <span class="s1">basedirs = set(map(os.path.abspath</span><span class="s0">, </span><span class="s1">filter(os.path.isdir</span><span class="s0">, </span><span class="s1">basedirs)))</span>
+
+        <span class="s0">if not </span><span class="s1">basedirs:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;This script should be run from the Django Git &quot;</span>
+                               <span class="s2">&quot;checkout or your project or app tree, or with &quot;</span>
+                               <span class="s2">&quot;the settings module specified.&quot;</span><span class="s1">)</span>
+
+        <span class="s4"># Build locale list</span>
+        <span class="s1">all_locales = []</span>
+        <span class="s0">for </span><span class="s1">basedir </span><span class="s0">in </span><span class="s1">basedirs:</span>
+            <span class="s1">locale_dirs = filter(os.path.isdir</span><span class="s0">, </span><span class="s1">glob.glob(</span><span class="s2">'%s/*' </span><span class="s1">% basedir))</span>
+            <span class="s1">all_locales.extend(map(os.path.basename</span><span class="s0">, </span><span class="s1">locale_dirs))</span>
+
+        <span class="s4"># Account for excluded locales</span>
+        <span class="s1">locales = locale </span><span class="s0">or </span><span class="s1">all_locales</span>
+        <span class="s1">locales = set(locales).difference(exclude)</span>
+
+        <span class="s1">self.has_errors = </span><span class="s0">False</span>
+        <span class="s0">for </span><span class="s1">basedir </span><span class="s0">in </span><span class="s1">basedirs:</span>
+            <span class="s0">if </span><span class="s1">locales:</span>
+                <span class="s1">dirs = [os.path.join(basedir</span><span class="s0">, </span><span class="s1">locale</span><span class="s0">, </span><span class="s2">'LC_MESSAGES'</span><span class="s1">) </span><span class="s0">for </span><span class="s1">locale </span><span class="s0">in </span><span class="s1">locales]</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">dirs = [basedir]</span>
+            <span class="s1">locations = []</span>
+            <span class="s0">for </span><span class="s1">ldir </span><span class="s0">in </span><span class="s1">dirs:</span>
+                <span class="s0">for </span><span class="s1">dirpath</span><span class="s0">, </span><span class="s1">dirnames</span><span class="s0">, </span><span class="s1">filenames </span><span class="s0">in </span><span class="s1">os.walk(ldir):</span>
+                    <span class="s1">locations.extend((dirpath</span><span class="s0">, </span><span class="s1">f) </span><span class="s0">for </span><span class="s1">f </span><span class="s0">in </span><span class="s1">filenames </span><span class="s0">if </span><span class="s1">f.endswith(</span><span class="s2">'.po'</span><span class="s1">))</span>
+            <span class="s0">if </span><span class="s1">locations:</span>
+                <span class="s1">self.compile_messages(locations)</span>
+
+        <span class="s0">if </span><span class="s1">self.has_errors:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">'compilemessages generated one or more errors.'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">compile_messages(self</span><span class="s0">, </span><span class="s1">locations):</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Locations is a list of tuples: [(directory, file), ...] 
+        &quot;&quot;&quot;</span>
+        <span class="s0">with </span><span class="s1">concurrent.futures.ThreadPoolExecutor() </span><span class="s0">as </span><span class="s1">executor:</span>
+            <span class="s1">futures = []</span>
+            <span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">(dirpath</span><span class="s0">, </span><span class="s1">f) </span><span class="s0">in </span><span class="s1">enumerate(locations):</span>
+                <span class="s1">po_path = Path(dirpath) / f</span>
+                <span class="s1">mo_path = po_path.with_suffix(</span><span class="s2">'.mo'</span><span class="s1">)</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">mo_path.stat().st_mtime &gt;= po_path.stat().st_mtime:</span>
+                        <span class="s0">if </span><span class="s1">self.verbosity &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                            <span class="s1">self.stdout.write(</span>
+                                <span class="s2">'File “%s” is already compiled and up to date.'</span>
+                                <span class="s1">% po_path</span>
+                            <span class="s1">)</span>
+                        <span class="s0">continue</span>
+                <span class="s0">except </span><span class="s1">FileNotFoundError:</span>
+                    <span class="s0">pass</span>
+                <span class="s0">if </span><span class="s1">self.verbosity &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                    <span class="s1">self.stdout.write(</span><span class="s2">'processing file %s in %s' </span><span class="s1">% (f</span><span class="s0">, </span><span class="s1">dirpath))</span>
+
+                <span class="s0">if </span><span class="s1">has_bom(po_path):</span>
+                    <span class="s1">self.stderr.write(</span>
+                        <span class="s2">'The %s file has a BOM (Byte Order Mark). Django only '</span>
+                        <span class="s2">'supports .po files encoded in UTF-8 and without any BOM.' </span><span class="s1">% po_path</span>
+                    <span class="s1">)</span>
+                    <span class="s1">self.has_errors = </span><span class="s0">True</span>
+                    <span class="s0">continue</span>
+
+                <span class="s4"># Check writability on first location</span>
+                <span class="s0">if </span><span class="s1">i == </span><span class="s3">0 </span><span class="s0">and not </span><span class="s1">is_writable(mo_path):</span>
+                    <span class="s1">self.stderr.write(</span>
+                        <span class="s2">'The po files under %s are in a seemingly not writable location. '</span>
+                        <span class="s2">'mo files will not be updated/created.' </span><span class="s1">% dirpath</span>
+                    <span class="s1">)</span>
+                    <span class="s1">self.has_errors = </span><span class="s0">True</span>
+                    <span class="s0">return</span>
+
+                <span class="s1">args = [self.program</span><span class="s0">, </span><span class="s1">*self.program_options</span><span class="s0">, </span><span class="s2">'-o'</span><span class="s0">, </span><span class="s1">mo_path</span><span class="s0">, </span><span class="s1">po_path]</span>
+                <span class="s1">futures.append(executor.submit(popen_wrapper</span><span class="s0">, </span><span class="s1">args))</span>
+
+            <span class="s0">for </span><span class="s1">future </span><span class="s0">in </span><span class="s1">concurrent.futures.as_completed(futures):</span>
+                <span class="s1">output</span><span class="s0">, </span><span class="s1">errors</span><span class="s0">, </span><span class="s1">status = future.result()</span>
+                <span class="s0">if </span><span class="s1">status:</span>
+                    <span class="s0">if </span><span class="s1">self.verbosity &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                        <span class="s0">if </span><span class="s1">errors:</span>
+                            <span class="s1">self.stderr.write(</span><span class="s2">&quot;Execution of %s failed: %s&quot; </span><span class="s1">% (self.program</span><span class="s0">, </span><span class="s1">errors))</span>
+                        <span class="s0">else</span><span class="s1">:</span>
+                            <span class="s1">self.stderr.write(</span><span class="s2">&quot;Execution of %s failed&quot; </span><span class="s1">% self.program)</span>
+                    <span class="s1">self.has_errors = </span><span class="s0">True</span>
+</pre>
+</body>
+</html>

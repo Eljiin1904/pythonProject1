@@ -1,0 +1,340 @@
+<html>
+<head>
+<title>query_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+query_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Various data structures used in query construction. 
+ 
+Factored out from django.db.models.query to avoid making the main module very 
+large and/or so that they can be used by other modules without getting into 
+circular import difficulties. 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">copy</span>
+<span class="s2">import </span><span class="s1">functools</span>
+<span class="s2">import </span><span class="s1">inspect</span>
+<span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">namedtuple</span>
+
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">FieldError</span>
+<span class="s2">from </span><span class="s1">django.db.models.constants </span><span class="s2">import </span><span class="s1">LOOKUP_SEP</span>
+<span class="s2">from </span><span class="s1">django.utils </span><span class="s2">import </span><span class="s1">tree</span>
+
+<span class="s3"># PathInfo is used when converting lookups (fk__somecol). The contents</span>
+<span class="s3"># describe the relation in Model terms (model Options and Fields for both</span>
+<span class="s3"># sides of the relation. The join_field is the field backing the relation.</span>
+<span class="s1">PathInfo = namedtuple(</span><span class="s4">'PathInfo'</span><span class="s2">, </span><span class="s4">'from_opts to_opts target_fields join_field m2m direct filtered_relation'</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">subclasses(cls):</span>
+    <span class="s2">yield </span><span class="s1">cls</span>
+    <span class="s2">for </span><span class="s1">subclass </span><span class="s2">in </span><span class="s1">cls.__subclasses__():</span>
+        <span class="s2">yield from </span><span class="s1">subclasses(subclass)</span>
+
+
+<span class="s2">class </span><span class="s1">Q(tree.Node):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Encapsulate filters as objects that can then be combined logically (using 
+    `&amp;` and `|`). 
+    &quot;&quot;&quot;</span>
+    <span class="s3"># Connection types</span>
+    <span class="s1">AND = </span><span class="s4">'AND'</span>
+    <span class="s1">OR = </span><span class="s4">'OR'</span>
+    <span class="s1">default = AND</span>
+    <span class="s1">conditional = </span><span class="s2">True</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">_connector=</span><span class="s2">None, </span><span class="s1">_negated=</span><span class="s2">False, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(children=[*args</span><span class="s2">, </span><span class="s1">*sorted(kwargs.items())]</span><span class="s2">, </span><span class="s1">connector=_connector</span><span class="s2">, </span><span class="s1">negated=_negated)</span>
+
+    <span class="s2">def </span><span class="s1">_combine(self</span><span class="s2">, </span><span class="s1">other</span><span class="s2">, </span><span class="s1">conn):</span>
+        <span class="s2">if not</span><span class="s1">(isinstance(other</span><span class="s2">, </span><span class="s1">Q) </span><span class="s2">or </span><span class="s1">getattr(other</span><span class="s2">, </span><span class="s4">'conditional'</span><span class="s2">, False</span><span class="s1">) </span><span class="s2">is True</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(other)</span>
+
+        <span class="s2">if not </span><span class="s1">self:</span>
+            <span class="s2">return </span><span class="s1">other.copy() </span><span class="s2">if </span><span class="s1">hasattr(other</span><span class="s2">, </span><span class="s4">'copy'</span><span class="s1">) </span><span class="s2">else </span><span class="s1">copy.copy(other)</span>
+        <span class="s2">elif </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">Q) </span><span class="s2">and not </span><span class="s1">other:</span>
+            <span class="s1">_</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs = self.deconstruct()</span>
+            <span class="s2">return </span><span class="s1">type(self)(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+        <span class="s1">obj = type(self)()</span>
+        <span class="s1">obj.connector = conn</span>
+        <span class="s1">obj.add(self</span><span class="s2">, </span><span class="s1">conn)</span>
+        <span class="s1">obj.add(other</span><span class="s2">, </span><span class="s1">conn)</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">def </span><span class="s1">__or__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return </span><span class="s1">self._combine(other</span><span class="s2">, </span><span class="s1">self.OR)</span>
+
+    <span class="s2">def </span><span class="s1">__and__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return </span><span class="s1">self._combine(other</span><span class="s2">, </span><span class="s1">self.AND)</span>
+
+    <span class="s2">def </span><span class="s1">__invert__(self):</span>
+        <span class="s1">obj = type(self)()</span>
+        <span class="s1">obj.add(self</span><span class="s2">, </span><span class="s1">self.AND)</span>
+        <span class="s1">obj.negate()</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">def </span><span class="s1">resolve_expression(self</span><span class="s2">, </span><span class="s1">query=</span><span class="s2">None, </span><span class="s1">allow_joins=</span><span class="s2">True, </span><span class="s1">reuse=</span><span class="s2">None, </span><span class="s1">summarize=</span><span class="s2">False, </span><span class="s1">for_save=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s3"># We must promote any new joins to left outer joins so that when Q is</span>
+        <span class="s3"># used as an expression, rows aren't filtered due to joins.</span>
+        <span class="s1">clause</span><span class="s2">, </span><span class="s1">joins = query._add_q(</span>
+            <span class="s1">self</span><span class="s2">, </span><span class="s1">reuse</span><span class="s2">, </span><span class="s1">allow_joins=allow_joins</span><span class="s2">, </span><span class="s1">split_subq=</span><span class="s2">False,</span>
+            <span class="s1">check_filterable=</span><span class="s2">False,</span>
+        <span class="s1">)</span>
+        <span class="s1">query.promote_joins(joins)</span>
+        <span class="s2">return </span><span class="s1">clause</span>
+
+    <span class="s2">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path = </span><span class="s4">'%s.%s' </span><span class="s1">% (self.__class__.__module__</span><span class="s2">, </span><span class="s1">self.__class__.__name__)</span>
+        <span class="s2">if </span><span class="s1">path.startswith(</span><span class="s4">'django.db.models.query_utils'</span><span class="s1">):</span>
+            <span class="s1">path = path.replace(</span><span class="s4">'django.db.models.query_utils'</span><span class="s2">, </span><span class="s4">'django.db.models'</span><span class="s1">)</span>
+        <span class="s1">args = tuple(self.children)</span>
+        <span class="s1">kwargs = {}</span>
+        <span class="s2">if </span><span class="s1">self.connector != self.default:</span>
+            <span class="s1">kwargs[</span><span class="s4">'_connector'</span><span class="s1">] = self.connector</span>
+        <span class="s2">if </span><span class="s1">self.negated:</span>
+            <span class="s1">kwargs[</span><span class="s4">'_negated'</span><span class="s1">] = </span><span class="s2">True</span>
+        <span class="s2">return </span><span class="s1">path</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs</span>
+
+
+<span class="s2">class </span><span class="s1">DeferredAttribute:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    A wrapper for a deferred-loading field. When the value is read from this 
+    object the first time, the query is executed. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field):</span>
+        <span class="s1">self.field = field</span>
+
+    <span class="s2">def </span><span class="s1">__get__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">cls=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Retrieve and caches the value from the datastore on the first lookup. 
+        Return the cached value. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self</span>
+        <span class="s1">data = instance.__dict__</span>
+        <span class="s1">field_name = self.field.attname</span>
+        <span class="s2">if </span><span class="s1">field_name </span><span class="s2">not in </span><span class="s1">data:</span>
+            <span class="s3"># Let's see if the field is part of the parent chain. If so we</span>
+            <span class="s3"># might be able to reuse the already loaded value. Refs #18343.</span>
+            <span class="s1">val = self._check_parent_chain(instance)</span>
+            <span class="s2">if </span><span class="s1">val </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">instance.refresh_from_db(fields=[field_name])</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">data[field_name] = val</span>
+        <span class="s2">return </span><span class="s1">data[field_name]</span>
+
+    <span class="s2">def </span><span class="s1">_check_parent_chain(self</span><span class="s2">, </span><span class="s1">instance):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Check if the field value can be fetched from a parent field already 
+        loaded in the instance. This can be done if the to-be fetched 
+        field is a primary key field. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">opts = instance._meta</span>
+        <span class="s1">link_field = opts.get_ancestor_link(self.field.model)</span>
+        <span class="s2">if </span><span class="s1">self.field.primary_key </span><span class="s2">and </span><span class="s1">self.field != link_field:</span>
+            <span class="s2">return </span><span class="s1">getattr(instance</span><span class="s2">, </span><span class="s1">link_field.attname)</span>
+        <span class="s2">return None</span>
+
+
+<span class="s2">class </span><span class="s1">RegisterLookupMixin:</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_get_lookup(cls</span><span class="s2">, </span><span class="s1">lookup_name):</span>
+        <span class="s2">return </span><span class="s1">cls.get_lookups().get(lookup_name</span><span class="s2">, None</span><span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s1">@functools.lru_cache(maxsize=</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s2">def </span><span class="s1">get_lookups(cls):</span>
+        <span class="s1">class_lookups = [parent.__dict__.get(</span><span class="s4">'class_lookups'</span><span class="s2">, </span><span class="s1">{}) </span><span class="s2">for </span><span class="s1">parent </span><span class="s2">in </span><span class="s1">inspect.getmro(cls)]</span>
+        <span class="s2">return </span><span class="s1">cls.merge_dicts(class_lookups)</span>
+
+    <span class="s2">def </span><span class="s1">get_lookup(self</span><span class="s2">, </span><span class="s1">lookup_name):</span>
+        <span class="s2">from </span><span class="s1">django.db.models.lookups </span><span class="s2">import </span><span class="s1">Lookup</span>
+        <span class="s1">found = self._get_lookup(lookup_name)</span>
+        <span class="s2">if </span><span class="s1">found </span><span class="s2">is None and </span><span class="s1">hasattr(self</span><span class="s2">, </span><span class="s4">'output_field'</span><span class="s1">):</span>
+            <span class="s2">return </span><span class="s1">self.output_field.get_lookup(lookup_name)</span>
+        <span class="s2">if </span><span class="s1">found </span><span class="s2">is not None and not </span><span class="s1">issubclass(found</span><span class="s2">, </span><span class="s1">Lookup):</span>
+            <span class="s2">return None</span>
+        <span class="s2">return </span><span class="s1">found</span>
+
+    <span class="s2">def </span><span class="s1">get_transform(self</span><span class="s2">, </span><span class="s1">lookup_name):</span>
+        <span class="s2">from </span><span class="s1">django.db.models.lookups </span><span class="s2">import </span><span class="s1">Transform</span>
+        <span class="s1">found = self._get_lookup(lookup_name)</span>
+        <span class="s2">if </span><span class="s1">found </span><span class="s2">is None and </span><span class="s1">hasattr(self</span><span class="s2">, </span><span class="s4">'output_field'</span><span class="s1">):</span>
+            <span class="s2">return </span><span class="s1">self.output_field.get_transform(lookup_name)</span>
+        <span class="s2">if </span><span class="s1">found </span><span class="s2">is not None and not </span><span class="s1">issubclass(found</span><span class="s2">, </span><span class="s1">Transform):</span>
+            <span class="s2">return None</span>
+        <span class="s2">return </span><span class="s1">found</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">merge_dicts(dicts):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Merge dicts in reverse to preference the order of the original list. e.g., 
+        merge_dicts([a, b]) will preference the keys in 'a' over those in 'b'. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">merged = {}</span>
+        <span class="s2">for </span><span class="s1">d </span><span class="s2">in </span><span class="s1">reversed(dicts):</span>
+            <span class="s1">merged.update(d)</span>
+        <span class="s2">return </span><span class="s1">merged</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_clear_cached_lookups(cls):</span>
+        <span class="s2">for </span><span class="s1">subclass </span><span class="s2">in </span><span class="s1">subclasses(cls):</span>
+            <span class="s1">subclass.get_lookups.cache_clear()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">register_lookup(cls</span><span class="s2">, </span><span class="s1">lookup</span><span class="s2">, </span><span class="s1">lookup_name=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">lookup_name </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">lookup_name = lookup.lookup_name</span>
+        <span class="s2">if </span><span class="s4">'class_lookups' </span><span class="s2">not in </span><span class="s1">cls.__dict__:</span>
+            <span class="s1">cls.class_lookups = {}</span>
+        <span class="s1">cls.class_lookups[lookup_name] = lookup</span>
+        <span class="s1">cls._clear_cached_lookups()</span>
+        <span class="s2">return </span><span class="s1">lookup</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_unregister_lookup(cls</span><span class="s2">, </span><span class="s1">lookup</span><span class="s2">, </span><span class="s1">lookup_name=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Remove given lookup from cls lookups. For use in tests only as it's 
+        not thread-safe. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">lookup_name </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">lookup_name = lookup.lookup_name</span>
+        <span class="s2">del </span><span class="s1">cls.class_lookups[lookup_name]</span>
+
+
+<span class="s2">def </span><span class="s1">select_related_descend(field</span><span class="s2">, </span><span class="s1">restricted</span><span class="s2">, </span><span class="s1">requested</span><span class="s2">, </span><span class="s1">load_fields</span><span class="s2">, </span><span class="s1">reverse=</span><span class="s2">False</span><span class="s1">):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Return True if this field should be used to descend deeper for 
+    select_related() purposes. Used by both the query construction code 
+    (sql.query.fill_related_selections()) and the model instance creation code 
+    (query.get_klass_info()). 
+ 
+    Arguments: 
+     * field - the field to be checked 
+     * restricted - a boolean field, indicating if the field list has been 
+       manually restricted using a requested clause) 
+     * requested - The select_related() dictionary. 
+     * load_fields - the set of fields to be loaded on this model 
+     * reverse - boolean, True if we are checking a reverse select related 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">field.remote_field:</span>
+        <span class="s2">return False</span>
+    <span class="s2">if </span><span class="s1">field.remote_field.parent_link </span><span class="s2">and not </span><span class="s1">reverse:</span>
+        <span class="s2">return False</span>
+    <span class="s2">if </span><span class="s1">restricted:</span>
+        <span class="s2">if </span><span class="s1">reverse </span><span class="s2">and </span><span class="s1">field.related_query_name() </span><span class="s2">not in </span><span class="s1">requested:</span>
+            <span class="s2">return False</span>
+        <span class="s2">if not </span><span class="s1">reverse </span><span class="s2">and </span><span class="s1">field.name </span><span class="s2">not in </span><span class="s1">requested:</span>
+            <span class="s2">return False</span>
+    <span class="s2">if not </span><span class="s1">restricted </span><span class="s2">and </span><span class="s1">field.null:</span>
+        <span class="s2">return False</span>
+    <span class="s2">if </span><span class="s1">load_fields:</span>
+        <span class="s2">if </span><span class="s1">field.attname </span><span class="s2">not in </span><span class="s1">load_fields:</span>
+            <span class="s2">if </span><span class="s1">restricted </span><span class="s2">and </span><span class="s1">field.name </span><span class="s2">in </span><span class="s1">requested:</span>
+                <span class="s1">msg = (</span>
+                    <span class="s4">'Field %s.%s cannot be both deferred and traversed using '</span>
+                    <span class="s4">'select_related at the same time.'</span>
+                <span class="s1">) % (field.model._meta.object_name</span><span class="s2">, </span><span class="s1">field.name)</span>
+                <span class="s2">raise </span><span class="s1">FieldError(msg)</span>
+    <span class="s2">return True</span>
+
+
+<span class="s2">def </span><span class="s1">refs_expression(lookup_parts</span><span class="s2">, </span><span class="s1">annotations):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Check if the lookup_parts contains references to the given annotations set. 
+    Because the LOOKUP_SEP is contained in the default annotation names, check 
+    each prefix of the lookup_parts for a match. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">for </span><span class="s1">n </span><span class="s2">in </span><span class="s1">range(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">len(lookup_parts) + </span><span class="s5">1</span><span class="s1">):</span>
+        <span class="s1">level_n_lookup = LOOKUP_SEP.join(lookup_parts[</span><span class="s5">0</span><span class="s1">:n])</span>
+        <span class="s2">if </span><span class="s1">level_n_lookup </span><span class="s2">in </span><span class="s1">annotations </span><span class="s2">and </span><span class="s1">annotations[level_n_lookup]:</span>
+            <span class="s2">return </span><span class="s1">annotations[level_n_lookup]</span><span class="s2">, </span><span class="s1">lookup_parts[n:]</span>
+    <span class="s2">return False, </span><span class="s1">()</span>
+
+
+<span class="s2">def </span><span class="s1">check_rel_lookup_compatibility(model</span><span class="s2">, </span><span class="s1">target_opts</span><span class="s2">, </span><span class="s1">field):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Check that self.model is compatible with target_opts. Compatibility 
+    is OK if: 
+      1) model and opts match (where proxy inheritance is removed) 
+      2) model is parent of opts' model or the other way around 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">check(opts):</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">model._meta.concrete_model == opts.concrete_model </span><span class="s2">or</span>
+            <span class="s1">opts.concrete_model </span><span class="s2">in </span><span class="s1">model._meta.get_parent_list() </span><span class="s2">or</span>
+            <span class="s1">model </span><span class="s2">in </span><span class="s1">opts.get_parent_list()</span>
+        <span class="s1">)</span>
+    <span class="s3"># If the field is a primary key, then doing a query against the field's</span>
+    <span class="s3"># model is ok, too. Consider the case:</span>
+    <span class="s3"># class Restaurant(models.Model):</span>
+    <span class="s3">#     place = OneToOneField(Place, primary_key=True):</span>
+    <span class="s3"># Restaurant.objects.filter(pk__in=Restaurant.objects.all()).</span>
+    <span class="s3"># If we didn't have the primary key check, then pk__in (== place__in) would</span>
+    <span class="s3"># give Place's opts as the target opts, but Restaurant isn't compatible</span>
+    <span class="s3"># with that. This logic applies only to primary keys, as when doing __in=qs,</span>
+    <span class="s3"># we are going to turn this into __in=qs.values('pk') later on.</span>
+    <span class="s2">return </span><span class="s1">(</span>
+        <span class="s1">check(target_opts) </span><span class="s2">or</span>
+        <span class="s1">(getattr(field</span><span class="s2">, </span><span class="s4">'primary_key'</span><span class="s2">, False</span><span class="s1">) </span><span class="s2">and </span><span class="s1">check(field.model._meta))</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">FilteredRelation:</span>
+    <span class="s0">&quot;&quot;&quot;Specify custom filtering in the ON clause of SQL joins.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">relation_name</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">condition=Q()):</span>
+        <span class="s2">if not </span><span class="s1">relation_name:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'relation_name cannot be empty.'</span><span class="s1">)</span>
+        <span class="s1">self.relation_name = relation_name</span>
+        <span class="s1">self.alias = </span><span class="s2">None</span>
+        <span class="s2">if not </span><span class="s1">isinstance(condition</span><span class="s2">, </span><span class="s1">Q):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'condition argument must be a Q() instance.'</span><span class="s1">)</span>
+        <span class="s1">self.condition = condition</span>
+        <span class="s1">self.path = []</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">self.__class__):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">self.relation_name == other.relation_name </span><span class="s2">and</span>
+            <span class="s1">self.alias == other.alias </span><span class="s2">and</span>
+            <span class="s1">self.condition == other.condition</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">clone(self):</span>
+        <span class="s1">clone = FilteredRelation(self.relation_name</span><span class="s2">, </span><span class="s1">condition=self.condition)</span>
+        <span class="s1">clone.alias = self.alias</span>
+        <span class="s1">clone.path = self.path[:]</span>
+        <span class="s2">return </span><span class="s1">clone</span>
+
+    <span class="s2">def </span><span class="s1">resolve_expression(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        QuerySet.annotate() only accepts expression-like arguments 
+        (with a resolve_expression() method). 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'FilteredRelation.resolve_expression() is unused.'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">as_sql(self</span><span class="s2">, </span><span class="s1">compiler</span><span class="s2">, </span><span class="s1">connection):</span>
+        <span class="s3"># Resolve the condition in Join.filtered_relation.</span>
+        <span class="s1">query = compiler.query</span>
+        <span class="s1">where = query.build_filtered_relation_q(self.condition</span><span class="s2">, </span><span class="s1">reuse=set(self.path))</span>
+        <span class="s2">return </span><span class="s1">compiler.compile(where)</span>
+</pre>
+</body>
+</html>

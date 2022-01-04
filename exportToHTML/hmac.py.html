@@ -1,0 +1,94 @@
+<html>
+<head>
+<title>hmac.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+hmac.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AlreadyFinalized</span><span class="s2">,</span>
+    <span class="s1">UnsupportedAlgorithm</span><span class="s2">,</span>
+    <span class="s1">_Reasons</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HMACBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">hashes</span>
+
+
+<span class="s2">class </span><span class="s1">HMAC(hashes.HashContext):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">key: bytes</span><span class="s2">,</span>
+        <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+        <span class="s1">ctx=</span><span class="s2">None,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HMACBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement HMACBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(algorithm</span><span class="s2">, </span><span class="s1">hashes.HashAlgorithm):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;Expected instance of hashes.HashAlgorithm.&quot;</span><span class="s1">)</span>
+        <span class="s1">self._algorithm = algorithm</span>
+
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._key = key</span>
+        <span class="s2">if </span><span class="s1">ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self._ctx = self._backend.create_hmac_ctx(key</span><span class="s2">, </span><span class="s1">self.algorithm)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._ctx = ctx</span>
+
+    <span class="s1">algorithm = utils.read_only_property(</span><span class="s3">&quot;_algorithm&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">update(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s3">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s3">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s1">self._ctx.update(data)</span>
+
+    <span class="s2">def </span><span class="s1">copy(self) -&gt; </span><span class="s3">&quot;HMAC&quot;</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s3">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">HMAC(</span>
+            <span class="s1">self._key</span><span class="s2">,</span>
+            <span class="s1">self.algorithm</span><span class="s2">,</span>
+            <span class="s1">backend=self._backend</span><span class="s2">,</span>
+            <span class="s1">ctx=self._ctx.copy()</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">finalize(self) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s3">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+        <span class="s1">digest = self._ctx.finalize()</span>
+        <span class="s1">self._ctx = </span><span class="s2">None</span>
+        <span class="s2">return </span><span class="s1">digest</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">signature: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;signature&quot;</span><span class="s2">, </span><span class="s1">signature)</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s3">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">ctx</span><span class="s2">, </span><span class="s1">self._ctx = self._ctx</span><span class="s2">, None</span>
+        <span class="s1">ctx.verify(signature)</span>
+</pre>
+</body>
+</html>

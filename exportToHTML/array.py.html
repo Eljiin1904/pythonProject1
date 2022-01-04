@@ -1,0 +1,340 @@
+<html>
+<head>
+<title>array.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+array.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+
+<span class="s0">from </span><span class="s1">django.contrib.postgres </span><span class="s0">import </span><span class="s1">lookups</span>
+<span class="s0">from </span><span class="s1">django.contrib.postgres.forms </span><span class="s0">import </span><span class="s1">SimpleArrayField</span>
+<span class="s0">from </span><span class="s1">django.contrib.postgres.validators </span><span class="s0">import </span><span class="s1">ArrayMaxLengthValidator</span>
+<span class="s0">from </span><span class="s1">django.core </span><span class="s0">import </span><span class="s1">checks</span><span class="s0">, </span><span class="s1">exceptions</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Field</span><span class="s0">, </span><span class="s1">Func</span><span class="s0">, </span><span class="s1">IntegerField</span><span class="s0">, </span><span class="s1">Transform</span><span class="s0">, </span><span class="s1">Value</span>
+<span class="s0">from </span><span class="s1">django.db.models.fields.mixins </span><span class="s0">import </span><span class="s1">CheckFieldDefaultMixin</span>
+<span class="s0">from </span><span class="s1">django.db.models.lookups </span><span class="s0">import </span><span class="s1">Exact</span><span class="s0">, </span><span class="s1">In</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext_lazy </span><span class="s0">as </span><span class="s1">_</span>
+
+<span class="s0">from </span><span class="s1">..utils </span><span class="s0">import </span><span class="s1">prefix_validation_error</span>
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">AttributeSetter</span>
+
+<span class="s1">__all__ = [</span><span class="s2">'ArrayField'</span><span class="s1">]</span>
+
+
+<span class="s0">class </span><span class="s1">ArrayField(CheckFieldDefaultMixin</span><span class="s0">, </span><span class="s1">Field):</span>
+    <span class="s1">empty_strings_allowed = </span><span class="s0">False</span>
+    <span class="s1">default_error_messages = {</span>
+        <span class="s2">'item_invalid'</span><span class="s1">: _(</span><span class="s2">'Item %(nth)s in the array did not validate:'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s2">'nested_array_mismatch'</span><span class="s1">: _(</span><span class="s2">'Nested arrays must have the same length.'</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">}</span>
+    <span class="s1">_default_hint = (</span><span class="s2">'list'</span><span class="s0">, </span><span class="s2">'[]'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">base_field</span><span class="s0">, </span><span class="s1">size=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.base_field = base_field</span>
+        <span class="s1">self.size = size</span>
+        <span class="s0">if </span><span class="s1">self.size:</span>
+            <span class="s1">self.default_validators = [*self.default_validators</span><span class="s0">, </span><span class="s1">ArrayMaxLengthValidator(self.size)]</span>
+        <span class="s3"># For performance, only add a from_db_value() method if the base field</span>
+        <span class="s3"># implements it.</span>
+        <span class="s0">if </span><span class="s1">hasattr(self.base_field</span><span class="s0">, </span><span class="s2">'from_db_value'</span><span class="s1">):</span>
+            <span class="s1">self.from_db_value = self._from_db_value</span>
+        <span class="s1">super().__init__(**kwargs)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">model(self):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.__dict__[</span><span class="s2">'model'</span><span class="s1">]</span>
+        <span class="s0">except </span><span class="s1">KeyError:</span>
+            <span class="s0">raise </span><span class="s1">AttributeError(</span><span class="s2">&quot;'%s' object has no attribute 'model'&quot; </span><span class="s1">% self.__class__.__name__)</span>
+
+    <span class="s1">@model.setter</span>
+    <span class="s0">def </span><span class="s1">model(self</span><span class="s0">, </span><span class="s1">model):</span>
+        <span class="s1">self.__dict__[</span><span class="s2">'model'</span><span class="s1">] = model</span>
+        <span class="s1">self.base_field.model = model</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_choices_is_value(cls</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s0">return </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)) </span><span class="s0">or </span><span class="s1">super()._choices_is_value(value)</span>
+
+    <span class="s0">def </span><span class="s1">check(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">errors = super().check(**kwargs)</span>
+        <span class="s0">if </span><span class="s1">self.base_field.remote_field:</span>
+            <span class="s1">errors.append(</span>
+                <span class="s1">checks.Error(</span>
+                    <span class="s2">'Base field for array cannot be a related field.'</span><span class="s0">,</span>
+                    <span class="s1">obj=self</span><span class="s0">,</span>
+                    <span class="s1">id=</span><span class="s2">'postgres.E002'</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s3"># Remove the field name checks as they are not needed here.</span>
+            <span class="s1">base_errors = self.base_field.check()</span>
+            <span class="s0">if </span><span class="s1">base_errors:</span>
+                <span class="s1">messages = </span><span class="s2">'</span><span class="s0">\n    </span><span class="s2">'</span><span class="s1">.join(</span><span class="s2">'%s (%s)' </span><span class="s1">% (error.msg</span><span class="s0">, </span><span class="s1">error.id) </span><span class="s0">for </span><span class="s1">error </span><span class="s0">in </span><span class="s1">base_errors)</span>
+                <span class="s1">errors.append(</span>
+                    <span class="s1">checks.Error(</span>
+                        <span class="s2">'Base field for array has errors:</span><span class="s0">\n    </span><span class="s2">%s' </span><span class="s1">% messages</span><span class="s0">,</span>
+                        <span class="s1">obj=self</span><span class="s0">,</span>
+                        <span class="s1">id=</span><span class="s2">'postgres.E001'</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">errors</span>
+
+    <span class="s0">def </span><span class="s1">set_attributes_from_name(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">super().set_attributes_from_name(name)</span>
+        <span class="s1">self.base_field.set_attributes_from_name(name)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">description(self):</span>
+        <span class="s0">return </span><span class="s2">'Array of %s' </span><span class="s1">% self.base_field.description</span>
+
+    <span class="s0">def </span><span class="s1">db_type(self</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">size = self.size </span><span class="s0">or </span><span class="s2">''</span>
+        <span class="s0">return </span><span class="s2">'%s[%s]' </span><span class="s1">% (self.base_field.db_type(connection)</span><span class="s0">, </span><span class="s1">size)</span>
+
+    <span class="s0">def </span><span class="s1">cast_db_type(self</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">size = self.size </span><span class="s0">or </span><span class="s2">''</span>
+        <span class="s0">return </span><span class="s2">'%s[%s]' </span><span class="s1">% (self.base_field.cast_db_type(connection)</span><span class="s0">, </span><span class="s1">size)</span>
+
+    <span class="s0">def </span><span class="s1">get_placeholder(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">return </span><span class="s2">'%s::{}'</span><span class="s1">.format(self.db_type(connection))</span>
+
+    <span class="s0">def </span><span class="s1">get_db_prep_value(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">prepared=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s0">return </span><span class="s1">[self.base_field.get_db_prep_value(i</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">prepared=</span><span class="s0">False</span><span class="s1">) </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">value]</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">name</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">path == </span><span class="s2">'django.contrib.postgres.fields.array.ArrayField'</span><span class="s1">:</span>
+            <span class="s1">path = </span><span class="s2">'django.contrib.postgres.fields.ArrayField'</span>
+        <span class="s1">kwargs.update({</span>
+            <span class="s2">'base_field'</span><span class="s1">: self.base_field.clone()</span><span class="s0">,</span>
+            <span class="s2">'size'</span><span class="s1">: self.size</span><span class="s0">,</span>
+        <span class="s1">})</span>
+        <span class="s0">return </span><span class="s1">name</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">to_python(self</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s0">if </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s3"># Assume we're deserializing</span>
+            <span class="s1">vals = json.loads(value)</span>
+            <span class="s1">value = [self.base_field.to_python(val) </span><span class="s0">for </span><span class="s1">val </span><span class="s0">in </span><span class="s1">vals]</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+    <span class="s0">def </span><span class="s1">_from_db_value(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">if </span><span class="s1">value </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">value</span>
+        <span class="s0">return </span><span class="s1">[</span>
+            <span class="s1">self.base_field.from_db_value(item</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">connection)</span>
+            <span class="s0">for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">value</span>
+        <span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">value_to_string(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s1">values = []</span>
+        <span class="s1">vals = self.value_from_object(obj)</span>
+        <span class="s1">base_field = self.base_field</span>
+
+        <span class="s0">for </span><span class="s1">val </span><span class="s0">in </span><span class="s1">vals:</span>
+            <span class="s0">if </span><span class="s1">val </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s1">values.append(</span><span class="s0">None</span><span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">obj = AttributeSetter(base_field.attname</span><span class="s0">, </span><span class="s1">val)</span>
+                <span class="s1">values.append(base_field.value_to_string(obj))</span>
+        <span class="s0">return </span><span class="s1">json.dumps(values)</span>
+
+    <span class="s0">def </span><span class="s1">get_transform(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">transform = super().get_transform(name)</span>
+        <span class="s0">if </span><span class="s1">transform:</span>
+            <span class="s0">return </span><span class="s1">transform</span>
+        <span class="s0">if </span><span class="s2">'_' </span><span class="s0">not in </span><span class="s1">name:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">index = int(name)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">index += </span><span class="s4">1  </span><span class="s3"># postgres uses 1-indexing</span>
+                <span class="s0">return </span><span class="s1">IndexTransformFactory(index</span><span class="s0">, </span><span class="s1">self.base_field)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">start</span><span class="s0">, </span><span class="s1">end = name.split(</span><span class="s2">'_'</span><span class="s1">)</span>
+            <span class="s1">start = int(start) + </span><span class="s4">1</span>
+            <span class="s1">end = int(end)  </span><span class="s3"># don't add one here because postgres slices are weird</span>
+        <span class="s0">except </span><span class="s1">ValueError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">SliceTransformFactory(start</span><span class="s0">, </span><span class="s1">end)</span>
+
+    <span class="s0">def </span><span class="s1">validate(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">model_instance):</span>
+        <span class="s1">super().validate(value</span><span class="s0">, </span><span class="s1">model_instance)</span>
+        <span class="s0">for </span><span class="s1">index</span><span class="s0">, </span><span class="s1">part </span><span class="s0">in </span><span class="s1">enumerate(value):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self.base_field.validate(part</span><span class="s0">, </span><span class="s1">model_instance)</span>
+            <span class="s0">except </span><span class="s1">exceptions.ValidationError </span><span class="s0">as </span><span class="s1">error:</span>
+                <span class="s0">raise </span><span class="s1">prefix_validation_error(</span>
+                    <span class="s1">error</span><span class="s0">,</span>
+                    <span class="s1">prefix=self.error_messages[</span><span class="s2">'item_invalid'</span><span class="s1">]</span><span class="s0">,</span>
+                    <span class="s1">code=</span><span class="s2">'item_invalid'</span><span class="s0">,</span>
+                    <span class="s1">params={</span><span class="s2">'nth'</span><span class="s1">: index + </span><span class="s4">1</span><span class="s1">}</span><span class="s0">,</span>
+                <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">isinstance(self.base_field</span><span class="s0">, </span><span class="s1">ArrayField):</span>
+            <span class="s0">if </span><span class="s1">len({len(i) </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">value}) &gt; </span><span class="s4">1</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">exceptions.ValidationError(</span>
+                    <span class="s1">self.error_messages[</span><span class="s2">'nested_array_mismatch'</span><span class="s1">]</span><span class="s0">,</span>
+                    <span class="s1">code=</span><span class="s2">'nested_array_mismatch'</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">run_validators(self</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s1">super().run_validators(value)</span>
+        <span class="s0">for </span><span class="s1">index</span><span class="s0">, </span><span class="s1">part </span><span class="s0">in </span><span class="s1">enumerate(value):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self.base_field.run_validators(part)</span>
+            <span class="s0">except </span><span class="s1">exceptions.ValidationError </span><span class="s0">as </span><span class="s1">error:</span>
+                <span class="s0">raise </span><span class="s1">prefix_validation_error(</span>
+                    <span class="s1">error</span><span class="s0">,</span>
+                    <span class="s1">prefix=self.error_messages[</span><span class="s2">'item_invalid'</span><span class="s1">]</span><span class="s0">,</span>
+                    <span class="s1">code=</span><span class="s2">'item_invalid'</span><span class="s0">,</span>
+                    <span class="s1">params={</span><span class="s2">'nth'</span><span class="s1">: index + </span><span class="s4">1</span><span class="s1">}</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">formfield(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">super().formfield(**{</span>
+            <span class="s2">'form_class'</span><span class="s1">: SimpleArrayField</span><span class="s0">,</span>
+            <span class="s2">'base_field'</span><span class="s1">: self.base_field.formfield()</span><span class="s0">,</span>
+            <span class="s2">'max_length'</span><span class="s1">: self.size</span><span class="s0">,</span>
+            <span class="s1">**kwargs</span><span class="s0">,</span>
+        <span class="s1">})</span>
+
+
+<span class="s0">class </span><span class="s1">ArrayRHSMixin:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">lhs</span><span class="s0">, </span><span class="s1">rhs):</span>
+        <span class="s0">if </span><span class="s1">isinstance(rhs</span><span class="s0">, </span><span class="s1">(tuple</span><span class="s0">, </span><span class="s1">list)):</span>
+            <span class="s1">expressions = []</span>
+            <span class="s0">for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">rhs:</span>
+                <span class="s0">if not </span><span class="s1">hasattr(value</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+                    <span class="s1">field = lhs.output_field</span>
+                    <span class="s1">value = Value(field.base_field.get_prep_value(value))</span>
+                <span class="s1">expressions.append(value)</span>
+            <span class="s1">rhs = Func(</span>
+                <span class="s1">*expressions</span><span class="s0">,</span>
+                <span class="s1">function=</span><span class="s2">'ARRAY'</span><span class="s0">,</span>
+                <span class="s1">template=</span><span class="s2">'%(function)s[%(expressions)s]'</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s1">super().__init__(lhs</span><span class="s0">, </span><span class="s1">rhs)</span>
+
+    <span class="s0">def </span><span class="s1">process_rhs(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">rhs</span><span class="s0">, </span><span class="s1">rhs_params = super().process_rhs(compiler</span><span class="s0">, </span><span class="s1">connection)</span>
+        <span class="s1">cast_type = self.lhs.output_field.cast_db_type(connection)</span>
+        <span class="s0">return </span><span class="s2">'%s::%s' </span><span class="s1">% (rhs</span><span class="s0">, </span><span class="s1">cast_type)</span><span class="s0">, </span><span class="s1">rhs_params</span>
+
+
+<span class="s1">@ArrayField.register_lookup</span>
+<span class="s0">class </span><span class="s1">ArrayContains(ArrayRHSMixin</span><span class="s0">, </span><span class="s1">lookups.DataContains):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s1">@ArrayField.register_lookup</span>
+<span class="s0">class </span><span class="s1">ArrayContainedBy(ArrayRHSMixin</span><span class="s0">, </span><span class="s1">lookups.ContainedBy):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s1">@ArrayField.register_lookup</span>
+<span class="s0">class </span><span class="s1">ArrayExact(ArrayRHSMixin</span><span class="s0">, </span><span class="s1">Exact):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s1">@ArrayField.register_lookup</span>
+<span class="s0">class </span><span class="s1">ArrayOverlap(ArrayRHSMixin</span><span class="s0">, </span><span class="s1">lookups.Overlap):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s1">@ArrayField.register_lookup</span>
+<span class="s0">class </span><span class="s1">ArrayLenTransform(Transform):</span>
+    <span class="s1">lookup_name = </span><span class="s2">'len'</span>
+    <span class="s1">output_field = IntegerField()</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">lhs</span><span class="s0">, </span><span class="s1">params = compiler.compile(self.lhs)</span>
+        <span class="s3"># Distinguish NULL and empty arrays</span>
+        <span class="s0">return </span><span class="s1">(</span>
+            <span class="s2">'CASE WHEN %(lhs)s IS NULL THEN NULL ELSE '</span>
+            <span class="s2">'coalesce(array_length(%(lhs)s, 1), 0) END'</span>
+        <span class="s1">) % {</span><span class="s2">'lhs'</span><span class="s1">: lhs}</span><span class="s0">, </span><span class="s1">params</span>
+
+
+<span class="s1">@ArrayField.register_lookup</span>
+<span class="s0">class </span><span class="s1">ArrayInLookup(In):</span>
+    <span class="s0">def </span><span class="s1">get_prep_lookup(self):</span>
+        <span class="s1">values = super().get_prep_lookup()</span>
+        <span class="s0">if </span><span class="s1">hasattr(values</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s0">return </span><span class="s1">values</span>
+        <span class="s3"># In.process_rhs() expects values to be hashable, so convert lists</span>
+        <span class="s3"># to tuples.</span>
+        <span class="s1">prepared_values = []</span>
+        <span class="s0">for </span><span class="s1">value </span><span class="s0">in </span><span class="s1">values:</span>
+            <span class="s0">if </span><span class="s1">hasattr(value</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+                <span class="s1">prepared_values.append(value)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">prepared_values.append(tuple(value))</span>
+        <span class="s0">return </span><span class="s1">prepared_values</span>
+
+
+<span class="s0">class </span><span class="s1">IndexTransform(Transform):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">index</span><span class="s0">, </span><span class="s1">base_field</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">self.index = index</span>
+        <span class="s1">self.base_field = base_field</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">lhs</span><span class="s0">, </span><span class="s1">params = compiler.compile(self.lhs)</span>
+        <span class="s0">return </span><span class="s2">'%s[%%s]' </span><span class="s1">% lhs</span><span class="s0">, </span><span class="s1">params + [self.index]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">output_field(self):</span>
+        <span class="s0">return </span><span class="s1">self.base_field</span>
+
+
+<span class="s0">class </span><span class="s1">IndexTransformFactory:</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">index</span><span class="s0">, </span><span class="s1">base_field):</span>
+        <span class="s1">self.index = index</span>
+        <span class="s1">self.base_field = base_field</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">IndexTransform(self.index</span><span class="s0">, </span><span class="s1">self.base_field</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s0">class </span><span class="s1">SliceTransform(Transform):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">start</span><span class="s0">, </span><span class="s1">end</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">self.start = start</span>
+        <span class="s1">self.end = end</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">lhs</span><span class="s0">, </span><span class="s1">params = compiler.compile(self.lhs)</span>
+        <span class="s0">return </span><span class="s2">'%s[%%s:%%s]' </span><span class="s1">% lhs</span><span class="s0">, </span><span class="s1">params + [self.start</span><span class="s0">, </span><span class="s1">self.end]</span>
+
+
+<span class="s0">class </span><span class="s1">SliceTransformFactory:</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">start</span><span class="s0">, </span><span class="s1">end):</span>
+        <span class="s1">self.start = start</span>
+        <span class="s1">self.end = end</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">SliceTransform(self.start</span><span class="s0">, </span><span class="s1">self.end</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+</pre>
+</body>
+</html>

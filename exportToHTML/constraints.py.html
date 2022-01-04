@@ -1,0 +1,190 @@
+<html>
+<head>
+<title>constraints.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+constraints.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">NotSupportedError</span>
+<span class="s0">from </span><span class="s1">django.db.backends.ddl_references </span><span class="s0">import </span><span class="s1">Statement</span><span class="s0">, </span><span class="s1">Table</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Deferrable</span><span class="s0">, </span><span class="s1">F</span><span class="s0">, </span><span class="s1">Q</span>
+<span class="s0">from </span><span class="s1">django.db.models.constraints </span><span class="s0">import </span><span class="s1">BaseConstraint</span>
+<span class="s0">from </span><span class="s1">django.db.models.expressions </span><span class="s0">import </span><span class="s1">Col</span>
+<span class="s0">from </span><span class="s1">django.db.models.sql </span><span class="s0">import </span><span class="s1">Query</span>
+
+<span class="s1">__all__ = [</span><span class="s2">'ExclusionConstraint'</span><span class="s1">]</span>
+
+
+<span class="s0">class </span><span class="s1">ExclusionConstraint(BaseConstraint):</span>
+    <span class="s1">template = </span><span class="s2">'CONSTRAINT %(name)s EXCLUDE USING %(index_type)s (%(expressions)s)%(include)s%(where)s%(deferrable)s'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">expressions</span><span class="s0">, </span><span class="s1">index_type=</span><span class="s0">None, </span><span class="s1">condition=</span><span class="s0">None,</span>
+        <span class="s1">deferrable=</span><span class="s0">None, </span><span class="s1">include=</span><span class="s0">None, </span><span class="s1">opclasses=()</span><span class="s0">,</span>
+    <span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">index_type </span><span class="s0">and </span><span class="s1">index_type.lower() </span><span class="s0">not in </span><span class="s1">{</span><span class="s2">'gist'</span><span class="s0">, </span><span class="s2">'spgist'</span><span class="s1">}:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'Exclusion constraints only support GiST or SP-GiST indexes.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">expressions:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'At least one expression is required to define an exclusion '</span>
+                <span class="s2">'constraint.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">all(</span>
+            <span class="s1">isinstance(expr</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)) </span><span class="s0">and </span><span class="s1">len(expr) == </span><span class="s3">2</span>
+            <span class="s0">for </span><span class="s1">expr </span><span class="s0">in </span><span class="s1">expressions</span>
+        <span class="s1">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">'The expressions must be a list of 2-tuples.'</span><span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance(condition</span><span class="s0">, </span><span class="s1">(type(</span><span class="s0">None</span><span class="s1">)</span><span class="s0">, </span><span class="s1">Q)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'ExclusionConstraint.condition must be a Q instance.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">condition </span><span class="s0">and </span><span class="s1">deferrable:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'ExclusionConstraint with conditions cannot be deferred.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance(deferrable</span><span class="s0">, </span><span class="s1">(type(</span><span class="s0">None</span><span class="s1">)</span><span class="s0">, </span><span class="s1">Deferrable)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'ExclusionConstraint.deferrable must be a Deferrable instance.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance(include</span><span class="s0">, </span><span class="s1">(type(</span><span class="s0">None</span><span class="s1">)</span><span class="s0">, </span><span class="s1">list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'ExclusionConstraint.include must be a list or tuple.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">include </span><span class="s0">and </span><span class="s1">index_type </span><span class="s0">and </span><span class="s1">index_type.lower() != </span><span class="s2">'gist'</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'Covering exclusion constraints only support GiST indexes.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance(opclasses</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'ExclusionConstraint.opclasses must be a list or tuple.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">opclasses </span><span class="s0">and </span><span class="s1">len(expressions) != len(opclasses):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'ExclusionConstraint.expressions and '</span>
+                <span class="s2">'ExclusionConstraint.opclasses must have the same number of '</span>
+                <span class="s2">'elements.'</span>
+            <span class="s1">)</span>
+        <span class="s1">self.expressions = expressions</span>
+        <span class="s1">self.index_type = index_type </span><span class="s0">or </span><span class="s2">'GIST'</span>
+        <span class="s1">self.condition = condition</span>
+        <span class="s1">self.deferrable = deferrable</span>
+        <span class="s1">self.include = tuple(include) </span><span class="s0">if </span><span class="s1">include </span><span class="s0">else </span><span class="s1">()</span>
+        <span class="s1">self.opclasses = opclasses</span>
+        <span class="s1">super().__init__(name=name)</span>
+
+    <span class="s0">def </span><span class="s1">_get_expression_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">query):</span>
+        <span class="s1">expressions = []</span>
+        <span class="s0">for </span><span class="s1">idx</span><span class="s0">, </span><span class="s1">(expression</span><span class="s0">, </span><span class="s1">operator) </span><span class="s0">in </span><span class="s1">enumerate(self.expressions):</span>
+            <span class="s0">if </span><span class="s1">isinstance(expression</span><span class="s0">, </span><span class="s1">str):</span>
+                <span class="s1">expression = F(expression)</span>
+            <span class="s1">expression = expression.resolve_expression(query=query)</span>
+            <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = compiler.compile(expression)</span>
+            <span class="s0">if not </span><span class="s1">isinstance(expression</span><span class="s0">, </span><span class="s1">Col):</span>
+                <span class="s1">sql = </span><span class="s2">f'(</span><span class="s0">{</span><span class="s1">sql</span><span class="s0">}</span><span class="s2">)'</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">opclass = self.opclasses[idx]</span>
+                <span class="s0">if </span><span class="s1">opclass:</span>
+                    <span class="s1">sql = </span><span class="s2">'%s %s' </span><span class="s1">% (sql</span><span class="s0">, </span><span class="s1">opclass)</span>
+            <span class="s0">except </span><span class="s1">IndexError:</span>
+                <span class="s0">pass</span>
+            <span class="s1">sql = sql % tuple(schema_editor.quote_value(p) </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">params)</span>
+            <span class="s1">expressions.append(</span><span class="s2">'%s WITH %s' </span><span class="s1">% (sql</span><span class="s0">, </span><span class="s1">operator))</span>
+        <span class="s0">return </span><span class="s1">expressions</span>
+
+    <span class="s0">def </span><span class="s1">_get_condition_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">query):</span>
+        <span class="s0">if </span><span class="s1">self.condition </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return None</span>
+        <span class="s1">where = query.build_where(self.condition)</span>
+        <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = where.as_sql(compiler</span><span class="s0">, </span><span class="s1">schema_editor.connection)</span>
+        <span class="s0">return </span><span class="s1">sql % tuple(schema_editor.quote_value(p) </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">params)</span>
+
+    <span class="s0">def </span><span class="s1">constraint_sql(self</span><span class="s0">, </span><span class="s1">model</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s1">query = Query(model</span><span class="s0">, </span><span class="s1">alias_cols=</span><span class="s0">False</span><span class="s1">)</span>
+        <span class="s1">compiler = query.get_compiler(connection=schema_editor.connection)</span>
+        <span class="s1">expressions = self._get_expression_sql(compiler</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">query)</span>
+        <span class="s1">condition = self._get_condition_sql(compiler</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">query)</span>
+        <span class="s1">include = [model._meta.get_field(field_name).column </span><span class="s0">for </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">self.include]</span>
+        <span class="s0">return </span><span class="s1">self.template % {</span>
+            <span class="s2">'name'</span><span class="s1">: schema_editor.quote_name(self.name)</span><span class="s0">,</span>
+            <span class="s2">'index_type'</span><span class="s1">: self.index_type</span><span class="s0">,</span>
+            <span class="s2">'expressions'</span><span class="s1">: </span><span class="s2">', '</span><span class="s1">.join(expressions)</span><span class="s0">,</span>
+            <span class="s2">'include'</span><span class="s1">: schema_editor._index_include_sql(model</span><span class="s0">, </span><span class="s1">include)</span><span class="s0">,</span>
+            <span class="s2">'where'</span><span class="s1">: </span><span class="s2">' WHERE (%s)' </span><span class="s1">% condition </span><span class="s0">if </span><span class="s1">condition </span><span class="s0">else </span><span class="s2">''</span><span class="s0">,</span>
+            <span class="s2">'deferrable'</span><span class="s1">: schema_editor._deferrable_constraint_sql(self.deferrable)</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">create_sql(self</span><span class="s0">, </span><span class="s1">model</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s1">self.check_supported(schema_editor)</span>
+        <span class="s0">return </span><span class="s1">Statement(</span>
+            <span class="s2">'ALTER TABLE %(table)s ADD %(constraint)s'</span><span class="s0">,</span>
+            <span class="s1">table=Table(model._meta.db_table</span><span class="s0">, </span><span class="s1">schema_editor.quote_name)</span><span class="s0">,</span>
+            <span class="s1">constraint=self.constraint_sql(model</span><span class="s0">, </span><span class="s1">schema_editor)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">remove_sql(self</span><span class="s0">, </span><span class="s1">model</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s0">return </span><span class="s1">schema_editor._delete_constraint_sql(</span>
+            <span class="s1">schema_editor.sql_delete_check</span><span class="s0">,</span>
+            <span class="s1">model</span><span class="s0">,</span>
+            <span class="s1">schema_editor.quote_name(self.name)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">check_supported(self</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s0">if </span><span class="s1">self.include </span><span class="s0">and not </span><span class="s1">schema_editor.connection.features.supports_covering_gist_indexes:</span>
+            <span class="s0">raise </span><span class="s1">NotSupportedError(</span>
+                <span class="s2">'Covering exclusion constraints requires PostgreSQL 12+.'</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s1">kwargs[</span><span class="s2">'expressions'</span><span class="s1">] = self.expressions</span>
+        <span class="s0">if </span><span class="s1">self.condition </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'condition'</span><span class="s1">] = self.condition</span>
+        <span class="s0">if </span><span class="s1">self.index_type.lower() != </span><span class="s2">'gist'</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'index_type'</span><span class="s1">] = self.index_type</span>
+        <span class="s0">if </span><span class="s1">self.deferrable:</span>
+            <span class="s1">kwargs[</span><span class="s2">'deferrable'</span><span class="s1">] = self.deferrable</span>
+        <span class="s0">if </span><span class="s1">self.include:</span>
+            <span class="s1">kwargs[</span><span class="s2">'include'</span><span class="s1">] = self.include</span>
+        <span class="s0">if </span><span class="s1">self.opclasses:</span>
+            <span class="s1">kwargs[</span><span class="s2">'opclasses'</span><span class="s1">] = self.opclasses</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">__eq__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">if </span><span class="s1">isinstance(other</span><span class="s0">, </span><span class="s1">self.__class__):</span>
+            <span class="s0">return </span><span class="s1">(</span>
+                <span class="s1">self.name == other.name </span><span class="s0">and</span>
+                <span class="s1">self.index_type == other.index_type </span><span class="s0">and</span>
+                <span class="s1">self.expressions == other.expressions </span><span class="s0">and</span>
+                <span class="s1">self.condition == other.condition </span><span class="s0">and</span>
+                <span class="s1">self.deferrable == other.deferrable </span><span class="s0">and</span>
+                <span class="s1">self.include == other.include </span><span class="s0">and</span>
+                <span class="s1">self.opclasses == other.opclasses</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">super().__eq__(other)</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s2">'&lt;%s: index_type=%s expressions=%s name=%s%s%s%s%s&gt;' </span><span class="s1">% (</span>
+            <span class="s1">self.__class__.__qualname__</span><span class="s0">,</span>
+            <span class="s1">repr(self.index_type)</span><span class="s0">,</span>
+            <span class="s1">repr(self.expressions)</span><span class="s0">,</span>
+            <span class="s1">repr(self.name)</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if </span><span class="s1">self.condition </span><span class="s0">is None else </span><span class="s2">' condition=%s' </span><span class="s1">% self.condition</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if </span><span class="s1">self.deferrable </span><span class="s0">is None else </span><span class="s2">' deferrable=%r' </span><span class="s1">% self.deferrable</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if not </span><span class="s1">self.include </span><span class="s0">else </span><span class="s2">' include=%s' </span><span class="s1">% repr(self.include)</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if not </span><span class="s1">self.opclasses </span><span class="s0">else </span><span class="s2">' opclasses=%s' </span><span class="s1">% repr(self.opclasses)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+</pre>
+</body>
+</html>

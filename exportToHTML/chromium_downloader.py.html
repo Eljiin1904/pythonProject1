@@ -1,0 +1,179 @@
+<html>
+<head>
+<title>chromium_downloader.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+chromium_downloader.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Chromium download module.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">import </span><span class="s1">os</span>
+<span class="s3">import </span><span class="s1">stat</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">from </span><span class="s1">io </span><span class="s3">import </span><span class="s1">BytesIO</span>
+<span class="s3">from </span><span class="s1">pathlib </span><span class="s3">import </span><span class="s1">Path</span>
+<span class="s3">from </span><span class="s1">zipfile </span><span class="s3">import </span><span class="s1">ZipFile</span>
+
+<span class="s3">import </span><span class="s1">urllib3</span>
+<span class="s3">from </span><span class="s1">pyppeteer </span><span class="s3">import </span><span class="s1">__chromium_revision__</span><span class="s3">, </span><span class="s1">__pyppeteer_home__</span>
+<span class="s3">from </span><span class="s1">tqdm </span><span class="s3">import </span><span class="s1">tqdm</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+<span class="s1">DOWNLOADS_FOLDER = Path(__pyppeteer_home__) / </span><span class="s4">'local-chromium'</span>
+<span class="s1">DEFAULT_DOWNLOAD_HOST = </span><span class="s4">'https://storage.googleapis.com'</span>
+<span class="s1">DOWNLOAD_HOST = os.environ.get(</span><span class="s4">'PYPPETEER_DOWNLOAD_HOST'</span><span class="s3">, </span><span class="s1">DEFAULT_DOWNLOAD_HOST)</span>
+<span class="s1">BASE_URL = </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">DOWNLOAD_HOST</span><span class="s3">}</span><span class="s4">/chromium-browser-snapshots'</span>
+
+<span class="s1">REVISION = os.environ.get(</span><span class="s4">'PYPPETEER_CHROMIUM_REVISION'</span><span class="s3">, </span><span class="s1">__chromium_revision__)</span>
+
+<span class="s1">NO_PROGRESS_BAR = os.environ.get(</span><span class="s4">'PYPPETEER_NO_PROGRESS_BAR'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+<span class="s3">if </span><span class="s1">NO_PROGRESS_BAR.lower() </span><span class="s3">in </span><span class="s1">(</span><span class="s4">'1'</span><span class="s3">, </span><span class="s4">'true'</span><span class="s1">):</span>
+    <span class="s1">NO_PROGRESS_BAR = </span><span class="s3">True  </span><span class="s0"># type: ignore</span>
+
+<span class="s0"># Windows archive name changed at r591479.</span>
+<span class="s1">windowsArchive = </span><span class="s4">'chrome-win' </span><span class="s3">if </span><span class="s1">int(REVISION) &gt; </span><span class="s5">591479 </span><span class="s3">else </span><span class="s4">'chrome-win32'</span>
+
+<span class="s1">downloadURLs = {</span>
+    <span class="s4">'linux'</span><span class="s1">: </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">BASE_URL</span><span class="s3">}</span><span class="s4">/Linux_x64/</span><span class="s3">{</span><span class="s1">REVISION</span><span class="s3">}</span><span class="s4">/chrome-linux.zip'</span><span class="s3">,</span>
+    <span class="s4">'mac'</span><span class="s1">: </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">BASE_URL</span><span class="s3">}</span><span class="s4">/Mac/</span><span class="s3">{</span><span class="s1">REVISION</span><span class="s3">}</span><span class="s4">/chrome-mac.zip'</span><span class="s3">,</span>
+    <span class="s4">'win32'</span><span class="s1">: </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">BASE_URL</span><span class="s3">}</span><span class="s4">/Win/</span><span class="s3">{</span><span class="s1">REVISION</span><span class="s3">}</span><span class="s4">/</span><span class="s3">{</span><span class="s1">windowsArchive</span><span class="s3">}</span><span class="s4">.zip'</span><span class="s3">,</span>
+    <span class="s4">'win64'</span><span class="s1">: </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">BASE_URL</span><span class="s3">}</span><span class="s4">/Win_x64/</span><span class="s3">{</span><span class="s1">REVISION</span><span class="s3">}</span><span class="s4">/</span><span class="s3">{</span><span class="s1">windowsArchive</span><span class="s3">}</span><span class="s4">.zip'</span><span class="s3">,</span>
+<span class="s1">}</span>
+
+<span class="s1">chromiumExecutable = {</span>
+    <span class="s4">'linux'</span><span class="s1">: DOWNLOADS_FOLDER / REVISION / </span><span class="s4">'chrome-linux' </span><span class="s1">/ </span><span class="s4">'chrome'</span><span class="s3">,</span>
+    <span class="s4">'mac'</span><span class="s1">: (DOWNLOADS_FOLDER / REVISION / </span><span class="s4">'chrome-mac' </span><span class="s1">/ </span><span class="s4">'Chromium.app' </span><span class="s1">/ </span><span class="s4">'Contents' </span><span class="s1">/ </span><span class="s4">'MacOS' </span><span class="s1">/ </span><span class="s4">'Chromium'</span><span class="s1">)</span><span class="s3">,</span>
+    <span class="s4">'win32'</span><span class="s1">: DOWNLOADS_FOLDER / REVISION / windowsArchive / </span><span class="s4">'chrome.exe'</span><span class="s3">,</span>
+    <span class="s4">'win64'</span><span class="s1">: DOWNLOADS_FOLDER / REVISION / windowsArchive / </span><span class="s4">'chrome.exe'</span><span class="s3">,</span>
+<span class="s1">}</span>
+
+
+<span class="s3">def </span><span class="s1">current_platform() -&gt; str:</span>
+    <span class="s2">&quot;&quot;&quot;Get current platform name by short string.&quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">sys.platform.startswith(</span><span class="s4">'linux'</span><span class="s1">):</span>
+        <span class="s3">return </span><span class="s4">'linux'</span>
+    <span class="s3">elif </span><span class="s1">sys.platform.startswith(</span><span class="s4">'darwin'</span><span class="s1">):</span>
+        <span class="s3">return </span><span class="s4">'mac'</span>
+    <span class="s3">elif </span><span class="s1">sys.platform.startswith(</span><span class="s4">'win'</span><span class="s1">) </span><span class="s3">or </span><span class="s1">sys.platform.startswith(</span><span class="s4">'msys'</span><span class="s1">) </span><span class="s3">or </span><span class="s1">sys.platform.startswith(</span><span class="s4">'cyg'</span><span class="s1">):</span>
+        <span class="s3">if </span><span class="s1">sys.maxsize &gt; </span><span class="s5">2 </span><span class="s1">** </span><span class="s5">31 </span><span class="s1">- </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s4">'win64'</span>
+        <span class="s3">return </span><span class="s4">'win32'</span>
+    <span class="s3">raise </span><span class="s1">OSError(</span><span class="s4">'Unsupported platform: ' </span><span class="s1">+ sys.platform)</span>
+
+
+<span class="s3">def </span><span class="s1">get_url() -&gt; str:</span>
+    <span class="s2">&quot;&quot;&quot;Get chromium download url.&quot;&quot;&quot;</span>
+    <span class="s3">return </span><span class="s1">downloadURLs[current_platform()]</span>
+
+
+<span class="s3">def </span><span class="s1">download_zip(url: str) -&gt; BytesIO:</span>
+    <span class="s2">&quot;&quot;&quot;Download data from url.&quot;&quot;&quot;</span>
+    <span class="s1">logger.warning(</span><span class="s4">'Starting Chromium download. ' 'Download may take a few minutes.'</span><span class="s1">)</span>
+
+    <span class="s0"># Uncomment the statement below to disable HTTPS warnings and allow</span>
+    <span class="s0"># download without certificate verification. This is *strongly* as it</span>
+    <span class="s0"># opens the code to man-in-the-middle (and other) vulnerabilities; see</span>
+    <span class="s0"># https://urllib3.readthedocs.io/en/latest/advanced-usage.html#tls-warnings</span>
+    <span class="s0"># for more.</span>
+    <span class="s0"># urllib3.disable_warnings()</span>
+
+    <span class="s3">with </span><span class="s1">urllib3.PoolManager() </span><span class="s3">as </span><span class="s1">http:</span>
+        <span class="s0"># Get data from url.</span>
+        <span class="s0"># set preload_content=False means using stream later.</span>
+        <span class="s1">r = http.request(</span><span class="s4">'GET'</span><span class="s3">, </span><span class="s1">url</span><span class="s3">, </span><span class="s1">preload_content=</span><span class="s3">False</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">r.status &gt;= </span><span class="s5">400</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">OSError(</span><span class="s4">f'Chromium downloadable not found at </span><span class="s3">{</span><span class="s1">url</span><span class="s3">}</span><span class="s4">: ' f'Received </span><span class="s3">{</span><span class="s1">r.data.decode()</span><span class="s3">}</span><span class="s4">.</span><span class="s3">\n</span><span class="s4">'</span><span class="s1">)</span>
+
+        <span class="s0"># 10 * 1024</span>
+        <span class="s1">_data = BytesIO()</span>
+        <span class="s3">if </span><span class="s1">NO_PROGRESS_BAR:</span>
+            <span class="s3">for </span><span class="s1">chunk </span><span class="s3">in </span><span class="s1">r.stream(</span><span class="s5">10240</span><span class="s1">):</span>
+                <span class="s1">_data.write(chunk)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">total_length = int(r.headers[</span><span class="s4">'content-length'</span><span class="s1">])</span>
+            <span class="s3">except </span><span class="s1">(KeyError</span><span class="s3">, </span><span class="s1">ValueError</span><span class="s3">, </span><span class="s1">AttributeError):</span>
+                <span class="s1">total_length = </span><span class="s5">0</span>
+            <span class="s1">process_bar = tqdm(total=total_length</span><span class="s3">, </span><span class="s1">unit_scale=</span><span class="s3">True, </span><span class="s1">unit=</span><span class="s4">'b'</span><span class="s1">)</span>
+            <span class="s3">for </span><span class="s1">chunk </span><span class="s3">in </span><span class="s1">r.stream(</span><span class="s5">10240</span><span class="s1">):</span>
+                <span class="s1">_data.write(chunk)</span>
+                <span class="s1">process_bar.update(len(chunk))</span>
+            <span class="s1">process_bar.close()</span>
+
+    <span class="s1">logger.warning(</span><span class="s4">'Chromium download done.'</span><span class="s1">)</span>
+    <span class="s3">return </span><span class="s1">_data</span>
+
+
+<span class="s3">def </span><span class="s1">extract_zip(data: BytesIO</span><span class="s3">, </span><span class="s1">path: Path) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+    <span class="s2">&quot;&quot;&quot;Extract zipped data to path.&quot;&quot;&quot;</span>
+    <span class="s0"># On mac zipfile module cannot extract correctly, so use unzip instead.</span>
+    <span class="s3">if </span><span class="s1">current_platform() == </span><span class="s4">'mac'</span><span class="s1">:</span>
+        <span class="s3">import </span><span class="s1">subprocess</span>
+        <span class="s3">import </span><span class="s1">shutil</span>
+
+        <span class="s1">zip_path = path / </span><span class="s4">'chrome.zip'</span>
+        <span class="s3">if not </span><span class="s1">path.exists():</span>
+            <span class="s1">path.mkdir(parents=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s3">with </span><span class="s1">zip_path.open(</span><span class="s4">'wb'</span><span class="s1">) </span><span class="s3">as </span><span class="s1">f:</span>
+            <span class="s1">f.write(data.getvalue())</span>
+        <span class="s3">if not </span><span class="s1">shutil.which(</span><span class="s4">'unzip'</span><span class="s1">):</span>
+            <span class="s3">raise </span><span class="s1">OSError(</span><span class="s4">'Failed to automatically extract chromium.' f'Please unzip </span><span class="s3">{</span><span class="s1">zip_path</span><span class="s3">} </span><span class="s4">manually.'</span><span class="s1">)</span>
+        <span class="s1">proc = subprocess.run(</span>
+            <span class="s1">[</span><span class="s4">'unzip'</span><span class="s3">, </span><span class="s1">str(zip_path)]</span><span class="s3">, </span><span class="s1">cwd=str(path)</span><span class="s3">, </span><span class="s1">stdout=subprocess.PIPE</span><span class="s3">, </span><span class="s1">stderr=subprocess.STDOUT</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">proc.returncode != </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">logger.error(proc.stdout.decode())</span>
+            <span class="s3">raise </span><span class="s1">OSError(</span><span class="s4">f'Failed to unzip </span><span class="s3">{</span><span class="s1">zip_path</span><span class="s3">}</span><span class="s4">.'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">chromium_executable().exists() </span><span class="s3">and </span><span class="s1">zip_path.exists():</span>
+            <span class="s1">zip_path.unlink()</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s3">with </span><span class="s1">ZipFile(data) </span><span class="s3">as </span><span class="s1">zf:</span>
+            <span class="s1">zf.extractall(str(path))</span>
+    <span class="s1">exec_path = chromium_executable()</span>
+    <span class="s3">if not </span><span class="s1">exec_path.exists():</span>
+        <span class="s3">raise </span><span class="s1">IOError(</span><span class="s4">'Failed to extract chromium.'</span><span class="s1">)</span>
+    <span class="s1">exec_path.chmod(exec_path.stat().st_mode | stat.S_IXOTH | stat.S_IXGRP | stat.S_IXUSR)</span>
+    <span class="s1">logger.warning(</span><span class="s4">f'chromium extracted to: </span><span class="s3">{</span><span class="s1">path</span><span class="s3">}</span><span class="s4">'</span><span class="s1">)</span>
+
+
+<span class="s3">def </span><span class="s1">download_chromium() -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+    <span class="s2">&quot;&quot;&quot;Download and extract chromium.&quot;&quot;&quot;</span>
+    <span class="s1">extract_zip(download_zip(get_url())</span><span class="s3">, </span><span class="s1">DOWNLOADS_FOLDER / REVISION)</span>
+
+
+<span class="s3">def </span><span class="s1">chromium_excutable() -&gt; Path:</span>
+    <span class="s2">&quot;&quot;&quot;[Deprecated] miss-spelled function. 
+    Use `chromium_executable` instead. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">logger.warning(</span><span class="s4">'`chromium_excutable` function is deprecated. ' 'Use `chromium_executable instead.'</span><span class="s1">)</span>
+    <span class="s3">return </span><span class="s1">chromium_executable()</span>
+
+
+<span class="s3">def </span><span class="s1">chromium_executable() -&gt; Path:</span>
+    <span class="s2">&quot;&quot;&quot;Get path of the chromium executable.&quot;&quot;&quot;</span>
+    <span class="s3">return </span><span class="s1">chromiumExecutable[current_platform()]</span>
+
+
+<span class="s3">def </span><span class="s1">check_chromium() -&gt; bool:</span>
+    <span class="s2">&quot;&quot;&quot;Check if chromium is placed at correct path.&quot;&quot;&quot;</span>
+    <span class="s3">return </span><span class="s1">chromium_executable().exists()</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,89 @@
+<html>
+<head>
+<title>geojson.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+geojson.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.contrib.gis.gdal </span><span class="s0">import </span><span class="s1">CoordTransform</span><span class="s0">, </span><span class="s1">SpatialReference</span>
+<span class="s0">from </span><span class="s1">django.core.serializers.base </span><span class="s0">import </span><span class="s1">SerializerDoesNotExist</span>
+<span class="s0">from </span><span class="s1">django.core.serializers.json </span><span class="s0">import </span><span class="s1">Serializer </span><span class="s0">as </span><span class="s1">JSONSerializer</span>
+
+
+<span class="s0">class </span><span class="s1">Serializer(JSONSerializer):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Convert a queryset to GeoJSON, http://geojson.org/ 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">_init_options(self):</span>
+        <span class="s1">super()._init_options()</span>
+        <span class="s1">self.geometry_field = self.json_kwargs.pop(</span><span class="s3">'geometry_field'</span><span class="s0">, None</span><span class="s1">)</span>
+        <span class="s1">self.srid = self.json_kwargs.pop(</span><span class="s3">'srid'</span><span class="s0">, </span><span class="s4">4326</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">(self.selected_fields </span><span class="s0">is not None and </span><span class="s1">self.geometry_field </span><span class="s0">is not None and</span>
+                <span class="s1">self.geometry_field </span><span class="s0">not in </span><span class="s1">self.selected_fields):</span>
+            <span class="s1">self.selected_fields = [*self.selected_fields</span><span class="s0">, </span><span class="s1">self.geometry_field]</span>
+
+    <span class="s0">def </span><span class="s1">start_serialization(self):</span>
+        <span class="s1">self._init_options()</span>
+        <span class="s1">self._cts = {}  </span><span class="s5"># cache of CoordTransform's</span>
+        <span class="s1">self.stream.write(</span>
+            <span class="s3">'{&quot;type&quot;: &quot;FeatureCollection&quot;, &quot;crs&quot;: {&quot;type&quot;: &quot;name&quot;, &quot;properties&quot;: {&quot;name&quot;: &quot;EPSG:%d&quot;}},'</span>
+            <span class="s3">' &quot;features&quot;: [' </span><span class="s1">% self.srid)</span>
+
+    <span class="s0">def </span><span class="s1">end_serialization(self):</span>
+        <span class="s1">self.stream.write(</span><span class="s3">']}'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">start_object(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s1">super().start_object(obj)</span>
+        <span class="s1">self._geometry = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">self.geometry_field </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s5"># Find the first declared geometry field</span>
+            <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">obj._meta.fields:</span>
+                <span class="s0">if </span><span class="s1">hasattr(field</span><span class="s0">, </span><span class="s3">'geom_type'</span><span class="s1">):</span>
+                    <span class="s1">self.geometry_field = field.name</span>
+                    <span class="s0">break</span>
+
+    <span class="s0">def </span><span class="s1">get_dump_object(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s1">data = {</span>
+            <span class="s3">&quot;type&quot;</span><span class="s1">: </span><span class="s3">&quot;Feature&quot;</span><span class="s0">,</span>
+            <span class="s3">&quot;properties&quot;</span><span class="s1">: self._current</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">if </span><span class="s1">((self.selected_fields </span><span class="s0">is None or </span><span class="s3">'pk' </span><span class="s0">in </span><span class="s1">self.selected_fields) </span><span class="s0">and</span>
+                <span class="s3">'pk' </span><span class="s0">not in </span><span class="s1">data[</span><span class="s3">&quot;properties&quot;</span><span class="s1">]):</span>
+            <span class="s1">data[</span><span class="s3">&quot;properties&quot;</span><span class="s1">][</span><span class="s3">&quot;pk&quot;</span><span class="s1">] = obj._meta.pk.value_to_string(obj)</span>
+        <span class="s0">if </span><span class="s1">self._geometry:</span>
+            <span class="s0">if </span><span class="s1">self._geometry.srid != self.srid:</span>
+                <span class="s5"># If needed, transform the geometry in the srid of the global geojson srid</span>
+                <span class="s0">if </span><span class="s1">self._geometry.srid </span><span class="s0">not in </span><span class="s1">self._cts:</span>
+                    <span class="s1">srs = SpatialReference(self.srid)</span>
+                    <span class="s1">self._cts[self._geometry.srid] = CoordTransform(self._geometry.srs</span><span class="s0">, </span><span class="s1">srs)</span>
+                <span class="s1">self._geometry.transform(self._cts[self._geometry.srid])</span>
+            <span class="s1">data[</span><span class="s3">&quot;geometry&quot;</span><span class="s1">] = eval(self._geometry.geojson)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">data[</span><span class="s3">&quot;geometry&quot;</span><span class="s1">] = </span><span class="s0">None</span>
+        <span class="s0">return </span><span class="s1">data</span>
+
+    <span class="s0">def </span><span class="s1">handle_field(self</span><span class="s0">, </span><span class="s1">obj</span><span class="s0">, </span><span class="s1">field):</span>
+        <span class="s0">if </span><span class="s1">field.name == self.geometry_field:</span>
+            <span class="s1">self._geometry = field.value_from_object(obj)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">super().handle_field(obj</span><span class="s0">, </span><span class="s1">field)</span>
+
+
+<span class="s0">class </span><span class="s1">Deserializer:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">raise </span><span class="s1">SerializerDoesNotExist(</span><span class="s3">&quot;geojson is a serialization-only serializer&quot;</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

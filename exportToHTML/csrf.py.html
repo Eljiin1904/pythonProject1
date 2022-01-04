@@ -1,0 +1,477 @@
+<html>
+<head>
+<title>csrf.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+csrf.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Cross Site Request Forgery Middleware. 
+ 
+This module provides a middleware that implements protection 
+against request forgeries from other sites. 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">string</span>
+<span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">defaultdict</span>
+<span class="s2">from </span><span class="s1">urllib.parse </span><span class="s2">import </span><span class="s1">urlparse</span>
+
+<span class="s2">from </span><span class="s1">django.conf </span><span class="s2">import </span><span class="s1">settings</span>
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">DisallowedHost</span><span class="s2">, </span><span class="s1">ImproperlyConfigured</span>
+<span class="s2">from </span><span class="s1">django.http </span><span class="s2">import </span><span class="s1">UnreadablePostError</span>
+<span class="s2">from </span><span class="s1">django.http.request </span><span class="s2">import </span><span class="s1">HttpHeaders</span>
+<span class="s2">from </span><span class="s1">django.urls </span><span class="s2">import </span><span class="s1">get_callable</span>
+<span class="s2">from </span><span class="s1">django.utils.cache </span><span class="s2">import </span><span class="s1">patch_vary_headers</span>
+<span class="s2">from </span><span class="s1">django.utils.crypto </span><span class="s2">import </span><span class="s1">constant_time_compare</span><span class="s2">, </span><span class="s1">get_random_string</span>
+<span class="s2">from </span><span class="s1">django.utils.deprecation </span><span class="s2">import </span><span class="s1">MiddlewareMixin</span>
+<span class="s2">from </span><span class="s1">django.utils.functional </span><span class="s2">import </span><span class="s1">cached_property</span>
+<span class="s2">from </span><span class="s1">django.utils.http </span><span class="s2">import </span><span class="s1">is_same_domain</span>
+<span class="s2">from </span><span class="s1">django.utils.log </span><span class="s2">import </span><span class="s1">log_response</span>
+<span class="s2">from </span><span class="s1">django.utils.regex_helper </span><span class="s2">import </span><span class="s1">_lazy_re_compile</span>
+
+<span class="s1">logger = logging.getLogger(</span><span class="s3">'django.security.csrf'</span><span class="s1">)</span>
+<span class="s4"># This matches if any character is not in CSRF_ALLOWED_CHARS.</span>
+<span class="s1">invalid_token_chars_re = _lazy_re_compile(</span><span class="s3">'[^a-zA-Z0-9]'</span><span class="s1">)</span>
+
+<span class="s1">REASON_BAD_ORIGIN = </span><span class="s3">&quot;Origin checking failed - %s does not match any trusted origins.&quot;</span>
+<span class="s1">REASON_NO_REFERER = </span><span class="s3">&quot;Referer checking failed - no Referer.&quot;</span>
+<span class="s1">REASON_BAD_REFERER = </span><span class="s3">&quot;Referer checking failed - %s does not match any trusted origins.&quot;</span>
+<span class="s1">REASON_NO_CSRF_COOKIE = </span><span class="s3">&quot;CSRF cookie not set.&quot;</span>
+<span class="s1">REASON_CSRF_TOKEN_MISSING = </span><span class="s3">'CSRF token missing.'</span>
+<span class="s1">REASON_MALFORMED_REFERER = </span><span class="s3">&quot;Referer checking failed - Referer is malformed.&quot;</span>
+<span class="s1">REASON_INSECURE_REFERER = </span><span class="s3">&quot;Referer checking failed - Referer is insecure while host is secure.&quot;</span>
+<span class="s4"># The reason strings below are for passing to InvalidTokenFormat. They are</span>
+<span class="s4"># phrases without a subject because they can be in reference to either the CSRF</span>
+<span class="s4"># cookie or non-cookie token.</span>
+<span class="s1">REASON_INCORRECT_LENGTH = </span><span class="s3">'has incorrect length'</span>
+<span class="s1">REASON_INVALID_CHARACTERS = </span><span class="s3">'has invalid characters'</span>
+
+<span class="s1">CSRF_SECRET_LENGTH = </span><span class="s5">32</span>
+<span class="s1">CSRF_TOKEN_LENGTH = </span><span class="s5">2 </span><span class="s1">* CSRF_SECRET_LENGTH</span>
+<span class="s1">CSRF_ALLOWED_CHARS = string.ascii_letters + string.digits</span>
+<span class="s1">CSRF_SESSION_KEY = </span><span class="s3">'_csrftoken'</span>
+
+
+<span class="s2">def </span><span class="s1">_get_failure_view():</span>
+    <span class="s0">&quot;&quot;&quot;Return the view to be used for CSRF rejections.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">get_callable(settings.CSRF_FAILURE_VIEW)</span>
+
+
+<span class="s2">def </span><span class="s1">_get_new_csrf_string():</span>
+    <span class="s2">return </span><span class="s1">get_random_string(CSRF_SECRET_LENGTH</span><span class="s2">, </span><span class="s1">allowed_chars=CSRF_ALLOWED_CHARS)</span>
+
+
+<span class="s2">def </span><span class="s1">_mask_cipher_secret(secret):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Given a secret (assumed to be a string of CSRF_ALLOWED_CHARS), generate a 
+    token by adding a mask and applying it to the secret. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">mask = _get_new_csrf_string()</span>
+    <span class="s1">chars = CSRF_ALLOWED_CHARS</span>
+    <span class="s1">pairs = zip((chars.index(x) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">secret)</span><span class="s2">, </span><span class="s1">(chars.index(x) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">mask))</span>
+    <span class="s1">cipher = </span><span class="s3">''</span><span class="s1">.join(chars[(x + y) % len(chars)] </span><span class="s2">for </span><span class="s1">x</span><span class="s2">, </span><span class="s1">y </span><span class="s2">in </span><span class="s1">pairs)</span>
+    <span class="s2">return </span><span class="s1">mask + cipher</span>
+
+
+<span class="s2">def </span><span class="s1">_unmask_cipher_token(token):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Given a token (assumed to be a string of CSRF_ALLOWED_CHARS, of length 
+    CSRF_TOKEN_LENGTH, and that its first half is a mask), use it to decrypt 
+    the second half to produce the original secret. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">mask = token[:CSRF_SECRET_LENGTH]</span>
+    <span class="s1">token = token[CSRF_SECRET_LENGTH:]</span>
+    <span class="s1">chars = CSRF_ALLOWED_CHARS</span>
+    <span class="s1">pairs = zip((chars.index(x) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">token)</span><span class="s2">, </span><span class="s1">(chars.index(x) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">mask))</span>
+    <span class="s2">return </span><span class="s3">''</span><span class="s1">.join(chars[x - y] </span><span class="s2">for </span><span class="s1">x</span><span class="s2">, </span><span class="s1">y </span><span class="s2">in </span><span class="s1">pairs)  </span><span class="s4"># Note negative values are ok</span>
+
+
+<span class="s2">def </span><span class="s1">_add_new_csrf_cookie(request):</span>
+    <span class="s0">&quot;&quot;&quot;Generate a new random CSRF_COOKIE value, and add it to request.META.&quot;&quot;&quot;</span>
+    <span class="s1">csrf_secret = _get_new_csrf_string()</span>
+    <span class="s1">request.META.update({</span>
+        <span class="s3">'CSRF_COOKIE'</span><span class="s1">: _mask_cipher_secret(csrf_secret)</span><span class="s2">,</span>
+        <span class="s3">'CSRF_COOKIE_NEEDS_UPDATE'</span><span class="s1">: </span><span class="s2">True,</span>
+    <span class="s1">})</span>
+    <span class="s2">return </span><span class="s1">csrf_secret</span>
+
+
+<span class="s2">def </span><span class="s1">get_token(request):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Return the CSRF token required for a POST form. The token is an 
+    alphanumeric value. A new token is created if one is not already set. 
+ 
+    A side effect of calling this function is to make the csrf_protect 
+    decorator and the CsrfViewMiddleware add a CSRF cookie and a 'Vary: Cookie' 
+    header to the outgoing response.  For this reason, you may need to use this 
+    function lazily, as is done by the csrf context processor. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s3">'CSRF_COOKIE' </span><span class="s2">in </span><span class="s1">request.META:</span>
+        <span class="s1">csrf_secret = _unmask_cipher_token(request.META[</span><span class="s3">&quot;CSRF_COOKIE&quot;</span><span class="s1">])</span>
+        <span class="s4"># Since the cookie is being used, flag to send the cookie in</span>
+        <span class="s4"># process_response() (even if the client already has it) in order to</span>
+        <span class="s4"># renew the expiry timer.</span>
+        <span class="s1">request.META[</span><span class="s3">'CSRF_COOKIE_NEEDS_UPDATE'</span><span class="s1">] = </span><span class="s2">True</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">csrf_secret = _add_new_csrf_cookie(request)</span>
+    <span class="s2">return </span><span class="s1">_mask_cipher_secret(csrf_secret)</span>
+
+
+<span class="s2">def </span><span class="s1">rotate_token(request):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Change the CSRF token in use for a request - should be done on login 
+    for security purposes. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">_add_new_csrf_cookie(request)</span>
+
+
+<span class="s2">class </span><span class="s1">InvalidTokenFormat(Exception):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">reason):</span>
+        <span class="s1">self.reason = reason</span>
+
+
+<span class="s2">def </span><span class="s1">_sanitize_token(token):</span>
+    <span class="s2">if </span><span class="s1">len(token) </span><span class="s2">not in </span><span class="s1">(CSRF_TOKEN_LENGTH</span><span class="s2">, </span><span class="s1">CSRF_SECRET_LENGTH):</span>
+        <span class="s2">raise </span><span class="s1">InvalidTokenFormat(REASON_INCORRECT_LENGTH)</span>
+    <span class="s4"># Make sure all characters are in CSRF_ALLOWED_CHARS.</span>
+    <span class="s2">if </span><span class="s1">invalid_token_chars_re.search(token):</span>
+        <span class="s2">raise </span><span class="s1">InvalidTokenFormat(REASON_INVALID_CHARACTERS)</span>
+    <span class="s2">if </span><span class="s1">len(token) == CSRF_SECRET_LENGTH:</span>
+        <span class="s4"># Older Django versions set cookies to values of CSRF_SECRET_LENGTH</span>
+        <span class="s4"># alphanumeric characters. For backwards compatibility, accept</span>
+        <span class="s4"># such values as unmasked secrets.</span>
+        <span class="s4"># It's easier to mask here and be consistent later, rather than add</span>
+        <span class="s4"># different code paths in the checks, although that might be a tad more</span>
+        <span class="s4"># efficient.</span>
+        <span class="s2">return </span><span class="s1">_mask_cipher_secret(token)</span>
+    <span class="s2">return </span><span class="s1">token</span>
+
+
+<span class="s2">def </span><span class="s1">_does_token_match(request_csrf_token</span><span class="s2">, </span><span class="s1">csrf_token):</span>
+    <span class="s4"># Assume both arguments are sanitized -- that is, strings of</span>
+    <span class="s4"># length CSRF_TOKEN_LENGTH, all CSRF_ALLOWED_CHARS.</span>
+    <span class="s2">return </span><span class="s1">constant_time_compare(</span>
+        <span class="s1">_unmask_cipher_token(request_csrf_token)</span><span class="s2">,</span>
+        <span class="s1">_unmask_cipher_token(csrf_token)</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">RejectRequest(Exception):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">reason):</span>
+        <span class="s1">self.reason = reason</span>
+
+
+<span class="s2">class </span><span class="s1">CsrfViewMiddleware(MiddlewareMixin):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Require a present and correct csrfmiddlewaretoken for POST requests that 
+    have a CSRF cookie, and set an outgoing CSRF cookie. 
+ 
+    This middleware should be used in conjunction with the {% csrf_token %} 
+    template tag. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">csrf_trusted_origins_hosts(self):</span>
+        <span class="s2">return </span><span class="s1">[</span>
+            <span class="s1">urlparse(origin).netloc.lstrip(</span><span class="s3">'*'</span><span class="s1">)</span>
+            <span class="s2">for </span><span class="s1">origin </span><span class="s2">in </span><span class="s1">settings.CSRF_TRUSTED_ORIGINS</span>
+        <span class="s1">]</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">allowed_origins_exact(self):</span>
+        <span class="s2">return </span><span class="s1">{</span>
+            <span class="s1">origin </span><span class="s2">for </span><span class="s1">origin </span><span class="s2">in </span><span class="s1">settings.CSRF_TRUSTED_ORIGINS</span>
+            <span class="s2">if </span><span class="s3">'*' </span><span class="s2">not in </span><span class="s1">origin</span>
+        <span class="s1">}</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">allowed_origin_subdomains(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        A mapping of allowed schemes to list of allowed netlocs, where all 
+        subdomains of the netloc are allowed. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">allowed_origin_subdomains = defaultdict(list)</span>
+        <span class="s2">for </span><span class="s1">parsed </span><span class="s2">in </span><span class="s1">(urlparse(origin) </span><span class="s2">for </span><span class="s1">origin </span><span class="s2">in </span><span class="s1">settings.CSRF_TRUSTED_ORIGINS </span><span class="s2">if </span><span class="s3">'*' </span><span class="s2">in </span><span class="s1">origin):</span>
+            <span class="s1">allowed_origin_subdomains[parsed.scheme].append(parsed.netloc.lstrip(</span><span class="s3">'*'</span><span class="s1">))</span>
+        <span class="s2">return </span><span class="s1">allowed_origin_subdomains</span>
+
+    <span class="s4"># The _accept and _reject methods currently only exist for the sake of the</span>
+    <span class="s4"># requires_csrf_token decorator.</span>
+    <span class="s2">def </span><span class="s1">_accept(self</span><span class="s2">, </span><span class="s1">request):</span>
+        <span class="s4"># Avoid checking the request twice by adding a custom attribute to</span>
+        <span class="s4"># request.  This will be relevant when both decorator and middleware</span>
+        <span class="s4"># are used.</span>
+        <span class="s1">request.csrf_processing_done = </span><span class="s2">True</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">def </span><span class="s1">_reject(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">reason):</span>
+        <span class="s1">response = _get_failure_view()(request</span><span class="s2">, </span><span class="s1">reason=reason)</span>
+        <span class="s1">log_response(</span>
+            <span class="s3">'Forbidden (%s): %s'</span><span class="s2">, </span><span class="s1">reason</span><span class="s2">, </span><span class="s1">request.path</span><span class="s2">,</span>
+            <span class="s1">response=response</span><span class="s2">,</span>
+            <span class="s1">request=request</span><span class="s2">,</span>
+            <span class="s1">logger=logger</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">response</span>
+
+    <span class="s2">def </span><span class="s1">_get_token(self</span><span class="s2">, </span><span class="s1">request):</span>
+        <span class="s2">if </span><span class="s1">settings.CSRF_USE_SESSIONS:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">request.session.get(CSRF_SESSION_KEY)</span>
+            <span class="s2">except </span><span class="s1">AttributeError:</span>
+                <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s3">'CSRF_USE_SESSIONS is enabled, but request.session is not '</span>
+                    <span class="s3">'set. SessionMiddleware must appear before CsrfViewMiddleware '</span>
+                    <span class="s3">'in MIDDLEWARE.'</span>
+                <span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">cookie_token = request.COOKIES[settings.CSRF_COOKIE_NAME]</span>
+            <span class="s2">except </span><span class="s1">KeyError:</span>
+                <span class="s2">return None</span>
+
+            <span class="s4"># This can raise InvalidTokenFormat.</span>
+            <span class="s1">csrf_token = _sanitize_token(cookie_token)</span>
+
+            <span class="s2">if </span><span class="s1">csrf_token != cookie_token:</span>
+                <span class="s4"># Then the cookie token had length CSRF_SECRET_LENGTH, so flag</span>
+                <span class="s4"># to replace it with the masked version.</span>
+                <span class="s1">request.META[</span><span class="s3">'CSRF_COOKIE_NEEDS_UPDATE'</span><span class="s1">] = </span><span class="s2">True</span>
+            <span class="s2">return </span><span class="s1">csrf_token</span>
+
+    <span class="s2">def </span><span class="s1">_set_csrf_cookie(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">response):</span>
+        <span class="s2">if </span><span class="s1">settings.CSRF_USE_SESSIONS:</span>
+            <span class="s2">if </span><span class="s1">request.session.get(CSRF_SESSION_KEY) != request.META[</span><span class="s3">'CSRF_COOKIE'</span><span class="s1">]:</span>
+                <span class="s1">request.session[CSRF_SESSION_KEY] = request.META[</span><span class="s3">'CSRF_COOKIE'</span><span class="s1">]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">response.set_cookie(</span>
+                <span class="s1">settings.CSRF_COOKIE_NAME</span><span class="s2">,</span>
+                <span class="s1">request.META[</span><span class="s3">'CSRF_COOKIE'</span><span class="s1">]</span><span class="s2">,</span>
+                <span class="s1">max_age=settings.CSRF_COOKIE_AGE</span><span class="s2">,</span>
+                <span class="s1">domain=settings.CSRF_COOKIE_DOMAIN</span><span class="s2">,</span>
+                <span class="s1">path=settings.CSRF_COOKIE_PATH</span><span class="s2">,</span>
+                <span class="s1">secure=settings.CSRF_COOKIE_SECURE</span><span class="s2">,</span>
+                <span class="s1">httponly=settings.CSRF_COOKIE_HTTPONLY</span><span class="s2">,</span>
+                <span class="s1">samesite=settings.CSRF_COOKIE_SAMESITE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+            <span class="s4"># Set the Vary header since content varies with the CSRF cookie.</span>
+            <span class="s1">patch_vary_headers(response</span><span class="s2">, </span><span class="s1">(</span><span class="s3">'Cookie'</span><span class="s2">,</span><span class="s1">))</span>
+
+    <span class="s2">def </span><span class="s1">_origin_verified(self</span><span class="s2">, </span><span class="s1">request):</span>
+        <span class="s1">request_origin = request.META[</span><span class="s3">'HTTP_ORIGIN'</span><span class="s1">]</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">good_host = request.get_host()</span>
+        <span class="s2">except </span><span class="s1">DisallowedHost:</span>
+            <span class="s2">pass</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">good_origin = </span><span class="s3">'%s://%s' </span><span class="s1">% (</span>
+                <span class="s3">'https' </span><span class="s2">if </span><span class="s1">request.is_secure() </span><span class="s2">else </span><span class="s3">'http'</span><span class="s2">,</span>
+                <span class="s1">good_host</span><span class="s2">,</span>
+            <span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">request_origin == good_origin:</span>
+                <span class="s2">return True</span>
+        <span class="s2">if </span><span class="s1">request_origin </span><span class="s2">in </span><span class="s1">self.allowed_origins_exact:</span>
+            <span class="s2">return True</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">parsed_origin = urlparse(request_origin)</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">return False</span>
+        <span class="s1">request_scheme = parsed_origin.scheme</span>
+        <span class="s1">request_netloc = parsed_origin.netloc</span>
+        <span class="s2">return </span><span class="s1">any(</span>
+            <span class="s1">is_same_domain(request_netloc</span><span class="s2">, </span><span class="s1">host)</span>
+            <span class="s2">for </span><span class="s1">host </span><span class="s2">in </span><span class="s1">self.allowed_origin_subdomains.get(request_scheme</span><span class="s2">, </span><span class="s1">())</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_check_referer(self</span><span class="s2">, </span><span class="s1">request):</span>
+        <span class="s1">referer = request.META.get(</span><span class="s3">'HTTP_REFERER'</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">referer </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(REASON_NO_REFERER)</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">referer = urlparse(referer)</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(REASON_MALFORMED_REFERER)</span>
+
+        <span class="s4"># Make sure we have a valid URL for Referer.</span>
+        <span class="s2">if </span><span class="s3">'' </span><span class="s2">in </span><span class="s1">(referer.scheme</span><span class="s2">, </span><span class="s1">referer.netloc):</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(REASON_MALFORMED_REFERER)</span>
+
+        <span class="s4"># Ensure that our Referer is also secure.</span>
+        <span class="s2">if </span><span class="s1">referer.scheme != </span><span class="s3">'https'</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(REASON_INSECURE_REFERER)</span>
+
+        <span class="s2">if </span><span class="s1">any(</span>
+            <span class="s1">is_same_domain(referer.netloc</span><span class="s2">, </span><span class="s1">host)</span>
+            <span class="s2">for </span><span class="s1">host </span><span class="s2">in </span><span class="s1">self.csrf_trusted_origins_hosts</span>
+        <span class="s1">):</span>
+            <span class="s2">return</span>
+        <span class="s4"># Allow matching the configured cookie domain.</span>
+        <span class="s1">good_referer = (</span>
+            <span class="s1">settings.SESSION_COOKIE_DOMAIN</span>
+            <span class="s2">if </span><span class="s1">settings.CSRF_USE_SESSIONS</span>
+            <span class="s2">else </span><span class="s1">settings.CSRF_COOKIE_DOMAIN</span>
+        <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">good_referer </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s4"># If no cookie domain is configured, allow matching the current</span>
+            <span class="s4"># host:port exactly if it's permitted by ALLOWED_HOSTS.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s4"># request.get_host() includes the port.</span>
+                <span class="s1">good_referer = request.get_host()</span>
+            <span class="s2">except </span><span class="s1">DisallowedHost:</span>
+                <span class="s2">raise </span><span class="s1">RejectRequest(REASON_BAD_REFERER % referer.geturl())</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">server_port = request.get_port()</span>
+            <span class="s2">if </span><span class="s1">server_port </span><span class="s2">not in </span><span class="s1">(</span><span class="s3">'443'</span><span class="s2">, </span><span class="s3">'80'</span><span class="s1">):</span>
+                <span class="s1">good_referer = </span><span class="s3">'%s:%s' </span><span class="s1">% (good_referer</span><span class="s2">, </span><span class="s1">server_port)</span>
+
+        <span class="s2">if not </span><span class="s1">is_same_domain(referer.netloc</span><span class="s2">, </span><span class="s1">good_referer):</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(REASON_BAD_REFERER % referer.geturl())</span>
+
+    <span class="s2">def </span><span class="s1">_bad_token_message(self</span><span class="s2">, </span><span class="s1">reason</span><span class="s2">, </span><span class="s1">token_source):</span>
+        <span class="s2">if </span><span class="s1">token_source != </span><span class="s3">'POST'</span><span class="s1">:</span>
+            <span class="s4"># Assume it is a settings.CSRF_HEADER_NAME value.</span>
+            <span class="s1">header_name = HttpHeaders.parse_header_name(token_source)</span>
+            <span class="s1">token_source = </span><span class="s3">f'the </span><span class="s2">{</span><span class="s1">header_name</span><span class="s2">!r} </span><span class="s3">HTTP header'</span>
+        <span class="s2">return </span><span class="s3">f'CSRF token from </span><span class="s2">{</span><span class="s1">token_source</span><span class="s2">} {</span><span class="s1">reason</span><span class="s2">}</span><span class="s3">.'</span>
+
+    <span class="s2">def </span><span class="s1">_check_token(self</span><span class="s2">, </span><span class="s1">request):</span>
+        <span class="s4"># Access csrf_token via self._get_token() as rotate_token() may have</span>
+        <span class="s4"># been called by an authentication middleware during the</span>
+        <span class="s4"># process_request() phase.</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">csrf_token = self._get_token(request)</span>
+        <span class="s2">except </span><span class="s1">InvalidTokenFormat </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(</span><span class="s3">f'CSRF cookie </span><span class="s2">{</span><span class="s1">exc.reason</span><span class="s2">}</span><span class="s3">.'</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">csrf_token </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s4"># No CSRF cookie. For POST requests, we insist on a CSRF cookie,</span>
+            <span class="s4"># and in this way we can avoid all CSRF attacks, including login</span>
+            <span class="s4"># CSRF.</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(REASON_NO_CSRF_COOKIE)</span>
+
+        <span class="s4"># Check non-cookie token for match.</span>
+        <span class="s1">request_csrf_token = </span><span class="s3">''</span>
+        <span class="s2">if </span><span class="s1">request.method == </span><span class="s3">'POST'</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">request_csrf_token = request.POST.get(</span><span class="s3">'csrfmiddlewaretoken'</span><span class="s2">, </span><span class="s3">''</span><span class="s1">)</span>
+            <span class="s2">except </span><span class="s1">UnreadablePostError:</span>
+                <span class="s4"># Handle a broken connection before we've completed reading the</span>
+                <span class="s4"># POST data. process_view shouldn't raise any exceptions, so</span>
+                <span class="s4"># we'll ignore and serve the user a 403 (assuming they're still</span>
+                <span class="s4"># listening, which they probably aren't because of the error).</span>
+                <span class="s2">pass</span>
+
+        <span class="s2">if </span><span class="s1">request_csrf_token == </span><span class="s3">''</span><span class="s1">:</span>
+            <span class="s4"># Fall back to X-CSRFToken, to make things easier for AJAX, and</span>
+            <span class="s4"># possible for PUT/DELETE.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">request_csrf_token = request.META[settings.CSRF_HEADER_NAME]</span>
+            <span class="s2">except </span><span class="s1">KeyError:</span>
+                <span class="s2">raise </span><span class="s1">RejectRequest(REASON_CSRF_TOKEN_MISSING)</span>
+            <span class="s1">token_source = settings.CSRF_HEADER_NAME</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">token_source = </span><span class="s3">'POST'</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">request_csrf_token = _sanitize_token(request_csrf_token)</span>
+        <span class="s2">except </span><span class="s1">InvalidTokenFormat </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s1">reason = self._bad_token_message(exc.reason</span><span class="s2">, </span><span class="s1">token_source)</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(reason)</span>
+
+        <span class="s2">if not </span><span class="s1">_does_token_match(request_csrf_token</span><span class="s2">, </span><span class="s1">csrf_token):</span>
+            <span class="s1">reason = self._bad_token_message(</span><span class="s3">'incorrect'</span><span class="s2">, </span><span class="s1">token_source)</span>
+            <span class="s2">raise </span><span class="s1">RejectRequest(reason)</span>
+
+    <span class="s2">def </span><span class="s1">process_request(self</span><span class="s2">, </span><span class="s1">request):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">csrf_token = self._get_token(request)</span>
+        <span class="s2">except </span><span class="s1">InvalidTokenFormat:</span>
+            <span class="s1">_add_new_csrf_cookie(request)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">csrf_token </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s4"># Use same token next time.</span>
+                <span class="s1">request.META[</span><span class="s3">'CSRF_COOKIE'</span><span class="s1">] = csrf_token</span>
+
+    <span class="s2">def </span><span class="s1">process_view(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">callback</span><span class="s2">, </span><span class="s1">callback_args</span><span class="s2">, </span><span class="s1">callback_kwargs):</span>
+        <span class="s2">if </span><span class="s1">getattr(request</span><span class="s2">, </span><span class="s3">'csrf_processing_done'</span><span class="s2">, False</span><span class="s1">):</span>
+            <span class="s2">return None</span>
+
+        <span class="s4"># Wait until request.META[&quot;CSRF_COOKIE&quot;] has been manipulated before</span>
+        <span class="s4"># bailing out, so that get_token still works</span>
+        <span class="s2">if </span><span class="s1">getattr(callback</span><span class="s2">, </span><span class="s3">'csrf_exempt'</span><span class="s2">, False</span><span class="s1">):</span>
+            <span class="s2">return None</span>
+
+        <span class="s4"># Assume that anything not defined as 'safe' by RFC7231 needs protection</span>
+        <span class="s2">if </span><span class="s1">request.method </span><span class="s2">in </span><span class="s1">(</span><span class="s3">'GET'</span><span class="s2">, </span><span class="s3">'HEAD'</span><span class="s2">, </span><span class="s3">'OPTIONS'</span><span class="s2">, </span><span class="s3">'TRACE'</span><span class="s1">):</span>
+            <span class="s2">return </span><span class="s1">self._accept(request)</span>
+
+        <span class="s2">if </span><span class="s1">getattr(request</span><span class="s2">, </span><span class="s3">'_dont_enforce_csrf_checks'</span><span class="s2">, False</span><span class="s1">):</span>
+            <span class="s4"># Mechanism to turn off CSRF checks for test suite. It comes after</span>
+            <span class="s4"># the creation of CSRF cookies, so that everything else continues</span>
+            <span class="s4"># to work exactly the same (e.g. cookies are sent, etc.), but</span>
+            <span class="s4"># before any branches that call the _reject method.</span>
+            <span class="s2">return </span><span class="s1">self._accept(request)</span>
+
+        <span class="s4"># Reject the request if the Origin header doesn't match an allowed</span>
+        <span class="s4"># value.</span>
+        <span class="s2">if </span><span class="s3">'HTTP_ORIGIN' </span><span class="s2">in </span><span class="s1">request.META:</span>
+            <span class="s2">if not </span><span class="s1">self._origin_verified(request):</span>
+                <span class="s2">return </span><span class="s1">self._reject(request</span><span class="s2">, </span><span class="s1">REASON_BAD_ORIGIN % request.META[</span><span class="s3">'HTTP_ORIGIN'</span><span class="s1">])</span>
+        <span class="s2">elif </span><span class="s1">request.is_secure():</span>
+            <span class="s4"># If the Origin header wasn't provided, reject HTTPS requests if</span>
+            <span class="s4"># the Referer header doesn't match an allowed value.</span>
+            <span class="s4">#</span>
+            <span class="s4"># Suppose user visits http://example.com/</span>
+            <span class="s4"># An active network attacker (man-in-the-middle, MITM) sends a</span>
+            <span class="s4"># POST form that targets https://example.com/detonate-bomb/ and</span>
+            <span class="s4"># submits it via JavaScript.</span>
+            <span class="s4">#</span>
+            <span class="s4"># The attacker will need to provide a CSRF cookie and token, but</span>
+            <span class="s4"># that's no problem for a MITM and the session-independent secret</span>
+            <span class="s4"># we're using. So the MITM can circumvent the CSRF protection. This</span>
+            <span class="s4"># is true for any HTTP connection, but anyone using HTTPS expects</span>
+            <span class="s4"># better! For this reason, for https://example.com/ we need</span>
+            <span class="s4"># additional protection that treats http://example.com/ as</span>
+            <span class="s4"># completely untrusted. Under HTTPS, Barth et al. found that the</span>
+            <span class="s4"># Referer header is missing for same-domain requests in only about</span>
+            <span class="s4"># 0.2% of cases or less, so we can use strict Referer checking.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">self._check_referer(request)</span>
+            <span class="s2">except </span><span class="s1">RejectRequest </span><span class="s2">as </span><span class="s1">exc:</span>
+                <span class="s2">return </span><span class="s1">self._reject(request</span><span class="s2">, </span><span class="s1">exc.reason)</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self._check_token(request)</span>
+        <span class="s2">except </span><span class="s1">RejectRequest </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s2">return </span><span class="s1">self._reject(request</span><span class="s2">, </span><span class="s1">exc.reason)</span>
+
+        <span class="s2">return </span><span class="s1">self._accept(request)</span>
+
+    <span class="s2">def </span><span class="s1">process_response(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">response):</span>
+        <span class="s2">if </span><span class="s1">request.META.get(</span><span class="s3">'CSRF_COOKIE_NEEDS_UPDATE'</span><span class="s1">):</span>
+            <span class="s1">self._set_csrf_cookie(request</span><span class="s2">, </span><span class="s1">response)</span>
+            <span class="s4"># Unset the flag to prevent _set_csrf_cookie() from being</span>
+            <span class="s4"># unnecessarily called again in process_response() by other</span>
+            <span class="s4"># instances of CsrfViewMiddleware. This can happen e.g. when both a</span>
+            <span class="s4"># decorator and middleware are used. However,</span>
+            <span class="s4"># CSRF_COOKIE_NEEDS_UPDATE is still respected in subsequent calls</span>
+            <span class="s4"># e.g. in case rotate_token() is called in process_response() later</span>
+            <span class="s4"># by custom middleware but before those subsequent calls.</span>
+            <span class="s1">request.META[</span><span class="s3">'CSRF_COOKIE_NEEDS_UPDATE'</span><span class="s1">] = </span><span class="s2">False</span>
+
+        <span class="s2">return </span><span class="s1">response</span>
+</pre>
+</body>
+</html>

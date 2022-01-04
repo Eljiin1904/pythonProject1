@@ -1,0 +1,116 @@
+<html>
+<head>
+<title>test_highlevel_generic.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #a5c261;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_highlevel_generic.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">import </span><span class="s1">attr</span>
+
+<span class="s0">from </span><span class="s1">..abc </span><span class="s0">import </span><span class="s1">SendStream</span><span class="s0">, </span><span class="s1">ReceiveStream</span>
+<span class="s0">from </span><span class="s1">.._highlevel_generic </span><span class="s0">import </span><span class="s1">StapledStream</span>
+
+
+<span class="s1">@attr.s</span>
+<span class="s0">class </span><span class="s1">RecordSendStream(SendStream):</span>
+    <span class="s1">record = attr.ib(factory=list)</span>
+
+    <span class="s0">async def </span><span class="s1">send_all(self</span><span class="s0">, </span><span class="s1">data):</span>
+        <span class="s1">self.record.append((</span><span class="s2">&quot;send_all&quot;</span><span class="s0">, </span><span class="s1">data))</span>
+
+    <span class="s0">async def </span><span class="s1">wait_send_all_might_not_block(self):</span>
+        <span class="s1">self.record.append(</span><span class="s2">&quot;wait_send_all_might_not_block&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">aclose(self):</span>
+        <span class="s1">self.record.append(</span><span class="s2">&quot;aclose&quot;</span><span class="s1">)</span>
+
+
+<span class="s1">@attr.s</span>
+<span class="s0">class </span><span class="s1">RecordReceiveStream(ReceiveStream):</span>
+    <span class="s1">record = attr.ib(factory=list)</span>
+
+    <span class="s0">async def </span><span class="s1">receive_some(self</span><span class="s0">, </span><span class="s1">max_bytes=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.record.append((</span><span class="s2">&quot;receive_some&quot;</span><span class="s0">, </span><span class="s1">max_bytes))</span>
+
+    <span class="s0">async def </span><span class="s1">aclose(self):</span>
+        <span class="s1">self.record.append(</span><span class="s2">&quot;aclose&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_StapledStream():</span>
+    <span class="s1">send_stream = RecordSendStream()</span>
+    <span class="s1">receive_stream = RecordReceiveStream()</span>
+    <span class="s1">stapled = StapledStream(send_stream</span><span class="s0">, </span><span class="s1">receive_stream)</span>
+
+    <span class="s0">assert </span><span class="s1">stapled.send_stream </span><span class="s0">is </span><span class="s1">send_stream</span>
+    <span class="s0">assert </span><span class="s1">stapled.receive_stream </span><span class="s0">is </span><span class="s1">receive_stream</span>
+
+    <span class="s0">await </span><span class="s1">stapled.send_all(</span><span class="s3">b&quot;foo&quot;</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">stapled.wait_send_all_might_not_block()</span>
+    <span class="s0">assert </span><span class="s1">send_stream.record == [</span>
+        <span class="s1">(</span><span class="s2">&quot;send_all&quot;</span><span class="s0">, </span><span class="s3">b&quot;foo&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s2">&quot;wait_send_all_might_not_block&quot;</span><span class="s0">,</span>
+    <span class="s1">]</span>
+    <span class="s1">send_stream.record.clear()</span>
+
+    <span class="s0">await </span><span class="s1">stapled.send_eof()</span>
+    <span class="s0">assert </span><span class="s1">send_stream.record == [</span><span class="s2">&quot;aclose&quot;</span><span class="s1">]</span>
+    <span class="s1">send_stream.record.clear()</span>
+
+    <span class="s0">async def </span><span class="s1">fake_send_eof():</span>
+        <span class="s1">send_stream.record.append(</span><span class="s2">&quot;send_eof&quot;</span><span class="s1">)</span>
+
+    <span class="s1">send_stream.send_eof = fake_send_eof</span>
+    <span class="s0">await </span><span class="s1">stapled.send_eof()</span>
+    <span class="s0">assert </span><span class="s1">send_stream.record == [</span><span class="s2">&quot;send_eof&quot;</span><span class="s1">]</span>
+
+    <span class="s1">send_stream.record.clear()</span>
+    <span class="s0">assert </span><span class="s1">receive_stream.record == []</span>
+
+    <span class="s0">await </span><span class="s1">stapled.receive_some(</span><span class="s4">1234</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">receive_stream.record == [(</span><span class="s2">&quot;receive_some&quot;</span><span class="s0">, </span><span class="s4">1234</span><span class="s1">)]</span>
+    <span class="s0">assert </span><span class="s1">send_stream.record == []</span>
+    <span class="s1">receive_stream.record.clear()</span>
+
+    <span class="s0">await </span><span class="s1">stapled.aclose()</span>
+    <span class="s0">assert </span><span class="s1">receive_stream.record == [</span><span class="s2">&quot;aclose&quot;</span><span class="s1">]</span>
+    <span class="s0">assert </span><span class="s1">send_stream.record == [</span><span class="s2">&quot;aclose&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_StapledStream_with_erroring_close():</span>
+    <span class="s5"># Make sure that if one of the aclose methods errors out, then the other</span>
+    <span class="s5"># one still gets called.</span>
+    <span class="s0">class </span><span class="s1">BrokenSendStream(RecordSendStream):</span>
+        <span class="s0">async def </span><span class="s1">aclose(self):</span>
+            <span class="s0">await </span><span class="s1">super().aclose()</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s0">class </span><span class="s1">BrokenReceiveStream(RecordReceiveStream):</span>
+        <span class="s0">async def </span><span class="s1">aclose(self):</span>
+            <span class="s0">await </span><span class="s1">super().aclose()</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s1">stapled = StapledStream(BrokenSendStream()</span><span class="s0">, </span><span class="s1">BrokenReceiveStream())</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">stapled.aclose()</span>
+    <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__context__</span><span class="s0">, </span><span class="s1">ValueError)</span>
+
+    <span class="s0">assert </span><span class="s1">stapled.send_stream.record == [</span><span class="s2">&quot;aclose&quot;</span><span class="s1">]</span>
+    <span class="s0">assert </span><span class="s1">stapled.receive_stream.record == [</span><span class="s2">&quot;aclose&quot;</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

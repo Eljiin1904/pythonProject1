@@ -1,0 +1,98 @@
+<html>
+<head>
+<title>threadsafe.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+threadsafe.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">threading</span>
+
+<span class="s0">from </span><span class="s1">django.contrib.gis.geos.base </span><span class="s0">import </span><span class="s1">GEOSBase</span>
+<span class="s0">from </span><span class="s1">django.contrib.gis.geos.libgeos </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">CONTEXT_PTR</span><span class="s0">, </span><span class="s1">error_h</span><span class="s0">, </span><span class="s1">lgeos</span><span class="s0">, </span><span class="s1">notice_h</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">GEOSContextHandle(GEOSBase):</span>
+    <span class="s2">&quot;&quot;&quot;Represent a GEOS context handle.&quot;&quot;&quot;</span>
+    <span class="s1">ptr_type = CONTEXT_PTR</span>
+    <span class="s1">destructor = lgeos.finishGEOS_r</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s3"># Initializing the context handler for this thread with</span>
+        <span class="s3"># the notice and error handler.</span>
+        <span class="s1">self.ptr = lgeos.initGEOS_r(notice_h</span><span class="s0">, </span><span class="s1">error_h)</span>
+
+
+<span class="s3"># Defining a thread-local object and creating an instance</span>
+<span class="s3"># to hold a reference to GEOSContextHandle for this thread.</span>
+<span class="s0">class </span><span class="s1">GEOSContext(threading.local):</span>
+    <span class="s1">handle = </span><span class="s0">None</span>
+
+
+<span class="s1">thread_context = GEOSContext()</span>
+
+
+<span class="s0">class </span><span class="s1">GEOSFunc:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Serve as a wrapper for GEOS C Functions. Use thread-safe function 
+    variants when available. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">func_name):</span>
+        <span class="s3"># GEOS thread-safe function signatures end with '_r' and take an</span>
+        <span class="s3"># additional context handle parameter.</span>
+        <span class="s1">self.cfunc = getattr(lgeos</span><span class="s0">, </span><span class="s1">func_name + </span><span class="s4">'_r'</span><span class="s1">)</span>
+        <span class="s3"># Create a reference to thread_context so it's not garbage-collected</span>
+        <span class="s3"># before an attempt to call this object.</span>
+        <span class="s1">self.thread_context = thread_context</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">*args):</span>
+        <span class="s3"># Create a context handle if one doesn't exist for this thread.</span>
+        <span class="s1">self.thread_context.handle = self.thread_context.handle </span><span class="s0">or </span><span class="s1">GEOSContextHandle()</span>
+        <span class="s3"># Call the threaded GEOS routine with the pointer of the context handle</span>
+        <span class="s3"># as the first argument.</span>
+        <span class="s0">return </span><span class="s1">self.cfunc(self.thread_context.handle.ptr</span><span class="s0">, </span><span class="s1">*args)</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s0">return </span><span class="s1">self.cfunc.__name__</span>
+
+    <span class="s3"># argtypes property</span>
+    <span class="s0">def </span><span class="s1">_get_argtypes(self):</span>
+        <span class="s0">return </span><span class="s1">self.cfunc.argtypes</span>
+
+    <span class="s0">def </span><span class="s1">_set_argtypes(self</span><span class="s0">, </span><span class="s1">argtypes):</span>
+        <span class="s1">self.cfunc.argtypes = [CONTEXT_PTR</span><span class="s0">, </span><span class="s1">*argtypes]</span>
+
+    <span class="s1">argtypes = property(_get_argtypes</span><span class="s0">, </span><span class="s1">_set_argtypes)</span>
+
+    <span class="s3"># restype property</span>
+    <span class="s0">def </span><span class="s1">_get_restype(self):</span>
+        <span class="s0">return </span><span class="s1">self.cfunc.restype</span>
+
+    <span class="s0">def </span><span class="s1">_set_restype(self</span><span class="s0">, </span><span class="s1">restype):</span>
+        <span class="s1">self.cfunc.restype = restype</span>
+
+    <span class="s1">restype = property(_get_restype</span><span class="s0">, </span><span class="s1">_set_restype)</span>
+
+    <span class="s3"># errcheck property</span>
+    <span class="s0">def </span><span class="s1">_get_errcheck(self):</span>
+        <span class="s0">return </span><span class="s1">self.cfunc.errcheck</span>
+
+    <span class="s0">def </span><span class="s1">_set_errcheck(self</span><span class="s0">, </span><span class="s1">errcheck):</span>
+        <span class="s1">self.cfunc.errcheck = errcheck</span>
+
+    <span class="s1">errcheck = property(_get_errcheck</span><span class="s0">, </span><span class="s1">_set_errcheck)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<html>
+<head>
+<title>test_gen_exports.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_gen_exports.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">ast</span>
+<span class="s0">import </span><span class="s1">astor</span>
+<span class="s0">import </span><span class="s1">pytest</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">sys</span>
+
+<span class="s0">from </span><span class="s1">shutil </span><span class="s0">import </span><span class="s1">copyfile</span>
+<span class="s0">from </span><span class="s1">trio._tools.gen_exports </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">get_public_methods</span><span class="s0">,</span>
+    <span class="s1">create_passthrough_args</span><span class="s0">,</span>
+    <span class="s1">process</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+<span class="s1">SOURCE = </span><span class="s2">'''from _run import _public 
+ 
+class Test: 
+    @_public 
+    def public_func(self): 
+        &quot;&quot;&quot;With doc string&quot;&quot;&quot; 
+ 
+    @ignore_this 
+    @_public 
+    @another_decorator 
+    async def public_async_func(self): 
+        pass  # no doc string 
+ 
+    def not_public(self): 
+        pass 
+ 
+    async def not_public_async(self): 
+        pass 
+'''</span>
+
+
+<span class="s0">def </span><span class="s1">test_get_public_methods():</span>
+    <span class="s1">methods = list(get_public_methods(ast.parse(SOURCE)))</span>
+    <span class="s0">assert </span><span class="s1">{m.name </span><span class="s0">for </span><span class="s1">m </span><span class="s0">in </span><span class="s1">methods} == {</span><span class="s2">&quot;public_func&quot;</span><span class="s0">, </span><span class="s2">&quot;public_async_func&quot;</span><span class="s1">}</span>
+
+
+<span class="s0">def </span><span class="s1">test_create_pass_through_args():</span>
+    <span class="s1">testcases = [</span>
+        <span class="s1">(</span><span class="s2">&quot;def f()&quot;</span><span class="s0">, </span><span class="s2">&quot;()&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">&quot;def f(one)&quot;</span><span class="s0">, </span><span class="s2">&quot;(one)&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">&quot;def f(one, two)&quot;</span><span class="s0">, </span><span class="s2">&quot;(one, two)&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">&quot;def f(one, *args)&quot;</span><span class="s0">, </span><span class="s2">&quot;(one, *args)&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span>
+            <span class="s2">&quot;def f(one, *args, kw1, kw2=None, **kwargs)&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;(one, *args, kw1=kw1, kw2=kw2, **kwargs)&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">]</span>
+
+    <span class="s0">for </span><span class="s1">(funcdef</span><span class="s0">, </span><span class="s1">expected) </span><span class="s0">in </span><span class="s1">testcases:</span>
+        <span class="s1">func_node = ast.parse(funcdef + </span><span class="s2">&quot;:</span><span class="s0">\n  </span><span class="s2">pass&quot;</span><span class="s1">).body[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s0">assert </span><span class="s1">isinstance(func_node</span><span class="s0">, </span><span class="s1">ast.FunctionDef)</span>
+        <span class="s0">assert </span><span class="s1">create_passthrough_args(func_node) == expected</span>
+
+
+<span class="s0">def </span><span class="s1">test_process(tmp_path):</span>
+    <span class="s1">modpath = tmp_path / </span><span class="s2">&quot;_module.py&quot;</span>
+    <span class="s1">genpath = tmp_path / </span><span class="s2">&quot;_generated_module.py&quot;</span>
+    <span class="s1">modpath.write_text(SOURCE</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s2">&quot;utf-8&quot;</span><span class="s1">)</span>
+    <span class="s0">assert not </span><span class="s1">genpath.exists()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(SystemExit) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s1">process([(str(modpath)</span><span class="s0">, </span><span class="s2">&quot;runner&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">do_test=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.code == </span><span class="s3">1</span>
+    <span class="s1">process([(str(modpath)</span><span class="s0">, </span><span class="s2">&quot;runner&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">do_test=</span><span class="s0">False</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">genpath.exists()</span>
+    <span class="s1">process([(str(modpath)</span><span class="s0">, </span><span class="s2">&quot;runner&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">do_test=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s4"># But if we change the lookup path it notices</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(SystemExit) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s1">process([(str(modpath)</span><span class="s0">, </span><span class="s2">&quot;runner.io_manager&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">do_test=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.code == </span><span class="s3">1</span>
+</pre>
+</body>
+</html>

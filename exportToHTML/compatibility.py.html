@@ -1,0 +1,83 @@
+<html>
+<head>
+<title>compatibility.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+compatibility.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">asyncio</span>
+<span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">import </span><span class="s1">sys</span>
+
+
+<span class="s0">def </span><span class="s1">is_double_callable(application):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Tests to see if an application is a legacy-style (double-callable) application. 
+    &quot;&quot;&quot;</span>
+    <span class="s3"># Look for a hint on the object first</span>
+    <span class="s0">if </span><span class="s1">getattr(application</span><span class="s0">, </span><span class="s4">&quot;_asgi_single_callable&quot;</span><span class="s0">, False</span><span class="s1">):</span>
+        <span class="s0">return False</span>
+    <span class="s0">if </span><span class="s1">getattr(application</span><span class="s0">, </span><span class="s4">&quot;_asgi_double_callable&quot;</span><span class="s0">, False</span><span class="s1">):</span>
+        <span class="s0">return True</span>
+    <span class="s3"># Uninstanted classes are double-callable</span>
+    <span class="s0">if </span><span class="s1">inspect.isclass(application):</span>
+        <span class="s0">return True</span>
+    <span class="s3"># Instanted classes depend on their __call__</span>
+    <span class="s0">if </span><span class="s1">hasattr(application</span><span class="s0">, </span><span class="s4">&quot;__call__&quot;</span><span class="s1">):</span>
+        <span class="s3"># We only check to see if its __call__ is a coroutine function -</span>
+        <span class="s3"># if it's not, it still might be a coroutine function itself.</span>
+        <span class="s0">if </span><span class="s1">asyncio.iscoroutinefunction(application.__call__):</span>
+            <span class="s0">return False</span>
+    <span class="s3"># Non-classes we just check directly</span>
+    <span class="s0">return not </span><span class="s1">asyncio.iscoroutinefunction(application)</span>
+
+
+<span class="s0">def </span><span class="s1">double_to_single_callable(application):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Transforms a double-callable ASGI application into a single-callable one. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">async def </span><span class="s1">new_application(scope</span><span class="s0">, </span><span class="s1">receive</span><span class="s0">, </span><span class="s1">send):</span>
+        <span class="s1">instance = application(scope)</span>
+        <span class="s0">return await </span><span class="s1">instance(receive</span><span class="s0">, </span><span class="s1">send)</span>
+
+    <span class="s0">return </span><span class="s1">new_application</span>
+
+
+<span class="s0">def </span><span class="s1">guarantee_single_callable(application):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Takes either a single- or double-callable application and always returns it 
+    in single-callable style. Use this to add backwards compatibility for ASGI 
+    2.0 applications to your server/test harness/etc. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">is_double_callable(application):</span>
+        <span class="s1">application = double_to_single_callable(application)</span>
+    <span class="s0">return </span><span class="s1">application</span>
+
+
+<span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s5">3</span><span class="s0">, </span><span class="s5">7</span><span class="s1">):</span>
+    <span class="s3"># these were introduced in 3.7</span>
+    <span class="s1">get_running_loop = asyncio.get_running_loop</span>
+    <span class="s1">run_future = asyncio.run</span>
+    <span class="s1">create_task = asyncio.create_task</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s3"># marked as deprecated in 3.10, did not exist before 3.7</span>
+    <span class="s1">get_running_loop = asyncio.get_event_loop</span>
+    <span class="s1">run_future = asyncio.ensure_future</span>
+    <span class="s3"># does nothing, this is fine for &lt;3.7</span>
+    <span class="s1">create_task = </span><span class="s0">lambda </span><span class="s1">task: task</span>
+</pre>
+</body>
+</html>

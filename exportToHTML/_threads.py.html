@@ -1,0 +1,366 @@
+<html>
+<head>
+<title>_threads.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_threads.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># coding: utf-8</span>
+
+<span class="s2">import </span><span class="s1">threading</span>
+<span class="s2">import </span><span class="s1">queue </span><span class="s2">as </span><span class="s1">stdlib_queue</span>
+<span class="s2">from </span><span class="s1">itertools </span><span class="s2">import </span><span class="s1">count</span>
+
+<span class="s2">import </span><span class="s1">attr</span>
+<span class="s2">import </span><span class="s1">inspect</span>
+<span class="s2">import </span><span class="s1">outcome</span>
+
+<span class="s2">import </span><span class="s1">trio</span>
+
+<span class="s2">from </span><span class="s1">._sync </span><span class="s2">import </span><span class="s1">CapacityLimiter</span>
+<span class="s2">from </span><span class="s1">._core </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">enable_ki_protection</span><span class="s2">,</span>
+    <span class="s1">disable_ki_protection</span><span class="s2">,</span>
+    <span class="s1">RunVar</span><span class="s2">,</span>
+    <span class="s1">TrioToken</span><span class="s2">,</span>
+    <span class="s1">start_thread_soon</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">._util </span><span class="s2">import </span><span class="s1">coroutine_or_error</span>
+
+<span class="s0"># Global due to Threading API, thread local storage for trio token</span>
+<span class="s1">TOKEN_LOCAL = threading.local()</span>
+
+<span class="s1">_limiter_local = RunVar(</span><span class="s3">&quot;limiter&quot;</span><span class="s1">)</span>
+<span class="s0"># I pulled this number out of the air; it isn't based on anything. Probably we</span>
+<span class="s0"># should make some kind of measurements to pick a good value.</span>
+<span class="s1">DEFAULT_LIMIT = </span><span class="s4">40</span>
+<span class="s1">_thread_counter = count()</span>
+
+
+<span class="s2">def </span><span class="s1">current_default_thread_limiter():</span>
+    <span class="s5">&quot;&quot;&quot;Get the default `~trio.CapacityLimiter` used by 
+    `trio.to_thread.run_sync`. 
+ 
+    The most common reason to call this would be if you want to modify its 
+    :attr:`~trio.CapacityLimiter.total_tokens` attribute. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">limiter = _limiter_local.get()</span>
+    <span class="s2">except </span><span class="s1">LookupError:</span>
+        <span class="s1">limiter = CapacityLimiter(DEFAULT_LIMIT)</span>
+        <span class="s1">_limiter_local.set(limiter)</span>
+    <span class="s2">return </span><span class="s1">limiter</span>
+
+
+<span class="s0"># Eventually we might build this into a full-fledged deadlock-detection</span>
+<span class="s0"># system; see https://github.com/python-trio/trio/issues/182</span>
+<span class="s0"># But for now we just need an object to stand in for the thread, so we can</span>
+<span class="s0"># keep track of who's holding the CapacityLimiter's token.</span>
+<span class="s1">@attr.s(frozen=</span><span class="s2">True, </span><span class="s1">eq=</span><span class="s2">False, </span><span class="s1">hash=</span><span class="s2">False</span><span class="s1">)</span>
+<span class="s2">class </span><span class="s1">ThreadPlaceholder:</span>
+    <span class="s1">name = attr.ib()</span>
+
+
+<span class="s1">@enable_ki_protection</span>
+<span class="s2">async def </span><span class="s1">to_thread_run_sync(sync_fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">cancellable=</span><span class="s2">False, </span><span class="s1">limiter=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;Convert a blocking operation into an async operation using a thread. 
+ 
+    These two lines are equivalent:: 
+ 
+        sync_fn(*args) 
+        await trio.to_thread.run_sync(sync_fn, *args) 
+ 
+    except that if ``sync_fn`` takes a long time, then the first line will 
+    block the Trio loop while it runs, while the second line allows other Trio 
+    tasks to continue working while ``sync_fn`` runs. This is accomplished by 
+    pushing the call to ``sync_fn(*args)`` off into a worker thread. 
+ 
+    From inside the worker thread, you can get back into Trio using the 
+    functions in `trio.from_thread`. 
+ 
+    Args: 
+      sync_fn: An arbitrary synchronous callable. 
+      *args: Positional arguments to pass to sync_fn. If you need keyword 
+          arguments, use :func:`functools.partial`. 
+      cancellable (bool): Whether to allow cancellation of this operation. See 
+          discussion below. 
+      limiter (None, or CapacityLimiter-like object): 
+          An object used to limit the number of simultaneous threads. Most 
+          commonly this will be a `~trio.CapacityLimiter`, but it could be 
+          anything providing compatible 
+          :meth:`~trio.CapacityLimiter.acquire_on_behalf_of` and 
+          :meth:`~trio.CapacityLimiter.release_on_behalf_of` methods. This 
+          function will call ``acquire_on_behalf_of`` before starting the 
+          thread, and ``release_on_behalf_of`` after the thread has finished. 
+ 
+          If None (the default), uses the default `~trio.CapacityLimiter`, as 
+          returned by :func:`current_default_thread_limiter`. 
+ 
+    **Cancellation handling**: Cancellation is a tricky issue here, because 
+    neither Python nor the operating systems it runs on provide any general 
+    mechanism for cancelling an arbitrary synchronous function running in a 
+    thread. This function will always check for cancellation on entry, before 
+    starting the thread. But once the thread is running, there are two ways it 
+    can handle being cancelled: 
+ 
+    * If ``cancellable=False``, the function ignores the cancellation and 
+      keeps going, just like if we had called ``sync_fn`` synchronously. This 
+      is the default behavior. 
+ 
+    * If ``cancellable=True``, then this function immediately raises 
+      `~trio.Cancelled`. In this case **the thread keeps running in 
+      background** – we just abandon it to do whatever it's going to do, and 
+      silently discard any return value or errors that it raises. Only use 
+      this if you know that the operation is safe and side-effect free. (For 
+      example: :func:`trio.socket.getaddrinfo` uses a thread with 
+      ``cancellable=True``, because it doesn't really affect anything if a 
+      stray hostname lookup keeps running in the background.) 
+ 
+      The ``limiter`` is only released after the thread has *actually* 
+      finished – which in the case of cancellation may be some time after this 
+      function has returned. If :func:`trio.run` finishes before the thread 
+      does, then the limiter release method will never be called at all. 
+ 
+    .. warning:: 
+ 
+       You should not use this function to call long-running CPU-bound 
+       functions! In addition to the usual GIL-related reasons why using 
+       threads for CPU-bound work is not very effective in Python, there is an 
+       additional problem: on CPython, `CPU-bound threads tend to &quot;starve out&quot; 
+       IO-bound threads &lt;https://bugs.python.org/issue7946&gt;`__, so using 
+       threads for CPU-bound work is likely to adversely affect the main 
+       thread running Trio. If you need to do this, you're better off using a 
+       worker process, or perhaps PyPy (which still has a GIL, but may do a 
+       better job of fairly allocating CPU time between threads). 
+ 
+    Returns: 
+      Whatever ``sync_fn(*args)`` returns. 
+ 
+    Raises: 
+      Exception: Whatever ``sync_fn(*args)`` raises. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">await </span><span class="s1">trio.lowlevel.checkpoint_if_cancelled()</span>
+    <span class="s2">if </span><span class="s1">limiter </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">limiter = current_default_thread_limiter()</span>
+
+    <span class="s0"># Holds a reference to the task that's blocked in this function waiting</span>
+    <span class="s0"># for the result – or None if this function was cancelled and we should</span>
+    <span class="s0"># discard the result.</span>
+    <span class="s1">task_register = [trio.lowlevel.current_task()]</span>
+    <span class="s1">name = </span><span class="s3">f&quot;trio.to_thread.run_sync-</span><span class="s2">{</span><span class="s1">next(_thread_counter)</span><span class="s2">}</span><span class="s3">&quot;</span>
+    <span class="s1">placeholder = ThreadPlaceholder(name)</span>
+
+    <span class="s0"># This function gets scheduled into the Trio run loop to deliver the</span>
+    <span class="s0"># thread's result.</span>
+    <span class="s2">def </span><span class="s1">report_back_in_trio_thread_fn(result):</span>
+        <span class="s2">def </span><span class="s1">do_release_then_return_result():</span>
+            <span class="s0"># release_on_behalf_of is an arbitrary user-defined method, so it</span>
+            <span class="s0"># might raise an error. If it does, we want that error to</span>
+            <span class="s0"># replace the regular return value, and if the regular return was</span>
+            <span class="s0"># already an exception then we want them to chain.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">result.unwrap()</span>
+            <span class="s2">finally</span><span class="s1">:</span>
+                <span class="s1">limiter.release_on_behalf_of(placeholder)</span>
+
+        <span class="s1">result = outcome.capture(do_release_then_return_result)</span>
+        <span class="s2">if </span><span class="s1">task_register[</span><span class="s4">0</span><span class="s1">] </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">trio.lowlevel.reschedule(task_register[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">result)</span>
+
+    <span class="s1">current_trio_token = trio.lowlevel.current_trio_token()</span>
+
+    <span class="s2">def </span><span class="s1">worker_fn():</span>
+        <span class="s1">TOKEN_LOCAL.token = current_trio_token</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">ret = sync_fn(*args)</span>
+
+            <span class="s2">if </span><span class="s1">inspect.iscoroutine(ret):</span>
+                <span class="s0"># Manually close coroutine to avoid RuntimeWarnings</span>
+                <span class="s1">ret.close()</span>
+                <span class="s2">raise </span><span class="s1">TypeError(</span>
+                    <span class="s3">&quot;Trio expected a sync function, but {!r} appears to be &quot;</span>
+                    <span class="s3">&quot;asynchronous&quot;</span><span class="s1">.format(getattr(sync_fn</span><span class="s2">, </span><span class="s3">&quot;__qualname__&quot;</span><span class="s2">, </span><span class="s1">sync_fn))</span>
+                <span class="s1">)</span>
+
+            <span class="s2">return </span><span class="s1">ret</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s2">del </span><span class="s1">TOKEN_LOCAL.token</span>
+
+    <span class="s2">def </span><span class="s1">deliver_worker_fn_result(result):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">current_trio_token.run_sync_soon(report_back_in_trio_thread_fn</span><span class="s2">, </span><span class="s1">result)</span>
+        <span class="s2">except </span><span class="s1">trio.RunFinishedError:</span>
+            <span class="s0"># The entire run finished, so the task we're trying to contact is</span>
+            <span class="s0"># certainly long gone -- it must have been cancelled and abandoned</span>
+            <span class="s0"># us.</span>
+            <span class="s2">pass</span>
+
+    <span class="s2">await </span><span class="s1">limiter.acquire_on_behalf_of(placeholder)</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">start_thread_soon(worker_fn</span><span class="s2">, </span><span class="s1">deliver_worker_fn_result)</span>
+    <span class="s2">except</span><span class="s1">:</span>
+        <span class="s1">limiter.release_on_behalf_of(placeholder)</span>
+        <span class="s2">raise</span>
+
+    <span class="s2">def </span><span class="s1">abort(_):</span>
+        <span class="s2">if </span><span class="s1">cancellable:</span>
+            <span class="s1">task_register[</span><span class="s4">0</span><span class="s1">] = </span><span class="s2">None</span>
+            <span class="s2">return </span><span class="s1">trio.lowlevel.Abort.SUCCEEDED</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">trio.lowlevel.Abort.FAILED</span>
+
+    <span class="s2">return await </span><span class="s1">trio.lowlevel.wait_task_rescheduled(abort)</span>
+
+
+<span class="s2">def </span><span class="s1">_run_fn_as_system_task(cb</span><span class="s2">, </span><span class="s1">fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">trio_token=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;Helper function for from_thread.run and from_thread.run_sync. 
+ 
+    Since this internally uses TrioToken.run_sync_soon, all warnings about 
+    raised exceptions canceling all tasks should be noted. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">if </span><span class="s1">trio_token </span><span class="s2">and not </span><span class="s1">isinstance(trio_token</span><span class="s2">, </span><span class="s1">TrioToken):</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s3">&quot;Passed kwarg trio_token is not of type TrioToken&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if not </span><span class="s1">trio_token:</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">trio_token = TOKEN_LOCAL.token</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s2">raise </span><span class="s1">RuntimeError(</span>
+                <span class="s3">&quot;this thread wasn't created by Trio, pass kwarg trio_token=...&quot;</span>
+            <span class="s1">)</span>
+
+    <span class="s0"># Avoid deadlock by making sure we're not called from Trio thread</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">trio.lowlevel.current_task()</span>
+    <span class="s2">except </span><span class="s1">RuntimeError:</span>
+        <span class="s2">pass</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">RuntimeError(</span><span class="s3">&quot;this is a blocking function; call it from a thread&quot;</span><span class="s1">)</span>
+
+    <span class="s1">q = stdlib_queue.Queue()</span>
+    <span class="s1">trio_token.run_sync_soon(cb</span><span class="s2">, </span><span class="s1">q</span><span class="s2">, </span><span class="s1">fn</span><span class="s2">, </span><span class="s1">args)</span>
+    <span class="s2">return </span><span class="s1">q.get().unwrap()</span>
+
+
+<span class="s2">def </span><span class="s1">from_thread_run(afn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">trio_token=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;Run the given async function in the parent Trio thread, blocking until it 
+    is complete. 
+ 
+    Returns: 
+      Whatever ``afn(*args)`` returns. 
+ 
+    Returns or raises whatever the given function returns or raises. It 
+    can also raise exceptions of its own: 
+ 
+    Raises: 
+        RunFinishedError: if the corresponding call to :func:`trio.run` has 
+            already completed, or if the run has started its final cleanup phase 
+            and can no longer spawn new system tasks. 
+        Cancelled: if the corresponding call to :func:`trio.run` completes 
+            while ``afn(*args)`` is running, then ``afn`` is likely to raise 
+            :exc:`trio.Cancelled`, and this will propagate out into 
+        RuntimeError: if you try calling this from inside the Trio thread, 
+            which would otherwise cause a deadlock. 
+        AttributeError: if no ``trio_token`` was provided, and we can't infer 
+            one from context. 
+        TypeError: if ``afn`` is not an asynchronous function. 
+ 
+    **Locating a Trio Token**: There are two ways to specify which 
+    `trio.run` loop to reenter: 
+ 
+        - Spawn this thread from `trio.to_thread.run_sync`. Trio will 
+          automatically capture the relevant Trio token and use it when you 
+          want to re-enter Trio. 
+        - Pass a keyword argument, ``trio_token`` specifying a specific 
+          `trio.run` loop to re-enter. This is useful in case you have a 
+          &quot;foreign&quot; thread, spawned using some other framework, and still want 
+          to enter Trio. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">callback(q</span><span class="s2">, </span><span class="s1">afn</span><span class="s2">, </span><span class="s1">args):</span>
+        <span class="s1">@disable_ki_protection</span>
+        <span class="s2">async def </span><span class="s1">unprotected_afn():</span>
+            <span class="s1">coro = coroutine_or_error(afn</span><span class="s2">, </span><span class="s1">*args)</span>
+            <span class="s2">return await </span><span class="s1">coro</span>
+
+        <span class="s2">async def </span><span class="s1">await_in_trio_thread_task():</span>
+            <span class="s1">q.put_nowait(</span><span class="s2">await </span><span class="s1">outcome.acapture(unprotected_afn))</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">trio.lowlevel.spawn_system_task(await_in_trio_thread_task</span><span class="s2">, </span><span class="s1">name=afn)</span>
+        <span class="s2">except </span><span class="s1">RuntimeError:  </span><span class="s0"># system nursery is closed</span>
+            <span class="s1">q.put_nowait(</span>
+                <span class="s1">outcome.Error(trio.RunFinishedError(</span><span class="s3">&quot;system nursery is closed&quot;</span><span class="s1">))</span>
+            <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">_run_fn_as_system_task(callback</span><span class="s2">, </span><span class="s1">afn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">trio_token=trio_token)</span>
+
+
+<span class="s2">def </span><span class="s1">from_thread_run_sync(fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">trio_token=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;Run the given sync function in the parent Trio thread, blocking until it 
+    is complete. 
+ 
+    Returns: 
+      Whatever ``fn(*args)`` returns. 
+ 
+    Returns or raises whatever the given function returns or raises. It 
+    can also raise exceptions of its own: 
+ 
+    Raises: 
+        RunFinishedError: if the corresponding call to `trio.run` has 
+            already completed. 
+        RuntimeError: if you try calling this from inside the Trio thread, 
+            which would otherwise cause a deadlock. 
+        AttributeError: if no ``trio_token`` was provided, and we can't infer 
+            one from context. 
+        TypeError: if ``fn`` is an async function. 
+ 
+    **Locating a Trio Token**: There are two ways to specify which 
+    `trio.run` loop to reenter: 
+ 
+        - Spawn this thread from `trio.to_thread.run_sync`. Trio will 
+          automatically capture the relevant Trio token and use it when you 
+          want to re-enter Trio. 
+        - Pass a keyword argument, ``trio_token`` specifying a specific 
+          `trio.run` loop to re-enter. This is useful in case you have a 
+          &quot;foreign&quot; thread, spawned using some other framework, and still want 
+          to enter Trio. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">callback(q</span><span class="s2">, </span><span class="s1">fn</span><span class="s2">, </span><span class="s1">args):</span>
+        <span class="s1">@disable_ki_protection</span>
+        <span class="s2">def </span><span class="s1">unprotected_fn():</span>
+            <span class="s1">ret = fn(*args)</span>
+
+            <span class="s2">if </span><span class="s1">inspect.iscoroutine(ret):</span>
+                <span class="s0"># Manually close coroutine to avoid RuntimeWarnings</span>
+                <span class="s1">ret.close()</span>
+                <span class="s2">raise </span><span class="s1">TypeError(</span>
+                    <span class="s3">&quot;Trio expected a sync function, but {!r} appears to be &quot;</span>
+                    <span class="s3">&quot;asynchronous&quot;</span><span class="s1">.format(getattr(fn</span><span class="s2">, </span><span class="s3">&quot;__qualname__&quot;</span><span class="s2">, </span><span class="s1">fn))</span>
+                <span class="s1">)</span>
+
+            <span class="s2">return </span><span class="s1">ret</span>
+
+        <span class="s1">res = outcome.capture(unprotected_fn)</span>
+        <span class="s1">q.put_nowait(res)</span>
+
+    <span class="s2">return </span><span class="s1">_run_fn_as_system_task(callback</span><span class="s2">, </span><span class="s1">fn</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">trio_token=trio_token)</span>
+</pre>
+</body>
+</html>

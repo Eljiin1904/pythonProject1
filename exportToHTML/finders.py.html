@@ -1,0 +1,324 @@
+<html>
+<head>
+<title>finders.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+finders.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">os</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.contrib.staticfiles </span><span class="s0">import </span><span class="s1">utils</span>
+<span class="s0">from </span><span class="s1">django.core.checks </span><span class="s0">import </span><span class="s1">Error</span><span class="s0">, </span><span class="s1">Warning</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.core.files.storage </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">FileSystemStorage</span><span class="s0">, </span><span class="s1">Storage</span><span class="s0">, </span><span class="s1">default_storage</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.utils._os </span><span class="s0">import </span><span class="s1">safe_join</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">LazyObject</span><span class="s0">, </span><span class="s1">empty</span>
+<span class="s0">from </span><span class="s1">django.utils.module_loading </span><span class="s0">import </span><span class="s1">import_string</span>
+
+<span class="s2"># To keep track on which directories the finder has searched the static files.</span>
+<span class="s1">searched_locations = []</span>
+
+
+<span class="s0">class </span><span class="s1">BaseFinder:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A base file finder to be used for custom staticfiles finder classes. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">check(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError(</span>
+            <span class="s4">'subclasses may provide a check() method to verify the finder is '</span>
+            <span class="s4">'configured correctly.'</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">find(self</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">all=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Given a relative file path, find an absolute file path. 
+ 
+        If the ``all`` parameter is False (default) return only the first found 
+        file path; if True, return a list of all found files paths. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'subclasses of BaseFinder must provide a find() method'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">list(self</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Given an optional list of paths to ignore, return a two item iterable 
+        consisting of the relative path and storage instance. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'subclasses of BaseFinder must provide a list() method'</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">FileSystemFinder(BaseFinder):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A static files finder that uses the ``STATICFILES_DIRS`` setting 
+    to locate files. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">app_names=</span><span class="s0">None, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2"># List of locations with static files</span>
+        <span class="s1">self.locations = []</span>
+        <span class="s2"># Maps dir paths to an appropriate storage instance</span>
+        <span class="s1">self.storages = {}</span>
+        <span class="s0">for </span><span class="s1">root </span><span class="s0">in </span><span class="s1">settings.STATICFILES_DIRS:</span>
+            <span class="s0">if </span><span class="s1">isinstance(root</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+                <span class="s1">prefix</span><span class="s0">, </span><span class="s1">root = root</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">prefix = </span><span class="s4">''</span>
+            <span class="s0">if </span><span class="s1">(prefix</span><span class="s0">, </span><span class="s1">root) </span><span class="s0">not in </span><span class="s1">self.locations:</span>
+                <span class="s1">self.locations.append((prefix</span><span class="s0">, </span><span class="s1">root))</span>
+        <span class="s0">for </span><span class="s1">prefix</span><span class="s0">, </span><span class="s1">root </span><span class="s0">in </span><span class="s1">self.locations:</span>
+            <span class="s1">filesystem_storage = FileSystemStorage(location=root)</span>
+            <span class="s1">filesystem_storage.prefix = prefix</span>
+            <span class="s1">self.storages[root] = filesystem_storage</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">check(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">errors = []</span>
+        <span class="s0">if not </span><span class="s1">isinstance(settings.STATICFILES_DIRS</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s1">errors.append(Error(</span>
+                <span class="s4">'The STATICFILES_DIRS setting is not a tuple or list.'</span><span class="s0">,</span>
+                <span class="s1">hint=</span><span class="s4">'Perhaps you forgot a trailing comma?'</span><span class="s0">,</span>
+                <span class="s1">id=</span><span class="s4">'staticfiles.E001'</span><span class="s0">,</span>
+            <span class="s1">))</span>
+            <span class="s0">return </span><span class="s1">errors</span>
+        <span class="s0">for </span><span class="s1">root </span><span class="s0">in </span><span class="s1">settings.STATICFILES_DIRS:</span>
+            <span class="s0">if </span><span class="s1">isinstance(root</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+                <span class="s1">prefix</span><span class="s0">, </span><span class="s1">root = root</span>
+                <span class="s0">if </span><span class="s1">prefix.endswith(</span><span class="s4">'/'</span><span class="s1">):</span>
+                    <span class="s1">errors.append(Error(</span>
+                        <span class="s4">'The prefix %r in the STATICFILES_DIRS setting must '</span>
+                        <span class="s4">'not end with a slash.' </span><span class="s1">% prefix</span><span class="s0">,</span>
+                        <span class="s1">id=</span><span class="s4">'staticfiles.E003'</span><span class="s0">,</span>
+                    <span class="s1">))</span>
+            <span class="s0">if </span><span class="s1">settings.STATIC_ROOT </span><span class="s0">and </span><span class="s1">os.path.abspath(settings.STATIC_ROOT) == os.path.abspath(root):</span>
+                <span class="s1">errors.append(Error(</span>
+                    <span class="s4">'The STATICFILES_DIRS setting should not contain the '</span>
+                    <span class="s4">'STATIC_ROOT setting.'</span><span class="s0">,</span>
+                    <span class="s1">id=</span><span class="s4">'staticfiles.E002'</span><span class="s0">,</span>
+                <span class="s1">))</span>
+            <span class="s0">if not </span><span class="s1">os.path.isdir(root):</span>
+                <span class="s1">errors.append(Warning(</span>
+                    <span class="s4">f&quot;The directory '</span><span class="s0">{</span><span class="s1">root</span><span class="s0">}</span><span class="s4">' in the STATICFILES_DIRS setting &quot;</span>
+                    <span class="s4">f&quot;does not exist.&quot;</span><span class="s0">,</span>
+                    <span class="s1">id=</span><span class="s4">'staticfiles.W004'</span><span class="s0">,</span>
+                <span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">errors</span>
+
+    <span class="s0">def </span><span class="s1">find(self</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">all=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Look for files in the extra locations as defined in STATICFILES_DIRS. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">matches = []</span>
+        <span class="s0">for </span><span class="s1">prefix</span><span class="s0">, </span><span class="s1">root </span><span class="s0">in </span><span class="s1">self.locations:</span>
+            <span class="s0">if </span><span class="s1">root </span><span class="s0">not in </span><span class="s1">searched_locations:</span>
+                <span class="s1">searched_locations.append(root)</span>
+            <span class="s1">matched_path = self.find_location(root</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">prefix)</span>
+            <span class="s0">if </span><span class="s1">matched_path:</span>
+                <span class="s0">if not </span><span class="s1">all:</span>
+                    <span class="s0">return </span><span class="s1">matched_path</span>
+                <span class="s1">matches.append(matched_path)</span>
+        <span class="s0">return </span><span class="s1">matches</span>
+
+    <span class="s0">def </span><span class="s1">find_location(self</span><span class="s0">, </span><span class="s1">root</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">prefix=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Find a requested static file in a location and return the found 
+        absolute path (or ``None`` if no match). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">prefix:</span>
+            <span class="s1">prefix = </span><span class="s4">'%s%s' </span><span class="s1">% (prefix</span><span class="s0">, </span><span class="s1">os.sep)</span>
+            <span class="s0">if not </span><span class="s1">path.startswith(prefix):</span>
+                <span class="s0">return None</span>
+            <span class="s1">path = path[len(prefix):]</span>
+        <span class="s1">path = safe_join(root</span><span class="s0">, </span><span class="s1">path)</span>
+        <span class="s0">if </span><span class="s1">os.path.exists(path):</span>
+            <span class="s0">return </span><span class="s1">path</span>
+
+    <span class="s0">def </span><span class="s1">list(self</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        List all files in all locations. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">prefix</span><span class="s0">, </span><span class="s1">root </span><span class="s0">in </span><span class="s1">self.locations:</span>
+            <span class="s2"># Skip nonexistent directories.</span>
+            <span class="s0">if </span><span class="s1">os.path.isdir(root):</span>
+                <span class="s1">storage = self.storages[root]</span>
+                <span class="s0">for </span><span class="s1">path </span><span class="s0">in </span><span class="s1">utils.get_files(storage</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+                    <span class="s0">yield </span><span class="s1">path</span><span class="s0">, </span><span class="s1">storage</span>
+
+
+<span class="s0">class </span><span class="s1">AppDirectoriesFinder(BaseFinder):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A static files finder that looks in the directory of each app as 
+    specified in the source_dir attribute. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">storage_class = FileSystemStorage</span>
+    <span class="s1">source_dir = </span><span class="s4">'static'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">app_names=</span><span class="s0">None, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2"># The list of apps that are handled</span>
+        <span class="s1">self.apps = []</span>
+        <span class="s2"># Mapping of app names to storage instances</span>
+        <span class="s1">self.storages = {}</span>
+        <span class="s1">app_configs = apps.get_app_configs()</span>
+        <span class="s0">if </span><span class="s1">app_names:</span>
+            <span class="s1">app_names = set(app_names)</span>
+            <span class="s1">app_configs = [ac </span><span class="s0">for </span><span class="s1">ac </span><span class="s0">in </span><span class="s1">app_configs </span><span class="s0">if </span><span class="s1">ac.name </span><span class="s0">in </span><span class="s1">app_names]</span>
+        <span class="s0">for </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">app_configs:</span>
+            <span class="s1">app_storage = self.storage_class(</span>
+                <span class="s1">os.path.join(app_config.path</span><span class="s0">, </span><span class="s1">self.source_dir))</span>
+            <span class="s0">if </span><span class="s1">os.path.isdir(app_storage.location):</span>
+                <span class="s1">self.storages[app_config.name] = app_storage</span>
+                <span class="s0">if </span><span class="s1">app_config.name </span><span class="s0">not in </span><span class="s1">self.apps:</span>
+                    <span class="s1">self.apps.append(app_config.name)</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">list(self</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        List all files in all app storages. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">storage </span><span class="s0">in </span><span class="s1">self.storages.values():</span>
+            <span class="s0">if </span><span class="s1">storage.exists(</span><span class="s4">''</span><span class="s1">):  </span><span class="s2"># check if storage location exists</span>
+                <span class="s0">for </span><span class="s1">path </span><span class="s0">in </span><span class="s1">utils.get_files(storage</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+                    <span class="s0">yield </span><span class="s1">path</span><span class="s0">, </span><span class="s1">storage</span>
+
+    <span class="s0">def </span><span class="s1">find(self</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">all=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Look for files in the app directories. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">matches = []</span>
+        <span class="s0">for </span><span class="s1">app </span><span class="s0">in </span><span class="s1">self.apps:</span>
+            <span class="s1">app_location = self.storages[app].location</span>
+            <span class="s0">if </span><span class="s1">app_location </span><span class="s0">not in </span><span class="s1">searched_locations:</span>
+                <span class="s1">searched_locations.append(app_location)</span>
+            <span class="s1">match = self.find_in_app(app</span><span class="s0">, </span><span class="s1">path)</span>
+            <span class="s0">if </span><span class="s1">match:</span>
+                <span class="s0">if not </span><span class="s1">all:</span>
+                    <span class="s0">return </span><span class="s1">match</span>
+                <span class="s1">matches.append(match)</span>
+        <span class="s0">return </span><span class="s1">matches</span>
+
+    <span class="s0">def </span><span class="s1">find_in_app(self</span><span class="s0">, </span><span class="s1">app</span><span class="s0">, </span><span class="s1">path):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Find a requested static file in an app's static locations. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">storage = self.storages.get(app)</span>
+        <span class="s2"># Only try to find a file if the source dir actually exists.</span>
+        <span class="s0">if </span><span class="s1">storage </span><span class="s0">and </span><span class="s1">storage.exists(path):</span>
+            <span class="s1">matched_path = storage.path(path)</span>
+            <span class="s0">if </span><span class="s1">matched_path:</span>
+                <span class="s0">return </span><span class="s1">matched_path</span>
+
+
+<span class="s0">class </span><span class="s1">BaseStorageFinder(BaseFinder):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A base static files finder to be used to extended 
+    with an own storage class. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">storage = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">storage=</span><span class="s0">None, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">if </span><span class="s1">storage </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.storage = storage</span>
+        <span class="s0">if </span><span class="s1">self.storage </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s4">&quot;The staticfiles storage finder %r &quot;</span>
+                                       <span class="s4">&quot;doesn't have a storage class &quot;</span>
+                                       <span class="s4">&quot;assigned.&quot; </span><span class="s1">% self.__class__)</span>
+        <span class="s2"># Make sure we have a storage instance here.</span>
+        <span class="s0">if not </span><span class="s1">isinstance(self.storage</span><span class="s0">, </span><span class="s1">(Storage</span><span class="s0">, </span><span class="s1">LazyObject)):</span>
+            <span class="s1">self.storage = self.storage()</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">find(self</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">all=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Look for files in the default file storage, if it's local. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self.storage.path(</span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">NotImplementedError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">self.storage.location </span><span class="s0">not in </span><span class="s1">searched_locations:</span>
+                <span class="s1">searched_locations.append(self.storage.location)</span>
+            <span class="s0">if </span><span class="s1">self.storage.exists(path):</span>
+                <span class="s1">match = self.storage.path(path)</span>
+                <span class="s0">if </span><span class="s1">all:</span>
+                    <span class="s1">match = [match]</span>
+                <span class="s0">return </span><span class="s1">match</span>
+        <span class="s0">return </span><span class="s1">[]</span>
+
+    <span class="s0">def </span><span class="s1">list(self</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        List all files of the storage. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">path </span><span class="s0">in </span><span class="s1">utils.get_files(self.storage</span><span class="s0">, </span><span class="s1">ignore_patterns):</span>
+            <span class="s0">yield </span><span class="s1">path</span><span class="s0">, </span><span class="s1">self.storage</span>
+
+
+<span class="s0">class </span><span class="s1">DefaultStorageFinder(BaseStorageFinder):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A static files finder that uses the default storage backend. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">storage = default_storage</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">base_location = getattr(self.storage</span><span class="s0">, </span><span class="s4">'base_location'</span><span class="s0">, </span><span class="s1">empty)</span>
+        <span class="s0">if not </span><span class="s1">base_location:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s4">&quot;The storage backend of the &quot;</span>
+                                       <span class="s4">&quot;staticfiles finder %r doesn't have &quot;</span>
+                                       <span class="s4">&quot;a valid location.&quot; </span><span class="s1">% self.__class__)</span>
+
+
+<span class="s0">def </span><span class="s1">find(path</span><span class="s0">, </span><span class="s1">all=</span><span class="s0">False</span><span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Find a static file with the given path using all enabled finders. 
+ 
+    If ``all`` is ``False`` (default), return the first matching 
+    absolute path (or ``None`` if no match). Otherwise return a list. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">searched_locations[:] = []</span>
+    <span class="s1">matches = []</span>
+    <span class="s0">for </span><span class="s1">finder </span><span class="s0">in </span><span class="s1">get_finders():</span>
+        <span class="s1">result = finder.find(path</span><span class="s0">, </span><span class="s1">all=all)</span>
+        <span class="s0">if not </span><span class="s1">all </span><span class="s0">and </span><span class="s1">result:</span>
+            <span class="s0">return </span><span class="s1">result</span>
+        <span class="s0">if not </span><span class="s1">isinstance(result</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s1">result = [result]</span>
+        <span class="s1">matches.extend(result)</span>
+    <span class="s0">if </span><span class="s1">matches:</span>
+        <span class="s0">return </span><span class="s1">matches</span>
+    <span class="s2"># No match.</span>
+    <span class="s0">return </span><span class="s1">[] </span><span class="s0">if </span><span class="s1">all </span><span class="s0">else None</span>
+
+
+<span class="s0">def </span><span class="s1">get_finders():</span>
+    <span class="s0">for </span><span class="s1">finder_path </span><span class="s0">in </span><span class="s1">settings.STATICFILES_FINDERS:</span>
+        <span class="s0">yield </span><span class="s1">get_finder(finder_path)</span>
+
+
+<span class="s1">@functools.lru_cache(maxsize=</span><span class="s0">None</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">get_finder(import_path):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Import the staticfiles finder class described by import_path, where 
+    import_path is the full Python path to the class. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">Finder = import_string(import_path)</span>
+    <span class="s0">if not </span><span class="s1">issubclass(Finder</span><span class="s0">, </span><span class="s1">BaseFinder):</span>
+        <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s4">'Finder &quot;%s&quot; is not a subclass of &quot;%s&quot;' </span><span class="s1">%</span>
+                                   <span class="s1">(Finder</span><span class="s0">, </span><span class="s1">BaseFinder))</span>
+    <span class="s0">return </span><span class="s1">Finder()</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<html>
+<head>
+<title>step_registry.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+step_registry.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides a step registry and step decorators. 
+The step registry allows to match steps (model elements) with 
+step implementations (step definitions). This is necessary to execute steps. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">from </span><span class="s1">behave.matchers </span><span class="s3">import </span><span class="s1">Match</span><span class="s3">, </span><span class="s1">get_matcher</span>
+<span class="s3">from </span><span class="s1">behave.textutil </span><span class="s3">import </span><span class="s1">text </span><span class="s3">as </span><span class="s1">_text</span>
+
+<span class="s0"># limit import * to just the decorators</span>
+<span class="s0"># pylint: disable=undefined-all-variable</span>
+<span class="s0"># names = &quot;given when then step&quot;</span>
+<span class="s0"># names = names + &quot; &quot; + names.title()</span>
+<span class="s0"># __all__ = names.split()</span>
+<span class="s1">__all__ = [</span>
+    <span class="s4">&quot;given&quot;</span><span class="s3">, </span><span class="s4">&quot;when&quot;</span><span class="s3">, </span><span class="s4">&quot;then&quot;</span><span class="s3">, </span><span class="s4">&quot;step&quot;</span><span class="s3">,    </span><span class="s0"># PREFERRED.</span>
+    <span class="s4">&quot;Given&quot;</span><span class="s3">, </span><span class="s4">&quot;When&quot;</span><span class="s3">, </span><span class="s4">&quot;Then&quot;</span><span class="s3">, </span><span class="s4">&quot;Step&quot;     </span><span class="s0"># Also possible.</span>
+<span class="s1">]</span>
+
+
+<span class="s3">class </span><span class="s1">AmbiguousStep(ValueError):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">StepRegistry(object):</span>
+    <span class="s3">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.steps = {</span>
+            <span class="s4">&quot;given&quot;</span><span class="s1">: []</span><span class="s3">,</span>
+            <span class="s4">&quot;when&quot;</span><span class="s1">: []</span><span class="s3">,</span>
+            <span class="s4">&quot;then&quot;</span><span class="s1">: []</span><span class="s3">,</span>
+            <span class="s4">&quot;step&quot;</span><span class="s1">: []</span><span class="s3">,</span>
+        <span class="s1">}</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">same_step_definition(step</span><span class="s3">, </span><span class="s1">other_pattern</span><span class="s3">, </span><span class="s1">other_location):</span>
+        <span class="s3">return </span><span class="s1">(step.pattern == other_pattern </span><span class="s3">and</span>
+                <span class="s1">step.location == other_location </span><span class="s3">and</span>
+                <span class="s1">other_location.filename != </span><span class="s4">&quot;&lt;string&gt;&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">add_step_definition(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">step_text</span><span class="s3">, </span><span class="s1">func):</span>
+        <span class="s1">step_location = Match.make_location(func)</span>
+        <span class="s1">step_type = keyword.lower()</span>
+        <span class="s1">step_text = _text(step_text)</span>
+        <span class="s1">step_definitions = self.steps[step_type]</span>
+        <span class="s3">for </span><span class="s1">existing </span><span class="s3">in </span><span class="s1">step_definitions:</span>
+            <span class="s3">if </span><span class="s1">self.same_step_definition(existing</span><span class="s3">, </span><span class="s1">step_text</span><span class="s3">, </span><span class="s1">step_location):</span>
+                <span class="s0"># -- EXACT-STEP: Same step function is already registered.</span>
+                <span class="s0"># This may occur when a step module imports another one.</span>
+                <span class="s3">return</span>
+            <span class="s3">elif </span><span class="s1">existing.match(step_text):     </span><span class="s0"># -- SIMPLISTIC</span>
+                <span class="s1">message = </span><span class="s4">u&quot;%s has already been defined in</span><span class="s3">\n  </span><span class="s4">existing step %s&quot;</span>
+                <span class="s1">new_step = </span><span class="s4">u&quot;@%s('%s')&quot; </span><span class="s1">% (step_type</span><span class="s3">, </span><span class="s1">step_text)</span>
+                <span class="s1">existing.step_type = step_type</span>
+                <span class="s1">existing_step = existing.describe()</span>
+                <span class="s1">existing_step += </span><span class="s4">u&quot; at %s&quot; </span><span class="s1">% existing.location</span>
+                <span class="s3">raise </span><span class="s1">AmbiguousStep(message % (new_step</span><span class="s3">, </span><span class="s1">existing_step))</span>
+        <span class="s1">step_definitions.append(get_matcher(func</span><span class="s3">, </span><span class="s1">step_text))</span>
+
+    <span class="s3">def </span><span class="s1">find_step_definition(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s1">candidates = self.steps[step.step_type]</span>
+        <span class="s1">more_steps = self.steps[</span><span class="s4">&quot;step&quot;</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">step.step_type != </span><span class="s4">&quot;step&quot; </span><span class="s3">and </span><span class="s1">more_steps:</span>
+            <span class="s0"># -- ENSURE: self.step_type lists are not modified/extended.</span>
+            <span class="s1">candidates = list(candidates)</span>
+            <span class="s1">candidates += more_steps</span>
+
+        <span class="s3">for </span><span class="s1">step_definition </span><span class="s3">in </span><span class="s1">candidates:</span>
+            <span class="s3">if </span><span class="s1">step_definition.match(step.name):</span>
+                <span class="s3">return </span><span class="s1">step_definition</span>
+        <span class="s3">return None</span>
+
+    <span class="s3">def </span><span class="s1">find_match(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s1">candidates = self.steps[step.step_type]</span>
+        <span class="s1">more_steps = self.steps[</span><span class="s4">&quot;step&quot;</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">step.step_type != </span><span class="s4">&quot;step&quot; </span><span class="s3">and </span><span class="s1">more_steps:</span>
+            <span class="s0"># -- ENSURE: self.step_type lists are not modified/extended.</span>
+            <span class="s1">candidates = list(candidates)</span>
+            <span class="s1">candidates += more_steps</span>
+
+        <span class="s3">for </span><span class="s1">step_definition </span><span class="s3">in </span><span class="s1">candidates:</span>
+            <span class="s1">result = step_definition.match(step.name)</span>
+            <span class="s3">if </span><span class="s1">result:</span>
+                <span class="s3">return </span><span class="s1">result</span>
+
+        <span class="s3">return None</span>
+
+    <span class="s3">def </span><span class="s1">make_decorator(self</span><span class="s3">, </span><span class="s1">step_type):</span>
+        <span class="s3">def </span><span class="s1">decorator(step_text):</span>
+            <span class="s3">def </span><span class="s1">wrapper(func):</span>
+                <span class="s1">self.add_step_definition(step_type</span><span class="s3">, </span><span class="s1">step_text</span><span class="s3">, </span><span class="s1">func)</span>
+                <span class="s3">return </span><span class="s1">func</span>
+            <span class="s3">return </span><span class="s1">wrapper</span>
+        <span class="s3">return </span><span class="s1">decorator</span>
+
+
+<span class="s1">registry = StepRegistry()</span>
+
+<span class="s0"># -- Create the decorators</span>
+<span class="s0"># pylint: disable=redefined-outer-name</span>
+<span class="s3">def </span><span class="s1">setup_step_decorators(run_context=</span><span class="s3">None, </span><span class="s1">registry=registry):</span>
+    <span class="s3">if </span><span class="s1">run_context </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s1">run_context = globals()</span>
+    <span class="s3">for </span><span class="s1">step_type </span><span class="s3">in </span><span class="s1">(</span><span class="s4">&quot;given&quot;</span><span class="s3">, </span><span class="s4">&quot;when&quot;</span><span class="s3">, </span><span class="s4">&quot;then&quot;</span><span class="s3">, </span><span class="s4">&quot;step&quot;</span><span class="s1">):</span>
+        <span class="s1">step_decorator = registry.make_decorator(step_type)</span>
+        <span class="s1">run_context[step_type.title()] = run_context[step_type] = step_decorator</span>
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># MODULE INIT:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s1">setup_step_decorators()</span>
+</pre>
+</body>
+</html>

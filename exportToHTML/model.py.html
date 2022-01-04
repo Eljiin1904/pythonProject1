@@ -1,0 +1,1770 @@
+<html>
+<head>
+<title>model.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+model.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s0"># pylint: disable=too-many-lines</span>
+<span class="s2">&quot;&quot;&quot; 
+This module provides the model element class that represent a behave model: 
+ 
+* :class:`Feature` 
+* :class:`Scenario` 
+* :class:`ScenarioOutline` 
+* :class:`Step` 
+* ... 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span><span class="s3">, </span><span class="s1">with_statement</span>
+<span class="s3">import </span><span class="s1">copy</span>
+<span class="s3">import </span><span class="s1">difflib</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">import </span><span class="s1">itertools</span>
+<span class="s3">import </span><span class="s1">time</span>
+<span class="s3">import </span><span class="s1">six</span>
+<span class="s3">from </span><span class="s1">six.moves </span><span class="s3">import </span><span class="s1">zip       </span><span class="s0"># pylint: disable=redefined-builtin</span>
+<span class="s3">from </span><span class="s1">behave.model_core </span><span class="s3">import </span><span class="s1">\</span>
+        <span class="s1">Status</span><span class="s3">, </span><span class="s1">BasicStatement</span><span class="s3">, </span><span class="s1">TagAndStatusStatement</span><span class="s3">, </span><span class="s1">TagStatement</span><span class="s3">, </span><span class="s1">Replayable</span>
+<span class="s3">from </span><span class="s1">behave.matchers </span><span class="s3">import </span><span class="s1">NoMatch</span>
+<span class="s3">from </span><span class="s1">behave.textutil </span><span class="s3">import </span><span class="s1">text </span><span class="s3">as </span><span class="s1">_text</span>
+<span class="s3">if </span><span class="s1">six.PY2:</span>
+    <span class="s0"># -- USE PYTHON3 BACKPORT: With unicode traceback support.</span>
+    <span class="s3">import </span><span class="s1">traceback2 </span><span class="s3">as </span><span class="s1">traceback</span>
+<span class="s3">else</span><span class="s1">:</span>
+    <span class="s3">import </span><span class="s1">traceback</span>
+
+
+<span class="s3">class </span><span class="s1">Feature(TagAndStatusStatement</span><span class="s3">, </span><span class="s1">Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;A `feature`_ parsed from a *feature file*. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: keyword 
+ 
+       This is the keyword as seen in the *feature file*. In English this will 
+       be &quot;Feature&quot;. 
+ 
+    .. attribute:: name 
+ 
+       The name of the feature (the text after &quot;Feature&quot;.) 
+ 
+    .. attribute:: description 
+ 
+       The description of the feature as seen in the *feature file*. This is 
+       stored as a list of text lines. 
+ 
+    .. attribute:: background 
+ 
+       The :class:`~behave.model.Background` for this feature, if any. 
+ 
+    .. attribute:: scenarios 
+ 
+       A list of :class:`~behave.model.Scenario` making up this feature. 
+ 
+    .. attribute:: tags 
+ 
+       A list of @tags (as :class:`~behave.model.Tag` which are basically 
+       glorified strings) attached to the feature. 
+       See :ref:`controlling things with tags`. 
+ 
+    .. attribute:: status 
+ 
+       Read-Only. A summary status of the feature's run. If read before the 
+       feature is fully tested it will return &quot;untested&quot; otherwise it will 
+       return one of: 
+ 
+       Status.untested 
+         The feature was has not been completely tested yet. 
+       Status.skipped 
+         One or more steps of this feature was passed over during testing. 
+       Status.passed 
+         The feature was tested successfully. 
+       Status.failed 
+         One or more steps of this feature failed. 
+ 
+       .. versionchanged:: 1.2.6 
+            Use Status enum class (was: string). 
+ 
+    .. attribute:: hook_failed 
+ 
+        Indicates if a hook failure occured while running this feature. 
+ 
+        .. versionadded:: 1.2.6 
+ 
+    .. attribute:: duration 
+ 
+       The time, in seconds, that it took to test this feature. If read before 
+       the feature is tested it will return 0.0. 
+ 
+    .. attribute:: filename 
+ 
+       The file name (or &quot;&lt;string&gt;&quot;) of the *feature file* where the feature 
+       was found. 
+ 
+    .. attribute:: line 
+ 
+       The line number of the *feature file* where the feature was found. 
+ 
+    .. attribute:: language 
+ 
+       Indicates which spoken language (English, French, German, ..) was used 
+       for parsing the feature file and its keywords. The I18N language code 
+       indicates which language is used. This corresponds to the language tag 
+       at the beginning of the feature file. 
+ 
+       .. versionadded:: 1.2.6 
+ 
+    .. _`feature`: gherkin.html#features 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">type = </span><span class="s4">&quot;feature&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags=</span><span class="s3">None,</span>
+                 <span class="s1">description=</span><span class="s3">None, </span><span class="s1">scenarios=</span><span class="s3">None, </span><span class="s1">background=</span><span class="s3">None,</span>
+                 <span class="s1">language=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">tags = tags </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">super(Feature</span><span class="s3">, </span><span class="s1">self).__init__(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags)</span>
+        <span class="s1">self.description = description </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self.scenarios = []</span>
+        <span class="s1">self.background = background</span>
+        <span class="s1">self.language = language</span>
+        <span class="s1">self.parser = </span><span class="s3">None</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s3">if </span><span class="s1">scenarios:</span>
+            <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">scenarios:</span>
+                <span class="s1">self.add_scenario(scenario)</span>
+
+    <span class="s3">def </span><span class="s1">reset(self):</span>
+        <span class="s2">&quot;&quot;&quot;Reset to clean state before a test run.&quot;&quot;&quot;</span>
+        <span class="s1">super(Feature</span><span class="s3">, </span><span class="s1">self).reset()</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+            <span class="s1">scenario.reset()</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;Feature &quot;%s&quot;: %d scenario(s)&gt;' </span><span class="s1">% \</span>
+            <span class="s1">(self.name</span><span class="s3">, </span><span class="s1">len(self.scenarios))</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">iter(self.scenarios)</span>
+
+    <span class="s3">def </span><span class="s1">add_scenario(self</span><span class="s3">, </span><span class="s1">scenario):</span>
+        <span class="s1">scenario.feature = self</span>
+        <span class="s1">scenario.background = self.background</span>
+        <span class="s1">self.scenarios.append(scenario)</span>
+
+    <span class="s3">def </span><span class="s1">compute_status(self):</span>
+        <span class="s2">&quot;&quot;&quot;Compute the status of this feature based on its: 
+          * scenarios 
+          * scenario outlines 
+          * hook failures 
+ 
+        :return: Computed status (as string-enum). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+            <span class="s3">return </span><span class="s1">Status.failed</span>
+
+        <span class="s1">skipped = </span><span class="s3">True</span>
+        <span class="s1">passed_count = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+            <span class="s1">scenario_status = scenario.status</span>
+            <span class="s3">if </span><span class="s1">scenario_status == Status.failed:</span>
+                <span class="s3">return </span><span class="s1">Status.failed</span>
+            <span class="s3">elif </span><span class="s1">scenario_status == Status.untested:</span>
+                <span class="s3">if </span><span class="s1">passed_count &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                    <span class="s3">return </span><span class="s1">Status.failed  </span><span class="s0"># ABORTED: Some passed, now untested.</span>
+                <span class="s3">return </span><span class="s1">Status.untested</span>
+            <span class="s3">if </span><span class="s1">scenario_status != Status.skipped:</span>
+                <span class="s1">skipped = </span><span class="s3">False</span>
+            <span class="s3">if </span><span class="s1">scenario_status == Status.passed:</span>
+                <span class="s1">passed_count += </span><span class="s5">1</span>
+
+        <span class="s3">if </span><span class="s1">skipped:</span>
+            <span class="s3">return </span><span class="s1">Status.skipped</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">Status.passed</span>
+
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">duration(self):</span>
+        <span class="s0"># -- NEW: Background is executed N times, now part of scenarios.</span>
+        <span class="s1">feature_duration = </span><span class="s5">0.0</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+            <span class="s1">feature_duration += scenario.duration</span>
+        <span class="s3">return </span><span class="s1">feature_duration</span>
+
+    <span class="s3">def </span><span class="s1">walk_scenarios(self</span><span class="s3">, </span><span class="s1">with_outlines=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Provides a flat list of all scenarios of this feature. 
+        A ScenarioOutline element adds its scenarios to this list. 
+        But the ScenarioOutline element itself is only added when specified. 
+ 
+        A flat scenario list is useful when all scenarios of a features 
+        should be processed. 
+ 
+        :param with_outlines: If ScenarioOutline items should be added, too. 
+        :return: List of all scenarios of this feature. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">all_scenarios = []</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+            <span class="s3">if </span><span class="s1">isinstance(scenario</span><span class="s3">, </span><span class="s1">ScenarioOutline):</span>
+                <span class="s1">scenario_outline = scenario</span>
+                <span class="s3">if </span><span class="s1">with_outlines:</span>
+                    <span class="s1">all_scenarios.append(scenario_outline)</span>
+                <span class="s1">all_scenarios.extend(scenario_outline.scenarios)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">all_scenarios.append(scenario)</span>
+        <span class="s3">return </span><span class="s1">all_scenarios</span>
+
+    <span class="s3">def </span><span class="s1">should_run(self</span><span class="s3">, </span><span class="s1">config=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Determines if this Feature (and its scenarios) should run. 
+        Implements the run decision logic for a feature. 
+        The decision depends on: 
+ 
+          * if the Feature is marked as skipped 
+          * if the config.tags (tag expression) enable/disable this feature 
+ 
+        :param config:  Runner configuration to use (optional). 
+        :return: True, if scenario should run. False, otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">answer = </span><span class="s3">not </span><span class="s1">self.should_skip</span>
+        <span class="s3">if </span><span class="s1">answer </span><span class="s3">and </span><span class="s1">config:</span>
+            <span class="s1">answer = self.should_run_with_tags(config.tags)</span>
+        <span class="s3">return </span><span class="s1">answer</span>
+
+    <span class="s3">def </span><span class="s1">should_run_with_tags(self</span><span class="s3">, </span><span class="s1">tag_expression):</span>
+        <span class="s2">&quot;&quot;&quot;Determines if this feature should run when the tag expression is used. 
+        A feature should run if: 
+          * it should run according to its tags 
+          * any of its scenarios should run according to its tags 
+ 
+        :param tag_expression:  Runner/config environment tags to use. 
+        :return: True, if feature should run. False, otherwise (skip it). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">run_feature = tag_expression.check(self.tags)</span>
+        <span class="s3">if not </span><span class="s1">run_feature:</span>
+            <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self:</span>
+                <span class="s3">if </span><span class="s1">scenario.should_run_with_tags(tag_expression):</span>
+                    <span class="s1">run_feature = </span><span class="s3">True</span>
+                    <span class="s3">break</span>
+        <span class="s3">return </span><span class="s1">run_feature</span>
+
+    <span class="s3">def </span><span class="s1">mark_skipped(self):</span>
+        <span class="s2">&quot;&quot;&quot;Marks this feature (and all its scenarios and steps) as skipped. 
+        Note this function may be called before the feature is executed. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.skip(require_not_executed=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s3">assert </span><span class="s1">self.status == Status.skipped </span><span class="s3">or </span><span class="s1">self.hook_failed</span>
+
+    <span class="s3">def </span><span class="s1">skip(self</span><span class="s3">, </span><span class="s1">reason=</span><span class="s3">None, </span><span class="s1">require_not_executed=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Skip executing this feature or the remaining parts of it. 
+        Note that this feature may be already partly executed 
+        when this function is called. 
+ 
+        :param reason:  Optional reason why feature should be skipped (as string). 
+        :param require_not_executed: Optional, requires that feature is not 
+                        executed yet (default: false). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">reason:</span>
+            <span class="s1">logger = logging.getLogger(</span><span class="s4">&quot;behave&quot;</span><span class="s1">)</span>
+            <span class="s1">logger.warning(</span><span class="s4">u&quot;SKIP FEATURE %s: %s&quot;</span><span class="s3">, </span><span class="s1">self.name</span><span class="s3">, </span><span class="s1">reason)</span>
+
+        <span class="s1">self.clear_status()</span>
+        <span class="s1">self.should_skip = </span><span class="s3">True</span>
+        <span class="s1">self.skip_reason = reason</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+            <span class="s1">scenario.skip(reason</span><span class="s3">, </span><span class="s1">require_not_executed)</span>
+        <span class="s3">if not </span><span class="s1">self.scenarios:</span>
+            <span class="s0"># -- SPECIAL CASE: Feature without scenarios</span>
+            <span class="s1">self.set_status(Status.skipped)</span>
+        <span class="s3">assert </span><span class="s1">self.status </span><span class="s3">in </span><span class="s1">self.final_status </span><span class="s0">#&lt; skipped, failed or passed.</span>
+
+    <span class="s3">def </span><span class="s1">run(self</span><span class="s3">, </span><span class="s1">runner):</span>
+        <span class="s0"># pylint: disable=too-many-branches</span>
+        <span class="s0"># MAYBE: self.reset()</span>
+        <span class="s1">self.clear_status()</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+
+        <span class="s1">runner.context._push(layer_name=</span><span class="s4">&quot;feature&quot;</span><span class="s1">)      </span><span class="s0"># pylint: disable=protected-access</span>
+        <span class="s1">runner.context.feature = self</span>
+        <span class="s1">runner.context.tags = set(self.tags)</span>
+
+        <span class="s1">skip_feature_untested = runner.aborted</span>
+        <span class="s1">run_feature = self.should_run(runner.config)</span>
+        <span class="s1">failed_count = </span><span class="s5">0</span>
+        <span class="s1">hooks_called = </span><span class="s3">False</span>
+        <span class="s3">if not </span><span class="s1">runner.config.dry_run </span><span class="s3">and </span><span class="s1">run_feature:</span>
+            <span class="s1">hooks_called = </span><span class="s3">True</span>
+            <span class="s3">for </span><span class="s1">tag </span><span class="s3">in </span><span class="s1">self.tags:</span>
+                <span class="s1">runner.run_hook(</span><span class="s4">&quot;before_tag&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">tag)</span>
+            <span class="s1">runner.run_hook(</span><span class="s4">&quot;before_feature&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">self)</span>
+            <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+                <span class="s1">failed_count += </span><span class="s5">1</span>
+
+            <span class="s0"># -- RE-EVALUATE SHOULD-RUN STATE:</span>
+            <span class="s0"># Hook may call feature.mark_skipped() to exclude it.</span>
+            <span class="s1">skip_feature_untested = self.hook_failed </span><span class="s3">or </span><span class="s1">runner.aborted</span>
+            <span class="s1">run_feature = self.should_run()</span>
+
+        <span class="s0"># run this feature if the tags say so or any one of its scenarios</span>
+        <span class="s3">if </span><span class="s1">run_feature </span><span class="s3">or </span><span class="s1">runner.config.show_skipped:</span>
+            <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                <span class="s1">formatter.feature(self)</span>
+            <span class="s3">if </span><span class="s1">self.background:</span>
+                <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                    <span class="s1">formatter.background(self.background)</span>
+
+        <span class="s3">if not </span><span class="s1">skip_feature_untested:</span>
+            <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+                <span class="s0"># -- OPTIONAL: Select scenario by name (regular expressions).</span>
+                <span class="s3">if </span><span class="s1">(runner.config.name </span><span class="s3">and</span>
+                        <span class="s3">not </span><span class="s1">scenario.should_run_with_name_select(runner.config)):</span>
+                    <span class="s1">scenario.mark_skipped()</span>
+                    <span class="s3">continue</span>
+
+                <span class="s1">failed = scenario.run(runner)</span>
+                <span class="s3">if </span><span class="s1">failed:</span>
+                    <span class="s1">failed_count += </span><span class="s5">1</span>
+                    <span class="s3">if </span><span class="s1">runner.config.stop </span><span class="s3">or </span><span class="s1">runner.aborted:</span>
+                        <span class="s0"># -- FAIL-EARLY: Stop after first failure.</span>
+                        <span class="s3">break</span>
+
+        <span class="s1">self.clear_status()  </span><span class="s0"># -- ENFORCE: compute_status() after run.</span>
+        <span class="s3">if not </span><span class="s1">self.scenarios </span><span class="s3">and not </span><span class="s1">run_feature:</span>
+            <span class="s0"># -- SPECIAL CASE: Feature without scenarios</span>
+            <span class="s1">self.set_status(Status.skipped)</span>
+
+        <span class="s3">if </span><span class="s1">hooks_called:</span>
+            <span class="s1">runner.run_hook(</span><span class="s4">&quot;after_feature&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">self)</span>
+            <span class="s3">for </span><span class="s1">tag </span><span class="s3">in </span><span class="s1">self.tags:</span>
+                <span class="s1">runner.run_hook(</span><span class="s4">&quot;after_tag&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">tag)</span>
+            <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+                <span class="s1">failed_count += </span><span class="s5">1</span>
+                <span class="s1">self.set_status(Status.failed)</span>
+
+        <span class="s0"># -- PERFORM CONTEXT CLEANUP: May raise cleanup errors.</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">runner.context._pop()       </span><span class="s0"># pylint: disable=protected-access</span>
+        <span class="s3">except </span><span class="s1">Exception:</span>
+            <span class="s0"># -- CLEANUP-ERROR:</span>
+            <span class="s1">self.set_status(Status.failed)</span>
+
+        <span class="s3">if </span><span class="s1">run_feature </span><span class="s3">or </span><span class="s1">runner.config.show_skipped:</span>
+            <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                <span class="s1">formatter.eof()</span>
+
+        <span class="s1">failed = (failed_count &gt; </span><span class="s5">0</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">failed</span>
+
+
+<span class="s3">class </span><span class="s1">Background(BasicStatement</span><span class="s3">, </span><span class="s1">Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;A `background`_ parsed from a *feature file*. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: keyword 
+ 
+       This is the keyword as seen in the *feature file*. In English this will 
+       typically be &quot;Background&quot;. 
+ 
+    .. attribute:: name 
+ 
+       The name of the background (the text after &quot;Background:&quot;.) 
+ 
+    .. attribute:: steps 
+ 
+       A list of :class:`~behave.model.Step` making up this background. 
+ 
+    .. attribute:: duration 
+ 
+       The time, in seconds, that it took to run this background. If read 
+       before the background is run it will return 0.0. 
+ 
+    .. attribute:: filename 
+ 
+       The file name (or &quot;&lt;string&gt;&quot;) of the *feature file* where the background 
+       was found. 
+ 
+    .. attribute:: line 
+ 
+       The line number of the *feature file* where the background was found. 
+ 
+    .. _`background`: gherkin.html#backgrounds 
+    &quot;&quot;&quot;</span>
+    <span class="s1">type = </span><span class="s4">&quot;background&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">steps=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(Background</span><span class="s3">, </span><span class="s1">self).__init__(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name)</span>
+        <span class="s1">self.steps = steps </span><span class="s3">or </span><span class="s1">[]</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;Background &quot;%s&quot;&gt;' </span><span class="s1">% self.name</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">iter(self.steps)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">duration(self):</span>
+        <span class="s1">duration = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.steps:</span>
+            <span class="s1">duration += step.duration</span>
+        <span class="s3">return </span><span class="s1">duration</span>
+
+
+<span class="s3">class </span><span class="s1">Scenario(TagAndStatusStatement</span><span class="s3">, </span><span class="s1">Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;A `scenario`_ parsed from a *feature file*. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: keyword 
+ 
+       This is the keyword as seen in the *feature file*. In English this will 
+       typically be &quot;Scenario&quot;. 
+ 
+    .. attribute:: name 
+ 
+       The name of the scenario (the text after &quot;Scenario:&quot;.) 
+ 
+    .. attribute:: description 
+ 
+       The description of the scenario as seen in the *feature file*. 
+       This is stored as a list of text lines. 
+ 
+    .. attribute:: feature 
+ 
+       The :class:`~behave.model.Feature` this scenario belongs to. 
+ 
+    .. attribute:: steps 
+ 
+       A list of :class:`~behave.model.Step` making up this scenario. 
+ 
+    .. attribute:: tags 
+ 
+       A list of @tags (as :class:`~behave.model.Tag` which are basically 
+       glorified strings) attached to the scenario. 
+       See :ref:`controlling things with tags`. 
+ 
+    .. attribute:: status 
+ 
+       Read-Only. A summary status of the scenario's run. If read before the 
+       scenario is fully tested it will return &quot;untested&quot; otherwise it will 
+       return one of: 
+ 
+ 
+       Status.untested 
+         The scenario was has not been completely tested yet. 
+       Status.skipped 
+         One or more steps of this scenario was passed over during testing. 
+       Status.passed 
+         The scenario was tested successfully. 
+       Status.failed 
+         One or more steps of this scenario failed. 
+ 
+       .. versionchanged:: 1.2.6 
+            Use Status enum class (was: string) 
+ 
+    .. attribute:: hook_failed 
+ 
+        Indicates if a hook failure occured while running this scenario. 
+ 
+        .. versionadded:: 1.2.6 
+ 
+    .. attribute:: duration 
+ 
+       The time, in seconds, that it took to test this scenario. If read before 
+       the scenario is tested it will return 0.0. 
+ 
+    .. attribute:: filename 
+ 
+       The file name (or &quot;&lt;string&gt;&quot;) of the *feature file* where the scenario 
+       was found. 
+ 
+    .. attribute:: line 
+ 
+       The line number of the *feature file* where the scenario was found. 
+ 
+ 
+    .. _`scenario`: gherkin.html#scenarios 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># pylint: disable=too-many-instance-attributes</span>
+    <span class="s1">type = </span><span class="s4">&quot;scenario&quot;</span>
+    <span class="s1">continue_after_failed_step = </span><span class="s3">False</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags=</span><span class="s3">None, </span><span class="s1">steps=</span><span class="s3">None,</span>
+                 <span class="s1">description=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">tags = tags </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">super(Scenario</span><span class="s3">, </span><span class="s1">self).__init__(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags)</span>
+        <span class="s1">self.description = description </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self.steps = steps </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self.background = </span><span class="s3">None</span>
+        <span class="s1">self.feature = </span><span class="s3">None  </span><span class="s0"># REFER-TO: owner=Feature</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s1">self._background_steps = </span><span class="s3">None</span>
+        <span class="s1">self._row = </span><span class="s3">None</span>
+        <span class="s1">self.was_dry_run = </span><span class="s3">False</span>
+
+    <span class="s3">def </span><span class="s1">reset(self):</span>
+        <span class="s2">&quot;&quot;&quot;Reset the internal data to reintroduce new-born state just after the 
+        ctor was called. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">super(Scenario</span><span class="s3">, </span><span class="s1">self).reset()</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s1">self._row = </span><span class="s3">None</span>
+        <span class="s1">self.was_dry_run = </span><span class="s3">False</span>
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.all_steps:</span>
+            <span class="s1">step.reset()</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">background_steps(self):</span>
+        <span class="s2">&quot;&quot;&quot;Provide background steps if feature has a background. 
+        Lazy init that copies the background steps. 
+ 
+        Note that a copy of the background steps is needed to ensure 
+        that the background step status is specific to the scenario. 
+ 
+        :return:  List of background steps or empty list 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._background_steps </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s0"># -- LAZY-INIT (need copy of background.steps):</span>
+            <span class="s0"># Each scenario needs own background.steps.</span>
+            <span class="s0"># Otherwise, background step status of the last-run scenario is used.</span>
+            <span class="s1">steps = []</span>
+            <span class="s3">if </span><span class="s1">self.background:</span>
+                <span class="s1">steps = [copy.copy(step) </span><span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.background.steps]</span>
+            <span class="s1">self._background_steps = steps</span>
+        <span class="s3">return </span><span class="s1">self._background_steps</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">all_steps(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns iterator to all steps, including background steps if any.&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.background </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">itertools.chain(self.background_steps</span><span class="s3">, </span><span class="s1">self.steps)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">iter(self.steps)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;Scenario &quot;%s&quot;&gt;' </span><span class="s1">% self.name</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">self.all_steps</span>
+
+    <span class="s3">def </span><span class="s1">compute_status(self):</span>
+        <span class="s2">&quot;&quot;&quot;Compute the status of the scenario from its steps 
+        (and hook failures). 
+ 
+        :return: Computed status (as enum value). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+            <span class="s3">return </span><span class="s1">Status.failed</span>
+
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.all_steps:</span>
+            <span class="s3">if </span><span class="s1">step.status == Status.undefined:</span>
+                <span class="s3">if </span><span class="s1">self.was_dry_run:</span>
+                    <span class="s0"># -- SPECIAL CASE: In dry-run with undefined-step discovery</span>
+                    <span class="s0">#    Undefined steps should not cause failed scenario.</span>
+                    <span class="s3">return </span><span class="s1">Status.untested</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s0"># -- NORMALLY: Undefined steps cause failed scenario.</span>
+                    <span class="s3">return </span><span class="s1">Status.failed</span>
+            <span class="s3">elif </span><span class="s1">step.status != Status.passed:</span>
+                <span class="s0"># pylint: disable=line-too-long</span>
+                <span class="s3">assert </span><span class="s1">step.status </span><span class="s3">in </span><span class="s1">(Status.failed</span><span class="s3">, </span><span class="s1">Status.skipped</span><span class="s3">, </span><span class="s1">Status.untested)</span>
+                <span class="s3">return </span><span class="s1">step.status</span>
+        <span class="s3">return </span><span class="s1">Status.passed</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">duration(self):</span>
+        <span class="s0"># -- ORIG: for step in self.steps:  Background steps were excluded.</span>
+        <span class="s1">scenario_duration = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.all_steps:</span>
+            <span class="s1">scenario_duration += step.duration</span>
+        <span class="s3">return </span><span class="s1">scenario_duration</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">effective_tags(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Effective tags for this scenario: 
+          * own tags 
+          * tags inherited from its feature 
+        &quot;&quot;&quot;</span>
+        <span class="s1">tags = self.tags</span>
+        <span class="s3">if </span><span class="s1">self.feature:</span>
+            <span class="s1">tags = self.feature.tags + self.tags</span>
+        <span class="s3">return </span><span class="s1">tags</span>
+
+    <span class="s3">def </span><span class="s1">should_run(self</span><span class="s3">, </span><span class="s1">config=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Determines if this Scenario (or ScenarioOutline) should run. 
+        Implements the run decision logic for a scenario. 
+        The decision depends on: 
+ 
+          * if the Scenario is marked as skipped 
+          * if the config.tags (tag expression) enable/disable this scenario 
+          * if the scenario is selected by name 
+ 
+        :param config:  Runner configuration to use (optional). 
+        :return: True, if scenario should run. False, otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">answer = </span><span class="s3">not </span><span class="s1">self.should_skip</span>
+        <span class="s3">if </span><span class="s1">answer </span><span class="s3">and </span><span class="s1">config:</span>
+            <span class="s1">answer = (self.should_run_with_tags(config.tags) </span><span class="s3">and</span>
+                      <span class="s1">self.should_run_with_name_select(config))</span>
+        <span class="s3">return </span><span class="s1">answer</span>
+
+    <span class="s3">def </span><span class="s1">should_run_with_tags(self</span><span class="s3">, </span><span class="s1">tag_expression):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Determines if this scenario should run when the tag expression is used. 
+ 
+        :param tag_expression:  Runner/config environment tags to use. 
+        :return: True, if scenario should run. False, otherwise (skip it). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">tag_expression.check(self.effective_tags)</span>
+
+    <span class="s3">def </span><span class="s1">should_run_with_name_select(self</span><span class="s3">, </span><span class="s1">config):</span>
+        <span class="s2">&quot;&quot;&quot;Determines if this scenario should run when it is selected by name. 
+ 
+        :param config:  Runner/config environment name regexp (if any). 
+        :return: True, if scenario should run. False, otherwise (skip it). 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># -- SELECT-ANY: If select by name is not specified (not config.name).</span>
+        <span class="s3">return not </span><span class="s1">config.name </span><span class="s3">or </span><span class="s1">config.name_re.search(self.name)</span>
+
+    <span class="s3">def </span><span class="s1">mark_skipped(self):</span>
+        <span class="s2">&quot;&quot;&quot;Marks this scenario (and all its steps) as skipped. 
+        Note that this method can be called before the scenario is executed. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.skip(require_not_executed=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s3">assert </span><span class="s1">self.status == Status.skipped </span><span class="s3">or </span><span class="s1">self.hook_failed</span><span class="s3">, </span><span class="s1">\</span>
+               <span class="s4">&quot;OOPS: scenario.status=%s&quot; </span><span class="s1">% self.status.name</span>
+
+    <span class="s3">def </span><span class="s1">skip(self</span><span class="s3">, </span><span class="s1">reason=</span><span class="s3">None, </span><span class="s1">require_not_executed=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Skip from executing this scenario or the remaining parts of it. 
+        Note that the scenario may be already partly executed 
+        when this method is called. 
+ 
+        :param reason:  Optional reason why it should be skipped (as string). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">reason:</span>
+            <span class="s1">scenario_type = self.__class__.__name__</span>
+            <span class="s1">logger = logging.getLogger(</span><span class="s4">&quot;behave&quot;</span><span class="s1">)</span>
+            <span class="s1">logger.warning(</span><span class="s4">u&quot;SKIP %s %s: %s&quot;</span><span class="s3">, </span><span class="s1">scenario_type</span><span class="s3">, </span><span class="s1">self.name</span><span class="s3">, </span><span class="s1">reason)</span>
+
+        <span class="s1">self.clear_status()</span>
+        <span class="s1">self.should_skip = </span><span class="s3">True</span>
+        <span class="s1">self.skip_reason = reason</span>
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.all_steps:</span>
+            <span class="s1">not_executed = step.status </span><span class="s3">in </span><span class="s1">(Status.untested</span><span class="s3">, </span><span class="s1">Status.skipped)</span>
+            <span class="s3">if </span><span class="s1">not_executed:</span>
+                <span class="s1">step.status = Status.skipped</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">assert not </span><span class="s1">require_not_executed</span><span class="s3">, </span><span class="s1">\</span>
+                    <span class="s4">&quot;REQUIRE NOT-EXECUTED, but step is %s&quot; </span><span class="s1">% step.status</span>
+
+        <span class="s1">scenario_without_steps = </span><span class="s3">not </span><span class="s1">self.steps </span><span class="s3">and not </span><span class="s1">self.background_steps</span>
+        <span class="s3">if </span><span class="s1">scenario_without_steps:</span>
+            <span class="s1">self.set_status(Status.skipped)</span>
+        <span class="s3">assert </span><span class="s1">self.status </span><span class="s3">in </span><span class="s1">self.final_status </span><span class="s0">#&lt; skipped, failed or passed</span>
+
+    <span class="s3">def </span><span class="s1">run(self</span><span class="s3">, </span><span class="s1">runner):</span>
+        <span class="s0"># pylint: disable=too-many-branches, too-many-statements</span>
+        <span class="s1">self.clear_status()</span>
+        <span class="s1">self.captured.reset()</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s1">failed = </span><span class="s3">False</span>
+        <span class="s1">skip_scenario_untested = runner.aborted</span>
+        <span class="s1">run_scenario = self.should_run(runner.config)</span>
+        <span class="s1">run_steps = run_scenario </span><span class="s3">and not </span><span class="s1">runner.config.dry_run</span>
+        <span class="s1">dry_run_scenario = run_scenario </span><span class="s3">and </span><span class="s1">runner.config.dry_run</span>
+        <span class="s1">self.was_dry_run = dry_run_scenario</span>
+
+        <span class="s1">runner.context._push(layer_name=</span><span class="s4">&quot;scenario&quot;</span><span class="s1">)      </span><span class="s0"># pylint: disable=protected-access</span>
+        <span class="s1">runner.context.scenario = self</span>
+        <span class="s1">runner.context.tags = set(self.effective_tags)</span>
+
+        <span class="s1">hooks_called = </span><span class="s3">False</span>
+        <span class="s3">if not </span><span class="s1">runner.config.dry_run </span><span class="s3">and </span><span class="s1">run_scenario:</span>
+            <span class="s1">hooks_called = </span><span class="s3">True</span>
+            <span class="s3">for </span><span class="s1">tag </span><span class="s3">in </span><span class="s1">self.tags:</span>
+                <span class="s1">runner.run_hook(</span><span class="s4">&quot;before_tag&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">tag)</span>
+            <span class="s1">runner.run_hook(</span><span class="s4">&quot;before_scenario&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">self)</span>
+            <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+                <span class="s0"># -- SKIP: Scenario steps and behave like dry_run_scenario</span>
+                <span class="s1">failed = </span><span class="s3">True</span>
+
+            <span class="s0"># -- RE-EVALUATE SHOULD-RUN STATE:</span>
+            <span class="s0"># Hook may call scenario.mark_skipped() to exclude it.</span>
+            <span class="s1">skip_scenario_untested = self.hook_failed </span><span class="s3">or </span><span class="s1">runner.aborted</span>
+            <span class="s1">run_scenario = self.should_run()</span>
+            <span class="s1">run_steps = run_scenario </span><span class="s3">and not </span><span class="s1">runner.config.dry_run</span>
+
+        <span class="s3">if </span><span class="s1">run_scenario </span><span class="s3">or </span><span class="s1">runner.config.show_skipped:</span>
+            <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                <span class="s1">formatter.scenario(self)</span>
+
+        <span class="s0"># TODO: Reevaluate location =&gt; Move in front of hook-calls</span>
+        <span class="s1">runner.setup_capture()</span>
+
+        <span class="s3">if </span><span class="s1">run_scenario </span><span class="s3">or </span><span class="s1">runner.config.show_skipped:</span>
+            <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self:</span>
+                <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                    <span class="s1">formatter.step(step)</span>
+
+        <span class="s3">if not </span><span class="s1">skip_scenario_untested:</span>
+            <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">self.all_steps:</span>
+                <span class="s3">if </span><span class="s1">run_steps:</span>
+                    <span class="s3">if not </span><span class="s1">step.run(runner):</span>
+                        <span class="s0"># -- CASE: Failed or undefined step</span>
+                        <span class="s0">#    Optionally continue_after_failed_step if enabled.</span>
+                        <span class="s0">#    But disable run_steps after undefined-step.</span>
+                        <span class="s1">run_steps = (self.continue_after_failed_step </span><span class="s3">and</span>
+                                     <span class="s1">step.status == Status.failed)</span>
+                        <span class="s1">failed = </span><span class="s3">True</span>
+                        <span class="s0"># pylint: disable=protected-access</span>
+                        <span class="s1">runner.context._set_root_attribute(</span><span class="s4">&quot;failed&quot;</span><span class="s3">, True</span><span class="s1">)</span>
+                        <span class="s1">self.set_status(Status.failed)</span>
+                    <span class="s3">elif </span><span class="s1">self.should_skip:</span>
+                        <span class="s0"># -- CASE: Step skipped remaining scenario.</span>
+                        <span class="s0"># assert self.status == Status.skipped</span>
+                        <span class="s1">run_steps = </span><span class="s3">False</span>
+                <span class="s3">elif </span><span class="s1">failed </span><span class="s3">or </span><span class="s1">dry_run_scenario:</span>
+                    <span class="s0"># -- SKIP STEPS: After failure/undefined-step occurred.</span>
+                    <span class="s0"># BUT: Detect all remaining undefined steps.</span>
+                    <span class="s1">step.status = Status.skipped</span>
+                    <span class="s3">if </span><span class="s1">dry_run_scenario:</span>
+                        <span class="s0"># pylint: disable=redefined-variable-type</span>
+                        <span class="s1">step.status = Status.untested</span>
+                    <span class="s1">found_step_match = runner.step_registry.find_match(step)</span>
+                    <span class="s3">if not </span><span class="s1">found_step_match:</span>
+                        <span class="s1">step.status = Status.undefined</span>
+                        <span class="s1">runner.undefined_steps.append(step)</span>
+                    <span class="s3">elif </span><span class="s1">dry_run_scenario:</span>
+                        <span class="s0"># -- BETTER DIAGNOSTICS: Provide step file location</span>
+                        <span class="s0"># (when --format=pretty is used).</span>
+                        <span class="s3">assert </span><span class="s1">step.status == Status.untested</span>
+                        <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                            <span class="s0"># -- EMULATE: Step.run() protocol w/o step execution.</span>
+                            <span class="s1">formatter.match(found_step_match)</span>
+                            <span class="s1">formatter.result(step)</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s0"># -- SKIP STEPS: For disabled scenario.</span>
+                    <span class="s0"># CASES:</span>
+                    <span class="s0">#   * Undefined steps are not detected (by intention).</span>
+                    <span class="s0">#   * Step skipped remaining scenario.</span>
+                    <span class="s1">step.status = Status.skipped</span>
+
+        <span class="s1">self.clear_status()  </span><span class="s0"># -- ENFORCE: compute_status() after run.</span>
+        <span class="s3">if not </span><span class="s1">run_scenario </span><span class="s3">and not </span><span class="s1">self.steps:</span>
+            <span class="s0"># -- SPECIAL CASE: Scenario without steps.</span>
+            <span class="s1">self.set_status(Status.skipped)</span>
+
+
+        <span class="s3">if </span><span class="s1">hooks_called:</span>
+            <span class="s1">runner.run_hook(</span><span class="s4">&quot;after_scenario&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">self)</span>
+            <span class="s3">for </span><span class="s1">tag </span><span class="s3">in </span><span class="s1">self.tags:</span>
+                <span class="s1">runner.run_hook(</span><span class="s4">&quot;after_tag&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">tag)</span>
+            <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+                <span class="s1">self.set_status(Status.failed)</span>
+                <span class="s1">failed = </span><span class="s3">True</span>
+
+        <span class="s0"># -- PERFORM CONTEXT-CLEANUP: May raise cleanup errors.</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">runner.context._pop()       </span><span class="s0"># pylint: disable=protected-access</span>
+        <span class="s3">except </span><span class="s1">Exception:</span>
+            <span class="s1">self.set_status(Status.failed)</span>
+            <span class="s1">failed = </span><span class="s3">True</span>
+
+        <span class="s0"># -- CAPTURED-OUTPUT:</span>
+        <span class="s1">store_captured = (runner.config.junit </span><span class="s3">or </span><span class="s1">self.status == Status.failed)</span>
+        <span class="s3">if </span><span class="s1">store_captured:</span>
+            <span class="s1">self.captured = runner.capture_controller.captured</span>
+
+        <span class="s1">runner.teardown_capture()</span>
+        <span class="s3">return </span><span class="s1">failed</span>
+
+
+<span class="s3">class </span><span class="s1">ScenarioOutlineBuilder(object):</span>
+    <span class="s2">&quot;&quot;&quot;Helper class to use a ScenarioOutline as a template and 
+    build its scenarios (as template instances). 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">annotation_schema):</span>
+        <span class="s1">self.annotation_schema = annotation_schema</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">render_template(text</span><span class="s3">, </span><span class="s1">row=</span><span class="s3">None, </span><span class="s1">params=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Render a text template with placeholders, ala &quot;Hello &lt;name&gt;&quot;. 
+ 
+        :param row:     As placeholder provider (dict-like). 
+        :param params:  As additional placeholder provider (as dict). 
+        :return: Rendered text, known placeholders are substituted w/ values. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">(</span><span class="s4">&quot;&lt;&quot; </span><span class="s3">in </span><span class="s1">text </span><span class="s3">and </span><span class="s4">&quot;&gt;&quot; </span><span class="s3">in </span><span class="s1">text):</span>
+            <span class="s3">return </span><span class="s1">text</span>
+
+        <span class="s1">safe_values = </span><span class="s3">False</span>
+        <span class="s3">for </span><span class="s1">placeholders </span><span class="s3">in </span><span class="s1">(row</span><span class="s3">, </span><span class="s1">params):</span>
+            <span class="s3">if not </span><span class="s1">placeholders:</span>
+                <span class="s3">continue</span>
+            <span class="s3">for </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">placeholders.items():</span>
+                <span class="s3">if </span><span class="s1">safe_values </span><span class="s3">and </span><span class="s1">(</span><span class="s4">&quot;&lt;&quot; </span><span class="s3">in </span><span class="s1">value </span><span class="s3">and </span><span class="s4">&quot;&gt;&quot; </span><span class="s3">in </span><span class="s1">value):</span>
+                    <span class="s3">continue    </span><span class="s0"># -- OOPS, value looks like placeholder.</span>
+                <span class="s1">text = text.replace(</span><span class="s4">&quot;&lt;%s&gt;&quot; </span><span class="s1">% name</span><span class="s3">, </span><span class="s1">value)</span>
+        <span class="s3">return </span><span class="s1">text</span>
+
+    <span class="s3">def </span><span class="s1">make_scenario_name(self</span><span class="s3">, </span><span class="s1">outline_name</span><span class="s3">, </span><span class="s1">example</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Build a scenario name for an example row of this scenario outline. 
+        Placeholders for row data are replaced by values. 
+ 
+        SCHEMA: &quot;{outline_name} -*- {examples.name}@{row.id}&quot; 
+ 
+        :param outline_name:    ScenarioOutline's name (as template). 
+        :param example:         Examples object. 
+        :param row:             Row of this example. 
+        :param params:          Additional placeholders for example/row. 
+        :return: Computed name for the scenario representing example/row. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">params </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">params = {}</span>
+        <span class="s1">params[</span><span class="s4">&quot;examples.name&quot;</span><span class="s1">] = example.name </span><span class="s3">or </span><span class="s4">&quot;&quot;</span>
+        <span class="s1">params.setdefault(</span><span class="s4">&quot;examples.index&quot;</span><span class="s3">, </span><span class="s1">example.index)</span>
+        <span class="s1">params.setdefault(</span><span class="s4">&quot;row.index&quot;</span><span class="s3">, </span><span class="s1">row.index)</span>
+        <span class="s1">params.setdefault(</span><span class="s4">&quot;row.id&quot;</span><span class="s3">, </span><span class="s1">row.id)</span>
+
+        <span class="s0"># -- STEP: Replace placeholders in scenario/example name (if any).</span>
+        <span class="s1">examples_name = self.render_template(example.name</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+        <span class="s1">params[</span><span class="s4">&quot;examples.name&quot;</span><span class="s1">] = examples_name</span>
+        <span class="s1">scenario_name = self.render_template(outline_name</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+
+        <span class="s3">class </span><span class="s1">Data(object):</span>
+            <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">index):</span>
+                <span class="s1">self.name = name</span>
+                <span class="s1">self.index = index</span>
+                <span class="s1">self.id = name      </span><span class="s0"># pylint: disable=invalid-name</span>
+
+        <span class="s1">example_data = Data(examples_name</span><span class="s3">, </span><span class="s1">example.index)</span>
+        <span class="s1">row_data = Data(row.id</span><span class="s3">, </span><span class="s1">row.index)</span>
+        <span class="s3">return </span><span class="s1">self.annotation_schema.format(name=scenario_name</span><span class="s3">,</span>
+                                             <span class="s1">examples=example_data</span><span class="s3">, </span><span class="s1">row=row_data)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">make_row_tags(cls</span><span class="s3">, </span><span class="s1">outline_tags</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">if not </span><span class="s1">outline_tags:</span>
+            <span class="s3">return </span><span class="s1">[]</span>
+
+        <span class="s1">tags = []</span>
+        <span class="s3">for </span><span class="s1">tag </span><span class="s3">in </span><span class="s1">outline_tags:</span>
+            <span class="s3">if </span><span class="s4">&quot;&lt;&quot; </span><span class="s3">in </span><span class="s1">tag </span><span class="s3">and </span><span class="s4">&quot;&gt;&quot; </span><span class="s3">in </span><span class="s1">tag:</span>
+                <span class="s1">tag = cls.render_template(tag</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+            <span class="s3">if </span><span class="s4">&quot;&lt;&quot; </span><span class="s3">in </span><span class="s1">tag </span><span class="s3">or </span><span class="s4">&quot;&gt;&quot; </span><span class="s3">in </span><span class="s1">tag:</span>
+                <span class="s0"># -- OOPS: Unknown placeholder, drop tag.</span>
+                <span class="s3">continue</span>
+            <span class="s1">new_tag = Tag.make_name(tag</span><span class="s3">, </span><span class="s1">unescape=</span><span class="s3">True</span><span class="s1">)</span>
+            <span class="s1">tags.append(new_tag)</span>
+        <span class="s3">return </span><span class="s1">tags</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">make_step_for_row(cls</span><span class="s3">, </span><span class="s1">outline_step</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s0"># -- BASED-ON: new_step = outline_step.set_values(row)</span>
+        <span class="s1">new_step = copy.deepcopy(outline_step)</span>
+        <span class="s1">new_step.name = cls.render_template(new_step.name</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+        <span class="s3">if </span><span class="s1">new_step.text:</span>
+            <span class="s1">new_step.text = cls.render_template(new_step.text</span><span class="s3">, </span><span class="s1">row)</span>
+        <span class="s3">if </span><span class="s1">new_step.table:</span>
+            <span class="s3">for </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">row.items():</span>
+                <span class="s3">for </span><span class="s1">row </span><span class="s3">in </span><span class="s1">new_step.table:</span>
+                    <span class="s3">for </span><span class="s1">i</span><span class="s3">, </span><span class="s1">cell </span><span class="s3">in </span><span class="s1">enumerate(row.cells):</span>
+                        <span class="s1">row.cells[i] = cell.replace(</span><span class="s4">&quot;&lt;%s&gt;&quot; </span><span class="s1">% name</span><span class="s3">, </span><span class="s1">value)</span>
+        <span class="s3">return </span><span class="s1">new_step</span>
+
+    <span class="s3">def </span><span class="s1">build_scenarios(self</span><span class="s3">, </span><span class="s1">scenario_outline):</span>
+        <span class="s2">&quot;&quot;&quot;Build scenarios for a ScenarioOutline from its examples.&quot;&quot;&quot;</span>
+        <span class="s0"># -- BUILD SCENARIOS (once): For this ScenarioOutline from examples.</span>
+        <span class="s1">params = {</span>
+            <span class="s4">&quot;examples.name&quot;</span><span class="s1">: </span><span class="s3">None,</span>
+            <span class="s4">&quot;examples.index&quot;</span><span class="s1">: </span><span class="s3">None,</span>
+            <span class="s4">&quot;row.index&quot;</span><span class="s1">: </span><span class="s3">None,</span>
+            <span class="s4">&quot;row.id&quot;</span><span class="s1">: </span><span class="s3">None,</span>
+        <span class="s1">}</span>
+        <span class="s1">scenarios = []</span>
+        <span class="s3">for </span><span class="s1">example_index</span><span class="s3">, </span><span class="s1">example </span><span class="s3">in </span><span class="s1">enumerate(scenario_outline.examples):</span>
+            <span class="s1">example.index = example_index+</span><span class="s5">1</span>
+            <span class="s1">params[</span><span class="s4">&quot;examples.name&quot;</span><span class="s1">] = example.name</span>
+            <span class="s1">params[</span><span class="s4">&quot;examples.index&quot;</span><span class="s1">] = _text(example.index)</span>
+            <span class="s3">for </span><span class="s1">row_index</span><span class="s3">, </span><span class="s1">row </span><span class="s3">in </span><span class="s1">enumerate(example.table):</span>
+                <span class="s1">row.index = row_index+</span><span class="s5">1</span>
+                <span class="s1">row.id = </span><span class="s4">&quot;%d.%d&quot; </span><span class="s1">% (example.index</span><span class="s3">, </span><span class="s1">row.index)</span>
+                <span class="s1">params[</span><span class="s4">&quot;row.id&quot;</span><span class="s1">] = row.id</span>
+                <span class="s1">params[</span><span class="s4">&quot;row.index&quot;</span><span class="s1">] = _text(row.index)</span>
+                <span class="s1">scenario_name = self.make_scenario_name(scenario_outline.name</span><span class="s3">,</span>
+                                                        <span class="s1">example</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+                <span class="s1">row_tags = self.make_row_tags(scenario_outline.tags</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+                <span class="s1">row_tags.extend(example.tags)</span>
+                <span class="s1">new_steps = []</span>
+                <span class="s3">for </span><span class="s1">outline_step </span><span class="s3">in </span><span class="s1">scenario_outline.steps:</span>
+                    <span class="s1">new_step = self.make_step_for_row(outline_step</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">params)</span>
+                    <span class="s1">new_steps.append(new_step)</span>
+
+                <span class="s0"># -- STEP: Make Scenario name for this row.</span>
+                <span class="s0"># scenario_line = example.line + 2 + row_index</span>
+                <span class="s1">scenario_line = row.line</span>
+                <span class="s1">scenario = Scenario(scenario_outline.filename</span><span class="s3">, </span><span class="s1">scenario_line</span><span class="s3">,</span>
+                                    <span class="s1">scenario_outline.keyword</span><span class="s3">,</span>
+                                    <span class="s1">scenario_name</span><span class="s3">, </span><span class="s1">row_tags</span><span class="s3">, </span><span class="s1">new_steps)</span>
+                <span class="s1">scenario.feature = scenario_outline.feature</span>
+                <span class="s1">scenario.background = scenario_outline.background</span>
+                <span class="s1">scenario._row = row     </span><span class="s0"># pylint: disable=protected-access</span>
+                <span class="s1">scenarios.append(scenario)</span>
+        <span class="s3">return </span><span class="s1">scenarios</span>
+
+
+<span class="s3">class </span><span class="s1">ScenarioOutline(Scenario):</span>
+    <span class="s2">&quot;&quot;&quot;A `scenario outline`_ parsed from a *feature file*. 
+ 
+    A scenario outline extends the existing :class:`~behave.model.Scenario` 
+    class with the addition of the :class:`~behave.model.Examples` tables of 
+    data from the *feature file*. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: keyword 
+ 
+       This is the keyword as seen in the *feature file*. In English this will 
+       typically be &quot;Scenario Outline&quot;. 
+ 
+    .. attribute:: name 
+ 
+       The name of the scenario (the text after &quot;Scenario Outline:&quot;.) 
+ 
+    .. attribute:: description 
+ 
+       The description of the `scenario outline`_ as seen in the *feature file*. 
+       This is stored as a list of text lines. 
+ 
+    .. attribute:: feature 
+ 
+       The :class:`~behave.model.Feature` this scenario outline belongs to. 
+ 
+    .. attribute:: steps 
+ 
+       A list of :class:`~behave.model.Step` making up this scenario outline. 
+ 
+    .. attribute:: examples 
+ 
+       A list of :class:`~behave.model.Examples` used by this scenario outline. 
+ 
+    .. attribute:: tags 
+ 
+       A list of @tags (as :class:`~behave.model.Tag` which are basically 
+       glorified strings) attached to the scenario. 
+       See :ref:`controlling things with tags`. 
+ 
+    .. attribute:: status 
+ 
+       Read-Only. A summary status of the scenario outlines's run. If read 
+       before the scenario is fully tested it will return &quot;untested&quot; otherwise 
+       it will return one of: 
+ 
+       Status.untested 
+         The scenario was has not been completely tested yet. 
+       Status.skipped 
+         One or more scenarios of this outline was passed over during testing. 
+       Status.passed 
+         The scenario was tested successfully. 
+       Status.failed 
+         One or more scenarios of this outline failed. 
+ 
+        .. versionchanged:: 1.2.6 
+            Use Status enum class (was: string) 
+ 
+    .. attribute:: duration 
+ 
+       The time, in seconds, that it took to test the scenarios of this 
+       outline. If read before the scenarios are tested it will return 0.0. 
+ 
+    .. attribute:: filename 
+ 
+       The file name (or &quot;&lt;string&gt;&quot;) of the *feature file* where the scenario 
+       was found. 
+ 
+    .. attribute:: line 
+ 
+       The line number of the *feature file* where the scenario was found. 
+ 
+    .. _`scenario outline`: gherkin.html#scenario-outlines 
+    &quot;&quot;&quot;</span>
+    <span class="s1">type = </span><span class="s4">&quot;scenario_outline&quot;</span>
+    <span class="s1">annotation_schema = </span><span class="s4">u&quot;{name} -- @{row.id} {examples.name}&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags=</span><span class="s3">None,</span>
+                 <span class="s1">steps=</span><span class="s3">None, </span><span class="s1">examples=</span><span class="s3">None, </span><span class="s1">description=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(ScenarioOutline</span><span class="s3">, </span><span class="s1">self).__init__(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">,</span>
+                                              <span class="s1">tags</span><span class="s3">, </span><span class="s1">steps</span><span class="s3">, </span><span class="s1">description)</span>
+        <span class="s1">self.examples = examples </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self._scenarios = []</span>
+
+    <span class="s3">def </span><span class="s1">reset(self):</span>
+        <span class="s2">&quot;&quot;&quot;Reset runtime temporary data like before a test run.&quot;&quot;&quot;</span>
+        <span class="s1">super(ScenarioOutline</span><span class="s3">, </span><span class="s1">self).reset()</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self._scenarios:    </span><span class="s0"># -- AVOID: BUILD-SCENARIOS</span>
+            <span class="s1">scenario.reset()</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">scenarios(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the scenarios with the steps altered to take the values from 
+        the examples. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._scenarios:</span>
+            <span class="s3">return </span><span class="s1">self._scenarios</span>
+
+        <span class="s0"># -- BUILD SCENARIOS (once): For this ScenarioOutline from examples.</span>
+        <span class="s1">builder = ScenarioOutlineBuilder(self.annotation_schema)</span>
+        <span class="s1">self._scenarios = builder.build_scenarios(self)</span>
+        <span class="s3">return </span><span class="s1">self._scenarios</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;ScenarioOutline &quot;%s&quot;&gt;' </span><span class="s1">% self.name</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">iter(self.scenarios) </span><span class="s0"># -- REQUIRE: BUILD-SCENARIOS</span>
+
+    <span class="s3">def </span><span class="s1">compute_status(self):</span>
+        <span class="s1">skipped_count = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self._scenarios:    </span><span class="s0"># -- AVOID: BUILD-SCENARIOS</span>
+            <span class="s1">scenario_status = scenario.status</span>
+            <span class="s3">if </span><span class="s1">scenario_status </span><span class="s3">in </span><span class="s1">(Status.failed</span><span class="s3">, </span><span class="s1">Status.untested):</span>
+                <span class="s3">return </span><span class="s1">scenario_status</span>
+            <span class="s3">elif </span><span class="s1">scenario_status == Status.skipped:</span>
+                <span class="s1">skipped_count += </span><span class="s5">1</span>
+        <span class="s3">if </span><span class="s1">skipped_count &gt; </span><span class="s5">0 </span><span class="s3">and </span><span class="s1">skipped_count == len(self._scenarios):</span>
+            <span class="s0"># -- ALL SKIPPED:</span>
+            <span class="s3">return </span><span class="s1">Status.skipped</span>
+        <span class="s0"># -- OTHERWISE: ALL PASSED (some scenarios may have been excluded)</span>
+        <span class="s3">return </span><span class="s1">Status.passed</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">duration(self):</span>
+        <span class="s1">outline_duration = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self._scenarios:    </span><span class="s0"># -- AVOID: BUILD-SCENARIOS</span>
+            <span class="s1">outline_duration += scenario.duration</span>
+        <span class="s3">return </span><span class="s1">outline_duration</span>
+
+    <span class="s3">def </span><span class="s1">should_run_with_tags(self</span><span class="s3">, </span><span class="s1">tag_expression):</span>
+        <span class="s2">&quot;&quot;&quot;Determines if this scenario outline (or one of its scenarios) 
+        should run when the tag expression is used. 
+ 
+        :param tag_expression:  Runner/config environment tags to use. 
+        :return: True, if scenario should run. False, otherwise (skip it). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">tag_expression.check(self.effective_tags):</span>
+            <span class="s3">return True</span>
+
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:     </span><span class="s0"># -- REQUIRE: BUILD-SCENARIOS</span>
+            <span class="s3">if </span><span class="s1">scenario.should_run_with_tags(tag_expression):</span>
+                <span class="s3">return True</span>
+        <span class="s0"># -- NOTHING SELECTED:</span>
+        <span class="s3">return False</span>
+
+    <span class="s3">def </span><span class="s1">should_run_with_name_select(self</span><span class="s3">, </span><span class="s1">config):</span>
+        <span class="s2">&quot;&quot;&quot;Determines if this scenario should run when it is selected by name. 
+ 
+        :param config:  Runner/config environment name regexp (if any). 
+        :return: True, if scenario should run. False, otherwise (skip it). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">config.name:</span>
+            <span class="s3">return True </span><span class="s0"># -- SELECT-ALL: Select by name is not specified.</span>
+
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:     </span><span class="s0"># -- REQUIRE: BUILD-SCENARIOS</span>
+            <span class="s3">if </span><span class="s1">scenario.should_run_with_name_select(config):</span>
+                <span class="s3">return True</span>
+        <span class="s0"># -- NOTHING SELECTED:</span>
+        <span class="s3">return False</span>
+
+
+    <span class="s3">def </span><span class="s1">mark_skipped(self):</span>
+        <span class="s2">&quot;&quot;&quot;Marks this scenario outline (and all its scenarios/steps) as skipped. 
+        Note that this method may be called before the scenario outline 
+        is executed. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.skip(require_not_executed=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s3">assert </span><span class="s1">self.status == Status.skipped</span>
+
+    <span class="s3">def </span><span class="s1">skip(self</span><span class="s3">, </span><span class="s1">reason=</span><span class="s3">None, </span><span class="s1">require_not_executed=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Skip from executing this scenario outline or its remaining parts. 
+        Note that the scenario outline may be already partly executed 
+        when this method is called. 
+ 
+        :param reason:  Optional reason why it should be skipped (as string). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">reason:</span>
+            <span class="s1">logger = logging.getLogger(</span><span class="s4">&quot;behave&quot;</span><span class="s1">)</span>
+            <span class="s1">logger.warning(</span><span class="s4">u&quot;SKIP ScenarioOutline %s: %s&quot;</span><span class="s3">, </span><span class="s1">self.name</span><span class="s3">, </span><span class="s1">reason)</span>
+
+        <span class="s1">self.clear_status()</span>
+        <span class="s1">self.should_skip = </span><span class="s3">True</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:</span>
+            <span class="s1">scenario.skip(reason</span><span class="s3">, </span><span class="s1">require_not_executed)</span>
+        <span class="s3">if not </span><span class="s1">self.scenarios:</span>
+            <span class="s0"># -- SPECIAL CASE: ScenarioOutline without scenarios/examples</span>
+            <span class="s1">self.set_status(Status.skipped)</span>
+        <span class="s3">assert </span><span class="s1">self.status </span><span class="s3">in </span><span class="s1">self.final_status </span><span class="s0">#&lt; skipped, failed or passed</span>
+
+    <span class="s3">def </span><span class="s1">run(self</span><span class="s3">, </span><span class="s1">runner):</span>
+        <span class="s0"># pylint: disable=protected-access</span>
+        <span class="s0"># REASON: context._set_root_attribute(), scenario._row</span>
+        <span class="s1">self.clear_status()</span>
+        <span class="s1">failed_count = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.scenarios:     </span><span class="s0"># -- REQUIRE: BUILD-SCENARIOS</span>
+            <span class="s1">runner.context._set_root_attribute(</span><span class="s4">&quot;active_outline&quot;</span><span class="s3">, </span><span class="s1">scenario._row)</span>
+            <span class="s1">failed = scenario.run(runner)</span>
+            <span class="s3">if </span><span class="s1">failed:</span>
+                <span class="s1">failed_count += </span><span class="s5">1</span>
+                <span class="s3">if </span><span class="s1">runner.config.stop </span><span class="s3">or </span><span class="s1">runner.aborted:</span>
+                    <span class="s0"># -- FAIL-EARLY: Stop after first failure.</span>
+                    <span class="s3">break</span>
+        <span class="s1">runner.context._set_root_attribute(</span><span class="s4">&quot;active_outline&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">failed_count &gt; </span><span class="s5">0</span>
+
+<span class="s3">class </span><span class="s1">Examples(TagStatement</span><span class="s3">, </span><span class="s1">Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;A table parsed from a `scenario outline`_ in a *feature file*. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: keyword 
+ 
+       This is the keyword as seen in the *feature file*. In English this will 
+       typically be &quot;Example&quot;. 
+ 
+    .. attribute:: name 
+ 
+       The name of the example (the text after &quot;Example:&quot;.) 
+ 
+    .. attribute:: table 
+ 
+       An instance  of :class:`~behave.model.Table` that came with the example 
+       in the *feature file*. 
+ 
+    .. attribute:: filename 
+ 
+       The file name (or &quot;&lt;string&gt;&quot;) of the *feature file* where the example 
+       was found. 
+ 
+    .. attribute:: line 
+ 
+       The line number of the *feature file* where the example was found. 
+ 
+    .. _`examples`: gherkin.html#examples 
+    &quot;&quot;&quot;</span>
+    <span class="s1">type = </span><span class="s4">&quot;examples&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags=</span><span class="s3">None, </span><span class="s1">table=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(Examples</span><span class="s3">, </span><span class="s1">self).__init__(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags)</span>
+        <span class="s1">self.table = table</span>
+        <span class="s1">self.index = </span><span class="s3">None</span>
+
+
+<span class="s3">class </span><span class="s1">Step(BasicStatement</span><span class="s3">, </span><span class="s1">Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;A single `step`_ parsed from a *feature file*. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: keyword 
+ 
+       This is the keyword as seen in the *feature file*. In English this will 
+       typically be &quot;Given&quot;, &quot;When&quot;, &quot;Then&quot; or a number of other words. 
+ 
+    .. attribute:: name 
+ 
+       The name of the step (the text after &quot;Given&quot; etc.) 
+ 
+    .. attribute:: step_type 
+ 
+       The type of step as determined by the keyword. If the keyword is &quot;and&quot; 
+       then the previous keyword in the *feature file* will determine this 
+       step's step_type. 
+ 
+    .. attribute:: text 
+ 
+       An instance of :class:`~behave.model.Text` that came with the step 
+       in the *feature file*. 
+ 
+    .. attribute:: table 
+ 
+       An instance of :class:`~behave.model.Table` that came with the step 
+       in the *feature file*. 
+ 
+    .. attribute:: status 
+ 
+       Read-Only. A summary status of the step's run. If read before the 
+       step is tested it will return &quot;untested&quot; otherwise it will 
+       return one of: 
+ 
+       Status.untested 
+         This step was not run (yet). 
+       Status.skipped 
+         This step was skipped during testing. 
+       Status.passed 
+         The step was tested successfully. 
+       Status.failed 
+         The step failed. 
+       Status.undefined 
+         The step has no matching step implementation. 
+ 
+       .. versionchanged:: 
+            Use Status enum class (was: string). 
+ 
+    .. attribute:: hook_failed 
+ 
+        Indicates if a hook failure occured while running this step. 
+ 
+        .. versionadded:: 1.2.6 
+ 
+    .. attribute:: duration 
+ 
+       The time, in seconds, that it took to test this step. If read before the 
+       step is tested it will return 0.0. 
+ 
+    .. attribute:: error_message 
+ 
+       If the step failed then this will hold any error information, as a 
+       single string. It will otherwise be None. 
+ 
+       .. versionchanged:: 1.2.6 (moved to base class) 
+ 
+    .. attribute:: filename 
+ 
+       The file name (or &quot;&lt;string&gt;&quot;) of the *feature file* where the step was 
+       found. 
+ 
+    .. attribute:: line 
+ 
+       The line number of the *feature file* where the step was found. 
+ 
+    .. _`step`: gherkin.html#steps 
+    &quot;&quot;&quot;</span>
+    <span class="s1">type = </span><span class="s4">&quot;step&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">step_type</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">text=</span><span class="s3">None,</span>
+                 <span class="s1">table=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(Step</span><span class="s3">, </span><span class="s1">self).__init__(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name)</span>
+        <span class="s1">self.step_type = step_type</span>
+        <span class="s1">self.text = text</span>
+        <span class="s1">self.table = table</span>
+
+        <span class="s1">self.status = Status.untested</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s1">self.duration = </span><span class="s5">0</span>
+
+    <span class="s3">def </span><span class="s1">reset(self):</span>
+        <span class="s2">&quot;&quot;&quot;Reset temporary runtime data to reach clean state again.&quot;&quot;&quot;</span>
+        <span class="s1">super(Step</span><span class="s3">, </span><span class="s1">self).reset()</span>
+        <span class="s1">self.status = Status.untested</span>
+        <span class="s1">self.hook_failed = </span><span class="s3">False</span>
+        <span class="s1">self.duration = </span><span class="s5">0</span>
+        <span class="s0"># -- POSTCONDITION: assert self.status == Status.untested</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;%s &quot;%s&quot;&gt;' </span><span class="s1">% (self.step_type</span><span class="s3">, </span><span class="s1">self.name)</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">return </span><span class="s1">(self.step_type</span><span class="s3">, </span><span class="s1">self.name) == (other.step_type</span><span class="s3">, </span><span class="s1">other.name)</span>
+
+    <span class="s3">def </span><span class="s1">__hash__(self):</span>
+        <span class="s3">return </span><span class="s1">hash(self.step_type) + hash(self.name)</span>
+
+    <span class="s3">def </span><span class="s1">set_values(self</span><span class="s3">, </span><span class="s1">table_row):</span>
+        <span class="s2">&quot;&quot;&quot;Clone a new step from this one, used for ScenarioOutline. 
+        Replace ScenarioOutline placeholders w/ values. 
+ 
+        :param table_row:  Placeholder data for example row. 
+        :return: Cloned, adapted step object. 
+ 
+        .. note:: Deprecating 
+            Use 'ScenarioOutlineBuilder.make_step_for_row()' instead. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">import </span><span class="s1">warnings</span>
+        <span class="s1">warnings.warn(</span><span class="s4">&quot;Use 'ScenarioOutline.make_step_for_row()' instead&quot;</span><span class="s3">,</span>
+                      <span class="s1">PendingDeprecationWarning</span><span class="s3">, </span><span class="s1">stacklevel=</span><span class="s5">2</span><span class="s1">)</span>
+        <span class="s1">outline_step = self</span>
+        <span class="s3">return </span><span class="s1">ScenarioOutlineBuilder.make_step_for_row(outline_step</span><span class="s3">, </span><span class="s1">table_row)</span>
+
+    <span class="s3">def </span><span class="s1">run(self</span><span class="s3">, </span><span class="s1">runner</span><span class="s3">, </span><span class="s1">quiet=</span><span class="s3">False, </span><span class="s1">capture=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s0"># pylint: disable=too-many-branches, too-many-statements</span>
+        <span class="s0"># -- RESET: Run-time information.</span>
+        <span class="s0"># self.status = Status.untested</span>
+        <span class="s0"># self.hook_failed = False</span>
+        <span class="s1">self.reset()</span>
+
+        <span class="s1">match = runner.step_registry.find_match(self)</span>
+        <span class="s3">if </span><span class="s1">match </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">runner.undefined_steps.append(self)</span>
+            <span class="s3">if not </span><span class="s1">quiet:</span>
+                <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                    <span class="s1">formatter.match(NoMatch())</span>
+
+            <span class="s1">self.status = Status.undefined</span>
+            <span class="s3">if not </span><span class="s1">quiet:</span>
+                <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                    <span class="s1">formatter.result(self)</span>
+            <span class="s3">return False</span>
+
+        <span class="s1">keep_going = </span><span class="s3">True</span>
+        <span class="s1">error = </span><span class="s4">u&quot;&quot;</span>
+
+        <span class="s3">if not </span><span class="s1">quiet:</span>
+            <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                <span class="s1">formatter.match(match)</span>
+
+        <span class="s3">if </span><span class="s1">capture:</span>
+            <span class="s1">runner.start_capture()</span>
+
+        <span class="s1">skip_step_untested = </span><span class="s3">False</span>
+        <span class="s1">runner.run_hook(</span><span class="s4">&quot;before_step&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">self)</span>
+        <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+            <span class="s1">skip_step_untested = </span><span class="s3">True</span>
+
+        <span class="s1">start = time.time()</span>
+        <span class="s3">if not </span><span class="s1">skip_step_untested:</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s0"># -- ENSURE:</span>
+                <span class="s0">#  * runner.context.text/.table attributes are reset (#66).</span>
+                <span class="s0">#  * Even EMPTY multiline text is available in context.</span>
+                <span class="s1">runner.context.text = self.text</span>
+                <span class="s1">runner.context.table = self.table</span>
+                <span class="s1">match.run(runner.context)</span>
+                <span class="s3">if </span><span class="s1">self.status == Status.untested:</span>
+                    <span class="s0"># -- NOTE: Executed step may have skipped scenario and itself.</span>
+                    <span class="s0"># pylint: disable=redefined-variable-type</span>
+                    <span class="s1">self.status = Status.passed</span>
+            <span class="s3">except </span><span class="s1">KeyboardInterrupt </span><span class="s3">as </span><span class="s1">e:</span>
+                <span class="s1">runner.aborted = </span><span class="s3">True</span>
+                <span class="s1">error = </span><span class="s4">u&quot;ABORTED: By user (KeyboardInterrupt).&quot;</span>
+                <span class="s1">self.status = Status.failed</span>
+                <span class="s1">self.store_exception_context(e)</span>
+            <span class="s3">except </span><span class="s1">AssertionError </span><span class="s3">as </span><span class="s1">e:</span>
+                <span class="s1">self.status = Status.failed</span>
+                <span class="s1">self.store_exception_context(e)</span>
+                <span class="s3">if </span><span class="s1">e.args:</span>
+                    <span class="s1">message = _text(e)</span>
+                    <span class="s1">error = </span><span class="s4">u&quot;Assertion Failed: &quot;</span><span class="s1">+ message</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s0"># no assertion text; format the exception</span>
+                    <span class="s1">error = _text(traceback.format_exc())</span>
+            <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:      </span><span class="s0"># pylint: disable=broad-except</span>
+                <span class="s1">self.status = Status.failed</span>
+                <span class="s1">error = _text(traceback.format_exc())</span>
+                <span class="s1">self.store_exception_context(e)</span>
+
+        <span class="s1">self.duration = time.time() - start</span>
+        <span class="s1">runner.run_hook(</span><span class="s4">&quot;after_step&quot;</span><span class="s3">, </span><span class="s1">runner.context</span><span class="s3">, </span><span class="s1">self)</span>
+        <span class="s3">if </span><span class="s1">self.hook_failed:</span>
+            <span class="s1">self.status = Status.failed</span>
+
+        <span class="s3">if </span><span class="s1">capture:</span>
+            <span class="s1">runner.stop_capture()</span>
+
+        <span class="s0"># flesh out the failure with details</span>
+        <span class="s1">store_captured_always = </span><span class="s3">False   </span><span class="s0"># PREPARED</span>
+        <span class="s1">store_captured = self.status == Status.failed </span><span class="s3">or </span><span class="s1">store_captured_always</span>
+        <span class="s3">if </span><span class="s1">self.status == Status.failed:</span>
+            <span class="s3">assert </span><span class="s1">isinstance(error</span><span class="s3">, </span><span class="s1">six.text_type)</span>
+            <span class="s3">if </span><span class="s1">capture:</span>
+                <span class="s0"># -- CAPTURE-ONLY: Non-nested step failures.</span>
+                <span class="s1">self.captured = runner.capture_controller.captured</span>
+                <span class="s1">error2 = self.captured.make_report()</span>
+                <span class="s3">if </span><span class="s1">error2:</span>
+                    <span class="s1">error += </span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">+ error2</span>
+            <span class="s1">self.error_message = error</span>
+            <span class="s1">keep_going = </span><span class="s3">False</span>
+        <span class="s3">elif </span><span class="s1">store_captured </span><span class="s3">and </span><span class="s1">capture:</span>
+            <span class="s1">self.captured = runner.capture_controller.captured</span>
+
+        <span class="s3">if not </span><span class="s1">quiet:</span>
+            <span class="s3">for </span><span class="s1">formatter </span><span class="s3">in </span><span class="s1">runner.formatters:</span>
+                <span class="s1">formatter.result(self)</span>
+
+        <span class="s3">return </span><span class="s1">keep_going</span>
+
+
+<span class="s3">class </span><span class="s1">Table(Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;A `table`_ extracted from a *feature file*. 
+ 
+    Table instance data is accessible using a number of methods: 
+ 
+    **iteration** 
+      Iterating over the Table will yield the :class:`~behave.model.Row` 
+      instances from the .rows attribute. 
+ 
+    **indexed access** 
+      Individual rows may be accessed directly by index on the Table instance; 
+      table[0] gives the first non-heading row and table[-1] gives the last 
+      row. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: headings 
+ 
+       The headings of the table as a list of strings. 
+ 
+    .. attribute:: rows 
+ 
+       An list of instances of :class:`~behave.model.Row` that make up the body 
+       of the table in the *feature file*. 
+ 
+    Tables are also comparable, for what that's worth. Headings and row data 
+    are compared. 
+ 
+    .. _`table`: gherkin.html#table 
+    &quot;&quot;&quot;</span>
+    <span class="s1">type = </span><span class="s4">&quot;table&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">headings</span><span class="s3">, </span><span class="s1">line=</span><span class="s3">None, </span><span class="s1">rows=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">Replayable.__init__(self)</span>
+        <span class="s1">self.headings = headings</span>
+        <span class="s1">self.line = line</span>
+        <span class="s1">self.rows = []</span>
+        <span class="s3">if </span><span class="s1">rows:</span>
+            <span class="s3">for </span><span class="s1">row </span><span class="s3">in </span><span class="s1">rows:</span>
+                <span class="s1">self.add_row(row</span><span class="s3">, </span><span class="s1">line)</span>
+
+    <span class="s3">def </span><span class="s1">add_row(self</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">line=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.rows.append(Row(self.headings</span><span class="s3">, </span><span class="s1">row</span><span class="s3">, </span><span class="s1">line))</span>
+
+    <span class="s3">def </span><span class="s1">add_column(self</span><span class="s3">, </span><span class="s1">column_name</span><span class="s3">, </span><span class="s1">values=</span><span class="s3">None, </span><span class="s1">default_value=</span><span class="s4">u&quot;&quot;</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Adds a new column to this table. 
+        Uses :param:`default_value` for new cells (if :param:`values` are 
+        not provided). param:`values` are extended with :param:`default_value` 
+        if values list is smaller than the number of table rows. 
+ 
+        :param column_name: Name of new column (as string). 
+        :param values: Optional list of cell values in new column. 
+        :param default_value: Default value for cell (if values not provided). 
+        :returns: Index of new column (as number). 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># assert isinstance(column_name, unicode)</span>
+        <span class="s3">assert not </span><span class="s1">self.has_column(column_name)</span>
+        <span class="s3">if </span><span class="s1">values </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">values = [default_value] * len(self.rows)</span>
+        <span class="s3">elif not </span><span class="s1">isinstance(values</span><span class="s3">, </span><span class="s1">list):</span>
+            <span class="s1">values = list(values)</span>
+        <span class="s3">if </span><span class="s1">len(values) &lt; len(self.rows):</span>
+            <span class="s1">more_size = len(self.rows) - len(values)</span>
+            <span class="s1">more_values = [default_value] * more_size</span>
+            <span class="s1">values.extend(more_values)</span>
+
+        <span class="s1">new_column_index = len(self.headings)</span>
+        <span class="s1">self.headings.append(column_name)</span>
+        <span class="s3">for </span><span class="s1">row</span><span class="s3">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">zip(self.rows</span><span class="s3">, </span><span class="s1">values):</span>
+            <span class="s3">assert </span><span class="s1">len(row.cells) == new_column_index</span>
+            <span class="s1">row.cells.append(value)</span>
+        <span class="s3">return </span><span class="s1">new_column_index</span>
+
+    <span class="s3">def </span><span class="s1">remove_column(self</span><span class="s3">, </span><span class="s1">column_name):</span>
+        <span class="s3">if not </span><span class="s1">isinstance(column_name</span><span class="s3">, </span><span class="s1">int):</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">column_index = self.get_column_index(column_name)</span>
+            <span class="s3">except </span><span class="s1">ValueError:</span>
+                <span class="s3">raise </span><span class="s1">KeyError(</span><span class="s4">&quot;column=%s is unknown&quot; </span><span class="s1">% column_name)</span>
+
+        <span class="s3">assert </span><span class="s1">isinstance(column_index</span><span class="s3">, </span><span class="s1">int)</span>
+        <span class="s3">assert </span><span class="s1">column_index &lt; len(self.headings)</span>
+        <span class="s3">del </span><span class="s1">self.headings[column_index]</span>
+        <span class="s3">for </span><span class="s1">row </span><span class="s3">in </span><span class="s1">self.rows:</span>
+            <span class="s3">assert </span><span class="s1">column_index &lt; len(row.cells)</span>
+            <span class="s3">del </span><span class="s1">row.cells[column_index]</span>
+
+    <span class="s3">def </span><span class="s1">remove_columns(self</span><span class="s3">, </span><span class="s1">column_names):</span>
+        <span class="s3">for </span><span class="s1">column_name </span><span class="s3">in </span><span class="s1">column_names:</span>
+            <span class="s1">self.remove_column(column_name)</span>
+
+    <span class="s3">def </span><span class="s1">has_column(self</span><span class="s3">, </span><span class="s1">column_name):</span>
+        <span class="s3">return </span><span class="s1">column_name </span><span class="s3">in </span><span class="s1">self.headings</span>
+
+    <span class="s3">def </span><span class="s1">get_column_index(self</span><span class="s3">, </span><span class="s1">column_name):</span>
+        <span class="s3">return </span><span class="s1">self.headings.index(column_name)</span>
+
+    <span class="s3">def </span><span class="s1">require_column(self</span><span class="s3">, </span><span class="s1">column_name):</span>
+        <span class="s2">&quot;&quot;&quot;Require that a column exists in the table. 
+        Raise an AssertionError if the column does not exist. 
+ 
+        :param column_name: Name of new column (as string). 
+        :return: Index of column (as number) if it exists. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">self.has_column(column_name):</span>
+            <span class="s1">columns = </span><span class="s4">&quot;, &quot;</span><span class="s1">.join(self.headings)</span>
+            <span class="s1">msg = </span><span class="s4">&quot;REQUIRE COLUMN: %s (columns: %s)&quot; </span><span class="s1">% (column_name</span><span class="s3">, </span><span class="s1">columns)</span>
+            <span class="s3">raise </span><span class="s1">AssertionError(msg)</span>
+        <span class="s3">return </span><span class="s1">self.get_column_index(column_name)</span>
+
+    <span class="s3">def </span><span class="s1">require_columns(self</span><span class="s3">, </span><span class="s1">column_names):</span>
+        <span class="s3">for </span><span class="s1">column_name </span><span class="s3">in </span><span class="s1">column_names:</span>
+            <span class="s1">self.require_column(column_name)</span>
+
+    <span class="s3">def </span><span class="s1">ensure_column_exists(self</span><span class="s3">, </span><span class="s1">column_name):</span>
+        <span class="s2">&quot;&quot;&quot;Ensures that a column with the given name exists. 
+        If the column does not exist, the column is added. 
+ 
+        :param column_name: Name of column (as string). 
+        :return: Index of column (as number). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.has_column(column_name):</span>
+            <span class="s3">return </span><span class="s1">self.get_column_index(column_name)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">self.add_column(column_name)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;&lt;Table: %dx%d&gt;&quot; </span><span class="s1">% (len(self.headings)</span><span class="s3">, </span><span class="s1">len(self.rows))</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">if </span><span class="s1">isinstance(other</span><span class="s3">, </span><span class="s1">Table):</span>
+            <span class="s3">if </span><span class="s1">self.headings != other.headings:</span>
+                <span class="s3">return False</span>
+            <span class="s3">for </span><span class="s1">my_row</span><span class="s3">, </span><span class="s1">their_row </span><span class="s3">in </span><span class="s1">zip(self.rows</span><span class="s3">, </span><span class="s1">other.rows):</span>
+                <span class="s3">if </span><span class="s1">my_row != their_row:</span>
+                    <span class="s3">return False</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s0"># -- ASSUME: table &lt;=&gt; raw data comparison</span>
+            <span class="s1">other_rows = other</span>
+            <span class="s3">for </span><span class="s1">my_row</span><span class="s3">, </span><span class="s1">their_row </span><span class="s3">in </span><span class="s1">zip(self.rows</span><span class="s3">, </span><span class="s1">other_rows):</span>
+                <span class="s3">if </span><span class="s1">my_row != their_row:</span>
+                    <span class="s3">return False</span>
+        <span class="s3">return True</span>
+
+    <span class="s3">def </span><span class="s1">__ne__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">return not </span><span class="s1">self.__eq__(other)</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">iter(self.rows)</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__(self</span><span class="s3">, </span><span class="s1">index):</span>
+        <span class="s3">return </span><span class="s1">self.rows[index]</span>
+
+    <span class="s3">def </span><span class="s1">assert_equals(self</span><span class="s3">, </span><span class="s1">data):</span>
+        <span class="s2">&quot;&quot;&quot;Assert that this table's cells are the same as the supplied &quot;data&quot;. 
+ 
+        The data passed in must be a list of lists giving: 
+ 
+            [ 
+                [row 1], 
+                [row 2], 
+                [row 3], 
+            ] 
+ 
+        If the cells do not match then a useful AssertionError will be raised. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">assert </span><span class="s1">self == data</span>
+        <span class="s3">raise </span><span class="s1">NotImplementedError</span>
+
+
+<span class="s3">class </span><span class="s1">Row(object):</span>
+    <span class="s2">&quot;&quot;&quot;One row of a `table`_ parsed from a *feature file*. 
+ 
+    Row data is accessible using a number of methods: 
+ 
+    **iteration** 
+      Iterating over the Row will yield the individual cells as strings. 
+ 
+    **named access** 
+      Individual cells may be accessed by heading name; row[&quot;name&quot;] would give 
+      the cell value for the column with heading &quot;name&quot;. 
+ 
+    **indexed access** 
+      Individual cells may be accessed directly by index on the Row instance; 
+      row[0] gives the first cell and row[-1] gives the last cell. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: cells 
+ 
+       The list of strings that form the cells of this row. 
+ 
+    .. attribute:: headings 
+ 
+       The headings of the table as a list of strings. 
+ 
+    Rows are also comparable, for what that's worth. Only the cells are 
+    compared. 
+ 
+    .. _`table`: gherkin.html#table 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">headings</span><span class="s3">, </span><span class="s1">cells</span><span class="s3">, </span><span class="s1">line=</span><span class="s3">None, </span><span class="s1">comments=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.headings = headings</span>
+        <span class="s1">self.comments = comments</span>
+        <span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">cells:</span>
+            <span class="s3">assert </span><span class="s1">isinstance(c</span><span class="s3">, </span><span class="s1">six.text_type)</span>
+        <span class="s1">self.cells = cells</span>
+        <span class="s1">self.line = line</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__(self</span><span class="s3">, </span><span class="s1">name):</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">index = self.headings.index(name)</span>
+        <span class="s3">except </span><span class="s1">ValueError:</span>
+            <span class="s3">if </span><span class="s1">isinstance(name</span><span class="s3">, </span><span class="s1">int):</span>
+                <span class="s1">index = name</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">raise </span><span class="s1">KeyError(</span><span class="s4">'&quot;%s&quot; is not a row heading' </span><span class="s1">% name)</span>
+        <span class="s3">return </span><span class="s1">self.cells[index]</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;&lt;Row %r&gt;&quot; </span><span class="s1">% (self.cells</span><span class="s3">,</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">return </span><span class="s1">self.cells == other.cells</span>
+
+    <span class="s3">def </span><span class="s1">__ne__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">return not </span><span class="s1">self.__eq__(other)</span>
+
+    <span class="s3">def </span><span class="s1">__len__(self):</span>
+        <span class="s3">return </span><span class="s1">len(self.cells)</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">iter(self.cells)</span>
+
+    <span class="s3">def </span><span class="s1">items(self):</span>
+        <span class="s3">return </span><span class="s1">zip(self.headings</span><span class="s3">, </span><span class="s1">self.cells)</span>
+
+    <span class="s3">def </span><span class="s1">get(self</span><span class="s3">, </span><span class="s1">key</span><span class="s3">, </span><span class="s1">default=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">self[key]</span>
+        <span class="s3">except </span><span class="s1">KeyError:</span>
+            <span class="s3">return </span><span class="s1">default</span>
+
+    <span class="s3">def </span><span class="s1">as_dict(self):</span>
+        <span class="s2">&quot;&quot;&quot;Converts the row and its cell data into a dictionary. 
+        :return: Row data as dictionary (without comments, line info). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">from </span><span class="s1">behave.compat.collections </span><span class="s3">import </span><span class="s1">OrderedDict</span>
+        <span class="s3">return </span><span class="s1">OrderedDict(self.items())</span>
+
+
+<span class="s3">class </span><span class="s1">Tag(six.text_type):</span>
+    <span class="s2">&quot;&quot;&quot;Tags appear may be associated with Features or Scenarios. 
+ 
+    They're a subclass of regular strings (unicode pre-Python 3) with an 
+    additional ``line`` number attribute (where the tag was seen in the source 
+    feature file. 
+ 
+    See :ref:`controlling things with tags`. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">allowed_chars = </span><span class="s4">u&quot;._-=:&quot;    </span><span class="s0"># In addition to aplha-numerical chars.</span>
+    <span class="s1">quoting_chars = (</span><span class="s4">&quot;'&quot;</span><span class="s3">, </span><span class="s4">'&quot;'</span><span class="s3">, </span><span class="s4">&quot;&lt;&quot;</span><span class="s3">, </span><span class="s4">&quot;&gt;&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__new__(cls</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">line):</span>
+        <span class="s1">o = six.text_type.__new__(cls</span><span class="s3">, </span><span class="s1">name)</span>
+        <span class="s1">o.line = line</span>
+        <span class="s3">return </span><span class="s1">o</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">make_name(cls</span><span class="s3">, </span><span class="s1">text</span><span class="s3">, </span><span class="s1">unescape=</span><span class="s3">False, </span><span class="s1">allowed_chars=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Translate text into a &quot;valid tag&quot; without whitespace, etc. 
+        Translation rules are: 
+          * alnum chars =&gt; same, kept 
+          * space chars =&gt; &quot;_&quot; 
+          * other chars =&gt; deleted 
+ 
+        Preserve following characters (in addition to alnums, like: A-z, 0-9): 
+          * dots        =&gt; &quot;.&quot; (support: dotted-names, active-tag name schema) 
+          * minus       =&gt; &quot;-&quot; (support: dashed-names) 
+          * underscore  =&gt; &quot;_&quot; 
+          * equal       =&gt; &quot;=&quot; (support: active-tag name schema) 
+          * colon       =&gt; &quot;:&quot; (support: active-tag name schema or similar) 
+ 
+        :param text: Unicode text as input for name. 
+        :param unescape: Optional flag to unescape some chars (default: false) 
+        :param allowed_chars: Optional string with additional preserved chars. 
+        :return: Unicode name that can be used as tag. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">assert </span><span class="s1">isinstance(text</span><span class="s3">, </span><span class="s1">six.text_type)</span>
+        <span class="s3">if </span><span class="s1">allowed_chars </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">allowed_chars = cls.allowed_chars</span>
+
+        <span class="s3">if </span><span class="s1">unescape:</span>
+            <span class="s0"># -- UNESCAPE: Some escaped sequences</span>
+            <span class="s1">text = text.replace(</span><span class="s4">&quot;</span><span class="s3">\\</span><span class="s4">t&quot;</span><span class="s3">, </span><span class="s4">&quot;</span><span class="s3">\t</span><span class="s4">&quot;</span><span class="s1">).replace(</span><span class="s4">&quot;</span><span class="s3">\\</span><span class="s4">n&quot;</span><span class="s3">, </span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">)</span>
+        <span class="s1">chars = []</span>
+        <span class="s3">for </span><span class="s1">char </span><span class="s3">in </span><span class="s1">text:</span>
+            <span class="s3">if </span><span class="s1">char.isalnum() </span><span class="s3">or </span><span class="s1">(allowed_chars </span><span class="s3">and </span><span class="s1">char </span><span class="s3">in </span><span class="s1">allowed_chars):</span>
+                <span class="s1">chars.append(char)</span>
+            <span class="s3">elif </span><span class="s1">char.isspace():</span>
+                <span class="s1">chars.append(</span><span class="s4">u&quot;_&quot;</span><span class="s1">)</span>
+            <span class="s3">elif </span><span class="s1">char </span><span class="s3">in </span><span class="s1">cls.quoting_chars:</span>
+                <span class="s3">pass    </span><span class="s0"># -- NORMALIZE: Remove any quoting chars.</span>
+            <span class="s0"># -- MAYBE:</span>
+            <span class="s0"># else:</span>
+            <span class="s0">#     # -- OTHERWISE: Accept gracefully any other character.</span>
+            <span class="s0">#     chars.append(char)</span>
+        <span class="s3">return </span><span class="s4">u&quot;&quot;</span><span class="s1">.join(chars)</span>
+
+
+<span class="s3">class </span><span class="s1">Text(six.text_type):</span>
+    <span class="s2">&quot;&quot;&quot;Store multiline text from a Step definition. 
+ 
+    The attributes are: 
+ 
+    .. attribute:: value 
+ 
+       The actual text parsed from the *feature file*. 
+ 
+    .. attribute:: content_type 
+ 
+       Currently only &quot;text/plain&quot;. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__new__(cls</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">content_type=</span><span class="s4">u&quot;text/plain&quot;</span><span class="s3">, </span><span class="s1">line=</span><span class="s5">0</span><span class="s1">):</span>
+        <span class="s3">assert </span><span class="s1">isinstance(value</span><span class="s3">, </span><span class="s1">six.text_type)</span>
+        <span class="s3">assert </span><span class="s1">isinstance(content_type</span><span class="s3">, </span><span class="s1">six.text_type)</span>
+        <span class="s1">o = six.text_type.__new__(cls</span><span class="s3">, </span><span class="s1">value)</span>
+        <span class="s1">o.content_type = content_type</span>
+        <span class="s1">o.line = line</span>
+        <span class="s3">return </span><span class="s1">o</span>
+
+    <span class="s3">def </span><span class="s1">line_range(self):</span>
+        <span class="s1">line_count = len(self.splitlines())</span>
+        <span class="s3">return </span><span class="s1">(self.line</span><span class="s3">, </span><span class="s1">self.line + line_count + </span><span class="s5">1</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">replace(self</span><span class="s3">, </span><span class="s1">old</span><span class="s3">, </span><span class="s1">new</span><span class="s3">, </span><span class="s1">count=-</span><span class="s5">1</span><span class="s1">):</span>
+        <span class="s3">return </span><span class="s1">Text(super(Text</span><span class="s3">, </span><span class="s1">self).replace(old</span><span class="s3">, </span><span class="s1">new</span><span class="s3">, </span><span class="s1">count)</span><span class="s3">, </span><span class="s1">self.content_type</span><span class="s3">,</span>
+                    <span class="s1">self.line)</span>
+
+    <span class="s3">def </span><span class="s1">assert_equals(self</span><span class="s3">, </span><span class="s1">expected):</span>
+        <span class="s2">&quot;&quot;&quot;Assert that my text is identical to the &quot;expected&quot; text. 
+ 
+        A nice context diff will be displayed if they do not match. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self == expected:</span>
+            <span class="s3">return True</span>
+        <span class="s1">diff = []</span>
+        <span class="s3">for </span><span class="s1">line </span><span class="s3">in </span><span class="s1">difflib.unified_diff(self.splitlines()</span><span class="s3">,</span>
+                                         <span class="s1">expected.splitlines()):</span>
+            <span class="s1">diff.append(line)</span>
+        <span class="s0"># strip unnecessary diff prefix</span>
+        <span class="s1">diff = [</span><span class="s4">&quot;Text does not match:&quot;</span><span class="s1">] + diff[</span><span class="s5">3</span><span class="s1">:]</span>
+        <span class="s3">raise </span><span class="s1">AssertionError(</span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">.join(diff))</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># UTILITY FUNCTIONS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">reset_model(model_elements):</span>
+    <span class="s2">&quot;&quot;&quot;Reset the test run information stored in model elements. 
+ 
+    :param model_elements:  List of model elements (Feature, Scenario, ...) 
+    &quot;&quot;&quot;</span>
+    <span class="s3">for </span><span class="s1">model_element </span><span class="s3">in </span><span class="s1">model_elements:</span>
+        <span class="s1">model_element.reset()</span>
+</pre>
+</body>
+</html>

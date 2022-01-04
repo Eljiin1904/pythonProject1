@@ -1,0 +1,198 @@
+<html>
+<head>
+<title>test_signals.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_signals.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">signal</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">import </span><span class="s1">trio</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">.._util </span><span class="s0">import </span><span class="s1">signal_raise</span>
+<span class="s0">from </span><span class="s1">.._signals </span><span class="s0">import </span><span class="s1">open_signal_receiver</span><span class="s0">, </span><span class="s1">_signal_handler</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_signal_receiver():</span>
+    <span class="s1">orig = signal.getsignal(signal.SIGILL)</span>
+    <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL) </span><span class="s0">as </span><span class="s1">receiver:</span>
+        <span class="s2"># Raise it a few times, to exercise signal coalescing, both at the</span>
+        <span class="s2"># call_soon level and at the SignalQueue level</span>
+        <span class="s1">signal_raise(signal.SIGILL)</span>
+        <span class="s1">signal_raise(signal.SIGILL)</span>
+        <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+        <span class="s1">signal_raise(signal.SIGILL)</span>
+        <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+        <span class="s0">async for </span><span class="s1">signum </span><span class="s0">in </span><span class="s1">receiver:  </span><span class="s2"># pragma: no branch</span>
+            <span class="s0">assert </span><span class="s1">signum == signal.SIGILL</span>
+            <span class="s0">break</span>
+        <span class="s0">assert </span><span class="s1">receiver._pending_signal_count() == </span><span class="s3">0</span>
+        <span class="s1">signal_raise(signal.SIGILL)</span>
+        <span class="s0">async for </span><span class="s1">signum </span><span class="s0">in </span><span class="s1">receiver:  </span><span class="s2"># pragma: no branch</span>
+            <span class="s0">assert </span><span class="s1">signum == signal.SIGILL</span>
+            <span class="s0">break</span>
+        <span class="s0">assert </span><span class="s1">receiver._pending_signal_count() == </span><span class="s3">0</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s0">await </span><span class="s1">receiver.__anext__()</span>
+    <span class="s0">assert </span><span class="s1">signal.getsignal(signal.SIGILL) </span><span class="s0">is </span><span class="s1">orig</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_signal_receiver_restore_handler_after_one_bad_signal():</span>
+    <span class="s1">orig = signal.getsignal(signal.SIGILL)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL</span><span class="s0">, </span><span class="s3">1234567</span><span class="s1">):</span>
+            <span class="s0">pass  </span><span class="s2"># pragma: no cover</span>
+    <span class="s2"># Still restored even if we errored out</span>
+    <span class="s0">assert </span><span class="s1">signal.getsignal(signal.SIGILL) </span><span class="s0">is </span><span class="s1">orig</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_signal_receiver_empty_fail():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError</span><span class="s0">, </span><span class="s1">match=</span><span class="s4">&quot;No signals were provided&quot;</span><span class="s1">):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver():</span>
+            <span class="s0">pass</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_signal_receiver_restore_handler_after_duplicate_signal():</span>
+    <span class="s1">orig = signal.getsignal(signal.SIGILL)</span>
+    <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGILL):</span>
+        <span class="s0">pass</span>
+    <span class="s2"># Still restored correctly</span>
+    <span class="s0">assert </span><span class="s1">signal.getsignal(signal.SIGILL) </span><span class="s0">is </span><span class="s1">orig</span>
+
+
+<span class="s0">async def </span><span class="s1">test_catch_signals_wrong_thread():</span>
+    <span class="s0">async def </span><span class="s1">naughty():</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGINT):</span>
+            <span class="s0">pass  </span><span class="s2"># pragma: no cover</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s0">await </span><span class="s1">trio.to_thread.run_sync(trio.run</span><span class="s0">, </span><span class="s1">naughty)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_signal_receiver_conflict():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(trio.BusyResourceError):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL) </span><span class="s0">as </span><span class="s1">receiver:</span>
+            <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+                <span class="s1">nursery.start_soon(receiver.__anext__)</span>
+                <span class="s1">nursery.start_soon(receiver.__anext__)</span>
+
+
+<span class="s2"># Blocks until all previous calls to run_sync_soon(idempotent=True) have been</span>
+<span class="s2"># processed.</span>
+<span class="s0">async def </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier():</span>
+    <span class="s1">ev = trio.Event()</span>
+    <span class="s1">token = _core.current_trio_token()</span>
+    <span class="s1">token.run_sync_soon(ev.set</span><span class="s0">, </span><span class="s1">idempotent=</span><span class="s0">True</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">ev.wait()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_open_signal_receiver_no_starvation():</span>
+    <span class="s2"># Set up a situation where there are always 2 pending signals available to</span>
+    <span class="s2"># report, and make sure that instead of getting the same signal reported</span>
+    <span class="s2"># over and over, it alternates between reporting both of them.</span>
+    <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE) </span><span class="s0">as </span><span class="s1">receiver:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">print(signal.getsignal(signal.SIGILL))</span>
+            <span class="s1">previous = </span><span class="s0">None</span>
+            <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">10</span><span class="s1">):</span>
+                <span class="s1">signal_raise(signal.SIGILL)</span>
+                <span class="s1">signal_raise(signal.SIGFPE)</span>
+                <span class="s0">await </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier()</span>
+                <span class="s0">if </span><span class="s1">previous </span><span class="s0">is None</span><span class="s1">:</span>
+                    <span class="s1">previous = </span><span class="s0">await </span><span class="s1">receiver.__anext__()</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">got = </span><span class="s0">await </span><span class="s1">receiver.__anext__()</span>
+                    <span class="s0">assert </span><span class="s1">got </span><span class="s0">in </span><span class="s1">[signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE]</span>
+                    <span class="s0">assert </span><span class="s1">got != previous</span>
+                    <span class="s1">previous = got</span>
+            <span class="s2"># Clear out the last signal so it doesn't get redelivered</span>
+            <span class="s0">while </span><span class="s1">receiver._pending_signal_count() != </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">await </span><span class="s1">receiver.__anext__()</span>
+        <span class="s0">except</span><span class="s1">:  </span><span class="s2"># pragma: no cover</span>
+            <span class="s2"># If there's an unhandled exception above, then exiting the</span>
+            <span class="s2"># open_signal_receiver block might cause the signal to be</span>
+            <span class="s2"># redelivered and give us a core dump instead of a traceback...</span>
+            <span class="s0">import </span><span class="s1">traceback</span>
+
+            <span class="s1">traceback.print_exc()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_catch_signals_race_condition_on_exit():</span>
+    <span class="s1">delivered_directly = set()</span>
+
+    <span class="s0">def </span><span class="s1">direct_handler(signo</span><span class="s0">, </span><span class="s1">frame):</span>
+        <span class="s1">delivered_directly.add(signo)</span>
+
+    <span class="s1">print(</span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s2"># Test the version where the call_soon *doesn't* have a chance to run</span>
+    <span class="s2"># before we exit the with block:</span>
+    <span class="s0">with </span><span class="s1">_signal_handler({signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE}</span><span class="s0">, </span><span class="s1">direct_handler):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE) </span><span class="s0">as </span><span class="s1">receiver:</span>
+            <span class="s1">signal_raise(signal.SIGILL)</span>
+            <span class="s1">signal_raise(signal.SIGFPE)</span>
+        <span class="s0">await </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier()</span>
+    <span class="s0">assert </span><span class="s1">delivered_directly == {signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE}</span>
+    <span class="s1">delivered_directly.clear()</span>
+
+    <span class="s1">print(</span><span class="s3">2</span><span class="s1">)</span>
+    <span class="s2"># Test the version where the call_soon *does* have a chance to run before</span>
+    <span class="s2"># we exit the with block:</span>
+    <span class="s0">with </span><span class="s1">_signal_handler({signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE}</span><span class="s0">, </span><span class="s1">direct_handler):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE) </span><span class="s0">as </span><span class="s1">receiver:</span>
+            <span class="s1">signal_raise(signal.SIGILL)</span>
+            <span class="s1">signal_raise(signal.SIGFPE)</span>
+            <span class="s0">await </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier()</span>
+            <span class="s0">assert </span><span class="s1">receiver._pending_signal_count() == </span><span class="s3">2</span>
+    <span class="s0">assert </span><span class="s1">delivered_directly == {signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE}</span>
+    <span class="s1">delivered_directly.clear()</span>
+
+    <span class="s2"># Again, but with a SIG_IGN signal:</span>
+
+    <span class="s1">print(</span><span class="s3">3</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">_signal_handler({signal.SIGILL}</span><span class="s0">, </span><span class="s1">signal.SIG_IGN):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL) </span><span class="s0">as </span><span class="s1">receiver:</span>
+            <span class="s1">signal_raise(signal.SIGILL)</span>
+        <span class="s0">await </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier()</span>
+    <span class="s2"># test passes if the process reaches this point without dying</span>
+
+    <span class="s1">print(</span><span class="s3">4</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">_signal_handler({signal.SIGILL}</span><span class="s0">, </span><span class="s1">signal.SIG_IGN):</span>
+        <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL) </span><span class="s0">as </span><span class="s1">receiver:</span>
+            <span class="s1">signal_raise(signal.SIGILL)</span>
+            <span class="s0">await </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier()</span>
+            <span class="s0">assert </span><span class="s1">receiver._pending_signal_count() == </span><span class="s3">1</span>
+    <span class="s2"># test passes if the process reaches this point without dying</span>
+
+    <span class="s2"># Check exception chaining if there are multiple exception-raising</span>
+    <span class="s2"># handlers</span>
+    <span class="s0">def </span><span class="s1">raise_handler(signum</span><span class="s0">, </span><span class="s1">_):</span>
+        <span class="s0">raise </span><span class="s1">RuntimeError(signum)</span>
+
+    <span class="s0">with </span><span class="s1">_signal_handler({signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE}</span><span class="s0">, </span><span class="s1">raise_handler):</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">with </span><span class="s1">open_signal_receiver(signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE) </span><span class="s0">as </span><span class="s1">receiver:</span>
+                <span class="s1">signal_raise(signal.SIGILL)</span>
+                <span class="s1">signal_raise(signal.SIGFPE)</span>
+                <span class="s0">await </span><span class="s1">wait_run_sync_soon_idempotent_queue_barrier()</span>
+                <span class="s0">assert </span><span class="s1">receiver._pending_signal_count() == </span><span class="s3">2</span>
+        <span class="s1">exc = excinfo.value</span>
+        <span class="s1">signums = {exc.args[</span><span class="s3">0</span><span class="s1">]}</span>
+        <span class="s0">assert </span><span class="s1">isinstance(exc.__context__</span><span class="s0">, </span><span class="s1">RuntimeError)</span>
+        <span class="s1">signums.add(exc.__context__.args[</span><span class="s3">0</span><span class="s1">])</span>
+        <span class="s0">assert </span><span class="s1">signums == {signal.SIGILL</span><span class="s0">, </span><span class="s1">signal.SIGFPE}</span>
+</pre>
+</body>
+</html>

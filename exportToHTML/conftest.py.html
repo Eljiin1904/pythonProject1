@@ -1,0 +1,56 @@
+<html>
+<head>
+<title>conftest.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+conftest.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">wraps</span><span class="s0">, </span><span class="s1">partial</span>
+<span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">import </span><span class="s1">types</span>
+
+
+<span class="s1">@types.coroutine</span>
+<span class="s0">def </span><span class="s1">mock_sleep():</span>
+    <span class="s0">yield </span><span class="s2">&quot;mock_sleep&quot;</span>
+
+
+<span class="s3"># Wrap any 'async def' tests so that they get automatically iterated.</span>
+<span class="s3"># We used to use pytest-asyncio as a convenient way to do this, but nowadays</span>
+<span class="s3"># pytest-asyncio uses us! In addition to it being generally bad for our test</span>
+<span class="s3"># infrastructure to depend on the code-under-test, this totally messes up</span>
+<span class="s3"># coverage info because depending on pytest's plugin load order, we might get</span>
+<span class="s3"># imported before pytest-cov can be loaded and start gathering coverage.</span>
+<span class="s1">@pytest.hookimpl(tryfirst=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">pytest_pyfunc_call(pyfuncitem):</span>
+    <span class="s0">if </span><span class="s1">inspect.iscoroutinefunction(pyfuncitem.obj):</span>
+        <span class="s1">fn = pyfuncitem.obj</span>
+
+        <span class="s1">@wraps(fn)</span>
+        <span class="s0">def </span><span class="s1">wrapper(**kwargs):</span>
+            <span class="s1">coro = fn(**kwargs)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">while True</span><span class="s1">:</span>
+                    <span class="s1">value = coro.send(</span><span class="s0">None</span><span class="s1">)</span>
+                    <span class="s0">if </span><span class="s1">value != </span><span class="s2">&quot;mock_sleep&quot;</span><span class="s1">:  </span><span class="s3"># pragma: no cover</span>
+                        <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                            <span class="s2">&quot;coroutine runner confused: {!r}&quot;</span><span class="s1">.format(value)</span>
+                        <span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">StopIteration:</span>
+                <span class="s0">pass</span>
+
+        <span class="s1">pyfuncitem.obj = wrapper</span>
+</pre>
+</body>
+</html>

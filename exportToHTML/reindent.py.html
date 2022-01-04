@@ -1,0 +1,264 @@
+<html>
+<head>
+<title>reindent.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+reindent.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#</span>
+<span class="s0"># Copyright (C) 2009-2020 the sqlparse authors and contributors</span>
+<span class="s0"># &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of python-sqlparse and is released under</span>
+<span class="s0"># the BSD License: https://opensource.org/licenses/BSD-3-Clause</span>
+
+<span class="s2">from </span><span class="s1">sqlparse </span><span class="s2">import </span><span class="s1">sql</span><span class="s2">, </span><span class="s1">tokens </span><span class="s2">as </span><span class="s1">T</span>
+<span class="s2">from </span><span class="s1">sqlparse.utils </span><span class="s2">import </span><span class="s1">offset</span><span class="s2">, </span><span class="s1">indent</span>
+
+
+<span class="s2">class </span><span class="s1">ReindentFilter:</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">width=</span><span class="s3">2</span><span class="s2">, </span><span class="s1">char=</span><span class="s4">' '</span><span class="s2">, </span><span class="s1">wrap_after=</span><span class="s3">0</span><span class="s2">, </span><span class="s1">n=</span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s2">,</span>
+                 <span class="s1">comma_first=</span><span class="s2">False, </span><span class="s1">indent_after_first=</span><span class="s2">False,</span>
+                 <span class="s1">indent_columns=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s1">self.n = n</span>
+        <span class="s1">self.width = width</span>
+        <span class="s1">self.char = char</span>
+        <span class="s1">self.indent = </span><span class="s3">1 </span><span class="s2">if </span><span class="s1">indent_after_first </span><span class="s2">else </span><span class="s3">0</span>
+        <span class="s1">self.offset = </span><span class="s3">0</span>
+        <span class="s1">self.wrap_after = wrap_after</span>
+        <span class="s1">self.comma_first = comma_first</span>
+        <span class="s1">self.indent_columns = indent_columns</span>
+        <span class="s1">self._curr_stmt = </span><span class="s2">None</span>
+        <span class="s1">self._last_stmt = </span><span class="s2">None</span>
+        <span class="s1">self._last_func = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">_flatten_up_to_token(self</span><span class="s2">, </span><span class="s1">token):</span>
+        <span class="s5">&quot;&quot;&quot;Yields all tokens up to token but excluding current.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">token.is_group:</span>
+            <span class="s1">token = next(token.flatten())</span>
+
+        <span class="s2">for </span><span class="s1">t </span><span class="s2">in </span><span class="s1">self._curr_stmt.flatten():</span>
+            <span class="s2">if </span><span class="s1">t == token:</span>
+                <span class="s2">break</span>
+            <span class="s2">yield </span><span class="s1">t</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">leading_ws(self):</span>
+        <span class="s2">return </span><span class="s1">self.offset + self.indent * self.width</span>
+
+    <span class="s2">def </span><span class="s1">_get_offset(self</span><span class="s2">, </span><span class="s1">token):</span>
+        <span class="s1">raw = </span><span class="s4">''</span><span class="s1">.join(map(str</span><span class="s2">, </span><span class="s1">self._flatten_up_to_token(token)))</span>
+        <span class="s1">line = (raw </span><span class="s2">or </span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s1">).splitlines()[-</span><span class="s3">1</span><span class="s1">]</span>
+        <span class="s0"># Now take current offset into account and return relative offset.</span>
+        <span class="s2">return </span><span class="s1">len(line) - len(self.char * self.leading_ws)</span>
+
+    <span class="s2">def </span><span class="s1">nl(self</span><span class="s2">, </span><span class="s1">offset=</span><span class="s3">0</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s1">sql.Token(</span>
+            <span class="s1">T.Whitespace</span><span class="s2">,</span>
+            <span class="s1">self.n + self.char * max(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">self.leading_ws + offset))</span>
+
+    <span class="s2">def </span><span class="s1">_next_token(self</span><span class="s2">, </span><span class="s1">tlist</span><span class="s2">, </span><span class="s1">idx=-</span><span class="s3">1</span><span class="s1">):</span>
+        <span class="s1">split_words = (</span><span class="s4">'FROM'</span><span class="s2">, </span><span class="s4">'STRAIGHT_JOIN$'</span><span class="s2">, </span><span class="s4">'JOIN$'</span><span class="s2">, </span><span class="s4">'AND'</span><span class="s2">, </span><span class="s4">'OR'</span><span class="s2">,</span>
+                       <span class="s4">'GROUP BY'</span><span class="s2">, </span><span class="s4">'ORDER BY'</span><span class="s2">, </span><span class="s4">'UNION'</span><span class="s2">, </span><span class="s4">'VALUES'</span><span class="s2">,</span>
+                       <span class="s4">'SET'</span><span class="s2">, </span><span class="s4">'BETWEEN'</span><span class="s2">, </span><span class="s4">'EXCEPT'</span><span class="s2">, </span><span class="s4">'HAVING'</span><span class="s2">, </span><span class="s4">'LIMIT'</span><span class="s1">)</span>
+        <span class="s1">m_split = T.Keyword</span><span class="s2">, </span><span class="s1">split_words</span><span class="s2">, True</span>
+        <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = tlist.token_next_by(m=m_split</span><span class="s2">, </span><span class="s1">idx=idx)</span>
+
+        <span class="s2">if </span><span class="s1">token </span><span class="s2">and </span><span class="s1">token.normalized == </span><span class="s4">'BETWEEN'</span><span class="s1">:</span>
+            <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = self._next_token(tlist</span><span class="s2">, </span><span class="s1">tidx)</span>
+
+            <span class="s2">if </span><span class="s1">token </span><span class="s2">and </span><span class="s1">token.normalized == </span><span class="s4">'AND'</span><span class="s1">:</span>
+                <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = self._next_token(tlist</span><span class="s2">, </span><span class="s1">tidx)</span>
+
+        <span class="s2">return </span><span class="s1">tidx</span><span class="s2">, </span><span class="s1">token</span>
+
+    <span class="s2">def </span><span class="s1">_split_kwds(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = self._next_token(tlist)</span>
+        <span class="s2">while </span><span class="s1">token:</span>
+            <span class="s1">pidx</span><span class="s2">, </span><span class="s1">prev_ = tlist.token_prev(tidx</span><span class="s2">, </span><span class="s1">skip_ws=</span><span class="s2">False</span><span class="s1">)</span>
+            <span class="s1">uprev = str(prev_)</span>
+
+            <span class="s2">if </span><span class="s1">prev_ </span><span class="s2">and </span><span class="s1">prev_.is_whitespace:</span>
+                <span class="s2">del </span><span class="s1">tlist.tokens[pidx]</span>
+                <span class="s1">tidx -= </span><span class="s3">1</span>
+
+            <span class="s2">if not </span><span class="s1">(uprev.endswith(</span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s1">) </span><span class="s2">or </span><span class="s1">uprev.endswith(</span><span class="s4">'</span><span class="s2">\r</span><span class="s4">'</span><span class="s1">)):</span>
+                <span class="s1">tlist.insert_before(tidx</span><span class="s2">, </span><span class="s1">self.nl())</span>
+                <span class="s1">tidx += </span><span class="s3">1</span>
+
+            <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = self._next_token(tlist</span><span class="s2">, </span><span class="s1">tidx)</span>
+
+    <span class="s2">def </span><span class="s1">_split_statements(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">ttypes = T.Keyword.DML</span><span class="s2">, </span><span class="s1">T.Keyword.DDL</span>
+        <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = tlist.token_next_by(t=ttypes)</span>
+        <span class="s2">while </span><span class="s1">token:</span>
+            <span class="s1">pidx</span><span class="s2">, </span><span class="s1">prev_ = tlist.token_prev(tidx</span><span class="s2">, </span><span class="s1">skip_ws=</span><span class="s2">False</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">prev_ </span><span class="s2">and </span><span class="s1">prev_.is_whitespace:</span>
+                <span class="s2">del </span><span class="s1">tlist.tokens[pidx]</span>
+                <span class="s1">tidx -= </span><span class="s3">1</span>
+            <span class="s0"># only break if it's not the first token</span>
+            <span class="s2">if </span><span class="s1">prev_:</span>
+                <span class="s1">tlist.insert_before(tidx</span><span class="s2">, </span><span class="s1">self.nl())</span>
+                <span class="s1">tidx += </span><span class="s3">1</span>
+            <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = tlist.token_next_by(t=ttypes</span><span class="s2">, </span><span class="s1">idx=tidx)</span>
+
+    <span class="s2">def </span><span class="s1">_process(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">func_name = </span><span class="s4">'_process_{cls}'</span><span class="s1">.format(cls=type(tlist).__name__)</span>
+        <span class="s1">func = getattr(self</span><span class="s2">, </span><span class="s1">func_name.lower()</span><span class="s2">, </span><span class="s1">self._process_default)</span>
+        <span class="s1">func(tlist)</span>
+
+    <span class="s2">def </span><span class="s1">_process_where(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = tlist.token_next_by(m=(T.Keyword</span><span class="s2">, </span><span class="s4">'WHERE'</span><span class="s1">))</span>
+        <span class="s2">if not </span><span class="s1">token:</span>
+            <span class="s2">return</span>
+        <span class="s0"># issue121, errors in statement fixed??</span>
+        <span class="s1">tlist.insert_before(tidx</span><span class="s2">, </span><span class="s1">self.nl())</span>
+        <span class="s2">with </span><span class="s1">indent(self):</span>
+            <span class="s1">self._process_default(tlist)</span>
+
+    <span class="s2">def </span><span class="s1">_process_parenthesis(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">ttypes = T.Keyword.DML</span><span class="s2">, </span><span class="s1">T.Keyword.DDL</span>
+        <span class="s1">_</span><span class="s2">, </span><span class="s1">is_dml_dll = tlist.token_next_by(t=ttypes)</span>
+        <span class="s1">fidx</span><span class="s2">, </span><span class="s1">first = tlist.token_next_by(m=sql.Parenthesis.M_OPEN)</span>
+        <span class="s2">if </span><span class="s1">first </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return</span>
+
+        <span class="s2">with </span><span class="s1">indent(self</span><span class="s2">, </span><span class="s3">1 </span><span class="s2">if </span><span class="s1">is_dml_dll </span><span class="s2">else </span><span class="s3">0</span><span class="s1">):</span>
+            <span class="s1">tlist.tokens.insert(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">self.nl()) </span><span class="s2">if </span><span class="s1">is_dml_dll </span><span class="s2">else None</span>
+            <span class="s2">with </span><span class="s1">offset(self</span><span class="s2">, </span><span class="s1">self._get_offset(first) + </span><span class="s3">1</span><span class="s1">):</span>
+                <span class="s1">self._process_default(tlist</span><span class="s2">, not </span><span class="s1">is_dml_dll)</span>
+
+    <span class="s2">def </span><span class="s1">_process_function(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">self._last_func = tlist[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s1">self._process_default(tlist)</span>
+
+    <span class="s2">def </span><span class="s1">_process_identifierlist(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">identifiers = list(tlist.get_identifiers())</span>
+        <span class="s2">if </span><span class="s1">self.indent_columns:</span>
+            <span class="s1">first = next(identifiers[</span><span class="s3">0</span><span class="s1">].flatten())</span>
+            <span class="s1">num_offset = </span><span class="s3">1 </span><span class="s2">if </span><span class="s1">self.char == </span><span class="s4">'</span><span class="s2">\t</span><span class="s4">' </span><span class="s2">else </span><span class="s1">self.width</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">first = next(identifiers.pop(</span><span class="s3">0</span><span class="s1">).flatten())</span>
+            <span class="s1">num_offset = </span><span class="s3">1 </span><span class="s2">if </span><span class="s1">self.char == </span><span class="s4">'</span><span class="s2">\t</span><span class="s4">' </span><span class="s2">else </span><span class="s1">self._get_offset(first)</span>
+
+        <span class="s2">if not </span><span class="s1">tlist.within(sql.Function) </span><span class="s2">and not </span><span class="s1">tlist.within(sql.Values):</span>
+            <span class="s2">with </span><span class="s1">offset(self</span><span class="s2">, </span><span class="s1">num_offset):</span>
+                <span class="s1">position = </span><span class="s3">0</span>
+                <span class="s2">for </span><span class="s1">token </span><span class="s2">in </span><span class="s1">identifiers:</span>
+                    <span class="s0"># Add 1 for the &quot;,&quot; separator</span>
+                    <span class="s1">position += len(token.value) + </span><span class="s3">1</span>
+                    <span class="s2">if </span><span class="s1">position &gt; (self.wrap_after - self.offset):</span>
+                        <span class="s1">adjust = </span><span class="s3">0</span>
+                        <span class="s2">if </span><span class="s1">self.comma_first:</span>
+                            <span class="s1">adjust = -</span><span class="s3">2</span>
+                            <span class="s1">_</span><span class="s2">, </span><span class="s1">comma = tlist.token_prev(</span>
+                                <span class="s1">tlist.token_index(token))</span>
+                            <span class="s2">if </span><span class="s1">comma </span><span class="s2">is None</span><span class="s1">:</span>
+                                <span class="s2">continue</span>
+                            <span class="s1">token = comma</span>
+                        <span class="s1">tlist.insert_before(token</span><span class="s2">, </span><span class="s1">self.nl(offset=adjust))</span>
+                        <span class="s2">if </span><span class="s1">self.comma_first:</span>
+                            <span class="s1">_</span><span class="s2">, </span><span class="s1">ws = tlist.token_next(</span>
+                                <span class="s1">tlist.token_index(token)</span><span class="s2">, </span><span class="s1">skip_ws=</span><span class="s2">False</span><span class="s1">)</span>
+                            <span class="s2">if </span><span class="s1">(ws </span><span class="s2">is not None</span>
+                                    <span class="s2">and </span><span class="s1">ws.ttype </span><span class="s2">is not </span><span class="s1">T.Text.Whitespace):</span>
+                                <span class="s1">tlist.insert_after(</span>
+                                    <span class="s1">token</span><span class="s2">, </span><span class="s1">sql.Token(T.Whitespace</span><span class="s2">, </span><span class="s4">' '</span><span class="s1">))</span>
+                        <span class="s1">position = </span><span class="s3">0</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># ensure whitespace</span>
+            <span class="s2">for </span><span class="s1">token </span><span class="s2">in </span><span class="s1">tlist:</span>
+                <span class="s1">_</span><span class="s2">, </span><span class="s1">next_ws = tlist.token_next(</span>
+                    <span class="s1">tlist.token_index(token)</span><span class="s2">, </span><span class="s1">skip_ws=</span><span class="s2">False</span><span class="s1">)</span>
+                <span class="s2">if </span><span class="s1">token.value == </span><span class="s4">',' </span><span class="s2">and not </span><span class="s1">next_ws.is_whitespace:</span>
+                    <span class="s1">tlist.insert_after(</span>
+                        <span class="s1">token</span><span class="s2">, </span><span class="s1">sql.Token(T.Whitespace</span><span class="s2">, </span><span class="s4">' '</span><span class="s1">))</span>
+
+            <span class="s1">end_at = self.offset + sum(len(i.value) + </span><span class="s3">1 </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">identifiers)</span>
+            <span class="s1">adjusted_offset = </span><span class="s3">0</span>
+            <span class="s2">if </span><span class="s1">(self.wrap_after &gt; </span><span class="s3">0</span>
+                    <span class="s2">and </span><span class="s1">end_at &gt; (self.wrap_after - self.offset)</span>
+                    <span class="s2">and </span><span class="s1">self._last_func):</span>
+                <span class="s1">adjusted_offset = -len(self._last_func.value) - </span><span class="s3">1</span>
+
+            <span class="s2">with </span><span class="s1">offset(self</span><span class="s2">, </span><span class="s1">adjusted_offset)</span><span class="s2">, </span><span class="s1">indent(self):</span>
+                <span class="s2">if </span><span class="s1">adjusted_offset &lt; </span><span class="s3">0</span><span class="s1">:</span>
+                    <span class="s1">tlist.insert_before(identifiers[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">self.nl())</span>
+                <span class="s1">position = </span><span class="s3">0</span>
+                <span class="s2">for </span><span class="s1">token </span><span class="s2">in </span><span class="s1">identifiers:</span>
+                    <span class="s0"># Add 1 for the &quot;,&quot; separator</span>
+                    <span class="s1">position += len(token.value) + </span><span class="s3">1</span>
+                    <span class="s2">if </span><span class="s1">(self.wrap_after &gt; </span><span class="s3">0</span>
+                            <span class="s2">and </span><span class="s1">position &gt; (self.wrap_after - self.offset)):</span>
+                        <span class="s1">adjust = </span><span class="s3">0</span>
+                        <span class="s1">tlist.insert_before(token</span><span class="s2">, </span><span class="s1">self.nl(offset=adjust))</span>
+                        <span class="s1">position = </span><span class="s3">0</span>
+        <span class="s1">self._process_default(tlist)</span>
+
+    <span class="s2">def </span><span class="s1">_process_case(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">iterable = iter(tlist.get_cases())</span>
+        <span class="s1">cond</span><span class="s2">, </span><span class="s1">_ = next(iterable)</span>
+        <span class="s1">first = next(cond[</span><span class="s3">0</span><span class="s1">].flatten())</span>
+
+        <span class="s2">with </span><span class="s1">offset(self</span><span class="s2">, </span><span class="s1">self._get_offset(tlist[</span><span class="s3">0</span><span class="s1">])):</span>
+            <span class="s2">with </span><span class="s1">offset(self</span><span class="s2">, </span><span class="s1">self._get_offset(first)):</span>
+                <span class="s2">for </span><span class="s1">cond</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">iterable:</span>
+                    <span class="s1">token = value[</span><span class="s3">0</span><span class="s1">] </span><span class="s2">if </span><span class="s1">cond </span><span class="s2">is None else </span><span class="s1">cond[</span><span class="s3">0</span><span class="s1">]</span>
+                    <span class="s1">tlist.insert_before(token</span><span class="s2">, </span><span class="s1">self.nl())</span>
+
+                <span class="s0"># Line breaks on group level are done. let's add an offset of</span>
+                <span class="s0"># len &quot;when &quot;, &quot;then &quot;, &quot;else &quot;</span>
+                <span class="s2">with </span><span class="s1">offset(self</span><span class="s2">, </span><span class="s1">len(</span><span class="s4">&quot;WHEN &quot;</span><span class="s1">)):</span>
+                    <span class="s1">self._process_default(tlist)</span>
+            <span class="s1">end_idx</span><span class="s2">, </span><span class="s1">end = tlist.token_next_by(m=sql.Case.M_CLOSE)</span>
+            <span class="s2">if </span><span class="s1">end_idx </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">tlist.insert_before(end_idx</span><span class="s2">, </span><span class="s1">self.nl())</span>
+
+    <span class="s2">def </span><span class="s1">_process_values(self</span><span class="s2">, </span><span class="s1">tlist):</span>
+        <span class="s1">tlist.insert_before(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">self.nl())</span>
+        <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = tlist.token_next_by(i=sql.Parenthesis)</span>
+        <span class="s1">first_token = token</span>
+        <span class="s2">while </span><span class="s1">token:</span>
+            <span class="s1">ptidx</span><span class="s2">, </span><span class="s1">ptoken = tlist.token_next_by(m=(T.Punctuation</span><span class="s2">, </span><span class="s4">','</span><span class="s1">)</span><span class="s2">,</span>
+                                                <span class="s1">idx=tidx)</span>
+            <span class="s2">if </span><span class="s1">ptoken:</span>
+                <span class="s2">if </span><span class="s1">self.comma_first:</span>
+                    <span class="s1">adjust = -</span><span class="s3">2</span>
+                    <span class="s1">offset = self._get_offset(first_token) + adjust</span>
+                    <span class="s1">tlist.insert_before(ptoken</span><span class="s2">, </span><span class="s1">self.nl(offset))</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">tlist.insert_after(ptoken</span><span class="s2">,</span>
+                                       <span class="s1">self.nl(self._get_offset(token)))</span>
+            <span class="s1">tidx</span><span class="s2">, </span><span class="s1">token = tlist.token_next_by(i=sql.Parenthesis</span><span class="s2">, </span><span class="s1">idx=tidx)</span>
+
+    <span class="s2">def </span><span class="s1">_process_default(self</span><span class="s2">, </span><span class="s1">tlist</span><span class="s2">, </span><span class="s1">stmts=</span><span class="s2">True</span><span class="s1">):</span>
+        <span class="s1">self._split_statements(tlist) </span><span class="s2">if </span><span class="s1">stmts </span><span class="s2">else None</span>
+        <span class="s1">self._split_kwds(tlist)</span>
+        <span class="s2">for </span><span class="s1">sgroup </span><span class="s2">in </span><span class="s1">tlist.get_sublists():</span>
+            <span class="s1">self._process(sgroup)</span>
+
+    <span class="s2">def </span><span class="s1">process(self</span><span class="s2">, </span><span class="s1">stmt):</span>
+        <span class="s1">self._curr_stmt = stmt</span>
+        <span class="s1">self._process(stmt)</span>
+
+        <span class="s2">if </span><span class="s1">self._last_stmt </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">nl = </span><span class="s4">'</span><span class="s2">\n</span><span class="s4">' </span><span class="s2">if </span><span class="s1">str(self._last_stmt).endswith(</span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s1">) </span><span class="s2">else </span><span class="s4">'</span><span class="s2">\n\n</span><span class="s4">'</span>
+            <span class="s1">stmt.tokens.insert(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">sql.Token(T.Whitespace</span><span class="s2">, </span><span class="s1">nl))</span>
+
+        <span class="s1">self._last_stmt = stmt</span>
+        <span class="s2">return </span><span class="s1">stmt</span>
+</pre>
+</body>
+</html>

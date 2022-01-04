@@ -1,0 +1,177 @@
+<html>
+<head>
+<title>pkcs7.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+pkcs7.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">typing</span>
+<span class="s2">from </span><span class="s1">enum </span><span class="s2">import </span><span class="s1">Enum</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">x509</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">hashes</span><span class="s2">, </span><span class="s1">serialization</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.asymmetric </span><span class="s2">import </span><span class="s1">ec</span><span class="s2">, </span><span class="s1">rsa</span>
+<span class="s2">from </span><span class="s1">cryptography.utils </span><span class="s2">import </span><span class="s1">_check_byteslike</span>
+
+
+<span class="s2">def </span><span class="s1">load_pem_pkcs7_certificates(data: bytes) -&gt; typing.List[x509.Certificate]:</span>
+    <span class="s1">backend = _get_backend(</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">backend.load_pem_pkcs7_certificates(data)</span>
+
+
+<span class="s2">def </span><span class="s1">load_der_pkcs7_certificates(data: bytes) -&gt; typing.List[x509.Certificate]:</span>
+    <span class="s1">backend = _get_backend(</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">backend.load_der_pkcs7_certificates(data)</span>
+
+
+<span class="s1">_ALLOWED_PKCS7_HASH_TYPES = typing.Union[</span>
+    <span class="s1">hashes.SHA1</span><span class="s2">,</span>
+    <span class="s1">hashes.SHA224</span><span class="s2">,</span>
+    <span class="s1">hashes.SHA256</span><span class="s2">,</span>
+    <span class="s1">hashes.SHA384</span><span class="s2">,</span>
+    <span class="s1">hashes.SHA512</span><span class="s2">,</span>
+<span class="s1">]</span>
+
+<span class="s1">_ALLOWED_PRIVATE_KEY_TYPES = typing.Union[</span>
+    <span class="s1">rsa.RSAPrivateKey</span><span class="s2">, </span><span class="s1">ec.EllipticCurvePrivateKey</span>
+<span class="s1">]</span>
+
+
+<span class="s2">class </span><span class="s1">PKCS7Options(Enum):</span>
+    <span class="s1">Text = </span><span class="s3">&quot;Add text/plain MIME type&quot;</span>
+    <span class="s1">Binary = </span><span class="s3">&quot;Don't translate input data into canonical MIME format&quot;</span>
+    <span class="s1">DetachedSignature = </span><span class="s3">&quot;Don't embed data in the PKCS7 structure&quot;</span>
+    <span class="s1">NoCapabilities = </span><span class="s3">&quot;Don't embed SMIME capabilities&quot;</span>
+    <span class="s1">NoAttributes = </span><span class="s3">&quot;Don't embed authenticatedAttributes&quot;</span>
+    <span class="s1">NoCerts = </span><span class="s3">&quot;Don't embed signer certificate&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">PKCS7SignatureBuilder(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">data=</span><span class="s2">None, </span><span class="s1">signers=[]</span><span class="s2">, </span><span class="s1">additional_certs=[]):</span>
+        <span class="s1">self._data = data</span>
+        <span class="s1">self._signers = signers</span>
+        <span class="s1">self._additional_certs = additional_certs</span>
+
+    <span class="s2">def </span><span class="s1">set_data(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s3">&quot;PKCS7SignatureBuilder&quot;</span><span class="s1">:</span>
+        <span class="s1">_check_byteslike(</span><span class="s3">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s2">if </span><span class="s1">self._data </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;data may only be set once&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">PKCS7SignatureBuilder(data</span><span class="s2">, </span><span class="s1">self._signers)</span>
+
+    <span class="s2">def </span><span class="s1">add_signer(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">certificate: x509.Certificate</span><span class="s2">,</span>
+        <span class="s1">private_key: _ALLOWED_PRIVATE_KEY_TYPES</span><span class="s2">,</span>
+        <span class="s1">hash_algorithm: _ALLOWED_PKCS7_HASH_TYPES</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s3">&quot;PKCS7SignatureBuilder&quot;</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(</span>
+            <span class="s1">hash_algorithm</span><span class="s2">,</span>
+            <span class="s1">(</span>
+                <span class="s1">hashes.SHA1</span><span class="s2">,</span>
+                <span class="s1">hashes.SHA224</span><span class="s2">,</span>
+                <span class="s1">hashes.SHA256</span><span class="s2">,</span>
+                <span class="s1">hashes.SHA384</span><span class="s2">,</span>
+                <span class="s1">hashes.SHA512</span><span class="s2">,</span>
+            <span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s3">&quot;hash_algorithm must be one of hashes.SHA1, SHA224, &quot;</span>
+                <span class="s3">&quot;SHA256, SHA384, or SHA512&quot;</span>
+            <span class="s1">)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(certificate</span><span class="s2">, </span><span class="s1">x509.Certificate):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;certificate must be a x509.Certificate&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(</span>
+            <span class="s1">private_key</span><span class="s2">, </span><span class="s1">(rsa.RSAPrivateKey</span><span class="s2">, </span><span class="s1">ec.EllipticCurvePrivateKey)</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;Only RSA &amp; EC keys are supported at this time.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">PKCS7SignatureBuilder(</span>
+            <span class="s1">self._data</span><span class="s2">,</span>
+            <span class="s1">self._signers + [(certificate</span><span class="s2">, </span><span class="s1">private_key</span><span class="s2">, </span><span class="s1">hash_algorithm)]</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">add_certificate(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">certificate: x509.Certificate</span>
+    <span class="s1">) -&gt; </span><span class="s3">&quot;PKCS7SignatureBuilder&quot;</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(certificate</span><span class="s2">, </span><span class="s1">x509.Certificate):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;certificate must be a x509.Certificate&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">PKCS7SignatureBuilder(</span>
+            <span class="s1">self._data</span><span class="s2">, </span><span class="s1">self._signers</span><span class="s2">, </span><span class="s1">self._additional_certs + [certificate]</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">sign(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">encoding: serialization.Encoding</span><span class="s2">,</span>
+        <span class="s1">options: typing.Iterable[PKCS7Options]</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">len(self._signers) == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Must have at least one signer&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">self._data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;You must add data to sign&quot;</span><span class="s1">)</span>
+        <span class="s1">options = list(options)</span>
+        <span class="s2">if not </span><span class="s1">all(isinstance(x</span><span class="s2">, </span><span class="s1">PKCS7Options) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">options):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;options must be from the PKCS7Options enum&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">encoding </span><span class="s2">not in </span><span class="s1">(</span>
+            <span class="s1">serialization.Encoding.PEM</span><span class="s2">,</span>
+            <span class="s1">serialization.Encoding.DER</span><span class="s2">,</span>
+            <span class="s1">serialization.Encoding.SMIME</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;Must be PEM, DER, or SMIME from the Encoding enum&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s0"># Text is a meaningless option unless it is accompanied by</span>
+        <span class="s0"># DetachedSignature</span>
+        <span class="s2">if </span><span class="s1">(</span>
+            <span class="s1">PKCS7Options.Text </span><span class="s2">in </span><span class="s1">options</span>
+            <span class="s2">and </span><span class="s1">PKCS7Options.DetachedSignature </span><span class="s2">not in </span><span class="s1">options</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;When passing the Text option you must also pass &quot;</span>
+                <span class="s3">&quot;DetachedSignature&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">PKCS7Options.Text </span><span class="s2">in </span><span class="s1">options </span><span class="s2">and </span><span class="s1">encoding </span><span class="s2">in </span><span class="s1">(</span>
+            <span class="s1">serialization.Encoding.DER</span><span class="s2">,</span>
+            <span class="s1">serialization.Encoding.PEM</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;The Text option is only available for SMIME serialization&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s0"># No attributes implies no capabilities so we'll error if you try to</span>
+        <span class="s0"># pass both.</span>
+        <span class="s2">if </span><span class="s1">(</span>
+            <span class="s1">PKCS7Options.NoAttributes </span><span class="s2">in </span><span class="s1">options</span>
+            <span class="s2">and </span><span class="s1">PKCS7Options.NoCapabilities </span><span class="s2">in </span><span class="s1">options</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;NoAttributes is a superset of NoCapabilities. Do not pass &quot;</span>
+                <span class="s3">&quot;both values.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.pkcs7_sign(self</span><span class="s2">, </span><span class="s1">encoding</span><span class="s2">, </span><span class="s1">options)</span>
+</pre>
+</body>
+</html>

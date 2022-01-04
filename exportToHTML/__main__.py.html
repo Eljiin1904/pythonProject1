@@ -1,0 +1,237 @@
+<html>
+<head>
+<title>__main__.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+__main__.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">argparse</span>
+<span class="s0">import </span><span class="s1">asyncio</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">signal</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Any</span><span class="s0">, </span><span class="s1">Set</span>
+
+<span class="s0">from </span><span class="s1">.exceptions </span><span class="s0">import </span><span class="s1">ConnectionClosed</span><span class="s0">, </span><span class="s1">format_close</span>
+<span class="s0">from </span><span class="s1">.legacy.client </span><span class="s0">import </span><span class="s1">connect</span>
+
+
+<span class="s0">if </span><span class="s1">sys.platform == </span><span class="s2">&quot;win32&quot;</span><span class="s1">:</span>
+
+    <span class="s0">def </span><span class="s1">win_enable_vt100() -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Enable VT-100 for console output on Windows. 
+ 
+        See also https://bugs.python.org/issue29059. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s0">import </span><span class="s1">ctypes</span>
+
+        <span class="s1">STD_OUTPUT_HANDLE = ctypes.c_uint(-</span><span class="s4">11</span><span class="s1">)</span>
+        <span class="s1">INVALID_HANDLE_VALUE = ctypes.c_uint(-</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s1">ENABLE_VIRTUAL_TERMINAL_PROCESSING = </span><span class="s4">0x004</span>
+
+        <span class="s1">handle = ctypes.windll.kernel32.GetStdHandle(STD_OUTPUT_HANDLE)</span>
+        <span class="s0">if </span><span class="s1">handle == INVALID_HANDLE_VALUE:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s2">&quot;unable to obtain stdout handle&quot;</span><span class="s1">)</span>
+
+        <span class="s1">cur_mode = ctypes.c_uint()</span>
+        <span class="s0">if </span><span class="s1">ctypes.windll.kernel32.GetConsoleMode(handle</span><span class="s0">, </span><span class="s1">ctypes.byref(cur_mode)) == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s2">&quot;unable to query current console mode&quot;</span><span class="s1">)</span>
+
+        <span class="s5"># ctypes ints lack support for the required bit-OR operation.</span>
+        <span class="s5"># Temporarily convert to Py int, do the OR and convert back.</span>
+        <span class="s1">py_int_mode = int.from_bytes(cur_mode</span><span class="s0">, </span><span class="s1">sys.byteorder)</span>
+        <span class="s1">new_mode = ctypes.c_uint(py_int_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)</span>
+
+        <span class="s0">if </span><span class="s1">ctypes.windll.kernel32.SetConsoleMode(handle</span><span class="s0">, </span><span class="s1">new_mode) == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s2">&quot;unable to set console mode&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">exit_from_event_loop_thread(</span>
+    <span class="s1">loop: asyncio.AbstractEventLoop</span><span class="s0">, </span><span class="s1">stop: </span><span class="s2">&quot;asyncio.Future[None]&quot;</span>
+<span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s1">loop.stop()</span>
+    <span class="s0">if not </span><span class="s1">stop.done():</span>
+        <span class="s5"># When exiting the thread that runs the event loop, raise</span>
+        <span class="s5"># KeyboardInterrupt in the main thread to exit the program.</span>
+        <span class="s0">if </span><span class="s1">sys.platform == </span><span class="s2">&quot;win32&quot;</span><span class="s1">:</span>
+            <span class="s1">ctrl_c = signal.CTRL_C_EVENT</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">ctrl_c = signal.SIGINT</span>
+        <span class="s1">os.kill(os.getpid()</span><span class="s0">, </span><span class="s1">ctrl_c)</span>
+
+
+<span class="s0">def </span><span class="s1">print_during_input(string: str) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s1">sys.stdout.write(</span>
+        <span class="s5"># Save cursor position</span>
+        <span class="s2">&quot;</span><span class="s0">\N{ESC}</span><span class="s2">7&quot;</span>
+        <span class="s5"># Add a new line</span>
+        <span class="s2">&quot;</span><span class="s0">\N{LINE FEED}</span><span class="s2">&quot;</span>
+        <span class="s5"># Move cursor up</span>
+        <span class="s2">&quot;</span><span class="s0">\N{ESC}</span><span class="s2">[A&quot;</span>
+        <span class="s5"># Insert blank line, scroll last line down</span>
+        <span class="s2">&quot;</span><span class="s0">\N{ESC}</span><span class="s2">[L&quot;</span>
+        <span class="s5"># Print string in the inserted blank line</span>
+        <span class="s2">f&quot;</span><span class="s0">{</span><span class="s1">string</span><span class="s0">}\N{LINE FEED}</span><span class="s2">&quot;</span>
+        <span class="s5"># Restore cursor position</span>
+        <span class="s2">&quot;</span><span class="s0">\N{ESC}</span><span class="s2">8&quot;</span>
+        <span class="s5"># Move cursor down</span>
+        <span class="s2">&quot;</span><span class="s0">\N{ESC}</span><span class="s2">[B&quot;</span>
+    <span class="s1">)</span>
+    <span class="s1">sys.stdout.flush()</span>
+
+
+<span class="s0">def </span><span class="s1">print_over_input(string: str) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s1">sys.stdout.write(</span>
+        <span class="s5"># Move cursor to beginning of line</span>
+        <span class="s2">&quot;</span><span class="s0">\N{CARRIAGE RETURN}</span><span class="s2">&quot;</span>
+        <span class="s5"># Delete current line</span>
+        <span class="s2">&quot;</span><span class="s0">\N{ESC}</span><span class="s2">[K&quot;</span>
+        <span class="s5"># Print string</span>
+        <span class="s2">f&quot;</span><span class="s0">{</span><span class="s1">string</span><span class="s0">}\N{LINE FEED}</span><span class="s2">&quot;</span>
+    <span class="s1">)</span>
+    <span class="s1">sys.stdout.flush()</span>
+
+
+<span class="s0">async def </span><span class="s1">run_client(</span>
+    <span class="s1">uri: str</span><span class="s0">,</span>
+    <span class="s1">loop: asyncio.AbstractEventLoop</span><span class="s0">,</span>
+    <span class="s1">inputs: </span><span class="s2">&quot;asyncio.Queue[str]&quot;</span><span class="s0">,</span>
+    <span class="s1">stop: </span><span class="s2">&quot;asyncio.Future[None]&quot;</span><span class="s0">,</span>
+<span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">websocket = </span><span class="s0">await </span><span class="s1">connect(uri)</span>
+    <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s1">print_over_input(</span><span class="s2">f&quot;Failed to connect to </span><span class="s0">{</span><span class="s1">uri</span><span class="s0">}</span><span class="s2">: </span><span class="s0">{</span><span class="s1">exc</span><span class="s0">}</span><span class="s2">.&quot;</span><span class="s1">)</span>
+        <span class="s1">exit_from_event_loop_thread(loop</span><span class="s0">, </span><span class="s1">stop)</span>
+        <span class="s0">return</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">print_during_input(</span><span class="s2">f&quot;Connected to </span><span class="s0">{</span><span class="s1">uri</span><span class="s0">}</span><span class="s2">.&quot;</span><span class="s1">)</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">incoming: asyncio.Future[Any] = asyncio.ensure_future(websocket.recv())</span>
+            <span class="s1">outgoing: asyncio.Future[Any] = asyncio.ensure_future(inputs.get())</span>
+            <span class="s1">done: Set[asyncio.Future[Any]]</span>
+            <span class="s1">pending: Set[asyncio.Future[Any]]</span>
+            <span class="s1">done</span><span class="s0">, </span><span class="s1">pending = </span><span class="s0">await </span><span class="s1">asyncio.wait(</span>
+                <span class="s1">[incoming</span><span class="s0">, </span><span class="s1">outgoing</span><span class="s0">, </span><span class="s1">stop]</span><span class="s0">, </span><span class="s1">return_when=asyncio.FIRST_COMPLETED</span>
+            <span class="s1">)</span>
+
+            <span class="s5"># Cancel pending tasks to avoid leaking them.</span>
+            <span class="s0">if </span><span class="s1">incoming </span><span class="s0">in </span><span class="s1">pending:</span>
+                <span class="s1">incoming.cancel()</span>
+            <span class="s0">if </span><span class="s1">outgoing </span><span class="s0">in </span><span class="s1">pending:</span>
+                <span class="s1">outgoing.cancel()</span>
+
+            <span class="s0">if </span><span class="s1">incoming </span><span class="s0">in </span><span class="s1">done:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">message = incoming.result()</span>
+                <span class="s0">except </span><span class="s1">ConnectionClosed:</span>
+                    <span class="s0">break</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">isinstance(message</span><span class="s0">, </span><span class="s1">str):</span>
+                        <span class="s1">print_during_input(</span><span class="s2">&quot;&lt; &quot; </span><span class="s1">+ message)</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">print_during_input(</span><span class="s2">&quot;&lt; (binary) &quot; </span><span class="s1">+ message.hex())</span>
+
+            <span class="s0">if </span><span class="s1">outgoing </span><span class="s0">in </span><span class="s1">done:</span>
+                <span class="s1">message = outgoing.result()</span>
+                <span class="s0">await </span><span class="s1">websocket.send(message)</span>
+
+            <span class="s0">if </span><span class="s1">stop </span><span class="s0">in </span><span class="s1">done:</span>
+                <span class="s0">break</span>
+
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">websocket.close()</span>
+        <span class="s1">close_status = format_close(websocket.close_code</span><span class="s0">, </span><span class="s1">websocket.close_reason)</span>
+
+        <span class="s1">print_over_input(</span><span class="s2">f&quot;Connection closed: </span><span class="s0">{</span><span class="s1">close_status</span><span class="s0">}</span><span class="s2">.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">exit_from_event_loop_thread(loop</span><span class="s0">, </span><span class="s1">stop)</span>
+
+
+<span class="s0">def </span><span class="s1">main() -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s5"># If we're on Windows, enable VT100 terminal support.</span>
+    <span class="s0">if </span><span class="s1">sys.platform == </span><span class="s2">&quot;win32&quot;</span><span class="s1">:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">win_enable_vt100()</span>
+        <span class="s0">except </span><span class="s1">RuntimeError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">sys.stderr.write(</span>
+                <span class="s2">f&quot;Unable to set terminal to VT100 mode. This is only &quot;</span>
+                <span class="s2">f&quot;supported since Win10 anniversary update. Expect &quot;</span>
+                <span class="s2">f&quot;weird symbols on the terminal.</span><span class="s0">\n</span><span class="s2">Error: </span><span class="s0">{</span><span class="s1">exc</span><span class="s0">}\n</span><span class="s2">&quot;</span>
+            <span class="s1">)</span>
+            <span class="s1">sys.stderr.flush()</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">import </span><span class="s1">readline  </span><span class="s5"># noqa</span>
+    <span class="s0">except </span><span class="s1">ImportError:  </span><span class="s5"># Windows has no `readline` normally</span>
+        <span class="s0">pass</span>
+
+    <span class="s5"># Parse command line arguments.</span>
+    <span class="s1">parser = argparse.ArgumentParser(</span>
+        <span class="s1">prog=</span><span class="s2">&quot;python -m websockets&quot;</span><span class="s0">,</span>
+        <span class="s1">description=</span><span class="s2">&quot;Interactive WebSocket client.&quot;</span><span class="s0">,</span>
+        <span class="s1">add_help=</span><span class="s0">False,</span>
+    <span class="s1">)</span>
+    <span class="s1">parser.add_argument(</span><span class="s2">&quot;uri&quot;</span><span class="s0">, </span><span class="s1">metavar=</span><span class="s2">&quot;&lt;uri&gt;&quot;</span><span class="s1">)</span>
+    <span class="s1">args = parser.parse_args()</span>
+
+    <span class="s5"># Create an event loop that will run in a background thread.</span>
+    <span class="s1">loop = asyncio.new_event_loop()</span>
+
+    <span class="s5"># Due to zealous removal of the loop parameter in the Queue constructor,</span>
+    <span class="s5"># we need a factory coroutine to run in the freshly created event loop.</span>
+    <span class="s0">async def </span><span class="s1">queue_factory() -&gt; </span><span class="s2">&quot;asyncio.Queue[str]&quot;</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">asyncio.Queue()</span>
+
+    <span class="s5"># Create a queue of user inputs. There's no need to limit its size.</span>
+    <span class="s1">inputs: </span><span class="s2">&quot;asyncio.Queue[str]&quot; </span><span class="s1">= loop.run_until_complete(queue_factory())</span>
+
+    <span class="s5"># Create a stop condition when receiving SIGINT or SIGTERM.</span>
+    <span class="s1">stop: asyncio.Future[</span><span class="s0">None</span><span class="s1">] = loop.create_future()</span>
+
+    <span class="s5"># Schedule the task that will manage the connection.</span>
+    <span class="s1">asyncio.ensure_future(run_client(args.uri</span><span class="s0">, </span><span class="s1">loop</span><span class="s0">, </span><span class="s1">inputs</span><span class="s0">, </span><span class="s1">stop)</span><span class="s0">, </span><span class="s1">loop=loop)</span>
+
+    <span class="s5"># Start the event loop in a background thread.</span>
+    <span class="s1">thread = threading.Thread(target=loop.run_forever)</span>
+    <span class="s1">thread.start()</span>
+
+    <span class="s5"># Read from stdin in the main thread in order to receive signals.</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s5"># Since there's no size limit, put_nowait is identical to put.</span>
+            <span class="s1">message = input(</span><span class="s2">&quot;&gt; &quot;</span><span class="s1">)</span>
+            <span class="s1">loop.call_soon_threadsafe(inputs.put_nowait</span><span class="s0">, </span><span class="s1">message)</span>
+    <span class="s0">except </span><span class="s1">(KeyboardInterrupt</span><span class="s0">, </span><span class="s1">EOFError):  </span><span class="s5"># ^C, ^D</span>
+        <span class="s1">loop.call_soon_threadsafe(stop.set_result</span><span class="s0">, None</span><span class="s1">)</span>
+
+    <span class="s5"># Wait for the event loop to terminate.</span>
+    <span class="s1">thread.join()</span>
+
+    <span class="s5"># For reasons unclear, even though the loop is closed in the thread,</span>
+    <span class="s5"># it still thinks it's running here.</span>
+    <span class="s1">loop.close()</span>
+
+
+<span class="s0">if </span><span class="s1">__name__ == </span><span class="s2">&quot;__main__&quot;</span><span class="s1">:</span>
+    <span class="s1">main()</span>
+</pre>
+</body>
+</html>

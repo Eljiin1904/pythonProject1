@@ -1,0 +1,114 @@
+<html>
+<head>
+<title>wrappers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+wrappers.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">partial</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+<span class="s0">from </span><span class="s1">pytest_bdd </span><span class="s0">import </span><span class="s1">exceptions</span>
+<span class="s0">from </span><span class="s1">pytest_bdd.feature </span><span class="s0">import </span><span class="s1">Feature</span>
+<span class="s0">from </span><span class="s1">pytest_bdd.scenario </span><span class="s0">import </span><span class="s1">get_features_base_dir</span><span class="s0">, </span><span class="s1">get_strict_gherkin</span>
+<span class="s0">from </span><span class="s1">pytest_bdd.steps </span><span class="s0">import </span><span class="s1">get_caller_module</span>
+
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">_wrap_function_with_additional_arguments</span>
+<span class="s0">from </span><span class="s1">.steps </span><span class="s0">import </span><span class="s1">StepMarkName</span><span class="s0">, </span><span class="s1">mark_step</span>
+
+
+<span class="s0">def </span><span class="s1">scenario(</span>
+        <span class="s1">feature_name</span><span class="s0">,</span>
+        <span class="s1">scenario_name</span><span class="s0">,</span>
+        <span class="s1">encoding=</span><span class="s2">&quot;utf-8&quot;</span><span class="s0">,</span>
+        <span class="s1">features_base_dir=</span><span class="s0">None,</span>
+        <span class="s1">example_converters=</span><span class="s0">None</span>
+<span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Scenario decorator. 
+ 
+    :param str feature_name: Feature file name. 
+        Absolute or relative to the configured feature base path. 
+    :param str scenario_name: Scenario name. 
+    :param str encoding: Feature file encoding. 
+    :param str | None features_base_dir: path to directory with feature 
+    :param example_converters: Dict of example value converting functions 
+    :type example_converters: dict[ValueName, Callable[[Value], Converted]] 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">features_base_dir </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">features_base_dir = get_features_base_dir(get_caller_module())</span>
+    <span class="s1">feature = Feature.get_feature(</span>
+        <span class="s1">features_base_dir</span><span class="s0">,</span>
+        <span class="s1">feature_name</span><span class="s0">,</span>
+        <span class="s1">encoding=encoding</span><span class="s0">,</span>
+        <span class="s1">strict_gherkin=get_strict_gherkin()</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s0">if </span><span class="s1">scenario_name </span><span class="s0">not in </span><span class="s1">feature.scenarios:</span>
+        <span class="s1">msg = (</span>
+            <span class="s2">u'Scenario &quot;{scenario_name}&quot; in feature &quot;{feature_name}&quot;'</span>
+            <span class="s2">u&quot; in {feature_filename} is not found.&quot;</span>
+        <span class="s1">).format(</span>
+            <span class="s1">scenario_name=scenario_name</span><span class="s0">,</span>
+            <span class="s1">feature_name=feature.name </span><span class="s0">or </span><span class="s2">&quot;[Empty]&quot;</span><span class="s0">,</span>
+            <span class="s1">feature_filename=feature.filename</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s0">raise </span><span class="s1">exceptions.ScenarioNotFound(msg)</span>
+
+    <span class="s1">tested_scenario = feature.scenarios[scenario_name]</span>
+    <span class="s1">tested_scenario.example_converters = example_converters</span>
+    <span class="s1">tested_scenario.validate()</span>
+
+    <span class="s0">def </span><span class="s1">wrap(func):</span>
+        <span class="s1">example_params = tested_scenario.get_example_params()</span>
+
+        <span class="s0">if </span><span class="s1">example_params:</span>
+            <span class="s1">func = _wrap_function_with_additional_arguments(</span>
+                <span class="s1">func</span><span class="s0">, </span><span class="s1">example_params</span><span class="s0">,</span>
+            <span class="s1">)</span>
+
+            <span class="s0">for </span><span class="s1">params </span><span class="s0">in </span><span class="s1">tested_scenario.get_params():</span>
+                <span class="s0">if </span><span class="s1">params:</span>
+                    <span class="s1">pytest.mark.parametrize(*params)(func)</span>
+
+        <span class="s1">pytest.mark.scenario(scenario=tested_scenario)(func)</span>
+        <span class="s0">return </span><span class="s1">func</span>
+
+    <span class="s0">return </span><span class="s1">wrap</span>
+
+
+<span class="s0">def </span><span class="s1">given(name</span><span class="s0">, </span><span class="s1">fixture=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    :param name: Name of step from feature file 
+    :type name: str 
+    :param fixture: alternative name for fixture 
+    :type fixture: str | None 
+    :return: Wrapper for given function 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">wrap(func):</span>
+        <span class="s0">if not </span><span class="s1">hasattr(func</span><span class="s0">, </span><span class="s2">&quot;_pytestfixturefunction&quot;</span><span class="s1">):</span>
+            <span class="s1">func = pytest.fixture(name=fixture)(func)</span>
+        <span class="s0">return </span><span class="s1">mark_step(StepMarkName.GIVEN</span><span class="s0">, </span><span class="s1">name)(func)</span>
+
+    <span class="s0">return </span><span class="s1">wrap</span>
+
+
+<span class="s1">when = partial(mark_step</span><span class="s0">, </span><span class="s1">StepMarkName.WHEN)  </span><span class="s4"># pylint: disable=invalid-name</span>
+<span class="s1">then = partial(mark_step</span><span class="s0">, </span><span class="s1">StepMarkName.THEN)  </span><span class="s4"># pylint: disable=invalid-name</span>
+
+<span class="s1">__all__ = [</span><span class="s2">'scenario'</span><span class="s0">, </span><span class="s2">'given'</span><span class="s0">, </span><span class="s2">'when'</span><span class="s0">, </span><span class="s2">'then'</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

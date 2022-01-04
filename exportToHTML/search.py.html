@@ -1,0 +1,340 @@
+<html>
+<head>
+<title>search.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+search.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">psycopg2</span>
+
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">CharField</span><span class="s0">, </span><span class="s1">Expression</span><span class="s0">, </span><span class="s1">Field</span><span class="s0">, </span><span class="s1">FloatField</span><span class="s0">, </span><span class="s1">Func</span><span class="s0">, </span><span class="s1">Lookup</span><span class="s0">, </span><span class="s1">TextField</span><span class="s0">, </span><span class="s1">Value</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.db.models.expressions </span><span class="s0">import </span><span class="s1">CombinedExpression</span>
+<span class="s0">from </span><span class="s1">django.db.models.functions </span><span class="s0">import </span><span class="s1">Cast</span><span class="s0">, </span><span class="s1">Coalesce</span>
+
+
+<span class="s0">class </span><span class="s1">SearchVectorExact(Lookup):</span>
+    <span class="s1">lookup_name = </span><span class="s2">'exact'</span>
+
+    <span class="s0">def </span><span class="s1">process_rhs(self</span><span class="s0">, </span><span class="s1">qn</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(self.rhs</span><span class="s0">, </span><span class="s1">(SearchQuery</span><span class="s0">, </span><span class="s1">CombinedSearchQuery)):</span>
+            <span class="s1">config = getattr(self.lhs</span><span class="s0">, </span><span class="s2">'config'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s1">self.rhs = SearchQuery(self.rhs</span><span class="s0">, </span><span class="s1">config=config)</span>
+        <span class="s1">rhs</span><span class="s0">, </span><span class="s1">rhs_params = super().process_rhs(qn</span><span class="s0">, </span><span class="s1">connection)</span>
+        <span class="s0">return </span><span class="s1">rhs</span><span class="s0">, </span><span class="s1">rhs_params</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">qn</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">lhs</span><span class="s0">, </span><span class="s1">lhs_params = self.process_lhs(qn</span><span class="s0">, </span><span class="s1">connection)</span>
+        <span class="s1">rhs</span><span class="s0">, </span><span class="s1">rhs_params = self.process_rhs(qn</span><span class="s0">, </span><span class="s1">connection)</span>
+        <span class="s1">params = lhs_params + rhs_params</span>
+        <span class="s0">return </span><span class="s2">'%s @@ %s' </span><span class="s1">% (lhs</span><span class="s0">, </span><span class="s1">rhs)</span><span class="s0">, </span><span class="s1">params</span>
+
+
+<span class="s0">class </span><span class="s1">SearchVectorField(Field):</span>
+
+    <span class="s0">def </span><span class="s1">db_type(self</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">return </span><span class="s2">'tsvector'</span>
+
+
+<span class="s0">class </span><span class="s1">SearchQueryField(Field):</span>
+
+    <span class="s0">def </span><span class="s1">db_type(self</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">return </span><span class="s2">'tsquery'</span>
+
+
+<span class="s0">class </span><span class="s1">SearchConfig(Expression):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">config):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s0">if not </span><span class="s1">hasattr(config</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">config = Value(config)</span>
+        <span class="s1">self.config = config</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">from_parameter(cls</span><span class="s0">, </span><span class="s1">config):</span>
+        <span class="s0">if </span><span class="s1">config </span><span class="s0">is None or </span><span class="s1">isinstance(config</span><span class="s0">, </span><span class="s1">cls):</span>
+            <span class="s0">return </span><span class="s1">config</span>
+        <span class="s0">return </span><span class="s1">cls(config)</span>
+
+    <span class="s0">def </span><span class="s1">get_source_expressions(self):</span>
+        <span class="s0">return </span><span class="s1">[self.config]</span>
+
+    <span class="s0">def </span><span class="s1">set_source_expressions(self</span><span class="s0">, </span><span class="s1">exprs):</span>
+        <span class="s1">self.config</span><span class="s0">, </span><span class="s1">= exprs</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = compiler.compile(self.config)</span>
+        <span class="s0">return </span><span class="s2">'%s::regconfig' </span><span class="s1">% sql</span><span class="s0">, </span><span class="s1">params</span>
+
+
+<span class="s0">class </span><span class="s1">SearchVectorCombinable:</span>
+    <span class="s1">ADD = </span><span class="s2">'||'</span>
+
+    <span class="s0">def </span><span class="s1">_combine(self</span><span class="s0">, </span><span class="s1">other</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">reversed):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(other</span><span class="s0">, </span><span class="s1">SearchVectorCombinable):</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span>
+                <span class="s2">'SearchVector can only be combined with other SearchVector '</span>
+                <span class="s2">'instances, got %s.' </span><span class="s1">% type(other).__name__</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">reversed:</span>
+            <span class="s0">return </span><span class="s1">CombinedSearchVector(other</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">self</span><span class="s0">, </span><span class="s1">self.config)</span>
+        <span class="s0">return </span><span class="s1">CombinedSearchVector(self</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">other</span><span class="s0">, </span><span class="s1">self.config)</span>
+
+
+<span class="s0">class </span><span class="s1">SearchVector(SearchVectorCombinable</span><span class="s0">, </span><span class="s1">Func):</span>
+    <span class="s1">function = </span><span class="s2">'to_tsvector'</span>
+    <span class="s1">arg_joiner = </span><span class="s2">&quot; || ' ' || &quot;</span>
+    <span class="s1">output_field = SearchVectorField()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">config=</span><span class="s0">None, </span><span class="s1">weight=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">super().__init__(*expressions)</span>
+        <span class="s1">self.config = SearchConfig.from_parameter(config)</span>
+        <span class="s0">if </span><span class="s1">weight </span><span class="s0">is not None and not </span><span class="s1">hasattr(weight</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">weight = Value(weight)</span>
+        <span class="s1">self.weight = weight</span>
+
+    <span class="s0">def </span><span class="s1">resolve_expression(self</span><span class="s0">, </span><span class="s1">query=</span><span class="s0">None, </span><span class="s1">allow_joins=</span><span class="s0">True, </span><span class="s1">reuse=</span><span class="s0">None, </span><span class="s1">summarize=</span><span class="s0">False, </span><span class="s1">for_save=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s1">resolved = super().resolve_expression(query</span><span class="s0">, </span><span class="s1">allow_joins</span><span class="s0">, </span><span class="s1">reuse</span><span class="s0">, </span><span class="s1">summarize</span><span class="s0">, </span><span class="s1">for_save)</span>
+        <span class="s0">if </span><span class="s1">self.config:</span>
+            <span class="s1">resolved.config = self.config.resolve_expression(query</span><span class="s0">, </span><span class="s1">allow_joins</span><span class="s0">, </span><span class="s1">reuse</span><span class="s0">, </span><span class="s1">summarize</span><span class="s0">, </span><span class="s1">for_save)</span>
+        <span class="s0">return </span><span class="s1">resolved</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function=</span><span class="s0">None, </span><span class="s1">template=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">clone = self.copy()</span>
+        <span class="s1">clone.set_source_expressions([</span>
+            <span class="s1">Coalesce(</span>
+                <span class="s1">expression</span>
+                <span class="s0">if </span><span class="s1">isinstance(expression.output_field</span><span class="s0">, </span><span class="s1">(CharField</span><span class="s0">, </span><span class="s1">TextField))</span>
+                <span class="s0">else </span><span class="s1">Cast(expression</span><span class="s0">, </span><span class="s1">TextField())</span><span class="s0">,</span>
+                <span class="s1">Value(</span><span class="s2">''</span><span class="s1">)</span>
+            <span class="s1">) </span><span class="s0">for </span><span class="s1">expression </span><span class="s0">in </span><span class="s1">clone.get_source_expressions()</span>
+        <span class="s1">])</span>
+        <span class="s1">config_sql = </span><span class="s0">None</span>
+        <span class="s1">config_params = []</span>
+        <span class="s0">if </span><span class="s1">template </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">clone.config:</span>
+                <span class="s1">config_sql</span><span class="s0">, </span><span class="s1">config_params = compiler.compile(clone.config)</span>
+                <span class="s1">template = </span><span class="s2">'%(function)s(%(config)s, %(expressions)s)'</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">template = clone.template</span>
+        <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = super(SearchVector</span><span class="s0">, </span><span class="s1">clone).as_sql(</span>
+            <span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function=function</span><span class="s0">, </span><span class="s1">template=template</span><span class="s0">,</span>
+            <span class="s1">config=config_sql</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">extra_params = []</span>
+        <span class="s0">if </span><span class="s1">clone.weight:</span>
+            <span class="s1">weight_sql</span><span class="s0">, </span><span class="s1">extra_params = compiler.compile(clone.weight)</span>
+            <span class="s1">sql = </span><span class="s2">'setweight({}, {})'</span><span class="s1">.format(sql</span><span class="s0">, </span><span class="s1">weight_sql)</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">config_params + params + extra_params</span>
+
+
+<span class="s0">class </span><span class="s1">CombinedSearchVector(SearchVectorCombinable</span><span class="s0">, </span><span class="s1">CombinedExpression):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">lhs</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">rhs</span><span class="s0">, </span><span class="s1">config</span><span class="s0">, </span><span class="s1">output_field=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.config = config</span>
+        <span class="s1">super().__init__(lhs</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">rhs</span><span class="s0">, </span><span class="s1">output_field)</span>
+
+
+<span class="s0">class </span><span class="s1">SearchQueryCombinable:</span>
+    <span class="s1">BITAND = </span><span class="s2">'&amp;&amp;'</span>
+    <span class="s1">BITOR = </span><span class="s2">'||'</span>
+
+    <span class="s0">def </span><span class="s1">_combine(self</span><span class="s0">, </span><span class="s1">other</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">reversed):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(other</span><span class="s0">, </span><span class="s1">SearchQueryCombinable):</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span>
+                <span class="s2">'SearchQuery can only be combined with other SearchQuery '</span>
+                <span class="s2">'instances, got %s.' </span><span class="s1">% type(other).__name__</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">reversed:</span>
+            <span class="s0">return </span><span class="s1">CombinedSearchQuery(other</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">self</span><span class="s0">, </span><span class="s1">self.config)</span>
+        <span class="s0">return </span><span class="s1">CombinedSearchQuery(self</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">other</span><span class="s0">, </span><span class="s1">self.config)</span>
+
+    <span class="s3"># On Combinable, these are not implemented to reduce confusion with Q. In</span>
+    <span class="s3"># this case we are actually (ab)using them to do logical combination so</span>
+    <span class="s3"># it's consistent with other usage in Django.</span>
+    <span class="s0">def </span><span class="s1">__or__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">self._combine(other</span><span class="s0">, </span><span class="s1">self.BITOR</span><span class="s0">, False</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__ror__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">self._combine(other</span><span class="s0">, </span><span class="s1">self.BITOR</span><span class="s0">, True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__and__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">self._combine(other</span><span class="s0">, </span><span class="s1">self.BITAND</span><span class="s0">, False</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__rand__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">self._combine(other</span><span class="s0">, </span><span class="s1">self.BITAND</span><span class="s0">, True</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">SearchQuery(SearchQueryCombinable</span><span class="s0">, </span><span class="s1">Func):</span>
+    <span class="s1">output_field = SearchQueryField()</span>
+    <span class="s1">SEARCH_TYPES = {</span>
+        <span class="s2">'plain'</span><span class="s1">: </span><span class="s2">'plainto_tsquery'</span><span class="s0">,</span>
+        <span class="s2">'phrase'</span><span class="s1">: </span><span class="s2">'phraseto_tsquery'</span><span class="s0">,</span>
+        <span class="s2">'raw'</span><span class="s1">: </span><span class="s2">'to_tsquery'</span><span class="s0">,</span>
+        <span class="s2">'websearch'</span><span class="s1">: </span><span class="s2">'websearch_to_tsquery'</span><span class="s0">,</span>
+    <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">output_field=</span><span class="s0">None, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">config=</span><span class="s0">None, </span><span class="s1">invert=</span><span class="s0">False, </span><span class="s1">search_type=</span><span class="s2">'plain'</span><span class="s1">):</span>
+        <span class="s1">self.function = self.SEARCH_TYPES.get(search_type)</span>
+        <span class="s0">if </span><span class="s1">self.function </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;Unknown search_type argument '%s'.&quot; </span><span class="s1">% search_type)</span>
+        <span class="s0">if not </span><span class="s1">hasattr(value</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">value = Value(value)</span>
+        <span class="s1">expressions = (value</span><span class="s0">,</span><span class="s1">)</span>
+        <span class="s1">self.config = SearchConfig.from_parameter(config)</span>
+        <span class="s0">if </span><span class="s1">self.config </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">expressions = (self.config</span><span class="s0">,</span><span class="s1">) + expressions</span>
+        <span class="s1">self.invert = invert</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">output_field=output_field)</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function=</span><span class="s0">None, </span><span class="s1">template=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = super().as_sql(compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function</span><span class="s0">, </span><span class="s1">template)</span>
+        <span class="s0">if </span><span class="s1">self.invert:</span>
+            <span class="s1">sql = </span><span class="s2">'!!(%s)' </span><span class="s1">% sql</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">params</span>
+
+    <span class="s0">def </span><span class="s1">__invert__(self):</span>
+        <span class="s1">clone = self.copy()</span>
+        <span class="s1">clone.invert = </span><span class="s0">not </span><span class="s1">self.invert</span>
+        <span class="s0">return </span><span class="s1">clone</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s1">result = super().__str__()</span>
+        <span class="s0">return </span><span class="s1">(</span><span class="s2">'~%s' </span><span class="s1">% result) </span><span class="s0">if </span><span class="s1">self.invert </span><span class="s0">else </span><span class="s1">result</span>
+
+
+<span class="s0">class </span><span class="s1">CombinedSearchQuery(SearchQueryCombinable</span><span class="s0">, </span><span class="s1">CombinedExpression):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">lhs</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">rhs</span><span class="s0">, </span><span class="s1">config</span><span class="s0">, </span><span class="s1">output_field=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.config = config</span>
+        <span class="s1">super().__init__(lhs</span><span class="s0">, </span><span class="s1">connector</span><span class="s0">, </span><span class="s1">rhs</span><span class="s0">, </span><span class="s1">output_field)</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s0">return </span><span class="s2">'(%s)' </span><span class="s1">% super().__str__()</span>
+
+
+<span class="s0">class </span><span class="s1">SearchRank(Func):</span>
+    <span class="s1">function = </span><span class="s2">'ts_rank'</span>
+    <span class="s1">output_field = FloatField()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s0">, </span><span class="s1">vector</span><span class="s0">, </span><span class="s1">query</span><span class="s0">, </span><span class="s1">weights=</span><span class="s0">None, </span><span class="s1">normalization=</span><span class="s0">None,</span>
+        <span class="s1">cover_density=</span><span class="s0">False,</span>
+    <span class="s1">):</span>
+        <span class="s0">if not </span><span class="s1">hasattr(vector</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">vector = SearchVector(vector)</span>
+        <span class="s0">if not </span><span class="s1">hasattr(query</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">query = SearchQuery(query)</span>
+        <span class="s1">expressions = (vector</span><span class="s0">, </span><span class="s1">query)</span>
+        <span class="s0">if </span><span class="s1">weights </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">if not </span><span class="s1">hasattr(weights</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+                <span class="s1">weights = Value(weights)</span>
+            <span class="s1">expressions = (weights</span><span class="s0">,</span><span class="s1">) + expressions</span>
+        <span class="s0">if </span><span class="s1">normalization </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">if not </span><span class="s1">hasattr(normalization</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+                <span class="s1">normalization = Value(normalization)</span>
+            <span class="s1">expressions += (normalization</span><span class="s0">,</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">cover_density:</span>
+            <span class="s1">self.function = </span><span class="s2">'ts_rank_cd'</span>
+        <span class="s1">super().__init__(*expressions)</span>
+
+
+<span class="s0">class </span><span class="s1">SearchHeadline(Func):</span>
+    <span class="s1">function = </span><span class="s2">'ts_headline'</span>
+    <span class="s1">template = </span><span class="s2">'%(function)s(%(expressions)s%(options)s)'</span>
+    <span class="s1">output_field = TextField()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">query</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">config=</span><span class="s0">None, </span><span class="s1">start_sel=</span><span class="s0">None, </span><span class="s1">stop_sel=</span><span class="s0">None,</span>
+        <span class="s1">max_words=</span><span class="s0">None, </span><span class="s1">min_words=</span><span class="s0">None, </span><span class="s1">short_word=</span><span class="s0">None, </span><span class="s1">highlight_all=</span><span class="s0">None,</span>
+        <span class="s1">max_fragments=</span><span class="s0">None, </span><span class="s1">fragment_delimiter=</span><span class="s0">None,</span>
+    <span class="s1">):</span>
+        <span class="s0">if not </span><span class="s1">hasattr(query</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">query = SearchQuery(query)</span>
+        <span class="s1">options = {</span>
+            <span class="s2">'StartSel'</span><span class="s1">: start_sel</span><span class="s0">,</span>
+            <span class="s2">'StopSel'</span><span class="s1">: stop_sel</span><span class="s0">,</span>
+            <span class="s2">'MaxWords'</span><span class="s1">: max_words</span><span class="s0">,</span>
+            <span class="s2">'MinWords'</span><span class="s1">: min_words</span><span class="s0">,</span>
+            <span class="s2">'ShortWord'</span><span class="s1">: short_word</span><span class="s0">,</span>
+            <span class="s2">'HighlightAll'</span><span class="s1">: highlight_all</span><span class="s0">,</span>
+            <span class="s2">'MaxFragments'</span><span class="s1">: max_fragments</span><span class="s0">,</span>
+            <span class="s2">'FragmentDelimiter'</span><span class="s1">: fragment_delimiter</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s1">self.options = {</span>
+            <span class="s1">option: value</span>
+            <span class="s0">for </span><span class="s1">option</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">options.items() </span><span class="s0">if </span><span class="s1">value </span><span class="s0">is not None</span>
+        <span class="s1">}</span>
+        <span class="s1">expressions = (expression</span><span class="s0">, </span><span class="s1">query)</span>
+        <span class="s0">if </span><span class="s1">config </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">config = SearchConfig.from_parameter(config)</span>
+            <span class="s1">expressions = (config</span><span class="s0">,</span><span class="s1">) + expressions</span>
+        <span class="s1">super().__init__(*expressions)</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function=</span><span class="s0">None, </span><span class="s1">template=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">options_sql = </span><span class="s2">''</span>
+        <span class="s1">options_params = []</span>
+        <span class="s0">if </span><span class="s1">self.options:</span>
+            <span class="s3"># getquoted() returns a quoted bytestring of the adapted value.</span>
+            <span class="s1">options_params.append(</span><span class="s2">', '</span><span class="s1">.join(</span>
+                <span class="s2">'%s=%s' </span><span class="s1">% (</span>
+                    <span class="s1">option</span><span class="s0">,</span>
+                    <span class="s1">psycopg2.extensions.adapt(value).getquoted().decode()</span><span class="s0">,</span>
+                <span class="s1">) </span><span class="s0">for </span><span class="s1">option</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">self.options.items()</span>
+            <span class="s1">))</span>
+            <span class="s1">options_sql = </span><span class="s2">', %s'</span>
+        <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = super().as_sql(</span>
+            <span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function=function</span><span class="s0">, </span><span class="s1">template=template</span><span class="s0">,</span>
+            <span class="s1">options=options_sql</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">params + options_params</span>
+
+
+<span class="s1">SearchVectorField.register_lookup(SearchVectorExact)</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramBase(Func):</span>
+    <span class="s1">output_field = FloatField()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">string</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s0">if not </span><span class="s1">hasattr(string</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">string = Value(string)</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">string</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramWordBase(Func):</span>
+    <span class="s1">output_field = FloatField()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">string</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s0">if not </span><span class="s1">hasattr(string</span><span class="s0">, </span><span class="s2">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">string = Value(string)</span>
+        <span class="s1">super().__init__(string</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramSimilarity(TrigramBase):</span>
+    <span class="s1">function = </span><span class="s2">'SIMILARITY'</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramDistance(TrigramBase):</span>
+    <span class="s1">function = </span><span class="s2">''</span>
+    <span class="s1">arg_joiner = </span><span class="s2">' &lt;-&gt; '</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramWordDistance(TrigramWordBase):</span>
+    <span class="s1">function = </span><span class="s2">''</span>
+    <span class="s1">arg_joiner = </span><span class="s2">' &lt;&lt;-&gt; '</span>
+
+
+<span class="s0">class </span><span class="s1">TrigramWordSimilarity(TrigramWordBase):</span>
+    <span class="s1">function = </span><span class="s2">'WORD_SIMILARITY'</span>
+</pre>
+</body>
+</html>

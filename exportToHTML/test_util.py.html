@@ -1,0 +1,248 @@
+<html>
+<head>
+<title>test_util.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_util.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">aclosing</span><span class="s0">, </span><span class="s1">async_generator</span><span class="s0">, </span><span class="s1">yield_</span><span class="s0">, </span><span class="s1">asynccontextmanager</span>
+
+
+<span class="s1">@async_generator</span>
+<span class="s0">async def </span><span class="s1">async_range(count</span><span class="s0">, </span><span class="s1">closed_slot):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(count):  </span><span class="s2"># pragma: no branch</span>
+            <span class="s0">await </span><span class="s1">yield_(i)</span>
+    <span class="s0">except </span><span class="s1">GeneratorExit:</span>
+        <span class="s1">closed_slot[</span><span class="s3">0</span><span class="s1">] = </span><span class="s0">True</span>
+
+
+<span class="s0">async def </span><span class="s1">test_aclosing():</span>
+    <span class="s1">closed_slot = [</span><span class="s0">False</span><span class="s1">]</span>
+    <span class="s0">async with </span><span class="s1">aclosing(async_range(</span><span class="s3">10</span><span class="s0">, </span><span class="s1">closed_slot)) </span><span class="s0">as </span><span class="s1">gen:</span>
+        <span class="s1">it = iter(range(</span><span class="s3">10</span><span class="s1">))</span>
+        <span class="s0">async for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">gen:  </span><span class="s2"># pragma: no branch</span>
+            <span class="s0">assert </span><span class="s1">item == next(it)</span>
+            <span class="s0">if </span><span class="s1">item == </span><span class="s3">4</span><span class="s1">:</span>
+                <span class="s0">break</span>
+    <span class="s0">assert </span><span class="s1">closed_slot[</span><span class="s3">0</span><span class="s1">]</span>
+
+    <span class="s1">closed_slot = [</span><span class="s0">False</span><span class="s1">]</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">async with </span><span class="s1">aclosing(async_range(</span><span class="s3">10</span><span class="s0">, </span><span class="s1">closed_slot)) </span><span class="s0">as </span><span class="s1">gen:</span>
+            <span class="s1">it = iter(range(</span><span class="s3">10</span><span class="s1">))</span>
+            <span class="s0">async for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">gen:  </span><span class="s2"># pragma: no branch</span>
+                <span class="s0">assert </span><span class="s1">item == next(it)</span>
+                <span class="s0">if </span><span class="s1">item == </span><span class="s3">4</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError()</span>
+    <span class="s0">except </span><span class="s1">ValueError:</span>
+        <span class="s0">pass</span>
+    <span class="s0">assert </span><span class="s1">closed_slot[</span><span class="s3">0</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_contextmanager_do_not_unchain_non_stopiteration_exceptions():</span>
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">manager_issue29692():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_()</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s4">'issue29692:Chained'</span><span class="s1">) </span><span class="s0">from </span><span class="s1">exc</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">manager_issue29692():</span>
+            <span class="s0">raise </span><span class="s1">ZeroDivisionError</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'issue29692:Chained'</span>
+    <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">ZeroDivisionError)</span>
+
+    <span class="s2"># This is a little funky because of implementation details in</span>
+    <span class="s2"># async_generator It can all go away once we stop supporting Python3.5</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">manager_issue29692():</span>
+            <span class="s1">exc = StopIteration(</span><span class="s4">'issue29692:Unchained'</span><span class="s1">)</span>
+            <span class="s0">raise </span><span class="s1">exc</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'issue29692:Chained'</span>
+    <span class="s1">cause = excinfo.value.__cause__</span>
+    <span class="s0">assert </span><span class="s1">cause.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'generator raised StopIteration'</span>
+    <span class="s0">assert </span><span class="s1">cause.__cause__ </span><span class="s0">is </span><span class="s1">exc</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(StopAsyncIteration) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">manager_issue29692():</span>
+            <span class="s0">raise </span><span class="s1">StopAsyncIteration(</span><span class="s4">'issue29692:Unchained'</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'issue29692:Unchained'</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.__cause__ </span><span class="s0">is None</span>
+
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">noop_async_context_manager():</span>
+        <span class="s0">await </span><span class="s1">yield_()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(StopIteration):</span>
+        <span class="s0">async with </span><span class="s1">noop_async_context_manager():</span>
+            <span class="s0">raise </span><span class="s1">StopIteration</span>
+
+
+<span class="s2"># Native async generators are only available from Python 3.6 and onwards</span>
+<span class="s1">nativeasyncgenerators = </span><span class="s0">True</span>
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s1">exec(</span>
+        <span class="s4">&quot;&quot;&quot; 
+@asynccontextmanager 
+async def manager_issue29692_2(): 
+    try: 
+        yield 
+    except Exception as exc: 
+        raise RuntimeError('issue29692:Chained') from exc 
+&quot;&quot;&quot;</span>
+    <span class="s1">)</span>
+<span class="s0">except </span><span class="s1">SyntaxError:</span>
+    <span class="s1">nativeasyncgenerators = </span><span class="s0">False</span>
+
+
+<span class="s1">@pytest.mark.skipif(</span>
+    <span class="s0">not </span><span class="s1">nativeasyncgenerators</span><span class="s0">,</span>
+    <span class="s1">reason=</span><span class="s4">&quot;Python &lt; 3.6 doesn't have native async generators&quot;</span>
+<span class="s1">)</span>
+<span class="s0">async def </span><span class="s1">test_native_contextmanager_do_not_unchain_non_stopiteration_exceptions(</span>
+<span class="s1">):</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">manager_issue29692_2():</span>
+            <span class="s0">raise </span><span class="s1">ZeroDivisionError</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'issue29692:Chained'</span>
+    <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">ZeroDivisionError)</span>
+
+    <span class="s0">for </span><span class="s1">cls </span><span class="s0">in </span><span class="s1">[StopIteration</span><span class="s0">, </span><span class="s1">StopAsyncIteration]:</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(cls) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">async with </span><span class="s1">manager_issue29692_2():</span>
+                <span class="s0">raise </span><span class="s1">cls(</span><span class="s4">'issue29692:Unchained'</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">excinfo.value.args[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'issue29692:Unchained'</span>
+        <span class="s0">assert </span><span class="s1">excinfo.value.__cause__ </span><span class="s0">is None</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_exception_passthrough():</span>
+    <span class="s2"># This was the cause of annoying coverage flapping, see gh-140</span>
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">noop_async_context_manager():</span>
+        <span class="s0">await </span><span class="s1">yield_()</span>
+
+    <span class="s0">for </span><span class="s1">exc_type </span><span class="s0">in </span><span class="s1">[StopAsyncIteration</span><span class="s0">, </span><span class="s1">RuntimeError</span><span class="s0">, </span><span class="s1">ValueError]:</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(exc_type):</span>
+            <span class="s0">async with </span><span class="s1">noop_async_context_manager():</span>
+                <span class="s0">raise </span><span class="s1">exc_type</span>
+
+    <span class="s2"># And let's also check a boring nothing pass-through while we're at it</span>
+    <span class="s0">async with </span><span class="s1">noop_async_context_manager():</span>
+        <span class="s0">pass</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_catches_exception():</span>
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">catch_it():</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+            <span class="s0">await </span><span class="s1">yield_()</span>
+
+    <span class="s0">async with </span><span class="s1">catch_it():</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_different_exception():</span>
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">switch_it():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_()</span>
+        <span class="s0">except </span><span class="s1">KeyError:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s0">async with </span><span class="s1">switch_it():</span>
+            <span class="s0">raise </span><span class="s1">KeyError</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_nice_message_on_sync_enter():</span>
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">xxx():  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">await </span><span class="s1">yield_()</span>
+
+    <span class="s1">cm = xxx()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">with </span><span class="s1">cm:</span>
+            <span class="s0">pass  </span><span class="s2"># pragma: no cover</span>
+
+    <span class="s0">assert </span><span class="s4">&quot;async with&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s0">async with </span><span class="s1">cm:</span>
+        <span class="s0">pass</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_no_yield():</span>
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">yeehaw():</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">yeehaw():</span>
+            <span class="s0">assert False  </span><span class="s2"># pragma: no cover</span>
+
+    <span class="s0">assert </span><span class="s4">&quot;didn't yield&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_too_many_yields():</span>
+    <span class="s1">closed_count = </span><span class="s3">0</span>
+
+    <span class="s1">@asynccontextmanager</span>
+    <span class="s1">@async_generator</span>
+    <span class="s0">async def </span><span class="s1">doubleyield():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_()</span>
+        <span class="s0">except </span><span class="s1">Exception:</span>
+            <span class="s0">pass</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">yield_()</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">nonlocal </span><span class="s1">closed_count</span>
+            <span class="s1">closed_count += </span><span class="s3">1</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">doubleyield():</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">assert </span><span class="s4">&quot;didn't stop&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+    <span class="s0">assert </span><span class="s1">closed_count == </span><span class="s3">1</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">doubleyield():</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s0">assert </span><span class="s4">&quot;didn't stop after athrow&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+    <span class="s0">assert </span><span class="s1">closed_count == </span><span class="s3">2</span>
+
+
+<span class="s0">async def </span><span class="s1">test_asynccontextmanager_requires_asyncgenfunction():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+
+        <span class="s1">@asynccontextmanager</span>
+        <span class="s0">def </span><span class="s1">syncgen():  </span><span class="s2"># pragma: no cover</span>
+            <span class="s0">yield</span>
+</pre>
+</body>
+</html>

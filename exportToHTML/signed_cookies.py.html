@@ -1,0 +1,102 @@
+<html>
+<head>
+<title>signed_cookies.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+signed_cookies.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.contrib.sessions.backends.base </span><span class="s0">import </span><span class="s1">SessionBase</span>
+<span class="s0">from </span><span class="s1">django.core </span><span class="s0">import </span><span class="s1">signing</span>
+
+
+<span class="s0">class </span><span class="s1">SessionStore(SessionBase):</span>
+
+    <span class="s0">def </span><span class="s1">load(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Load the data from the key itself instead of fetching from some 
+        external data store. Opposite of _get_session_key(), raise BadSignature 
+        if signature fails. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">signing.loads(</span>
+                <span class="s1">self.session_key</span><span class="s0">,</span>
+                <span class="s1">serializer=self.serializer</span><span class="s0">,</span>
+                <span class="s3"># This doesn't handle non-default expiry dates, see #19201</span>
+                <span class="s1">max_age=self.get_session_cookie_age()</span><span class="s0">,</span>
+                <span class="s1">salt=</span><span class="s4">'django.contrib.sessions.backends.signed_cookies'</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">Exception:</span>
+            <span class="s3"># BadSignature, ValueError, or unpickling exceptions. If any of</span>
+            <span class="s3"># these happen, reset the session.</span>
+            <span class="s1">self.create()</span>
+        <span class="s0">return </span><span class="s1">{}</span>
+
+    <span class="s0">def </span><span class="s1">create(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        To create a new key, set the modified flag so that the cookie is set 
+        on the client for the current request. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.modified = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">save(self</span><span class="s0">, </span><span class="s1">must_create=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        To save, get the session key as a securely signed string and then set 
+        the modified flag so that the cookie is set on the client for the 
+        current request. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._session_key = self._get_session_key()</span>
+        <span class="s1">self.modified = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">exists(self</span><span class="s0">, </span><span class="s1">session_key=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        This method makes sense when you're talking to a shared resource, but 
+        it doesn't matter when you're storing the information in the client's 
+        cookie. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return False</span>
+
+    <span class="s0">def </span><span class="s1">delete(self</span><span class="s0">, </span><span class="s1">session_key=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        To delete, clear the session key and the underlying data structure 
+        and set the modified flag so that the cookie is set on the client for 
+        the current request. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._session_key = </span><span class="s4">''</span>
+        <span class="s1">self._session_cache = {}</span>
+        <span class="s1">self.modified = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">cycle_key(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Keep the same data but with a new key. Call save() and it will 
+        automatically save a cookie with a new key at the end of the request. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.save()</span>
+
+    <span class="s0">def </span><span class="s1">_get_session_key(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Instead of generating a random string, generate a secure url-safe 
+        base64-encoded string of data as our session key. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">signing.dumps(</span>
+            <span class="s1">self._session</span><span class="s0">, </span><span class="s1">compress=</span><span class="s0">True,</span>
+            <span class="s1">salt=</span><span class="s4">'django.contrib.sessions.backends.signed_cookies'</span><span class="s0">,</span>
+            <span class="s1">serializer=self.serializer</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">clear_expired(cls):</span>
+        <span class="s0">pass</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,896 @@
+<html>
+<head>
+<title>decode_asn1.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+decode_asn1.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">datetime</span>
+<span class="s2">import </span><span class="s1">ipaddress</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">x509</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat._der </span><span class="s2">import </span><span class="s1">DERReader</span><span class="s2">, </span><span class="s1">INTEGER</span><span class="s2">, </span><span class="s1">NULL</span><span class="s2">, </span><span class="s1">SEQUENCE</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.extensions </span><span class="s2">import </span><span class="s1">_TLS_FEATURE_TYPE_TO_ENUM</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.name </span><span class="s2">import </span><span class="s1">_ASN1_TYPE_TO_ENUM</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.oid </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">CRLEntryExtensionOID</span><span class="s2">,</span>
+    <span class="s1">CertificatePoliciesOID</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID</span><span class="s2">,</span>
+    <span class="s1">OCSPExtensionOID</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_obj2txt(backend</span><span class="s2">, </span><span class="s1">obj):</span>
+    <span class="s0"># Set to 80 on the recommendation of</span>
+    <span class="s0"># https://www.openssl.org/docs/crypto/OBJ_nid2ln.html#return_values</span>
+    <span class="s0">#</span>
+    <span class="s0"># But OIDs longer than this occur in real life (e.g. Active</span>
+    <span class="s0"># Directory makes some very long OIDs).  So we need to detect</span>
+    <span class="s0"># and properly handle the case where the default buffer is not</span>
+    <span class="s0"># big enough.</span>
+    <span class="s0">#</span>
+    <span class="s1">buf_len = </span><span class="s3">80</span>
+    <span class="s1">buf = backend._ffi.new(</span><span class="s4">&quot;char[]&quot;</span><span class="s2">, </span><span class="s1">buf_len)</span>
+
+    <span class="s0"># 'res' is the number of bytes that *would* be written if the</span>
+    <span class="s0"># buffer is large enough.  If 'res' &gt; buf_len - 1, we need to</span>
+    <span class="s0"># alloc a big-enough buffer and go again.</span>
+    <span class="s1">res = backend._lib.OBJ_obj2txt(buf</span><span class="s2">, </span><span class="s1">buf_len</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">, </span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">res &gt; buf_len - </span><span class="s3">1</span><span class="s1">:  </span><span class="s0"># account for terminating null byte</span>
+        <span class="s1">buf_len = res + </span><span class="s3">1</span>
+        <span class="s1">buf = backend._ffi.new(</span><span class="s4">&quot;char[]&quot;</span><span class="s2">, </span><span class="s1">buf_len)</span>
+        <span class="s1">res = backend._lib.OBJ_obj2txt(buf</span><span class="s2">, </span><span class="s1">buf_len</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">, </span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(res &gt; </span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">backend._ffi.buffer(buf</span><span class="s2">, </span><span class="s1">res)[:].decode()</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_x509_name_entry(backend</span><span class="s2">, </span><span class="s1">x509_name_entry):</span>
+    <span class="s1">obj = backend._lib.X509_NAME_ENTRY_get_object(x509_name_entry)</span>
+    <span class="s1">backend.openssl_assert(obj != backend._ffi.NULL)</span>
+    <span class="s1">data = backend._lib.X509_NAME_ENTRY_get_data(x509_name_entry)</span>
+    <span class="s1">backend.openssl_assert(data != backend._ffi.NULL)</span>
+    <span class="s1">value = _asn1_string_to_utf8(backend</span><span class="s2">, </span><span class="s1">data)</span>
+    <span class="s1">oid = _obj2txt(backend</span><span class="s2">, </span><span class="s1">obj)</span>
+    <span class="s1">type = _ASN1_TYPE_TO_ENUM[data.type]</span>
+
+    <span class="s2">return </span><span class="s1">x509.NameAttribute(x509.ObjectIdentifier(oid)</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">type)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_x509_name(backend</span><span class="s2">, </span><span class="s1">x509_name):</span>
+    <span class="s1">count = backend._lib.X509_NAME_entry_count(x509_name)</span>
+    <span class="s1">attributes = []</span>
+    <span class="s1">prev_set_id = -</span><span class="s3">1</span>
+    <span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">range(count):</span>
+        <span class="s1">entry = backend._lib.X509_NAME_get_entry(x509_name</span><span class="s2">, </span><span class="s1">x)</span>
+        <span class="s1">attribute = _decode_x509_name_entry(backend</span><span class="s2">, </span><span class="s1">entry)</span>
+        <span class="s1">set_id = backend._lib.X509_NAME_ENTRY_set(entry)</span>
+        <span class="s2">if </span><span class="s1">set_id != prev_set_id:</span>
+            <span class="s1">attributes.append({attribute})</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># is in the same RDN a previous entry</span>
+            <span class="s1">attributes[-</span><span class="s3">1</span><span class="s1">].add(attribute)</span>
+        <span class="s1">prev_set_id = set_id</span>
+
+    <span class="s2">return </span><span class="s1">x509.Name(x509.RelativeDistinguishedName(rdn) </span><span class="s2">for </span><span class="s1">rdn </span><span class="s2">in </span><span class="s1">attributes)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_general_names(backend</span><span class="s2">, </span><span class="s1">gns):</span>
+    <span class="s1">num = backend._lib.sk_GENERAL_NAME_num(gns)</span>
+    <span class="s1">names = []</span>
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+        <span class="s1">gn = backend._lib.sk_GENERAL_NAME_value(gns</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s1">backend.openssl_assert(gn != backend._ffi.NULL)</span>
+        <span class="s1">names.append(_decode_general_name(backend</span><span class="s2">, </span><span class="s1">gn))</span>
+
+    <span class="s2">return </span><span class="s1">names</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_general_name(backend</span><span class="s2">, </span><span class="s1">gn):</span>
+    <span class="s2">if </span><span class="s1">gn.type == backend._lib.GEN_DNS:</span>
+        <span class="s0"># Convert to bytes and then decode to utf8. We don't use</span>
+        <span class="s0"># asn1_string_to_utf8 here because it doesn't properly convert</span>
+        <span class="s0"># utf8 from ia5strings.</span>
+        <span class="s1">data = _asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">gn.d.dNSName).decode(</span><span class="s4">&quot;utf8&quot;</span><span class="s1">)</span>
+        <span class="s0"># We don't use the constructor for DNSName so we can bypass validation</span>
+        <span class="s0"># This allows us to create DNSName objects that have unicode chars</span>
+        <span class="s0"># when a certificate (against the RFC) contains them.</span>
+        <span class="s2">return </span><span class="s1">x509.DNSName._init_without_validation(data)</span>
+    <span class="s2">elif </span><span class="s1">gn.type == backend._lib.GEN_URI:</span>
+        <span class="s0"># Convert to bytes and then decode to utf8. We don't use</span>
+        <span class="s0"># asn1_string_to_utf8 here because it doesn't properly convert</span>
+        <span class="s0"># utf8 from ia5strings.</span>
+        <span class="s1">data = _asn1_string_to_bytes(</span>
+            <span class="s1">backend</span><span class="s2">, </span><span class="s1">gn.d.uniformResourceIdentifier</span>
+        <span class="s1">).decode(</span><span class="s4">&quot;utf8&quot;</span><span class="s1">)</span>
+        <span class="s0"># We don't use the constructor for URI so we can bypass validation</span>
+        <span class="s0"># This allows us to create URI objects that have unicode chars</span>
+        <span class="s0"># when a certificate (against the RFC) contains them.</span>
+        <span class="s2">return </span><span class="s1">x509.UniformResourceIdentifier._init_without_validation(data)</span>
+    <span class="s2">elif </span><span class="s1">gn.type == backend._lib.GEN_RID:</span>
+        <span class="s1">oid = _obj2txt(backend</span><span class="s2">, </span><span class="s1">gn.d.registeredID)</span>
+        <span class="s2">return </span><span class="s1">x509.RegisteredID(x509.ObjectIdentifier(oid))</span>
+    <span class="s2">elif </span><span class="s1">gn.type == backend._lib.GEN_IPADD:</span>
+        <span class="s1">data = _asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">gn.d.iPAddress)</span>
+        <span class="s1">data_len = len(data)</span>
+        <span class="s2">if </span><span class="s1">data_len == </span><span class="s3">8 </span><span class="s2">or </span><span class="s1">data_len == </span><span class="s3">32</span><span class="s1">:</span>
+            <span class="s0"># This is an IPv4 or IPv6 Network and not a single IP. This</span>
+            <span class="s0"># type of data appears in Name Constraints. Unfortunately,</span>
+            <span class="s0"># ipaddress doesn't support packed bytes + netmask. Additionally,</span>
+            <span class="s0"># IPv6Network can only handle CIDR rather than the full 16 byte</span>
+            <span class="s0"># netmask. To handle this we convert the netmask to integer, then</span>
+            <span class="s0"># find the first 0 bit, which will be the prefix. If another 1</span>
+            <span class="s0"># bit is present after that the netmask is invalid.</span>
+            <span class="s1">base = ipaddress.ip_address(data[: data_len // </span><span class="s3">2</span><span class="s1">])</span>
+            <span class="s1">netmask = ipaddress.ip_address(data[data_len // </span><span class="s3">2 </span><span class="s1">:])</span>
+            <span class="s1">bits = bin(int(netmask))[</span><span class="s3">2</span><span class="s1">:]</span>
+            <span class="s1">prefix = bits.find(</span><span class="s4">&quot;0&quot;</span><span class="s1">)</span>
+            <span class="s0"># If no 0 bits are found it is a /32 or /128</span>
+            <span class="s2">if </span><span class="s1">prefix == -</span><span class="s3">1</span><span class="s1">:</span>
+                <span class="s1">prefix = len(bits)</span>
+
+            <span class="s2">if </span><span class="s4">&quot;1&quot; </span><span class="s2">in </span><span class="s1">bits[prefix:]:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid netmask&quot;</span><span class="s1">)</span>
+
+            <span class="s1">ip = ipaddress.ip_network(base.exploded + </span><span class="s4">&quot;/{}&quot;</span><span class="s1">.format(prefix))</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">ip = ipaddress.ip_address(data)</span>
+
+        <span class="s2">return </span><span class="s1">x509.IPAddress(ip)</span>
+    <span class="s2">elif </span><span class="s1">gn.type == backend._lib.GEN_DIRNAME:</span>
+        <span class="s2">return </span><span class="s1">x509.DirectoryName(</span>
+            <span class="s1">_decode_x509_name(backend</span><span class="s2">, </span><span class="s1">gn.d.directoryName)</span>
+        <span class="s1">)</span>
+    <span class="s2">elif </span><span class="s1">gn.type == backend._lib.GEN_EMAIL:</span>
+        <span class="s0"># Convert to bytes and then decode to utf8. We don't use</span>
+        <span class="s0"># asn1_string_to_utf8 here because it doesn't properly convert</span>
+        <span class="s0"># utf8 from ia5strings.</span>
+        <span class="s1">data = _asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">gn.d.rfc822Name).decode(</span><span class="s4">&quot;utf8&quot;</span><span class="s1">)</span>
+        <span class="s0"># We don't use the constructor for RFC822Name so we can bypass</span>
+        <span class="s0"># validation. This allows us to create RFC822Name objects that have</span>
+        <span class="s0"># unicode chars when a certificate (against the RFC) contains them.</span>
+        <span class="s2">return </span><span class="s1">x509.RFC822Name._init_without_validation(data)</span>
+    <span class="s2">elif </span><span class="s1">gn.type == backend._lib.GEN_OTHERNAME:</span>
+        <span class="s1">type_id = _obj2txt(backend</span><span class="s2">, </span><span class="s1">gn.d.otherName.type_id)</span>
+        <span class="s1">value = _asn1_to_der(backend</span><span class="s2">, </span><span class="s1">gn.d.otherName.value)</span>
+        <span class="s2">return </span><span class="s1">x509.OtherName(x509.ObjectIdentifier(type_id)</span><span class="s2">, </span><span class="s1">value)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s0"># x400Address or ediPartyName</span>
+        <span class="s2">raise </span><span class="s1">x509.UnsupportedGeneralNameType(</span>
+            <span class="s4">&quot;{} is not a supported type&quot;</span><span class="s1">.format(</span>
+                <span class="s1">x509._GENERAL_NAMES.get(gn.type</span><span class="s2">, </span><span class="s1">gn.type)</span>
+            <span class="s1">)</span><span class="s2">,</span>
+            <span class="s1">gn.type</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_ocsp_no_check(backend</span><span class="s2">, </span><span class="s1">ext):</span>
+    <span class="s2">return </span><span class="s1">x509.OCSPNoCheck()</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_crl_number(backend</span><span class="s2">, </span><span class="s1">ext):</span>
+    <span class="s1">asn1_int = backend._ffi.cast(</span><span class="s4">&quot;ASN1_INTEGER *&quot;</span><span class="s2">, </span><span class="s1">ext)</span>
+    <span class="s1">asn1_int = backend._ffi.gc(asn1_int</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_INTEGER_free)</span>
+    <span class="s2">return </span><span class="s1">x509.CRLNumber(_asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">asn1_int))</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_delta_crl_indicator(backend</span><span class="s2">, </span><span class="s1">ext):</span>
+    <span class="s1">asn1_int = backend._ffi.cast(</span><span class="s4">&quot;ASN1_INTEGER *&quot;</span><span class="s2">, </span><span class="s1">ext)</span>
+    <span class="s1">asn1_int = backend._ffi.gc(asn1_int</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_INTEGER_free)</span>
+    <span class="s2">return </span><span class="s1">x509.DeltaCRLIndicator(_asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">asn1_int))</span>
+
+
+<span class="s2">class </span><span class="s1">_X509ExtensionParser(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">ext_count</span><span class="s2">, </span><span class="s1">get_ext</span><span class="s2">, </span><span class="s1">handlers):</span>
+        <span class="s1">self.ext_count = ext_count</span>
+        <span class="s1">self.get_ext = get_ext</span>
+        <span class="s1">self.handlers = handlers</span>
+        <span class="s1">self._backend = backend</span>
+
+    <span class="s2">def </span><span class="s1">parse(self</span><span class="s2">, </span><span class="s1">x509_obj):</span>
+        <span class="s1">extensions = []</span>
+        <span class="s1">seen_oids = set()</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(self.ext_count(x509_obj)):</span>
+            <span class="s1">ext = self.get_ext(x509_obj</span><span class="s2">, </span><span class="s1">i)</span>
+            <span class="s1">self._backend.openssl_assert(ext != self._backend._ffi.NULL)</span>
+            <span class="s1">crit = self._backend._lib.X509_EXTENSION_get_critical(ext)</span>
+            <span class="s1">critical = crit == </span><span class="s3">1</span>
+            <span class="s1">oid = x509.ObjectIdentifier(</span>
+                <span class="s1">_obj2txt(</span>
+                    <span class="s1">self._backend</span><span class="s2">,</span>
+                    <span class="s1">self._backend._lib.X509_EXTENSION_get_object(ext)</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">oid </span><span class="s2">in </span><span class="s1">seen_oids:</span>
+                <span class="s2">raise </span><span class="s1">x509.DuplicateExtension(</span>
+                    <span class="s4">&quot;Duplicate {} extension found&quot;</span><span class="s1">.format(oid)</span><span class="s2">, </span><span class="s1">oid</span>
+                <span class="s1">)</span>
+
+            <span class="s0"># These OIDs are only supported in OpenSSL 1.1.0+ but we want</span>
+            <span class="s0"># to support them in all versions of OpenSSL so we decode them</span>
+            <span class="s0"># ourselves.</span>
+            <span class="s2">if </span><span class="s1">oid == ExtensionOID.TLS_FEATURE:</span>
+                <span class="s0"># The extension contents are a SEQUENCE OF INTEGERs.</span>
+                <span class="s1">data = self._backend._lib.X509_EXTENSION_get_data(ext)</span>
+                <span class="s1">data_bytes = _asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">data)</span>
+                <span class="s1">features = DERReader(data_bytes).read_single_element(SEQUENCE)</span>
+                <span class="s1">parsed = []</span>
+                <span class="s2">while not </span><span class="s1">features.is_empty():</span>
+                    <span class="s1">parsed.append(features.read_element(INTEGER).as_integer())</span>
+                <span class="s0"># Map the features to their enum value.</span>
+                <span class="s1">value = x509.TLSFeature(</span>
+                    <span class="s1">[_TLS_FEATURE_TYPE_TO_ENUM[x] </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">parsed]</span>
+                <span class="s1">)</span>
+                <span class="s1">extensions.append(x509.Extension(oid</span><span class="s2">, </span><span class="s1">critical</span><span class="s2">, </span><span class="s1">value))</span>
+                <span class="s1">seen_oids.add(oid)</span>
+                <span class="s2">continue</span>
+            <span class="s2">elif </span><span class="s1">oid == ExtensionOID.PRECERT_POISON:</span>
+                <span class="s1">data = self._backend._lib.X509_EXTENSION_get_data(ext)</span>
+                <span class="s0"># The contents of the extension must be an ASN.1 NULL.</span>
+                <span class="s1">reader = DERReader(_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">data))</span>
+                <span class="s1">reader.read_single_element(NULL).check_empty()</span>
+                <span class="s1">extensions.append(</span>
+                    <span class="s1">x509.Extension(oid</span><span class="s2">, </span><span class="s1">critical</span><span class="s2">, </span><span class="s1">x509.PrecertPoison())</span>
+                <span class="s1">)</span>
+                <span class="s1">seen_oids.add(oid)</span>
+                <span class="s2">continue</span>
+
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">handler = self.handlers[oid]</span>
+            <span class="s2">except </span><span class="s1">KeyError:</span>
+                <span class="s0"># Dump the DER payload into an UnrecognizedExtension object</span>
+                <span class="s1">data = self._backend._lib.X509_EXTENSION_get_data(ext)</span>
+                <span class="s1">self._backend.openssl_assert(data != self._backend._ffi.NULL)</span>
+                <span class="s1">der = self._backend._ffi.buffer(data.data</span><span class="s2">, </span><span class="s1">data.length)[:]</span>
+                <span class="s1">unrecognized = x509.UnrecognizedExtension(oid</span><span class="s2">, </span><span class="s1">der)</span>
+                <span class="s1">extensions.append(x509.Extension(oid</span><span class="s2">, </span><span class="s1">critical</span><span class="s2">, </span><span class="s1">unrecognized))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">ext_data = self._backend._lib.X509V3_EXT_d2i(ext)</span>
+                <span class="s2">if </span><span class="s1">ext_data == self._backend._ffi.NULL:</span>
+                    <span class="s1">self._backend._consume_errors()</span>
+                    <span class="s2">raise </span><span class="s1">ValueError(</span>
+                        <span class="s4">&quot;The {} extension is invalid and can't be &quot;</span>
+                        <span class="s4">&quot;parsed&quot;</span><span class="s1">.format(oid)</span>
+                    <span class="s1">)</span>
+
+                <span class="s1">value = handler(self._backend</span><span class="s2">, </span><span class="s1">ext_data)</span>
+                <span class="s1">extensions.append(x509.Extension(oid</span><span class="s2">, </span><span class="s1">critical</span><span class="s2">, </span><span class="s1">value))</span>
+
+            <span class="s1">seen_oids.add(oid)</span>
+
+        <span class="s2">return </span><span class="s1">x509.Extensions(extensions)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_certificate_policies(backend</span><span class="s2">, </span><span class="s1">cp):</span>
+    <span class="s1">cp = backend._ffi.cast(</span><span class="s4">&quot;Cryptography_STACK_OF_POLICYINFO *&quot;</span><span class="s2">, </span><span class="s1">cp)</span>
+    <span class="s1">cp = backend._ffi.gc(cp</span><span class="s2">, </span><span class="s1">backend._lib.CERTIFICATEPOLICIES_free)</span>
+
+    <span class="s1">num = backend._lib.sk_POLICYINFO_num(cp)</span>
+    <span class="s1">certificate_policies = []</span>
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+        <span class="s1">qualifiers = </span><span class="s2">None</span>
+        <span class="s1">pi = backend._lib.sk_POLICYINFO_value(cp</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s1">oid = x509.ObjectIdentifier(_obj2txt(backend</span><span class="s2">, </span><span class="s1">pi.policyid))</span>
+        <span class="s2">if </span><span class="s1">pi.qualifiers != backend._ffi.NULL:</span>
+            <span class="s1">qnum = backend._lib.sk_POLICYQUALINFO_num(pi.qualifiers)</span>
+            <span class="s1">qualifiers = []</span>
+            <span class="s2">for </span><span class="s1">j </span><span class="s2">in </span><span class="s1">range(qnum):</span>
+                <span class="s1">pqi = backend._lib.sk_POLICYQUALINFO_value(pi.qualifiers</span><span class="s2">, </span><span class="s1">j)</span>
+                <span class="s1">pqualid = x509.ObjectIdentifier(_obj2txt(backend</span><span class="s2">, </span><span class="s1">pqi.pqualid))</span>
+                <span class="s2">if </span><span class="s1">pqualid == CertificatePoliciesOID.CPS_QUALIFIER:</span>
+                    <span class="s1">cpsuri = backend._ffi.buffer(</span>
+                        <span class="s1">pqi.d.cpsuri.data</span><span class="s2">, </span><span class="s1">pqi.d.cpsuri.length</span>
+                    <span class="s1">)[:].decode(</span><span class="s4">&quot;ascii&quot;</span><span class="s1">)</span>
+                    <span class="s1">qualifiers.append(cpsuri)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">assert </span><span class="s1">pqualid == CertificatePoliciesOID.CPS_USER_NOTICE</span>
+                    <span class="s1">user_notice = _decode_user_notice(</span>
+                        <span class="s1">backend</span><span class="s2">, </span><span class="s1">pqi.d.usernotice</span>
+                    <span class="s1">)</span>
+                    <span class="s1">qualifiers.append(user_notice)</span>
+
+        <span class="s1">certificate_policies.append(x509.PolicyInformation(oid</span><span class="s2">, </span><span class="s1">qualifiers))</span>
+
+    <span class="s2">return </span><span class="s1">x509.CertificatePolicies(certificate_policies)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_user_notice(backend</span><span class="s2">, </span><span class="s1">un):</span>
+    <span class="s1">explicit_text = </span><span class="s2">None</span>
+    <span class="s1">notice_reference = </span><span class="s2">None</span>
+
+    <span class="s2">if </span><span class="s1">un.exptext != backend._ffi.NULL:</span>
+        <span class="s1">explicit_text = _asn1_string_to_utf8(backend</span><span class="s2">, </span><span class="s1">un.exptext)</span>
+
+    <span class="s2">if </span><span class="s1">un.noticeref != backend._ffi.NULL:</span>
+        <span class="s1">organization = _asn1_string_to_utf8(backend</span><span class="s2">, </span><span class="s1">un.noticeref.organization)</span>
+
+        <span class="s1">num = backend._lib.sk_ASN1_INTEGER_num(un.noticeref.noticenos)</span>
+        <span class="s1">notice_numbers = []</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+            <span class="s1">asn1_int = backend._lib.sk_ASN1_INTEGER_value(</span>
+                <span class="s1">un.noticeref.noticenos</span><span class="s2">, </span><span class="s1">i</span>
+            <span class="s1">)</span>
+            <span class="s1">notice_num = _asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">asn1_int)</span>
+            <span class="s1">notice_numbers.append(notice_num)</span>
+
+        <span class="s1">notice_reference = x509.NoticeReference(organization</span><span class="s2">, </span><span class="s1">notice_numbers)</span>
+
+    <span class="s2">return </span><span class="s1">x509.UserNotice(notice_reference</span><span class="s2">, </span><span class="s1">explicit_text)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_basic_constraints(backend</span><span class="s2">, </span><span class="s1">bc_st):</span>
+    <span class="s1">basic_constraints = backend._ffi.cast(</span><span class="s4">&quot;BASIC_CONSTRAINTS *&quot;</span><span class="s2">, </span><span class="s1">bc_st)</span>
+    <span class="s1">basic_constraints = backend._ffi.gc(</span>
+        <span class="s1">basic_constraints</span><span class="s2">, </span><span class="s1">backend._lib.BASIC_CONSTRAINTS_free</span>
+    <span class="s1">)</span>
+    <span class="s0"># The byte representation of an ASN.1 boolean true is \xff. OpenSSL</span>
+    <span class="s0"># chooses to just map this to its ordinal value, so true is 255 and</span>
+    <span class="s0"># false is 0.</span>
+    <span class="s1">ca = basic_constraints.ca == </span><span class="s3">255</span>
+    <span class="s1">path_length = _asn1_integer_to_int_or_none(</span>
+        <span class="s1">backend</span><span class="s2">, </span><span class="s1">basic_constraints.pathlen</span>
+    <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">x509.BasicConstraints(ca</span><span class="s2">, </span><span class="s1">path_length)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_subject_key_identifier(backend</span><span class="s2">, </span><span class="s1">asn1_string):</span>
+    <span class="s1">asn1_string = backend._ffi.cast(</span><span class="s4">&quot;ASN1_OCTET_STRING *&quot;</span><span class="s2">, </span><span class="s1">asn1_string)</span>
+    <span class="s1">asn1_string = backend._ffi.gc(</span>
+        <span class="s1">asn1_string</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_OCTET_STRING_free</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">x509.SubjectKeyIdentifier(</span>
+        <span class="s1">backend._ffi.buffer(asn1_string.data</span><span class="s2">, </span><span class="s1">asn1_string.length)[:]</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_authority_key_identifier(backend</span><span class="s2">, </span><span class="s1">akid):</span>
+    <span class="s1">akid = backend._ffi.cast(</span><span class="s4">&quot;AUTHORITY_KEYID *&quot;</span><span class="s2">, </span><span class="s1">akid)</span>
+    <span class="s1">akid = backend._ffi.gc(akid</span><span class="s2">, </span><span class="s1">backend._lib.AUTHORITY_KEYID_free)</span>
+    <span class="s1">key_identifier = </span><span class="s2">None</span>
+    <span class="s1">authority_cert_issuer = </span><span class="s2">None</span>
+
+    <span class="s2">if </span><span class="s1">akid.keyid != backend._ffi.NULL:</span>
+        <span class="s1">key_identifier = backend._ffi.buffer(</span>
+            <span class="s1">akid.keyid.data</span><span class="s2">, </span><span class="s1">akid.keyid.length</span>
+        <span class="s1">)[:]</span>
+
+    <span class="s2">if </span><span class="s1">akid.issuer != backend._ffi.NULL:</span>
+        <span class="s1">authority_cert_issuer = _decode_general_names(backend</span><span class="s2">, </span><span class="s1">akid.issuer)</span>
+
+    <span class="s1">authority_cert_serial_number = _asn1_integer_to_int_or_none(</span>
+        <span class="s1">backend</span><span class="s2">, </span><span class="s1">akid.serial</span>
+    <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">x509.AuthorityKeyIdentifier(</span>
+        <span class="s1">key_identifier</span><span class="s2">, </span><span class="s1">authority_cert_issuer</span><span class="s2">, </span><span class="s1">authority_cert_serial_number</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_information_access(backend</span><span class="s2">, </span><span class="s1">ia):</span>
+    <span class="s1">ia = backend._ffi.cast(</span><span class="s4">&quot;Cryptography_STACK_OF_ACCESS_DESCRIPTION *&quot;</span><span class="s2">, </span><span class="s1">ia)</span>
+    <span class="s1">ia = backend._ffi.gc(</span>
+        <span class="s1">ia</span><span class="s2">,</span>
+        <span class="s2">lambda </span><span class="s1">x: backend._lib.sk_ACCESS_DESCRIPTION_pop_free(</span>
+            <span class="s1">x</span><span class="s2">,</span>
+            <span class="s1">backend._ffi.addressof(</span>
+                <span class="s1">backend._lib._original_lib</span><span class="s2">, </span><span class="s4">&quot;ACCESS_DESCRIPTION_free&quot;</span>
+            <span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">num = backend._lib.sk_ACCESS_DESCRIPTION_num(ia)</span>
+    <span class="s1">access_descriptions = []</span>
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+        <span class="s1">ad = backend._lib.sk_ACCESS_DESCRIPTION_value(ia</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s1">backend.openssl_assert(ad.method != backend._ffi.NULL)</span>
+        <span class="s1">oid = x509.ObjectIdentifier(_obj2txt(backend</span><span class="s2">, </span><span class="s1">ad.method))</span>
+        <span class="s1">backend.openssl_assert(ad.location != backend._ffi.NULL)</span>
+        <span class="s1">gn = _decode_general_name(backend</span><span class="s2">, </span><span class="s1">ad.location)</span>
+        <span class="s1">access_descriptions.append(x509.AccessDescription(oid</span><span class="s2">, </span><span class="s1">gn))</span>
+
+    <span class="s2">return </span><span class="s1">access_descriptions</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_authority_information_access(backend</span><span class="s2">, </span><span class="s1">aia):</span>
+    <span class="s1">access_descriptions = _decode_information_access(backend</span><span class="s2">, </span><span class="s1">aia)</span>
+    <span class="s2">return </span><span class="s1">x509.AuthorityInformationAccess(access_descriptions)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_subject_information_access(backend</span><span class="s2">, </span><span class="s1">aia):</span>
+    <span class="s1">access_descriptions = _decode_information_access(backend</span><span class="s2">, </span><span class="s1">aia)</span>
+    <span class="s2">return </span><span class="s1">x509.SubjectInformationAccess(access_descriptions)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_key_usage(backend</span><span class="s2">, </span><span class="s1">bit_string):</span>
+    <span class="s1">bit_string = backend._ffi.cast(</span><span class="s4">&quot;ASN1_BIT_STRING *&quot;</span><span class="s2">, </span><span class="s1">bit_string)</span>
+    <span class="s1">bit_string = backend._ffi.gc(bit_string</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_BIT_STRING_free)</span>
+    <span class="s1">get_bit = backend._lib.ASN1_BIT_STRING_get_bit</span>
+    <span class="s1">digital_signature = get_bit(bit_string</span><span class="s2">, </span><span class="s3">0</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">content_commitment = get_bit(bit_string</span><span class="s2">, </span><span class="s3">1</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">key_encipherment = get_bit(bit_string</span><span class="s2">, </span><span class="s3">2</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">data_encipherment = get_bit(bit_string</span><span class="s2">, </span><span class="s3">3</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">key_agreement = get_bit(bit_string</span><span class="s2">, </span><span class="s3">4</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">key_cert_sign = get_bit(bit_string</span><span class="s2">, </span><span class="s3">5</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">crl_sign = get_bit(bit_string</span><span class="s2">, </span><span class="s3">6</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">encipher_only = get_bit(bit_string</span><span class="s2">, </span><span class="s3">7</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s1">decipher_only = get_bit(bit_string</span><span class="s2">, </span><span class="s3">8</span><span class="s1">) == </span><span class="s3">1</span>
+    <span class="s2">return </span><span class="s1">x509.KeyUsage(</span>
+        <span class="s1">digital_signature</span><span class="s2">,</span>
+        <span class="s1">content_commitment</span><span class="s2">,</span>
+        <span class="s1">key_encipherment</span><span class="s2">,</span>
+        <span class="s1">data_encipherment</span><span class="s2">,</span>
+        <span class="s1">key_agreement</span><span class="s2">,</span>
+        <span class="s1">key_cert_sign</span><span class="s2">,</span>
+        <span class="s1">crl_sign</span><span class="s2">,</span>
+        <span class="s1">encipher_only</span><span class="s2">,</span>
+        <span class="s1">decipher_only</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_general_names_extension(backend</span><span class="s2">, </span><span class="s1">gns):</span>
+    <span class="s1">gns = backend._ffi.cast(</span><span class="s4">&quot;GENERAL_NAMES *&quot;</span><span class="s2">, </span><span class="s1">gns)</span>
+    <span class="s1">gns = backend._ffi.gc(gns</span><span class="s2">, </span><span class="s1">backend._lib.GENERAL_NAMES_free)</span>
+    <span class="s1">general_names = _decode_general_names(backend</span><span class="s2">, </span><span class="s1">gns)</span>
+    <span class="s2">return </span><span class="s1">general_names</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_subject_alt_name(backend</span><span class="s2">, </span><span class="s1">ext):</span>
+    <span class="s2">return </span><span class="s1">x509.SubjectAlternativeName(</span>
+        <span class="s1">_decode_general_names_extension(backend</span><span class="s2">, </span><span class="s1">ext)</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_issuer_alt_name(backend</span><span class="s2">, </span><span class="s1">ext):</span>
+    <span class="s2">return </span><span class="s1">x509.IssuerAlternativeName(</span>
+        <span class="s1">_decode_general_names_extension(backend</span><span class="s2">, </span><span class="s1">ext)</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_name_constraints(backend</span><span class="s2">, </span><span class="s1">nc):</span>
+    <span class="s1">nc = backend._ffi.cast(</span><span class="s4">&quot;NAME_CONSTRAINTS *&quot;</span><span class="s2">, </span><span class="s1">nc)</span>
+    <span class="s1">nc = backend._ffi.gc(nc</span><span class="s2">, </span><span class="s1">backend._lib.NAME_CONSTRAINTS_free)</span>
+    <span class="s1">permitted = _decode_general_subtrees(backend</span><span class="s2">, </span><span class="s1">nc.permittedSubtrees)</span>
+    <span class="s1">excluded = _decode_general_subtrees(backend</span><span class="s2">, </span><span class="s1">nc.excludedSubtrees)</span>
+    <span class="s2">return </span><span class="s1">x509.NameConstraints(</span>
+        <span class="s1">permitted_subtrees=permitted</span><span class="s2">, </span><span class="s1">excluded_subtrees=excluded</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_general_subtrees(backend</span><span class="s2">, </span><span class="s1">stack_subtrees):</span>
+    <span class="s2">if </span><span class="s1">stack_subtrees == backend._ffi.NULL:</span>
+        <span class="s2">return None</span>
+
+    <span class="s1">num = backend._lib.sk_GENERAL_SUBTREE_num(stack_subtrees)</span>
+    <span class="s1">subtrees = []</span>
+
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+        <span class="s1">obj = backend._lib.sk_GENERAL_SUBTREE_value(stack_subtrees</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s1">backend.openssl_assert(obj != backend._ffi.NULL)</span>
+        <span class="s1">name = _decode_general_name(backend</span><span class="s2">, </span><span class="s1">obj.base)</span>
+        <span class="s1">subtrees.append(name)</span>
+
+    <span class="s2">return </span><span class="s1">subtrees</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_issuing_dist_point(backend</span><span class="s2">, </span><span class="s1">idp):</span>
+    <span class="s1">idp = backend._ffi.cast(</span><span class="s4">&quot;ISSUING_DIST_POINT *&quot;</span><span class="s2">, </span><span class="s1">idp)</span>
+    <span class="s1">idp = backend._ffi.gc(idp</span><span class="s2">, </span><span class="s1">backend._lib.ISSUING_DIST_POINT_free)</span>
+    <span class="s2">if </span><span class="s1">idp.distpoint != backend._ffi.NULL:</span>
+        <span class="s1">full_name</span><span class="s2">, </span><span class="s1">relative_name = _decode_distpoint(backend</span><span class="s2">, </span><span class="s1">idp.distpoint)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">full_name = </span><span class="s2">None</span>
+        <span class="s1">relative_name = </span><span class="s2">None</span>
+
+    <span class="s1">only_user = idp.onlyuser == </span><span class="s3">255</span>
+    <span class="s1">only_ca = idp.onlyCA == </span><span class="s3">255</span>
+    <span class="s1">indirect_crl = idp.indirectCRL == </span><span class="s3">255</span>
+    <span class="s1">only_attr = idp.onlyattr == </span><span class="s3">255</span>
+    <span class="s2">if </span><span class="s1">idp.onlysomereasons != backend._ffi.NULL:</span>
+        <span class="s1">only_some_reasons = _decode_reasons(backend</span><span class="s2">, </span><span class="s1">idp.onlysomereasons)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">only_some_reasons = </span><span class="s2">None</span>
+
+    <span class="s2">return </span><span class="s1">x509.IssuingDistributionPoint(</span>
+        <span class="s1">full_name</span><span class="s2">,</span>
+        <span class="s1">relative_name</span><span class="s2">,</span>
+        <span class="s1">only_user</span><span class="s2">,</span>
+        <span class="s1">only_ca</span><span class="s2">,</span>
+        <span class="s1">only_some_reasons</span><span class="s2">,</span>
+        <span class="s1">indirect_crl</span><span class="s2">,</span>
+        <span class="s1">only_attr</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_policy_constraints(backend</span><span class="s2">, </span><span class="s1">pc):</span>
+    <span class="s1">pc = backend._ffi.cast(</span><span class="s4">&quot;POLICY_CONSTRAINTS *&quot;</span><span class="s2">, </span><span class="s1">pc)</span>
+    <span class="s1">pc = backend._ffi.gc(pc</span><span class="s2">, </span><span class="s1">backend._lib.POLICY_CONSTRAINTS_free)</span>
+
+    <span class="s1">require_explicit_policy = _asn1_integer_to_int_or_none(</span>
+        <span class="s1">backend</span><span class="s2">, </span><span class="s1">pc.requireExplicitPolicy</span>
+    <span class="s1">)</span>
+    <span class="s1">inhibit_policy_mapping = _asn1_integer_to_int_or_none(</span>
+        <span class="s1">backend</span><span class="s2">, </span><span class="s1">pc.inhibitPolicyMapping</span>
+    <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">x509.PolicyConstraints(</span>
+        <span class="s1">require_explicit_policy</span><span class="s2">, </span><span class="s1">inhibit_policy_mapping</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_extended_key_usage(backend</span><span class="s2">, </span><span class="s1">sk):</span>
+    <span class="s1">sk = backend._ffi.cast(</span><span class="s4">&quot;Cryptography_STACK_OF_ASN1_OBJECT *&quot;</span><span class="s2">, </span><span class="s1">sk)</span>
+    <span class="s1">sk = backend._ffi.gc(sk</span><span class="s2">, </span><span class="s1">backend._lib.sk_ASN1_OBJECT_free)</span>
+    <span class="s1">num = backend._lib.sk_ASN1_OBJECT_num(sk)</span>
+    <span class="s1">ekus = []</span>
+
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+        <span class="s1">obj = backend._lib.sk_ASN1_OBJECT_value(sk</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s1">backend.openssl_assert(obj != backend._ffi.NULL)</span>
+        <span class="s1">oid = x509.ObjectIdentifier(_obj2txt(backend</span><span class="s2">, </span><span class="s1">obj))</span>
+        <span class="s1">ekus.append(oid)</span>
+
+    <span class="s2">return </span><span class="s1">x509.ExtendedKeyUsage(ekus)</span>
+
+
+<span class="s1">_DISTPOINT_TYPE_FULLNAME = </span><span class="s3">0</span>
+<span class="s1">_DISTPOINT_TYPE_RELATIVENAME = </span><span class="s3">1</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_dist_points(backend</span><span class="s2">, </span><span class="s1">cdps):</span>
+    <span class="s1">cdps = backend._ffi.cast(</span><span class="s4">&quot;Cryptography_STACK_OF_DIST_POINT *&quot;</span><span class="s2">, </span><span class="s1">cdps)</span>
+    <span class="s1">cdps = backend._ffi.gc(cdps</span><span class="s2">, </span><span class="s1">backend._lib.CRL_DIST_POINTS_free)</span>
+
+    <span class="s1">num = backend._lib.sk_DIST_POINT_num(cdps)</span>
+    <span class="s1">dist_points = []</span>
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+        <span class="s1">full_name = </span><span class="s2">None</span>
+        <span class="s1">relative_name = </span><span class="s2">None</span>
+        <span class="s1">crl_issuer = </span><span class="s2">None</span>
+        <span class="s1">reasons = </span><span class="s2">None</span>
+        <span class="s1">cdp = backend._lib.sk_DIST_POINT_value(cdps</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s2">if </span><span class="s1">cdp.reasons != backend._ffi.NULL:</span>
+            <span class="s1">reasons = _decode_reasons(backend</span><span class="s2">, </span><span class="s1">cdp.reasons)</span>
+
+        <span class="s2">if </span><span class="s1">cdp.CRLissuer != backend._ffi.NULL:</span>
+            <span class="s1">crl_issuer = _decode_general_names(backend</span><span class="s2">, </span><span class="s1">cdp.CRLissuer)</span>
+
+        <span class="s0"># Certificates may have a crl_issuer/reasons and no distribution</span>
+        <span class="s0"># point so make sure it's not null.</span>
+        <span class="s2">if </span><span class="s1">cdp.distpoint != backend._ffi.NULL:</span>
+            <span class="s1">full_name</span><span class="s2">, </span><span class="s1">relative_name = _decode_distpoint(</span>
+                <span class="s1">backend</span><span class="s2">, </span><span class="s1">cdp.distpoint</span>
+            <span class="s1">)</span>
+
+        <span class="s1">dist_points.append(</span>
+            <span class="s1">x509.DistributionPoint(</span>
+                <span class="s1">full_name</span><span class="s2">, </span><span class="s1">relative_name</span><span class="s2">, </span><span class="s1">reasons</span><span class="s2">, </span><span class="s1">crl_issuer</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">dist_points</span>
+
+
+<span class="s0"># ReasonFlags ::= BIT STRING {</span>
+<span class="s0">#      unused                  (0),</span>
+<span class="s0">#      keyCompromise           (1),</span>
+<span class="s0">#      cACompromise            (2),</span>
+<span class="s0">#      affiliationChanged      (3),</span>
+<span class="s0">#      superseded              (4),</span>
+<span class="s0">#      cessationOfOperation    (5),</span>
+<span class="s0">#      certificateHold         (6),</span>
+<span class="s0">#      privilegeWithdrawn      (7),</span>
+<span class="s0">#      aACompromise            (8) }</span>
+<span class="s1">_REASON_BIT_MAPPING = {</span>
+    <span class="s3">1</span><span class="s1">: x509.ReasonFlags.key_compromise</span><span class="s2">,</span>
+    <span class="s3">2</span><span class="s1">: x509.ReasonFlags.ca_compromise</span><span class="s2">,</span>
+    <span class="s3">3</span><span class="s1">: x509.ReasonFlags.affiliation_changed</span><span class="s2">,</span>
+    <span class="s3">4</span><span class="s1">: x509.ReasonFlags.superseded</span><span class="s2">,</span>
+    <span class="s3">5</span><span class="s1">: x509.ReasonFlags.cessation_of_operation</span><span class="s2">,</span>
+    <span class="s3">6</span><span class="s1">: x509.ReasonFlags.certificate_hold</span><span class="s2">,</span>
+    <span class="s3">7</span><span class="s1">: x509.ReasonFlags.privilege_withdrawn</span><span class="s2">,</span>
+    <span class="s3">8</span><span class="s1">: x509.ReasonFlags.aa_compromise</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_reasons(backend</span><span class="s2">, </span><span class="s1">reasons):</span>
+    <span class="s0"># We will check each bit from RFC 5280</span>
+    <span class="s1">enum_reasons = []</span>
+    <span class="s2">for </span><span class="s1">bit_position</span><span class="s2">, </span><span class="s1">reason </span><span class="s2">in </span><span class="s1">_REASON_BIT_MAPPING.items():</span>
+        <span class="s2">if </span><span class="s1">backend._lib.ASN1_BIT_STRING_get_bit(reasons</span><span class="s2">, </span><span class="s1">bit_position):</span>
+            <span class="s1">enum_reasons.append(reason)</span>
+
+    <span class="s2">return </span><span class="s1">frozenset(enum_reasons)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_distpoint(backend</span><span class="s2">, </span><span class="s1">distpoint):</span>
+    <span class="s2">if </span><span class="s1">distpoint.type == _DISTPOINT_TYPE_FULLNAME:</span>
+        <span class="s1">full_name = _decode_general_names(backend</span><span class="s2">, </span><span class="s1">distpoint.name.fullname)</span>
+        <span class="s2">return </span><span class="s1">full_name</span><span class="s2">, None</span>
+
+    <span class="s0"># OpenSSL code doesn't test for a specific type for</span>
+    <span class="s0"># relativename, everything that isn't fullname is considered</span>
+    <span class="s0"># relativename.  Per RFC 5280:</span>
+    <span class="s0">#</span>
+    <span class="s0"># DistributionPointName ::= CHOICE {</span>
+    <span class="s0">#      fullName                [0]      GeneralNames,</span>
+    <span class="s0">#      nameRelativeToCRLIssuer [1]      RelativeDistinguishedName }</span>
+    <span class="s1">rns = distpoint.name.relativename</span>
+    <span class="s1">rnum = backend._lib.sk_X509_NAME_ENTRY_num(rns)</span>
+    <span class="s1">attributes = set()</span>
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(rnum):</span>
+        <span class="s1">rn = backend._lib.sk_X509_NAME_ENTRY_value(rns</span><span class="s2">, </span><span class="s1">i)</span>
+        <span class="s1">backend.openssl_assert(rn != backend._ffi.NULL)</span>
+        <span class="s1">attributes.add(_decode_x509_name_entry(backend</span><span class="s2">, </span><span class="s1">rn))</span>
+
+    <span class="s1">relative_name = x509.RelativeDistinguishedName(attributes)</span>
+
+    <span class="s2">return None, </span><span class="s1">relative_name</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_crl_distribution_points(backend</span><span class="s2">, </span><span class="s1">cdps):</span>
+    <span class="s1">dist_points = _decode_dist_points(backend</span><span class="s2">, </span><span class="s1">cdps)</span>
+    <span class="s2">return </span><span class="s1">x509.CRLDistributionPoints(dist_points)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_freshest_crl(backend</span><span class="s2">, </span><span class="s1">cdps):</span>
+    <span class="s1">dist_points = _decode_dist_points(backend</span><span class="s2">, </span><span class="s1">cdps)</span>
+    <span class="s2">return </span><span class="s1">x509.FreshestCRL(dist_points)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_inhibit_any_policy(backend</span><span class="s2">, </span><span class="s1">asn1_int):</span>
+    <span class="s1">asn1_int = backend._ffi.cast(</span><span class="s4">&quot;ASN1_INTEGER *&quot;</span><span class="s2">, </span><span class="s1">asn1_int)</span>
+    <span class="s1">asn1_int = backend._ffi.gc(asn1_int</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_INTEGER_free)</span>
+    <span class="s1">skip_certs = _asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">asn1_int)</span>
+    <span class="s2">return </span><span class="s1">x509.InhibitAnyPolicy(skip_certs)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_scts(backend</span><span class="s2">, </span><span class="s1">asn1_scts):</span>
+    <span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl.x509 </span><span class="s2">import </span><span class="s1">(</span>
+        <span class="s1">_SignedCertificateTimestamp</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+    <span class="s1">asn1_scts = backend._ffi.cast(</span><span class="s4">&quot;Cryptography_STACK_OF_SCT *&quot;</span><span class="s2">, </span><span class="s1">asn1_scts)</span>
+    <span class="s1">asn1_scts = backend._ffi.gc(asn1_scts</span><span class="s2">, </span><span class="s1">backend._lib.SCT_LIST_free)</span>
+
+    <span class="s1">scts = []</span>
+    <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(backend._lib.sk_SCT_num(asn1_scts)):</span>
+        <span class="s1">sct = backend._lib.sk_SCT_value(asn1_scts</span><span class="s2">, </span><span class="s1">i)</span>
+
+        <span class="s1">scts.append(_SignedCertificateTimestamp(backend</span><span class="s2">, </span><span class="s1">asn1_scts</span><span class="s2">, </span><span class="s1">sct))</span>
+    <span class="s2">return </span><span class="s1">scts</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_precert_signed_certificate_timestamps(backend</span><span class="s2">, </span><span class="s1">asn1_scts):</span>
+    <span class="s2">return </span><span class="s1">x509.PrecertificateSignedCertificateTimestamps(</span>
+        <span class="s1">_decode_scts(backend</span><span class="s2">, </span><span class="s1">asn1_scts)</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_signed_certificate_timestamps(backend</span><span class="s2">, </span><span class="s1">asn1_scts):</span>
+    <span class="s2">return </span><span class="s1">x509.SignedCertificateTimestamps(_decode_scts(backend</span><span class="s2">, </span><span class="s1">asn1_scts))</span>
+
+
+<span class="s0">#    CRLReason ::= ENUMERATED {</span>
+<span class="s0">#        unspecified             (0),</span>
+<span class="s0">#        keyCompromise           (1),</span>
+<span class="s0">#        cACompromise            (2),</span>
+<span class="s0">#        affiliationChanged      (3),</span>
+<span class="s0">#        superseded              (4),</span>
+<span class="s0">#        cessationOfOperation    (5),</span>
+<span class="s0">#        certificateHold         (6),</span>
+<span class="s0">#             -- value 7 is not used</span>
+<span class="s0">#        removeFromCRL           (8),</span>
+<span class="s0">#        privilegeWithdrawn      (9),</span>
+<span class="s0">#        aACompromise           (10) }</span>
+<span class="s1">_CRL_ENTRY_REASON_CODE_TO_ENUM = {</span>
+    <span class="s3">0</span><span class="s1">: x509.ReasonFlags.unspecified</span><span class="s2">,</span>
+    <span class="s3">1</span><span class="s1">: x509.ReasonFlags.key_compromise</span><span class="s2">,</span>
+    <span class="s3">2</span><span class="s1">: x509.ReasonFlags.ca_compromise</span><span class="s2">,</span>
+    <span class="s3">3</span><span class="s1">: x509.ReasonFlags.affiliation_changed</span><span class="s2">,</span>
+    <span class="s3">4</span><span class="s1">: x509.ReasonFlags.superseded</span><span class="s2">,</span>
+    <span class="s3">5</span><span class="s1">: x509.ReasonFlags.cessation_of_operation</span><span class="s2">,</span>
+    <span class="s3">6</span><span class="s1">: x509.ReasonFlags.certificate_hold</span><span class="s2">,</span>
+    <span class="s3">8</span><span class="s1">: x509.ReasonFlags.remove_from_crl</span><span class="s2">,</span>
+    <span class="s3">9</span><span class="s1">: x509.ReasonFlags.privilege_withdrawn</span><span class="s2">,</span>
+    <span class="s3">10</span><span class="s1">: x509.ReasonFlags.aa_compromise</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+
+<span class="s1">_CRL_ENTRY_REASON_ENUM_TO_CODE = {</span>
+    <span class="s1">x509.ReasonFlags.unspecified: </span><span class="s3">0</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.key_compromise: </span><span class="s3">1</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.ca_compromise: </span><span class="s3">2</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.affiliation_changed: </span><span class="s3">3</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.superseded: </span><span class="s3">4</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.cessation_of_operation: </span><span class="s3">5</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.certificate_hold: </span><span class="s3">6</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.remove_from_crl: </span><span class="s3">8</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.privilege_withdrawn: </span><span class="s3">9</span><span class="s2">,</span>
+    <span class="s1">x509.ReasonFlags.aa_compromise: </span><span class="s3">10</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_crl_reason(backend</span><span class="s2">, </span><span class="s1">enum):</span>
+    <span class="s1">enum = backend._ffi.cast(</span><span class="s4">&quot;ASN1_ENUMERATED *&quot;</span><span class="s2">, </span><span class="s1">enum)</span>
+    <span class="s1">enum = backend._ffi.gc(enum</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_ENUMERATED_free)</span>
+    <span class="s1">code = backend._lib.ASN1_ENUMERATED_get(enum)</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">x509.CRLReason(_CRL_ENTRY_REASON_CODE_TO_ENUM[code])</span>
+    <span class="s2">except </span><span class="s1">KeyError:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Unsupported reason code: {}&quot;</span><span class="s1">.format(code))</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_invalidity_date(backend</span><span class="s2">, </span><span class="s1">inv_date):</span>
+    <span class="s1">generalized_time = backend._ffi.cast(</span><span class="s4">&quot;ASN1_GENERALIZEDTIME *&quot;</span><span class="s2">, </span><span class="s1">inv_date)</span>
+    <span class="s1">generalized_time = backend._ffi.gc(</span>
+        <span class="s1">generalized_time</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_GENERALIZEDTIME_free</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">x509.InvalidityDate(</span>
+        <span class="s1">_parse_asn1_generalized_time(backend</span><span class="s2">, </span><span class="s1">generalized_time)</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_cert_issuer(backend</span><span class="s2">, </span><span class="s1">gns):</span>
+    <span class="s1">gns = backend._ffi.cast(</span><span class="s4">&quot;GENERAL_NAMES *&quot;</span><span class="s2">, </span><span class="s1">gns)</span>
+    <span class="s1">gns = backend._ffi.gc(gns</span><span class="s2">, </span><span class="s1">backend._lib.GENERAL_NAMES_free)</span>
+    <span class="s1">general_names = _decode_general_names(backend</span><span class="s2">, </span><span class="s1">gns)</span>
+    <span class="s2">return </span><span class="s1">x509.CertificateIssuer(general_names)</span>
+
+
+<span class="s2">def </span><span class="s1">_asn1_to_der(backend</span><span class="s2">, </span><span class="s1">asn1_type):</span>
+    <span class="s1">buf = backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+    <span class="s1">res = backend._lib.i2d_ASN1_TYPE(asn1_type</span><span class="s2">, </span><span class="s1">buf)</span>
+    <span class="s1">backend.openssl_assert(res &gt;= </span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(buf[</span><span class="s3">0</span><span class="s1">] != backend._ffi.NULL)</span>
+    <span class="s1">buf = backend._ffi.gc(</span>
+        <span class="s1">buf</span><span class="s2">, lambda </span><span class="s1">buffer: backend._lib.OPENSSL_free(buffer[</span><span class="s3">0</span><span class="s1">])</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">backend._ffi.buffer(buf[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:]</span>
+
+
+<span class="s2">def </span><span class="s1">_asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">asn1_int):</span>
+    <span class="s1">bn = backend._lib.ASN1_INTEGER_to_BN(asn1_int</span><span class="s2">, </span><span class="s1">backend._ffi.NULL)</span>
+    <span class="s1">backend.openssl_assert(bn != backend._ffi.NULL)</span>
+    <span class="s1">bn = backend._ffi.gc(bn</span><span class="s2">, </span><span class="s1">backend._lib.BN_free)</span>
+    <span class="s2">return </span><span class="s1">backend._bn_to_int(bn)</span>
+
+
+<span class="s2">def </span><span class="s1">_asn1_integer_to_int_or_none(backend</span><span class="s2">, </span><span class="s1">asn1_int):</span>
+    <span class="s2">if </span><span class="s1">asn1_int == backend._ffi.NULL:</span>
+        <span class="s2">return None</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">_asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">asn1_int)</span>
+
+
+<span class="s2">def </span><span class="s1">_asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">asn1_string):</span>
+    <span class="s2">return </span><span class="s1">backend._ffi.buffer(asn1_string.data</span><span class="s2">, </span><span class="s1">asn1_string.length)[:]</span>
+
+
+<span class="s2">def </span><span class="s1">_asn1_string_to_ascii(backend</span><span class="s2">, </span><span class="s1">asn1_string):</span>
+    <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">asn1_string).decode(</span><span class="s4">&quot;ascii&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_asn1_string_to_utf8(backend</span><span class="s2">, </span><span class="s1">asn1_string) -&gt; str:</span>
+    <span class="s1">buf = backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+    <span class="s1">res = backend._lib.ASN1_STRING_to_UTF8(buf</span><span class="s2">, </span><span class="s1">asn1_string)</span>
+    <span class="s2">if </span><span class="s1">res == -</span><span class="s3">1</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s4">&quot;Unsupported ASN1 string type. Type: {}&quot;</span><span class="s1">.format(asn1_string.type)</span>
+        <span class="s1">)</span>
+
+    <span class="s1">backend.openssl_assert(buf[</span><span class="s3">0</span><span class="s1">] != backend._ffi.NULL)</span>
+    <span class="s1">buf = backend._ffi.gc(</span>
+        <span class="s1">buf</span><span class="s2">, lambda </span><span class="s1">buffer: backend._lib.OPENSSL_free(buffer[</span><span class="s3">0</span><span class="s1">])</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">backend._ffi.buffer(buf[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:].decode(</span><span class="s4">&quot;utf8&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_parse_asn1_time(backend</span><span class="s2">, </span><span class="s1">asn1_time):</span>
+    <span class="s1">backend.openssl_assert(asn1_time != backend._ffi.NULL)</span>
+    <span class="s1">generalized_time = backend._lib.ASN1_TIME_to_generalizedtime(</span>
+        <span class="s1">asn1_time</span><span class="s2">, </span><span class="s1">backend._ffi.NULL</span>
+    <span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">generalized_time == backend._ffi.NULL:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s4">&quot;Couldn't parse ASN.1 time as generalizedtime {!r}&quot;</span><span class="s1">.format(</span>
+                <span class="s1">_asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">asn1_time)</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+    <span class="s1">generalized_time = backend._ffi.gc(</span>
+        <span class="s1">generalized_time</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_GENERALIZEDTIME_free</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">_parse_asn1_generalized_time(backend</span><span class="s2">, </span><span class="s1">generalized_time)</span>
+
+
+<span class="s2">def </span><span class="s1">_parse_asn1_generalized_time(backend</span><span class="s2">, </span><span class="s1">generalized_time):</span>
+    <span class="s1">time = _asn1_string_to_ascii(</span>
+        <span class="s1">backend</span><span class="s2">, </span><span class="s1">backend._ffi.cast(</span><span class="s4">&quot;ASN1_STRING *&quot;</span><span class="s2">, </span><span class="s1">generalized_time)</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">datetime.datetime.strptime(time</span><span class="s2">, </span><span class="s4">&quot;%Y%m%d%H%M%SZ&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_nonce(backend</span><span class="s2">, </span><span class="s1">nonce):</span>
+    <span class="s1">nonce = backend._ffi.cast(</span><span class="s4">&quot;ASN1_OCTET_STRING *&quot;</span><span class="s2">, </span><span class="s1">nonce)</span>
+    <span class="s1">nonce = backend._ffi.gc(nonce</span><span class="s2">, </span><span class="s1">backend._lib.ASN1_OCTET_STRING_free)</span>
+    <span class="s2">return </span><span class="s1">x509.OCSPNonce(_asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">nonce))</span>
+
+
+<span class="s1">_EXTENSION_HANDLERS_BASE = {</span>
+    <span class="s1">ExtensionOID.BASIC_CONSTRAINTS: _decode_basic_constraints</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.SUBJECT_KEY_IDENTIFIER: _decode_subject_key_identifier</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.KEY_USAGE: _decode_key_usage</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.SUBJECT_ALTERNATIVE_NAME: _decode_subject_alt_name</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.EXTENDED_KEY_USAGE: _decode_extended_key_usage</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.AUTHORITY_KEY_IDENTIFIER: _decode_authority_key_identifier</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.AUTHORITY_INFORMATION_ACCESS: (</span>
+        <span class="s1">_decode_authority_information_access</span>
+    <span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.SUBJECT_INFORMATION_ACCESS: (</span>
+        <span class="s1">_decode_subject_information_access</span>
+    <span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.CERTIFICATE_POLICIES: _decode_certificate_policies</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.CRL_DISTRIBUTION_POINTS: _decode_crl_distribution_points</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.FRESHEST_CRL: _decode_freshest_crl</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.OCSP_NO_CHECK: _decode_ocsp_no_check</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.INHIBIT_ANY_POLICY: _decode_inhibit_any_policy</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.ISSUER_ALTERNATIVE_NAME: _decode_issuer_alt_name</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.NAME_CONSTRAINTS: _decode_name_constraints</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.POLICY_CONSTRAINTS: _decode_policy_constraints</span><span class="s2">,</span>
+<span class="s1">}</span>
+<span class="s1">_EXTENSION_HANDLERS_SCT = {</span>
+    <span class="s1">ExtensionOID.PRECERT_SIGNED_CERTIFICATE_TIMESTAMPS: (</span>
+        <span class="s1">_decode_precert_signed_certificate_timestamps</span>
+    <span class="s1">)</span>
+<span class="s1">}</span>
+
+<span class="s1">_REVOKED_EXTENSION_HANDLERS = {</span>
+    <span class="s1">CRLEntryExtensionOID.CRL_REASON: _decode_crl_reason</span><span class="s2">,</span>
+    <span class="s1">CRLEntryExtensionOID.INVALIDITY_DATE: _decode_invalidity_date</span><span class="s2">,</span>
+    <span class="s1">CRLEntryExtensionOID.CERTIFICATE_ISSUER: _decode_cert_issuer</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">_CRL_EXTENSION_HANDLERS = {</span>
+    <span class="s1">ExtensionOID.CRL_NUMBER: _decode_crl_number</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.DELTA_CRL_INDICATOR: _decode_delta_crl_indicator</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.AUTHORITY_KEY_IDENTIFIER: _decode_authority_key_identifier</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.ISSUER_ALTERNATIVE_NAME: _decode_issuer_alt_name</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.AUTHORITY_INFORMATION_ACCESS: (</span>
+        <span class="s1">_decode_authority_information_access</span>
+    <span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.ISSUING_DISTRIBUTION_POINT: _decode_issuing_dist_point</span><span class="s2">,</span>
+    <span class="s1">ExtensionOID.FRESHEST_CRL: _decode_freshest_crl</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">_OCSP_REQ_EXTENSION_HANDLERS = {</span>
+    <span class="s1">OCSPExtensionOID.NONCE: _decode_nonce</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">_OCSP_BASICRESP_EXTENSION_HANDLERS = {</span>
+    <span class="s1">OCSPExtensionOID.NONCE: _decode_nonce</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">_OCSP_SINGLERESP_EXTENSION_HANDLERS_SCT = {</span>
+    <span class="s1">ExtensionOID.SIGNED_CERTIFICATE_TIMESTAMPS: (</span>
+        <span class="s1">_decode_signed_certificate_timestamps</span>
+    <span class="s1">)</span>
+<span class="s1">}</span>
+</pre>
+</body>
+</html>

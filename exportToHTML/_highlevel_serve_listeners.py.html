@@ -1,0 +1,143 @@
+<html>
+<head>
+<title>_highlevel_serve_listeners.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_highlevel_serve_listeners.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">errno</span>
+<span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">import </span><span class="s1">os</span>
+
+<span class="s0">import </span><span class="s1">trio</span>
+
+<span class="s2"># Errors that accept(2) can return, and which indicate that the system is</span>
+<span class="s2"># overloaded</span>
+<span class="s1">ACCEPT_CAPACITY_ERRNOS = {</span>
+    <span class="s1">errno.EMFILE</span><span class="s0">,</span>
+    <span class="s1">errno.ENFILE</span><span class="s0">,</span>
+    <span class="s1">errno.ENOMEM</span><span class="s0">,</span>
+    <span class="s1">errno.ENOBUFS</span><span class="s0">,</span>
+<span class="s1">}</span>
+
+<span class="s2"># How long to sleep when we get one of those errors</span>
+<span class="s1">SLEEP_TIME = </span><span class="s3">0.100</span>
+
+<span class="s2"># The logger we use to complain when this happens</span>
+<span class="s1">LOGGER = logging.getLogger(</span><span class="s4">&quot;trio.serve_listeners&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">_run_handler(stream</span><span class="s0">, </span><span class="s1">handler):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">handler(stream)</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s0">await </span><span class="s1">trio.aclose_forcefully(stream)</span>
+
+
+<span class="s0">async def </span><span class="s1">_serve_one_listener(listener</span><span class="s0">, </span><span class="s1">handler_nursery</span><span class="s0">, </span><span class="s1">handler):</span>
+    <span class="s0">async with </span><span class="s1">listener:</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">stream = </span><span class="s0">await </span><span class="s1">listener.accept()</span>
+            <span class="s0">except </span><span class="s1">OSError </span><span class="s0">as </span><span class="s1">exc:</span>
+                <span class="s0">if </span><span class="s1">exc.errno </span><span class="s0">in </span><span class="s1">ACCEPT_CAPACITY_ERRNOS:</span>
+                    <span class="s1">LOGGER.error(</span>
+                        <span class="s4">&quot;accept returned %s (%s); retrying in %s seconds&quot;</span><span class="s0">,</span>
+                        <span class="s1">errno.errorcode[exc.errno]</span><span class="s0">,</span>
+                        <span class="s1">os.strerror(exc.errno)</span><span class="s0">,</span>
+                        <span class="s1">SLEEP_TIME</span><span class="s0">,</span>
+                        <span class="s1">exc_info=</span><span class="s0">True,</span>
+                    <span class="s1">)</span>
+                    <span class="s0">await </span><span class="s1">trio.sleep(SLEEP_TIME)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">handler_nursery.start_soon(_run_handler</span><span class="s0">, </span><span class="s1">stream</span><span class="s0">, </span><span class="s1">handler)</span>
+
+
+<span class="s0">async def </span><span class="s1">serve_listeners(</span>
+    <span class="s1">handler</span><span class="s0">, </span><span class="s1">listeners</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">handler_nursery=</span><span class="s0">None, </span><span class="s1">task_status=trio.TASK_STATUS_IGNORED</span>
+<span class="s1">):</span>
+    <span class="s5">r&quot;&quot;&quot;Listen for incoming connections on ``listeners``, and for each one 
+    start a task running ``handler(stream)``. 
+ 
+    .. warning:: 
+ 
+       If ``handler`` raises an exception, then this function doesn't do 
+       anything special to catch it – so by default the exception will 
+       propagate out and crash your server. If you don't want this, then catch 
+       exceptions inside your ``handler``, or use a ``handler_nursery`` object 
+       that responds to exceptions in some other way. 
+ 
+    Args: 
+ 
+      handler: An async callable, that will be invoked like 
+          ``handler_nursery.start_soon(handler, stream)`` for each incoming 
+          connection. 
+ 
+      listeners: A list of :class:`~trio.abc.Listener` objects. 
+          :func:`serve_listeners` takes responsibility for closing them. 
+ 
+      handler_nursery: The nursery used to start handlers, or any object with 
+          a ``start_soon`` method. If ``None`` (the default), then 
+          :func:`serve_listeners` will create a new nursery internally and use 
+          that. 
+ 
+      task_status: This function can be used with ``nursery.start``, which 
+          will return ``listeners``. 
+ 
+    Returns: 
+ 
+      This function never returns unless cancelled. 
+ 
+    Resource handling: 
+ 
+      If ``handler`` neglects to close the ``stream``, then it will be closed 
+      using :func:`trio.aclose_forcefully`. 
+ 
+    Error handling: 
+ 
+      Most errors coming from :meth:`~trio.abc.Listener.accept` are allowed to 
+      propagate out (crashing the server in the process). However, some errors – 
+      those which indicate that the server is temporarily overloaded – are 
+      handled specially. These are :class:`OSError`\s with one of the following 
+      errnos: 
+ 
+      * ``EMFILE``: process is out of file descriptors 
+      * ``ENFILE``: system is out of file descriptors 
+      * ``ENOBUFS``, ``ENOMEM``: the kernel hit some sort of memory limitation 
+        when trying to create a socket object 
+ 
+      When :func:`serve_listeners` gets one of these errors, then it: 
+ 
+      * Logs the error to the standard library logger ``trio.serve_listeners`` 
+        (level = ERROR, with exception information included). By default this 
+        causes it to be printed to stderr. 
+      * Waits 100 ms before calling ``accept`` again, in hopes that the 
+        system will recover. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s0">if </span><span class="s1">handler_nursery </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">handler_nursery = nursery</span>
+        <span class="s0">for </span><span class="s1">listener </span><span class="s0">in </span><span class="s1">listeners:</span>
+            <span class="s1">nursery.start_soon(_serve_one_listener</span><span class="s0">, </span><span class="s1">listener</span><span class="s0">, </span><span class="s1">handler_nursery</span><span class="s0">, </span><span class="s1">handler)</span>
+        <span class="s2"># The listeners are already queueing connections when we're called,</span>
+        <span class="s2"># but we wait until the end to call started() just in case we get an</span>
+        <span class="s2"># error or whatever.</span>
+        <span class="s1">task_status.started(listeners)</span>
+</pre>
+</body>
+</html>

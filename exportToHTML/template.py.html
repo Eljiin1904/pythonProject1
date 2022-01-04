@@ -1,0 +1,251 @@
+<html>
+<head>
+<title>template.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+template.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">from </span><span class="s1">io </span><span class="s0">import </span><span class="s1">StringIO</span>
+
+<span class="s0">from </span><span class="s1">django.template.base </span><span class="s0">import </span><span class="s1">Lexer</span><span class="s0">, </span><span class="s1">TokenType</span>
+<span class="s0">from </span><span class="s1">django.utils.regex_helper </span><span class="s0">import </span><span class="s1">_lazy_re_compile</span>
+
+<span class="s0">from </span><span class="s1">. </span><span class="s0">import </span><span class="s1">TranslatorCommentWarning</span><span class="s0">, </span><span class="s1">trim_whitespace</span>
+
+<span class="s1">TRANSLATOR_COMMENT_MARK = </span><span class="s2">'Translators'</span>
+
+<span class="s1">dot_re = _lazy_re_compile(</span><span class="s2">r'\S'</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">blankout(src</span><span class="s0">, </span><span class="s1">char):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Change every non-whitespace character to the given char. 
+    Used in the templatize function. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">dot_re.sub(char</span><span class="s0">, </span><span class="s1">src)</span>
+
+
+<span class="s1">context_re = _lazy_re_compile(</span><span class="s2">r&quot;&quot;&quot;^\s+.*context\s+((?:&quot;[^&quot;]*?&quot;)|(?:'[^']*?'))\s*&quot;&quot;&quot;</span><span class="s1">)</span>
+<span class="s1">inline_re = _lazy_re_compile(</span>
+    <span class="s4"># Match the trans/translate 'some text' part.</span>
+    <span class="s2">r&quot;&quot;&quot;^\s*trans(?:late)?\s+((?:&quot;[^&quot;]*?&quot;)|(?:'[^']*?'))&quot;&quot;&quot;</span>
+    <span class="s4"># Match and ignore optional filters</span>
+    <span class="s2">r&quot;&quot;&quot;(?:\s*\|\s*[^\s:]+(?::(?:[^\s'&quot;:]+|(?:&quot;[^&quot;]*?&quot;)|(?:'[^']*?')))?)*&quot;&quot;&quot;</span>
+    <span class="s4"># Match the optional context part</span>
+    <span class="s2">r&quot;&quot;&quot;(\s+.*context\s+((?:&quot;[^&quot;]*?&quot;)|(?:'[^']*?')))?\s*&quot;&quot;&quot;</span>
+<span class="s1">)</span>
+<span class="s1">block_re = _lazy_re_compile(</span><span class="s2">r&quot;&quot;&quot;^\s*blocktrans(?:late)?(\s+.*context\s+((?:&quot;[^&quot;]*?&quot;)|(?:'[^']*?')))?(?:\s+|$)&quot;&quot;&quot;</span><span class="s1">)</span>
+<span class="s1">endblock_re = _lazy_re_compile(</span><span class="s2">r&quot;&quot;&quot;^\s*endblocktrans(?:late)?$&quot;&quot;&quot;</span><span class="s1">)</span>
+<span class="s1">plural_re = _lazy_re_compile(</span><span class="s2">r&quot;&quot;&quot;^\s*plural$&quot;&quot;&quot;</span><span class="s1">)</span>
+<span class="s1">constant_re = _lazy_re_compile(</span><span class="s2">r&quot;&quot;&quot;_\(((?:&quot;.*?&quot;)|(?:'.*?'))\)&quot;&quot;&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">templatize(src</span><span class="s0">, </span><span class="s1">origin=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Turn a Django template into something that is understood by xgettext. It 
+    does so by translating the Django translation tags into standard gettext 
+    function invocations. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">out = StringIO(</span><span class="s2">''</span><span class="s1">)</span>
+    <span class="s1">message_context = </span><span class="s0">None</span>
+    <span class="s1">intrans = </span><span class="s0">False</span>
+    <span class="s1">inplural = </span><span class="s0">False</span>
+    <span class="s1">trimmed = </span><span class="s0">False</span>
+    <span class="s1">singular = []</span>
+    <span class="s1">plural = []</span>
+    <span class="s1">incomment = </span><span class="s0">False</span>
+    <span class="s1">comment = []</span>
+    <span class="s1">lineno_comment_map = {}</span>
+    <span class="s1">comment_lineno_cache = </span><span class="s0">None</span>
+    <span class="s4"># Adding the u prefix allows gettext to recognize the string (#26093).</span>
+    <span class="s1">raw_prefix = </span><span class="s2">'u'</span>
+
+    <span class="s0">def </span><span class="s1">join_tokens(tokens</span><span class="s0">, </span><span class="s1">trim=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s1">message = </span><span class="s2">''</span><span class="s1">.join(tokens)</span>
+        <span class="s0">if </span><span class="s1">trim:</span>
+            <span class="s1">message = trim_whitespace(message)</span>
+        <span class="s0">return </span><span class="s1">message</span>
+
+    <span class="s0">for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">Lexer(src).tokenize():</span>
+        <span class="s0">if </span><span class="s1">incomment:</span>
+            <span class="s0">if </span><span class="s1">t.token_type == TokenType.BLOCK </span><span class="s0">and </span><span class="s1">t.contents == </span><span class="s2">'endcomment'</span><span class="s1">:</span>
+                <span class="s1">content = </span><span class="s2">''</span><span class="s1">.join(comment)</span>
+                <span class="s1">translators_comment_start = </span><span class="s0">None</span>
+                <span class="s0">for </span><span class="s1">lineno</span><span class="s0">, </span><span class="s1">line </span><span class="s0">in </span><span class="s1">enumerate(content.splitlines(</span><span class="s0">True</span><span class="s1">)):</span>
+                    <span class="s0">if </span><span class="s1">line.lstrip().startswith(TRANSLATOR_COMMENT_MARK):</span>
+                        <span class="s1">translators_comment_start = lineno</span>
+                <span class="s0">for </span><span class="s1">lineno</span><span class="s0">, </span><span class="s1">line </span><span class="s0">in </span><span class="s1">enumerate(content.splitlines(</span><span class="s0">True</span><span class="s1">)):</span>
+                    <span class="s0">if </span><span class="s1">translators_comment_start </span><span class="s0">is not None and </span><span class="s1">lineno &gt;= translators_comment_start:</span>
+                        <span class="s1">out.write(</span><span class="s2">' # %s' </span><span class="s1">% line)</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">out.write(</span><span class="s2">' #</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">)</span>
+                <span class="s1">incomment = </span><span class="s0">False</span>
+                <span class="s1">comment = []</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">comment.append(t.contents)</span>
+        <span class="s0">elif </span><span class="s1">intrans:</span>
+            <span class="s0">if </span><span class="s1">t.token_type == TokenType.BLOCK:</span>
+                <span class="s1">endbmatch = endblock_re.match(t.contents)</span>
+                <span class="s1">pluralmatch = plural_re.match(t.contents)</span>
+                <span class="s0">if </span><span class="s1">endbmatch:</span>
+                    <span class="s0">if </span><span class="s1">inplural:</span>
+                        <span class="s0">if </span><span class="s1">message_context:</span>
+                            <span class="s1">out.write(</span><span class="s2">' npgettext({p}{!r}, {p}{!r}, {p}{!r},count) '</span><span class="s1">.format(</span>
+                                <span class="s1">message_context</span><span class="s0">,</span>
+                                <span class="s1">join_tokens(singular</span><span class="s0">, </span><span class="s1">trimmed)</span><span class="s0">,</span>
+                                <span class="s1">join_tokens(plural</span><span class="s0">, </span><span class="s1">trimmed)</span><span class="s0">,</span>
+                                <span class="s1">p=raw_prefix</span><span class="s0">,</span>
+                            <span class="s1">))</span>
+                        <span class="s0">else</span><span class="s1">:</span>
+                            <span class="s1">out.write(</span><span class="s2">' ngettext({p}{!r}, {p}{!r}, count) '</span><span class="s1">.format(</span>
+                                <span class="s1">join_tokens(singular</span><span class="s0">, </span><span class="s1">trimmed)</span><span class="s0">,</span>
+                                <span class="s1">join_tokens(plural</span><span class="s0">, </span><span class="s1">trimmed)</span><span class="s0">,</span>
+                                <span class="s1">p=raw_prefix</span><span class="s0">,</span>
+                            <span class="s1">))</span>
+                        <span class="s0">for </span><span class="s1">part </span><span class="s0">in </span><span class="s1">singular:</span>
+                            <span class="s1">out.write(blankout(part</span><span class="s0">, </span><span class="s2">'S'</span><span class="s1">))</span>
+                        <span class="s0">for </span><span class="s1">part </span><span class="s0">in </span><span class="s1">plural:</span>
+                            <span class="s1">out.write(blankout(part</span><span class="s0">, </span><span class="s2">'P'</span><span class="s1">))</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">if </span><span class="s1">message_context:</span>
+                            <span class="s1">out.write(</span><span class="s2">' pgettext({p}{!r}, {p}{!r}) '</span><span class="s1">.format(</span>
+                                <span class="s1">message_context</span><span class="s0">,</span>
+                                <span class="s1">join_tokens(singular</span><span class="s0">, </span><span class="s1">trimmed)</span><span class="s0">,</span>
+                                <span class="s1">p=raw_prefix</span><span class="s0">,</span>
+                            <span class="s1">))</span>
+                        <span class="s0">else</span><span class="s1">:</span>
+                            <span class="s1">out.write(</span><span class="s2">' gettext({p}{!r}) '</span><span class="s1">.format(</span>
+                                <span class="s1">join_tokens(singular</span><span class="s0">, </span><span class="s1">trimmed)</span><span class="s0">,</span>
+                                <span class="s1">p=raw_prefix</span><span class="s0">,</span>
+                            <span class="s1">))</span>
+                        <span class="s0">for </span><span class="s1">part </span><span class="s0">in </span><span class="s1">singular:</span>
+                            <span class="s1">out.write(blankout(part</span><span class="s0">, </span><span class="s2">'S'</span><span class="s1">))</span>
+                    <span class="s1">message_context = </span><span class="s0">None</span>
+                    <span class="s1">intrans = </span><span class="s0">False</span>
+                    <span class="s1">inplural = </span><span class="s0">False</span>
+                    <span class="s1">singular = []</span>
+                    <span class="s1">plural = []</span>
+                <span class="s0">elif </span><span class="s1">pluralmatch:</span>
+                    <span class="s1">inplural = </span><span class="s0">True</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">filemsg = </span><span class="s2">''</span>
+                    <span class="s0">if </span><span class="s1">origin:</span>
+                        <span class="s1">filemsg = </span><span class="s2">'file %s, ' </span><span class="s1">% origin</span>
+                    <span class="s0">raise </span><span class="s1">SyntaxError(</span>
+                        <span class="s2">&quot;Translation blocks must not include other block tags: &quot;</span>
+                        <span class="s2">&quot;%s (%sline %d)&quot; </span><span class="s1">% (t.contents</span><span class="s0">, </span><span class="s1">filemsg</span><span class="s0">, </span><span class="s1">t.lineno)</span>
+                    <span class="s1">)</span>
+            <span class="s0">elif </span><span class="s1">t.token_type == TokenType.VAR:</span>
+                <span class="s0">if </span><span class="s1">inplural:</span>
+                    <span class="s1">plural.append(</span><span class="s2">'%%(%s)s' </span><span class="s1">% t.contents)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">singular.append(</span><span class="s2">'%%(%s)s' </span><span class="s1">% t.contents)</span>
+            <span class="s0">elif </span><span class="s1">t.token_type == TokenType.TEXT:</span>
+                <span class="s1">contents = t.contents.replace(</span><span class="s2">'%'</span><span class="s0">, </span><span class="s2">'%%'</span><span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">inplural:</span>
+                    <span class="s1">plural.append(contents)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">singular.append(contents)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s4"># Handle comment tokens (`{# ... #}`) plus other constructs on</span>
+            <span class="s4"># the same line:</span>
+            <span class="s0">if </span><span class="s1">comment_lineno_cache </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">cur_lineno = t.lineno + t.contents.count(</span><span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">comment_lineno_cache == cur_lineno:</span>
+                    <span class="s0">if </span><span class="s1">t.token_type != TokenType.COMMENT:</span>
+                        <span class="s0">for </span><span class="s1">c </span><span class="s0">in </span><span class="s1">lineno_comment_map[comment_lineno_cache]:</span>
+                            <span class="s1">filemsg = </span><span class="s2">''</span>
+                            <span class="s0">if </span><span class="s1">origin:</span>
+                                <span class="s1">filemsg = </span><span class="s2">'file %s, ' </span><span class="s1">% origin</span>
+                            <span class="s1">warn_msg = (</span>
+                                <span class="s2">&quot;The translator-targeted comment '%s' &quot;</span>
+                                <span class="s2">&quot;(%sline %d) was ignored, because it wasn't &quot;</span>
+                                <span class="s2">&quot;the last item on the line.&quot;</span>
+                            <span class="s1">) % (c</span><span class="s0">, </span><span class="s1">filemsg</span><span class="s0">, </span><span class="s1">comment_lineno_cache)</span>
+                            <span class="s1">warnings.warn(warn_msg</span><span class="s0">, </span><span class="s1">TranslatorCommentWarning)</span>
+                        <span class="s1">lineno_comment_map[comment_lineno_cache] = []</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">out.write(</span><span class="s2">'# %s' </span><span class="s1">% </span><span class="s2">' | '</span><span class="s1">.join(lineno_comment_map[comment_lineno_cache]))</span>
+                <span class="s1">comment_lineno_cache = </span><span class="s0">None</span>
+
+            <span class="s0">if </span><span class="s1">t.token_type == TokenType.BLOCK:</span>
+                <span class="s1">imatch = inline_re.match(t.contents)</span>
+                <span class="s1">bmatch = block_re.match(t.contents)</span>
+                <span class="s1">cmatches = constant_re.findall(t.contents)</span>
+                <span class="s0">if </span><span class="s1">imatch:</span>
+                    <span class="s1">g = imatch[</span><span class="s5">1</span><span class="s1">]</span>
+                    <span class="s0">if </span><span class="s1">g[</span><span class="s5">0</span><span class="s1">] == </span><span class="s2">'&quot;'</span><span class="s1">:</span>
+                        <span class="s1">g = g.strip(</span><span class="s2">'&quot;'</span><span class="s1">)</span>
+                    <span class="s0">elif </span><span class="s1">g[</span><span class="s5">0</span><span class="s1">] == </span><span class="s2">&quot;'&quot;</span><span class="s1">:</span>
+                        <span class="s1">g = g.strip(</span><span class="s2">&quot;'&quot;</span><span class="s1">)</span>
+                    <span class="s1">g = g.replace(</span><span class="s2">'%'</span><span class="s0">, </span><span class="s2">'%%'</span><span class="s1">)</span>
+                    <span class="s0">if </span><span class="s1">imatch[</span><span class="s5">2</span><span class="s1">]:</span>
+                        <span class="s4"># A context is provided</span>
+                        <span class="s1">context_match = context_re.match(imatch[</span><span class="s5">2</span><span class="s1">])</span>
+                        <span class="s1">message_context = context_match[</span><span class="s5">1</span><span class="s1">]</span>
+                        <span class="s0">if </span><span class="s1">message_context[</span><span class="s5">0</span><span class="s1">] == </span><span class="s2">'&quot;'</span><span class="s1">:</span>
+                            <span class="s1">message_context = message_context.strip(</span><span class="s2">'&quot;'</span><span class="s1">)</span>
+                        <span class="s0">elif </span><span class="s1">message_context[</span><span class="s5">0</span><span class="s1">] == </span><span class="s2">&quot;'&quot;</span><span class="s1">:</span>
+                            <span class="s1">message_context = message_context.strip(</span><span class="s2">&quot;'&quot;</span><span class="s1">)</span>
+                        <span class="s1">out.write(</span><span class="s2">' pgettext({p}{!r}, {p}{!r}) '</span><span class="s1">.format(</span>
+                            <span class="s1">message_context</span><span class="s0">, </span><span class="s1">g</span><span class="s0">, </span><span class="s1">p=raw_prefix</span>
+                        <span class="s1">))</span>
+                        <span class="s1">message_context = </span><span class="s0">None</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">out.write(</span><span class="s2">' gettext({p}{!r}) '</span><span class="s1">.format(g</span><span class="s0">, </span><span class="s1">p=raw_prefix))</span>
+                <span class="s0">elif </span><span class="s1">bmatch:</span>
+                    <span class="s0">for </span><span class="s1">fmatch </span><span class="s0">in </span><span class="s1">constant_re.findall(t.contents):</span>
+                        <span class="s1">out.write(</span><span class="s2">' _(%s) ' </span><span class="s1">% fmatch)</span>
+                    <span class="s0">if </span><span class="s1">bmatch[</span><span class="s5">1</span><span class="s1">]:</span>
+                        <span class="s4"># A context is provided</span>
+                        <span class="s1">context_match = context_re.match(bmatch[</span><span class="s5">1</span><span class="s1">])</span>
+                        <span class="s1">message_context = context_match[</span><span class="s5">1</span><span class="s1">]</span>
+                        <span class="s0">if </span><span class="s1">message_context[</span><span class="s5">0</span><span class="s1">] == </span><span class="s2">'&quot;'</span><span class="s1">:</span>
+                            <span class="s1">message_context = message_context.strip(</span><span class="s2">'&quot;'</span><span class="s1">)</span>
+                        <span class="s0">elif </span><span class="s1">message_context[</span><span class="s5">0</span><span class="s1">] == </span><span class="s2">&quot;'&quot;</span><span class="s1">:</span>
+                            <span class="s1">message_context = message_context.strip(</span><span class="s2">&quot;'&quot;</span><span class="s1">)</span>
+                    <span class="s1">intrans = </span><span class="s0">True</span>
+                    <span class="s1">inplural = </span><span class="s0">False</span>
+                    <span class="s1">trimmed = </span><span class="s2">'trimmed' </span><span class="s0">in </span><span class="s1">t.split_contents()</span>
+                    <span class="s1">singular = []</span>
+                    <span class="s1">plural = []</span>
+                <span class="s0">elif </span><span class="s1">cmatches:</span>
+                    <span class="s0">for </span><span class="s1">cmatch </span><span class="s0">in </span><span class="s1">cmatches:</span>
+                        <span class="s1">out.write(</span><span class="s2">' _(%s) ' </span><span class="s1">% cmatch)</span>
+                <span class="s0">elif </span><span class="s1">t.contents == </span><span class="s2">'comment'</span><span class="s1">:</span>
+                    <span class="s1">incomment = </span><span class="s0">True</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">out.write(blankout(t.contents</span><span class="s0">, </span><span class="s2">'B'</span><span class="s1">))</span>
+            <span class="s0">elif </span><span class="s1">t.token_type == TokenType.VAR:</span>
+                <span class="s1">parts = t.contents.split(</span><span class="s2">'|'</span><span class="s1">)</span>
+                <span class="s1">cmatch = constant_re.match(parts[</span><span class="s5">0</span><span class="s1">])</span>
+                <span class="s0">if </span><span class="s1">cmatch:</span>
+                    <span class="s1">out.write(</span><span class="s2">' _(%s) ' </span><span class="s1">% cmatch[</span><span class="s5">1</span><span class="s1">])</span>
+                <span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">parts[</span><span class="s5">1</span><span class="s1">:]:</span>
+                    <span class="s0">if </span><span class="s1">p.find(</span><span class="s2">':_('</span><span class="s1">) &gt;= </span><span class="s5">0</span><span class="s1">:</span>
+                        <span class="s1">out.write(</span><span class="s2">' %s ' </span><span class="s1">% p.split(</span><span class="s2">':'</span><span class="s0">, </span><span class="s5">1</span><span class="s1">)[</span><span class="s5">1</span><span class="s1">])</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">out.write(blankout(p</span><span class="s0">, </span><span class="s2">'F'</span><span class="s1">))</span>
+            <span class="s0">elif </span><span class="s1">t.token_type == TokenType.COMMENT:</span>
+                <span class="s0">if </span><span class="s1">t.contents.lstrip().startswith(TRANSLATOR_COMMENT_MARK):</span>
+                    <span class="s1">lineno_comment_map.setdefault(t.lineno</span><span class="s0">, </span><span class="s1">[]).append(t.contents)</span>
+                    <span class="s1">comment_lineno_cache = t.lineno</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">out.write(blankout(t.contents</span><span class="s0">, </span><span class="s2">'X'</span><span class="s1">))</span>
+    <span class="s0">return </span><span class="s1">out.getvalue()</span>
+</pre>
+</body>
+</html>

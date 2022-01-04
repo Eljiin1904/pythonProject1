@@ -1,0 +1,218 @@
+<html>
+<head>
+<title>cli.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cli.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright (C) 2009-2020 the sqlparse authors and contributors</span>
+<span class="s0"># &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of python-sqlparse and is released under</span>
+<span class="s0"># the BSD License: https://opensource.org/licenses/BSD-3-Clause</span>
+
+<span class="s2">&quot;&quot;&quot;Module that contains the command line app. 
+ 
+Why does this file exist, and why not put this in __main__? 
+  You might be tempted to import things from __main__ later, but that will 
+  cause problems: the code will get executed twice: 
+  - When you run `python -m sqlparse` python will execute 
+    ``__main__.py`` as a script. That means there won't be any 
+    ``sqlparse.__main__`` in ``sys.modules``. 
+  - When you import __main__ it will get executed again (as a module) because 
+    there's no ``sqlparse.__main__`` in ``sys.modules``. 
+  Also see (1) from http://click.pocoo.org/5/setuptools/#setuptools-integration 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">argparse</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">from </span><span class="s1">io </span><span class="s3">import </span><span class="s1">TextIOWrapper</span>
+
+<span class="s3">import </span><span class="s1">sqlparse</span>
+<span class="s3">from </span><span class="s1">sqlparse.exceptions </span><span class="s3">import </span><span class="s1">SQLParseError</span>
+
+
+<span class="s0"># TODO: Add CLI Tests</span>
+<span class="s0"># TODO: Simplify formatter by using argparse `type` arguments</span>
+<span class="s3">def </span><span class="s1">create_parser():</span>
+    <span class="s1">_CASE_CHOICES = [</span><span class="s4">'upper'</span><span class="s3">, </span><span class="s4">'lower'</span><span class="s3">, </span><span class="s4">'capitalize'</span><span class="s1">]</span>
+
+    <span class="s1">parser = argparse.ArgumentParser(</span>
+        <span class="s1">prog=</span><span class="s4">'sqlformat'</span><span class="s3">,</span>
+        <span class="s1">description=</span><span class="s4">'Format FILE according to OPTIONS. Use &quot;-&quot; as FILE '</span>
+                    <span class="s4">'to read from stdin.'</span><span class="s3">,</span>
+        <span class="s1">usage=</span><span class="s4">'%(prog)s  [OPTIONS] FILE, ...'</span><span class="s3">,</span>
+    <span class="s1">)</span>
+
+    <span class="s1">parser.add_argument(</span><span class="s4">'filename'</span><span class="s1">)</span>
+
+    <span class="s1">parser.add_argument(</span>
+        <span class="s4">'-o'</span><span class="s3">, </span><span class="s4">'--outfile'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'outfile'</span><span class="s3">,</span>
+        <span class="s1">metavar=</span><span class="s4">'FILE'</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'write output to FILE (defaults to stdout)'</span><span class="s1">)</span>
+
+    <span class="s1">parser.add_argument(</span>
+        <span class="s4">'--version'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'version'</span><span class="s3">,</span>
+        <span class="s1">version=sqlparse.__version__)</span>
+
+    <span class="s1">group = parser.add_argument_group(</span><span class="s4">'Formatting Options'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'-k'</span><span class="s3">, </span><span class="s4">'--keywords'</span><span class="s3">,</span>
+        <span class="s1">metavar=</span><span class="s4">'CHOICE'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'keyword_case'</span><span class="s3">,</span>
+        <span class="s1">choices=_CASE_CHOICES</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'change case of keywords, CHOICE is one of {}'</span><span class="s1">.format(</span>
+            <span class="s4">', '</span><span class="s1">.join(</span><span class="s4">'&quot;{}&quot;'</span><span class="s1">.format(x) </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">_CASE_CHOICES)))</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'-i'</span><span class="s3">, </span><span class="s4">'--identifiers'</span><span class="s3">,</span>
+        <span class="s1">metavar=</span><span class="s4">'CHOICE'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'identifier_case'</span><span class="s3">,</span>
+        <span class="s1">choices=_CASE_CHOICES</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'change case of identifiers, CHOICE is one of {}'</span><span class="s1">.format(</span>
+            <span class="s4">', '</span><span class="s1">.join(</span><span class="s4">'&quot;{}&quot;'</span><span class="s1">.format(x) </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">_CASE_CHOICES)))</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'-l'</span><span class="s3">, </span><span class="s4">'--language'</span><span class="s3">,</span>
+        <span class="s1">metavar=</span><span class="s4">'LANG'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'output_format'</span><span class="s3">,</span>
+        <span class="s1">choices=[</span><span class="s4">'python'</span><span class="s3">, </span><span class="s4">'php'</span><span class="s1">]</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'output a snippet in programming language LANG, '</span>
+             <span class="s4">'choices are &quot;python&quot;, &quot;php&quot;'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--strip-comments'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'strip_comments'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'store_true'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">help=</span><span class="s4">'remove comments'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'-r'</span><span class="s3">, </span><span class="s4">'--reindent'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'reindent'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'store_true'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">help=</span><span class="s4">'reindent statements'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--indent_width'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'indent_width'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s5">2</span><span class="s3">,</span>
+        <span class="s1">type=int</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'indentation width (defaults to 2 spaces)'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--indent_after_first'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'indent_after_first'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'store_true'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">help=</span><span class="s4">'indent after first line of statement (e.g. SELECT)'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--indent_columns'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'indent_columns'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'store_true'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">help=</span><span class="s4">'indent all columns by indent_width instead of keyword length'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'-a'</span><span class="s3">, </span><span class="s4">'--reindent_aligned'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'store_true'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">help=</span><span class="s4">'reindent statements to aligned format'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'-s'</span><span class="s3">, </span><span class="s4">'--use_space_around_operators'</span><span class="s3">,</span>
+        <span class="s1">action=</span><span class="s4">'store_true'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">help=</span><span class="s4">'place spaces around mathematical operators'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--wrap_after'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'wrap_after'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s5">0</span><span class="s3">,</span>
+        <span class="s1">type=int</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'Column after which lists should be wrapped'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--comma_first'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'comma_first'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s3">False,</span>
+        <span class="s1">type=bool</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'Insert linebreak before comma (default False)'</span><span class="s1">)</span>
+
+    <span class="s1">group.add_argument(</span>
+        <span class="s4">'--encoding'</span><span class="s3">,</span>
+        <span class="s1">dest=</span><span class="s4">'encoding'</span><span class="s3">,</span>
+        <span class="s1">default=</span><span class="s4">'utf-8'</span><span class="s3">,</span>
+        <span class="s1">help=</span><span class="s4">'Specify the input encoding (default utf-8)'</span><span class="s1">)</span>
+
+    <span class="s3">return </span><span class="s1">parser</span>
+
+
+<span class="s3">def </span><span class="s1">_error(msg):</span>
+    <span class="s2">&quot;&quot;&quot;Print msg and optionally exit with return code exit_.&quot;&quot;&quot;</span>
+    <span class="s1">sys.stderr.write(</span><span class="s4">'[ERROR] {}</span><span class="s3">\n</span><span class="s4">'</span><span class="s1">.format(msg))</span>
+    <span class="s3">return </span><span class="s5">1</span>
+
+
+<span class="s3">def </span><span class="s1">main(args=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s1">parser = create_parser()</span>
+    <span class="s1">args = parser.parse_args(args)</span>
+
+    <span class="s3">if </span><span class="s1">args.filename == </span><span class="s4">'-'</span><span class="s1">:  </span><span class="s0"># read from stdin</span>
+        <span class="s1">wrapper = TextIOWrapper(sys.stdin.buffer</span><span class="s3">, </span><span class="s1">encoding=args.encoding)</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">data = wrapper.read()</span>
+        <span class="s3">finally</span><span class="s1">:</span>
+            <span class="s1">wrapper.detach()</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">with </span><span class="s1">open(args.filename</span><span class="s3">, </span><span class="s1">encoding=args.encoding) </span><span class="s3">as </span><span class="s1">f:</span>
+                <span class="s1">data = </span><span class="s4">''</span><span class="s1">.join(f.readlines())</span>
+        <span class="s3">except </span><span class="s1">OSError </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s3">return </span><span class="s1">_error(</span>
+                <span class="s4">'Failed to read {}: {}'</span><span class="s1">.format(args.filename</span><span class="s3">, </span><span class="s1">e))</span>
+
+    <span class="s1">close_stream = </span><span class="s3">False</span>
+    <span class="s3">if </span><span class="s1">args.outfile:</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">stream = open(args.outfile</span><span class="s3">, </span><span class="s4">'w'</span><span class="s3">, </span><span class="s1">encoding=args.encoding)</span>
+            <span class="s1">close_stream = </span><span class="s3">True</span>
+        <span class="s3">except </span><span class="s1">OSError </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s3">return </span><span class="s1">_error(</span><span class="s4">'Failed to open {}: {}'</span><span class="s1">.format(args.outfile</span><span class="s3">, </span><span class="s1">e))</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s1">stream = sys.stdout</span>
+
+    <span class="s1">formatter_opts = vars(args)</span>
+    <span class="s3">try</span><span class="s1">:</span>
+        <span class="s1">formatter_opts = sqlparse.formatter.validate_options(formatter_opts)</span>
+    <span class="s3">except </span><span class="s1">SQLParseError </span><span class="s3">as </span><span class="s1">e:</span>
+        <span class="s3">return </span><span class="s1">_error(</span><span class="s4">'Invalid options: {}'</span><span class="s1">.format(e))</span>
+
+    <span class="s1">s = sqlparse.format(data</span><span class="s3">, </span><span class="s1">**formatter_opts)</span>
+    <span class="s1">stream.write(s)</span>
+    <span class="s1">stream.flush()</span>
+    <span class="s3">if </span><span class="s1">close_stream:</span>
+        <span class="s1">stream.close()</span>
+    <span class="s3">return </span><span class="s5">0</span>
+</pre>
+</body>
+</html>

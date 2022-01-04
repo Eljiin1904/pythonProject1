@@ -1,0 +1,437 @@
+<html>
+<head>
+<title>DateTimeShortcuts.js</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #cc7832;}
+.s5 { color: #4646f1;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+DateTimeShortcuts.js</font>
+</center></td></tr></table>
+<pre><span class="s0">/*global Calendar, findPosX, findPosY, get_format, gettext, gettext_noop, interpolate, ngettext, quickElement*/</span>
+<span class="s0">// Inserts shortcut buttons after all of the following:</span>
+<span class="s0">//     &lt;input type=&quot;text&quot; class=&quot;vDateField&quot;&gt;</span>
+<span class="s0">//     &lt;input type=&quot;text&quot; class=&quot;vTimeField&quot;&gt;</span>
+<span class="s2">'use strict'</span><span class="s1">;</span>
+<span class="s1">{</span>
+    <span class="s1">const DateTimeShortcuts = {</span>
+        <span class="s1">calendars: [],</span>
+        <span class="s1">calendarInputs: [],</span>
+        <span class="s1">clockInputs: [],</span>
+        <span class="s1">clockHours: {</span>
+            <span class="s1">default_: [</span>
+                <span class="s1">[gettext_noop(</span><span class="s2">'Now'</span><span class="s1">), -</span><span class="s3">1</span><span class="s1">],</span>
+                <span class="s1">[gettext_noop(</span><span class="s2">'Midnight'</span><span class="s1">), </span><span class="s3">0</span><span class="s1">],</span>
+                <span class="s1">[gettext_noop(</span><span class="s2">'6 a.m.'</span><span class="s1">), </span><span class="s3">6</span><span class="s1">],</span>
+                <span class="s1">[gettext_noop(</span><span class="s2">'Noon'</span><span class="s1">), </span><span class="s3">12</span><span class="s1">],</span>
+                <span class="s1">[gettext_noop(</span><span class="s2">'6 p.m.'</span><span class="s1">), </span><span class="s3">18</span><span class="s1">]</span>
+            <span class="s1">]</span>
+        <span class="s1">},</span>
+        <span class="s1">dismissClockFunc: [],</span>
+        <span class="s1">dismissCalendarFunc: [],</span>
+        <span class="s1">calendarDivName1: </span><span class="s2">'calendarbox'</span><span class="s1">, </span><span class="s0">// name of calendar &lt;div&gt; that gets toggled</span>
+        <span class="s1">calendarDivName2: </span><span class="s2">'calendarin'</span><span class="s1">, </span><span class="s0">// name of &lt;div&gt; that contains calendar</span>
+        <span class="s1">calendarLinkName: </span><span class="s2">'calendarlink'</span><span class="s1">, </span><span class="s0">// name of the link that is used to toggle</span>
+        <span class="s1">clockDivName: </span><span class="s2">'clockbox'</span><span class="s1">, </span><span class="s0">// name of clock &lt;div&gt; that gets toggled</span>
+        <span class="s1">clockLinkName: </span><span class="s2">'clocklink'</span><span class="s1">, </span><span class="s0">// name of the link that is used to toggle</span>
+        <span class="s1">shortCutsClass: </span><span class="s2">'datetimeshortcuts'</span><span class="s1">, </span><span class="s0">// class of the clock and cal shortcuts</span>
+        <span class="s1">timezoneWarningClass: </span><span class="s2">'timezonewarning'</span><span class="s1">, </span><span class="s0">// class of the warning for timezone mismatch</span>
+        <span class="s1">timezoneOffset: </span><span class="s3">0</span><span class="s1">,</span>
+        <span class="s1">init: </span><span class="s4">function</span><span class="s1">() {</span>
+            <span class="s1">const serverOffset = document.body.dataset.adminUtcOffset;</span>
+            <span class="s4">if </span><span class="s1">(serverOffset) {</span>
+                <span class="s1">const localOffset = </span><span class="s4">new </span><span class="s1">Date().getTimezoneOffset() * -</span><span class="s3">60</span><span class="s1">;</span>
+                <span class="s1">DateTimeShortcuts.timezoneOffset = localOffset - serverOffset;</span>
+            <span class="s1">}</span>
+
+            <span class="s4">for </span><span class="s1">(const inp of document.getElementsByTagName(</span><span class="s2">'input'</span><span class="s1">)) {</span>
+                <span class="s4">if </span><span class="s1">(inp.type === </span><span class="s2">'text' </span><span class="s1">&amp;&amp; inp.classList.contains(</span><span class="s2">'vTimeField'</span><span class="s1">)) {</span>
+                    <span class="s1">DateTimeShortcuts.addClock(inp);</span>
+                    <span class="s1">DateTimeShortcuts.addTimezoneWarning(inp);</span>
+                <span class="s1">}</span>
+                <span class="s4">else if </span><span class="s1">(inp.type === </span><span class="s2">'text' </span><span class="s1">&amp;&amp; inp.classList.contains(</span><span class="s2">'vDateField'</span><span class="s1">)) {</span>
+                    <span class="s1">DateTimeShortcuts.addCalendar(inp);</span>
+                    <span class="s1">DateTimeShortcuts.addTimezoneWarning(inp);</span>
+                <span class="s1">}</span>
+            <span class="s1">}</span>
+        <span class="s1">},</span>
+        <span class="s0">// Return the current time while accounting for the server timezone.</span>
+        <span class="s1">now: </span><span class="s4">function</span><span class="s1">() {</span>
+            <span class="s1">const serverOffset = document.body.dataset.adminUtcOffset;</span>
+            <span class="s4">if </span><span class="s1">(serverOffset) {</span>
+                <span class="s1">const localNow = </span><span class="s4">new </span><span class="s1">Date();</span>
+                <span class="s1">const localOffset = localNow.getTimezoneOffset() * -</span><span class="s3">60</span><span class="s1">;</span>
+                <span class="s1">localNow.setTime(localNow.getTime() + </span><span class="s3">1000 </span><span class="s1">* (serverOffset - localOffset));</span>
+                <span class="s4">return </span><span class="s1">localNow;</span>
+            <span class="s1">} </span><span class="s4">else </span><span class="s1">{</span>
+                <span class="s4">return new </span><span class="s1">Date();</span>
+            <span class="s1">}</span>
+        <span class="s1">},</span>
+        <span class="s0">// Add a warning when the time zone in the browser and backend do not match.</span>
+        <span class="s1">addTimezoneWarning: </span><span class="s4">function</span><span class="s1">(inp) {</span>
+            <span class="s1">const warningClass = DateTimeShortcuts.timezoneWarningClass;</span>
+            <span class="s1">let timezoneOffset = DateTimeShortcuts.timezoneOffset / </span><span class="s3">3600</span><span class="s1">;</span>
+
+            <span class="s0">// Only warn if there is a time zone mismatch.</span>
+            <span class="s4">if </span><span class="s1">(!timezoneOffset) {</span>
+                <span class="s4">return</span><span class="s1">;</span>
+            <span class="s1">}</span>
+
+            <span class="s0">// Check if warning is already there.</span>
+            <span class="s4">if </span><span class="s1">(inp.parentNode.querySelectorAll(</span><span class="s2">'.' </span><span class="s1">+ warningClass).length) {</span>
+                <span class="s4">return</span><span class="s1">;</span>
+            <span class="s1">}</span>
+
+            <span class="s1">let message;</span>
+            <span class="s4">if </span><span class="s1">(timezoneOffset &gt; </span><span class="s3">0</span><span class="s1">) {</span>
+                <span class="s1">message = ngettext(</span>
+                    <span class="s2">'Note: You are %s hour ahead of server time.'</span><span class="s1">,</span>
+                    <span class="s2">'Note: You are %s hours ahead of server time.'</span><span class="s1">,</span>
+                    <span class="s1">timezoneOffset</span>
+                <span class="s1">);</span>
+            <span class="s1">}</span>
+            <span class="s4">else </span><span class="s1">{</span>
+                <span class="s1">timezoneOffset *= -</span><span class="s3">1</span><span class="s1">;</span>
+                <span class="s1">message = ngettext(</span>
+                    <span class="s2">'Note: You are %s hour behind server time.'</span><span class="s1">,</span>
+                    <span class="s2">'Note: You are %s hours behind server time.'</span><span class="s1">,</span>
+                    <span class="s1">timezoneOffset</span>
+                <span class="s1">);</span>
+            <span class="s1">}</span>
+            <span class="s1">message = interpolate(message, [timezoneOffset]);</span>
+
+            <span class="s1">const warning = document.createElement(</span><span class="s2">'span'</span><span class="s1">);</span>
+            <span class="s1">warning.className = warningClass;</span>
+            <span class="s1">warning.textContent = message;</span>
+            <span class="s1">inp.parentNode.appendChild(document.createElement(</span><span class="s2">'br'</span><span class="s1">));</span>
+            <span class="s1">inp.parentNode.appendChild(warning);</span>
+        <span class="s1">},</span>
+        <span class="s0">// Add clock widget to a given field</span>
+        <span class="s1">addClock: </span><span class="s4">function</span><span class="s1">(inp) {</span>
+            <span class="s1">const num = DateTimeShortcuts.clockInputs.length;</span>
+            <span class="s1">DateTimeShortcuts.clockInputs[num] = inp;</span>
+            <span class="s1">DateTimeShortcuts.dismissClockFunc[num] = </span><span class="s4">function</span><span class="s1">() { DateTimeShortcuts.dismissClock(num); </span><span class="s4">return true</span><span class="s1">; };</span>
+
+            <span class="s0">// Shortcut links (clock icon and &quot;Now&quot; link)</span>
+            <span class="s1">const shortcuts_span = document.createElement(</span><span class="s2">'span'</span><span class="s1">);</span>
+            <span class="s1">shortcuts_span.className = DateTimeShortcuts.shortCutsClass;</span>
+            <span class="s1">inp.parentNode.insertBefore(shortcuts_span, inp.nextSibling);</span>
+            <span class="s1">const now_link = document.createElement(</span><span class="s2">'a'</span><span class="s1">);</span>
+            <span class="s1">now_link.href = </span><span class="s2">&quot;#&quot;</span><span class="s1">;</span>
+            <span class="s1">now_link.textContent = gettext(</span><span class="s2">'Now'</span><span class="s1">);</span>
+            <span class="s1">now_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.handleClockQuicklink(num, -</span><span class="s3">1</span><span class="s1">);</span>
+            <span class="s1">});</span>
+            <span class="s1">const clock_link = document.createElement(</span><span class="s2">'a'</span><span class="s1">);</span>
+            <span class="s1">clock_link.href = </span><span class="s2">'#'</span><span class="s1">;</span>
+            <span class="s1">clock_link.id = DateTimeShortcuts.clockLinkName + num;</span>
+            <span class="s1">clock_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s0">// avoid triggering the document click handler to dismiss the clock</span>
+                <span class="s1">e.stopPropagation();</span>
+                <span class="s1">DateTimeShortcuts.openClock(num);</span>
+            <span class="s1">});</span>
+
+            <span class="s1">quickElement(</span>
+                <span class="s2">'span'</span><span class="s1">, clock_link, </span><span class="s2">''</span><span class="s1">,</span>
+                <span class="s2">'class'</span><span class="s1">, </span><span class="s2">'clock-icon'</span><span class="s1">,</span>
+                <span class="s2">'title'</span><span class="s1">, gettext(</span><span class="s2">'Choose a Time'</span><span class="s1">)</span>
+            <span class="s1">);</span>
+            <span class="s1">shortcuts_span.appendChild(document.createTextNode(</span><span class="s2">'</span><span class="s5">\u00A0</span><span class="s2">'</span><span class="s1">));</span>
+            <span class="s1">shortcuts_span.appendChild(now_link);</span>
+            <span class="s1">shortcuts_span.appendChild(document.createTextNode(</span><span class="s2">'</span><span class="s5">\u00A0</span><span class="s2">|</span><span class="s5">\u00A0</span><span class="s2">'</span><span class="s1">));</span>
+            <span class="s1">shortcuts_span.appendChild(clock_link);</span>
+
+            <span class="s0">// Create clock link div</span>
+            <span class="s0">//</span>
+            <span class="s0">// Markup looks like:</span>
+            <span class="s0">// &lt;div id=&quot;clockbox1&quot; class=&quot;clockbox module&quot;&gt;</span>
+            <span class="s0">//     &lt;h2&gt;Choose a time&lt;/h2&gt;</span>
+            <span class="s0">//     &lt;ul class=&quot;timelist&quot;&gt;</span>
+            <span class="s0">//         &lt;li&gt;&lt;a href=&quot;#&quot;&gt;Now&lt;/a&gt;&lt;/li&gt;</span>
+            <span class="s0">//         &lt;li&gt;&lt;a href=&quot;#&quot;&gt;Midnight&lt;/a&gt;&lt;/li&gt;</span>
+            <span class="s0">//         &lt;li&gt;&lt;a href=&quot;#&quot;&gt;6 a.m.&lt;/a&gt;&lt;/li&gt;</span>
+            <span class="s0">//         &lt;li&gt;&lt;a href=&quot;#&quot;&gt;Noon&lt;/a&gt;&lt;/li&gt;</span>
+            <span class="s0">//         &lt;li&gt;&lt;a href=&quot;#&quot;&gt;6 p.m.&lt;/a&gt;&lt;/li&gt;</span>
+            <span class="s0">//     &lt;/ul&gt;</span>
+            <span class="s0">//     &lt;p class=&quot;calendar-cancel&quot;&gt;&lt;a href=&quot;#&quot;&gt;Cancel&lt;/a&gt;&lt;/p&gt;</span>
+            <span class="s0">// &lt;/div&gt;</span>
+
+            <span class="s1">const clock_box = document.createElement(</span><span class="s2">'div'</span><span class="s1">);</span>
+            <span class="s1">clock_box.style.display = </span><span class="s2">'none'</span><span class="s1">;</span>
+            <span class="s1">clock_box.style.position = </span><span class="s2">'absolute'</span><span class="s1">;</span>
+            <span class="s1">clock_box.className = </span><span class="s2">'clockbox module'</span><span class="s1">;</span>
+            <span class="s1">clock_box.id = DateTimeShortcuts.clockDivName + num;</span>
+            <span class="s1">document.body.appendChild(clock_box);</span>
+            <span class="s1">clock_box.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) { e.stopPropagation(); });</span>
+
+            <span class="s1">quickElement(</span><span class="s2">'h2'</span><span class="s1">, clock_box, gettext(</span><span class="s2">'Choose a time'</span><span class="s1">));</span>
+            <span class="s1">const time_list = quickElement(</span><span class="s2">'ul'</span><span class="s1">, clock_box);</span>
+            <span class="s1">time_list.className = </span><span class="s2">'timelist'</span><span class="s1">;</span>
+            <span class="s0">// The list of choices can be overridden in JavaScript like this:</span>
+            <span class="s0">// DateTimeShortcuts.clockHours.name = [['3 a.m.', 3]];</span>
+            <span class="s0">// where name is the name attribute of the &lt;input&gt;.</span>
+            <span class="s1">const name = </span><span class="s4">typeof </span><span class="s1">DateTimeShortcuts.clockHours[inp.name] === </span><span class="s2">'undefined' </span><span class="s1">? </span><span class="s2">'default_' </span><span class="s1">: inp.name;</span>
+            <span class="s1">DateTimeShortcuts.clockHours[name].forEach(</span><span class="s4">function</span><span class="s1">(element) {</span>
+                <span class="s1">const time_link = quickElement(</span><span class="s2">'a'</span><span class="s1">, quickElement(</span><span class="s2">'li'</span><span class="s1">, time_list), gettext(element[</span><span class="s3">0</span><span class="s1">]), </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+                <span class="s1">time_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                    <span class="s1">e.preventDefault();</span>
+                    <span class="s1">DateTimeShortcuts.handleClockQuicklink(num, element[</span><span class="s3">1</span><span class="s1">]);</span>
+                <span class="s1">});</span>
+            <span class="s1">});</span>
+
+            <span class="s1">const cancel_p = quickElement(</span><span class="s2">'p'</span><span class="s1">, clock_box);</span>
+            <span class="s1">cancel_p.className = </span><span class="s2">'calendar-cancel'</span><span class="s1">;</span>
+            <span class="s1">const cancel_link = quickElement(</span><span class="s2">'a'</span><span class="s1">, cancel_p, gettext(</span><span class="s2">'Cancel'</span><span class="s1">), </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">cancel_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.dismissClock(num);</span>
+            <span class="s1">});</span>
+
+            <span class="s1">document.addEventListener(</span><span class="s2">'keyup'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(event) {</span>
+                <span class="s4">if </span><span class="s1">(event.which === </span><span class="s3">27</span><span class="s1">) {</span>
+                    <span class="s0">// ESC key closes popup</span>
+                    <span class="s1">DateTimeShortcuts.dismissClock(num);</span>
+                    <span class="s1">event.preventDefault();</span>
+                <span class="s1">}</span>
+            <span class="s1">});</span>
+        <span class="s1">},</span>
+        <span class="s1">openClock: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">const clock_box = document.getElementById(DateTimeShortcuts.clockDivName + num);</span>
+            <span class="s1">const clock_link = document.getElementById(DateTimeShortcuts.clockLinkName + num);</span>
+
+            <span class="s0">// Recalculate the clockbox position</span>
+            <span class="s0">// is it left-to-right or right-to-left layout ?</span>
+            <span class="s4">if </span><span class="s1">(window.getComputedStyle(document.body).direction !== </span><span class="s2">'rtl'</span><span class="s1">) {</span>
+                <span class="s1">clock_box.style.left = findPosX(clock_link) + </span><span class="s3">17 </span><span class="s1">+ </span><span class="s2">'px'</span><span class="s1">;</span>
+            <span class="s1">}</span>
+            <span class="s4">else </span><span class="s1">{</span>
+                <span class="s0">// since style's width is in em, it'd be tough to calculate</span>
+                <span class="s0">// px value of it. let's use an estimated px for now</span>
+                <span class="s1">clock_box.style.left = findPosX(clock_link) - </span><span class="s3">110 </span><span class="s1">+ </span><span class="s2">'px'</span><span class="s1">;</span>
+            <span class="s1">}</span>
+            <span class="s1">clock_box.style.top = Math.max(</span><span class="s3">0</span><span class="s1">, findPosY(clock_link) - </span><span class="s3">30</span><span class="s1">) + </span><span class="s2">'px'</span><span class="s1">;</span>
+
+            <span class="s0">// Show the clock box</span>
+            <span class="s1">clock_box.style.display = </span><span class="s2">'block'</span><span class="s1">;</span>
+            <span class="s1">document.addEventListener(</span><span class="s2">'click'</span><span class="s1">, DateTimeShortcuts.dismissClockFunc[num]);</span>
+        <span class="s1">},</span>
+        <span class="s1">dismissClock: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">document.getElementById(DateTimeShortcuts.clockDivName + num).style.display = </span><span class="s2">'none'</span><span class="s1">;</span>
+            <span class="s1">document.removeEventListener(</span><span class="s2">'click'</span><span class="s1">, DateTimeShortcuts.dismissClockFunc[num]);</span>
+        <span class="s1">},</span>
+        <span class="s1">handleClockQuicklink: </span><span class="s4">function</span><span class="s1">(num, val) {</span>
+            <span class="s1">let d;</span>
+            <span class="s4">if </span><span class="s1">(val === -</span><span class="s3">1</span><span class="s1">) {</span>
+                <span class="s1">d = DateTimeShortcuts.now();</span>
+            <span class="s1">}</span>
+            <span class="s4">else </span><span class="s1">{</span>
+                <span class="s1">d = </span><span class="s4">new </span><span class="s1">Date(</span><span class="s3">1970</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, val, </span><span class="s3">0</span><span class="s1">, </span><span class="s3">0</span><span class="s1">, </span><span class="s3">0</span><span class="s1">);</span>
+            <span class="s1">}</span>
+            <span class="s1">DateTimeShortcuts.clockInputs[num].value = d.strftime(get_format(</span><span class="s2">'TIME_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s3">0</span><span class="s1">]);</span>
+            <span class="s1">DateTimeShortcuts.clockInputs[num].focus();</span>
+            <span class="s1">DateTimeShortcuts.dismissClock(num);</span>
+        <span class="s1">},</span>
+        <span class="s0">// Add calendar widget to a given field.</span>
+        <span class="s1">addCalendar: </span><span class="s4">function</span><span class="s1">(inp) {</span>
+            <span class="s1">const num = DateTimeShortcuts.calendars.length;</span>
+
+            <span class="s1">DateTimeShortcuts.calendarInputs[num] = inp;</span>
+            <span class="s1">DateTimeShortcuts.dismissCalendarFunc[num] = </span><span class="s4">function</span><span class="s1">() { DateTimeShortcuts.dismissCalendar(num); </span><span class="s4">return true</span><span class="s1">; };</span>
+
+            <span class="s0">// Shortcut links (calendar icon and &quot;Today&quot; link)</span>
+            <span class="s1">const shortcuts_span = document.createElement(</span><span class="s2">'span'</span><span class="s1">);</span>
+            <span class="s1">shortcuts_span.className = DateTimeShortcuts.shortCutsClass;</span>
+            <span class="s1">inp.parentNode.insertBefore(shortcuts_span, inp.nextSibling);</span>
+            <span class="s1">const today_link = document.createElement(</span><span class="s2">'a'</span><span class="s1">);</span>
+            <span class="s1">today_link.href = </span><span class="s2">'#'</span><span class="s1">;</span>
+            <span class="s1">today_link.appendChild(document.createTextNode(gettext(</span><span class="s2">'Today'</span><span class="s1">)));</span>
+            <span class="s1">today_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.handleCalendarQuickLink(num, </span><span class="s3">0</span><span class="s1">);</span>
+            <span class="s1">});</span>
+            <span class="s1">const cal_link = document.createElement(</span><span class="s2">'a'</span><span class="s1">);</span>
+            <span class="s1">cal_link.href = </span><span class="s2">'#'</span><span class="s1">;</span>
+            <span class="s1">cal_link.id = DateTimeShortcuts.calendarLinkName + num;</span>
+            <span class="s1">cal_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s0">// avoid triggering the document click handler to dismiss the calendar</span>
+                <span class="s1">e.stopPropagation();</span>
+                <span class="s1">DateTimeShortcuts.openCalendar(num);</span>
+            <span class="s1">});</span>
+            <span class="s1">quickElement(</span>
+                <span class="s2">'span'</span><span class="s1">, cal_link, </span><span class="s2">''</span><span class="s1">,</span>
+                <span class="s2">'class'</span><span class="s1">, </span><span class="s2">'date-icon'</span><span class="s1">,</span>
+                <span class="s2">'title'</span><span class="s1">, gettext(</span><span class="s2">'Choose a Date'</span><span class="s1">)</span>
+            <span class="s1">);</span>
+            <span class="s1">shortcuts_span.appendChild(document.createTextNode(</span><span class="s2">'</span><span class="s5">\u00A0</span><span class="s2">'</span><span class="s1">));</span>
+            <span class="s1">shortcuts_span.appendChild(today_link);</span>
+            <span class="s1">shortcuts_span.appendChild(document.createTextNode(</span><span class="s2">'</span><span class="s5">\u00A0</span><span class="s2">|</span><span class="s5">\u00A0</span><span class="s2">'</span><span class="s1">));</span>
+            <span class="s1">shortcuts_span.appendChild(cal_link);</span>
+
+            <span class="s0">// Create calendarbox div.</span>
+            <span class="s0">//</span>
+            <span class="s0">// Markup looks like:</span>
+            <span class="s0">//</span>
+            <span class="s0">// &lt;div id=&quot;calendarbox3&quot; class=&quot;calendarbox module&quot;&gt;</span>
+            <span class="s0">//     &lt;h2&gt;</span>
+            <span class="s0">//           &lt;a href=&quot;#&quot; class=&quot;link-previous&quot;&gt;&amp;lsaquo;&lt;/a&gt;</span>
+            <span class="s0">//           &lt;a href=&quot;#&quot; class=&quot;link-next&quot;&gt;&amp;rsaquo;&lt;/a&gt; February 2003</span>
+            <span class="s0">//     &lt;/h2&gt;</span>
+            <span class="s0">//     &lt;div class=&quot;calendar&quot; id=&quot;calendarin3&quot;&gt;</span>
+            <span class="s0">//         &lt;!-- (cal) --&gt;</span>
+            <span class="s0">//     &lt;/div&gt;</span>
+            <span class="s0">//     &lt;div class=&quot;calendar-shortcuts&quot;&gt;</span>
+            <span class="s0">//          &lt;a href=&quot;#&quot;&gt;Yesterday&lt;/a&gt; | &lt;a href=&quot;#&quot;&gt;Today&lt;/a&gt; | &lt;a href=&quot;#&quot;&gt;Tomorrow&lt;/a&gt;</span>
+            <span class="s0">//     &lt;/div&gt;</span>
+            <span class="s0">//     &lt;p class=&quot;calendar-cancel&quot;&gt;&lt;a href=&quot;#&quot;&gt;Cancel&lt;/a&gt;&lt;/p&gt;</span>
+            <span class="s0">// &lt;/div&gt;</span>
+            <span class="s1">const cal_box = document.createElement(</span><span class="s2">'div'</span><span class="s1">);</span>
+            <span class="s1">cal_box.style.display = </span><span class="s2">'none'</span><span class="s1">;</span>
+            <span class="s1">cal_box.style.position = </span><span class="s2">'absolute'</span><span class="s1">;</span>
+            <span class="s1">cal_box.className = </span><span class="s2">'calendarbox module'</span><span class="s1">;</span>
+            <span class="s1">cal_box.id = DateTimeShortcuts.calendarDivName1 + num;</span>
+            <span class="s1">document.body.appendChild(cal_box);</span>
+            <span class="s1">cal_box.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) { e.stopPropagation(); });</span>
+
+            <span class="s0">// next-prev links</span>
+            <span class="s1">const cal_nav = quickElement(</span><span class="s2">'div'</span><span class="s1">, cal_box);</span>
+            <span class="s1">const cal_nav_prev = quickElement(</span><span class="s2">'a'</span><span class="s1">, cal_nav, </span><span class="s2">'&lt;'</span><span class="s1">, </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">cal_nav_prev.className = </span><span class="s2">'calendarnav-previous'</span><span class="s1">;</span>
+            <span class="s1">cal_nav_prev.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.drawPrev(num);</span>
+            <span class="s1">});</span>
+
+            <span class="s1">const cal_nav_next = quickElement(</span><span class="s2">'a'</span><span class="s1">, cal_nav, </span><span class="s2">'&gt;'</span><span class="s1">, </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">cal_nav_next.className = </span><span class="s2">'calendarnav-next'</span><span class="s1">;</span>
+            <span class="s1">cal_nav_next.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.drawNext(num);</span>
+            <span class="s1">});</span>
+
+            <span class="s0">// main box</span>
+            <span class="s1">const cal_main = quickElement(</span><span class="s2">'div'</span><span class="s1">, cal_box, </span><span class="s2">''</span><span class="s1">, </span><span class="s2">'id'</span><span class="s1">, DateTimeShortcuts.calendarDivName2 + num);</span>
+            <span class="s1">cal_main.className = </span><span class="s2">'calendar'</span><span class="s1">;</span>
+            <span class="s1">DateTimeShortcuts.calendars[num] = </span><span class="s4">new </span><span class="s1">Calendar(DateTimeShortcuts.calendarDivName2 + num, DateTimeShortcuts.handleCalendarCallback(num));</span>
+            <span class="s1">DateTimeShortcuts.calendars[num].drawCurrent();</span>
+
+            <span class="s0">// calendar shortcuts</span>
+            <span class="s1">const shortcuts = quickElement(</span><span class="s2">'div'</span><span class="s1">, cal_box);</span>
+            <span class="s1">shortcuts.className = </span><span class="s2">'calendar-shortcuts'</span><span class="s1">;</span>
+            <span class="s1">let day_link = quickElement(</span><span class="s2">'a'</span><span class="s1">, shortcuts, gettext(</span><span class="s2">'Yesterday'</span><span class="s1">), </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">day_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.handleCalendarQuickLink(num, -</span><span class="s3">1</span><span class="s1">);</span>
+            <span class="s1">});</span>
+            <span class="s1">shortcuts.appendChild(document.createTextNode(</span><span class="s2">'</span><span class="s5">\u00A0</span><span class="s2">|</span><span class="s5">\u00A0</span><span class="s2">'</span><span class="s1">));</span>
+            <span class="s1">day_link = quickElement(</span><span class="s2">'a'</span><span class="s1">, shortcuts, gettext(</span><span class="s2">'Today'</span><span class="s1">), </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">day_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.handleCalendarQuickLink(num, </span><span class="s3">0</span><span class="s1">);</span>
+            <span class="s1">});</span>
+            <span class="s1">shortcuts.appendChild(document.createTextNode(</span><span class="s2">'</span><span class="s5">\u00A0</span><span class="s2">|</span><span class="s5">\u00A0</span><span class="s2">'</span><span class="s1">));</span>
+            <span class="s1">day_link = quickElement(</span><span class="s2">'a'</span><span class="s1">, shortcuts, gettext(</span><span class="s2">'Tomorrow'</span><span class="s1">), </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">day_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.handleCalendarQuickLink(num, +</span><span class="s3">1</span><span class="s1">);</span>
+            <span class="s1">});</span>
+
+            <span class="s0">// cancel bar</span>
+            <span class="s1">const cancel_p = quickElement(</span><span class="s2">'p'</span><span class="s1">, cal_box);</span>
+            <span class="s1">cancel_p.className = </span><span class="s2">'calendar-cancel'</span><span class="s1">;</span>
+            <span class="s1">const cancel_link = quickElement(</span><span class="s2">'a'</span><span class="s1">, cancel_p, gettext(</span><span class="s2">'Cancel'</span><span class="s1">), </span><span class="s2">'href'</span><span class="s1">, </span><span class="s2">'#'</span><span class="s1">);</span>
+            <span class="s1">cancel_link.addEventListener(</span><span class="s2">'click'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(e) {</span>
+                <span class="s1">e.preventDefault();</span>
+                <span class="s1">DateTimeShortcuts.dismissCalendar(num);</span>
+            <span class="s1">});</span>
+            <span class="s1">document.addEventListener(</span><span class="s2">'keyup'</span><span class="s1">, </span><span class="s4">function</span><span class="s1">(event) {</span>
+                <span class="s4">if </span><span class="s1">(event.which === </span><span class="s3">27</span><span class="s1">) {</span>
+                    <span class="s0">// ESC key closes popup</span>
+                    <span class="s1">DateTimeShortcuts.dismissCalendar(num);</span>
+                    <span class="s1">event.preventDefault();</span>
+                <span class="s1">}</span>
+            <span class="s1">});</span>
+        <span class="s1">},</span>
+        <span class="s1">openCalendar: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">const cal_box = document.getElementById(DateTimeShortcuts.calendarDivName1 + num);</span>
+            <span class="s1">const cal_link = document.getElementById(DateTimeShortcuts.calendarLinkName + num);</span>
+            <span class="s1">const inp = DateTimeShortcuts.calendarInputs[num];</span>
+
+            <span class="s0">// Determine if the current value in the input has a valid date.</span>
+            <span class="s0">// If so, draw the calendar with that date's year and month.</span>
+            <span class="s4">if </span><span class="s1">(inp.value) {</span>
+                <span class="s1">const format = get_format(</span><span class="s2">'DATE_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s3">0</span><span class="s1">];</span>
+                <span class="s1">const selected = inp.value.strptime(format);</span>
+                <span class="s1">const year = selected.getUTCFullYear();</span>
+                <span class="s1">const month = selected.getUTCMonth() + </span><span class="s3">1</span><span class="s1">;</span>
+                <span class="s1">const re = /\d{</span><span class="s3">4</span><span class="s1">}/;</span>
+                <span class="s4">if </span><span class="s1">(re.test(year.toString()) &amp;&amp; month &gt;= </span><span class="s3">1 </span><span class="s1">&amp;&amp; month &lt;= </span><span class="s3">12</span><span class="s1">) {</span>
+                    <span class="s1">DateTimeShortcuts.calendars[num].drawDate(month, year, selected);</span>
+                <span class="s1">}</span>
+            <span class="s1">}</span>
+
+            <span class="s0">// Recalculate the clockbox position</span>
+            <span class="s0">// is it left-to-right or right-to-left layout ?</span>
+            <span class="s4">if </span><span class="s1">(window.getComputedStyle(document.body).direction !== </span><span class="s2">'rtl'</span><span class="s1">) {</span>
+                <span class="s1">cal_box.style.left = findPosX(cal_link) + </span><span class="s3">17 </span><span class="s1">+ </span><span class="s2">'px'</span><span class="s1">;</span>
+            <span class="s1">}</span>
+            <span class="s4">else </span><span class="s1">{</span>
+                <span class="s0">// since style's width is in em, it'd be tough to calculate</span>
+                <span class="s0">// px value of it. let's use an estimated px for now</span>
+                <span class="s1">cal_box.style.left = findPosX(cal_link) - </span><span class="s3">180 </span><span class="s1">+ </span><span class="s2">'px'</span><span class="s1">;</span>
+            <span class="s1">}</span>
+            <span class="s1">cal_box.style.top = Math.max(</span><span class="s3">0</span><span class="s1">, findPosY(cal_link) - </span><span class="s3">75</span><span class="s1">) + </span><span class="s2">'px'</span><span class="s1">;</span>
+
+            <span class="s1">cal_box.style.display = </span><span class="s2">'block'</span><span class="s1">;</span>
+            <span class="s1">document.addEventListener(</span><span class="s2">'click'</span><span class="s1">, DateTimeShortcuts.dismissCalendarFunc[num]);</span>
+        <span class="s1">},</span>
+        <span class="s1">dismissCalendar: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">document.getElementById(DateTimeShortcuts.calendarDivName1 + num).style.display = </span><span class="s2">'none'</span><span class="s1">;</span>
+            <span class="s1">document.removeEventListener(</span><span class="s2">'click'</span><span class="s1">, DateTimeShortcuts.dismissCalendarFunc[num]);</span>
+        <span class="s1">},</span>
+        <span class="s1">drawPrev: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">DateTimeShortcuts.calendars[num].drawPreviousMonth();</span>
+        <span class="s1">},</span>
+        <span class="s1">drawNext: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">DateTimeShortcuts.calendars[num].drawNextMonth();</span>
+        <span class="s1">},</span>
+        <span class="s1">handleCalendarCallback: </span><span class="s4">function</span><span class="s1">(num) {</span>
+            <span class="s1">let format = get_format(</span><span class="s2">'DATE_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s3">0</span><span class="s1">];</span>
+            <span class="s0">// the format needs to be escaped a little</span>
+            <span class="s1">format = format.replace(</span><span class="s2">'</span><span class="s5">\\</span><span class="s2">'</span><span class="s1">, </span><span class="s2">'</span><span class="s5">\\\\</span><span class="s2">'</span><span class="s1">)</span>
+                <span class="s1">.replace(</span><span class="s2">'</span><span class="s5">\r</span><span class="s2">'</span><span class="s1">, </span><span class="s2">'</span><span class="s5">\\</span><span class="s2">r'</span><span class="s1">)</span>
+                <span class="s1">.replace(</span><span class="s2">'</span><span class="s5">\n</span><span class="s2">'</span><span class="s1">, </span><span class="s2">'</span><span class="s5">\\</span><span class="s2">n'</span><span class="s1">)</span>
+                <span class="s1">.replace(</span><span class="s2">'</span><span class="s5">\t</span><span class="s2">'</span><span class="s1">, </span><span class="s2">'</span><span class="s5">\\</span><span class="s2">t'</span><span class="s1">)</span>
+                <span class="s1">.replace(</span><span class="s2">&quot;'&quot;</span><span class="s1">, </span><span class="s2">&quot;</span><span class="s5">\\</span><span class="s2">'&quot;</span><span class="s1">);</span>
+            <span class="s4">return function</span><span class="s1">(y, m, d) {</span>
+                <span class="s1">DateTimeShortcuts.calendarInputs[num].value = </span><span class="s4">new </span><span class="s1">Date(y, m - </span><span class="s3">1</span><span class="s1">, d).strftime(format);</span>
+                <span class="s1">DateTimeShortcuts.calendarInputs[num].focus();</span>
+                <span class="s1">document.getElementById(DateTimeShortcuts.calendarDivName1 + num).style.display = </span><span class="s2">'none'</span><span class="s1">;</span>
+            <span class="s1">};</span>
+        <span class="s1">},</span>
+        <span class="s1">handleCalendarQuickLink: </span><span class="s4">function</span><span class="s1">(num, offset) {</span>
+            <span class="s1">const d = DateTimeShortcuts.now();</span>
+            <span class="s1">d.setDate(d.getDate() + offset);</span>
+            <span class="s1">DateTimeShortcuts.calendarInputs[num].value = d.strftime(get_format(</span><span class="s2">'DATE_INPUT_FORMATS'</span><span class="s1">)[</span><span class="s3">0</span><span class="s1">]);</span>
+            <span class="s1">DateTimeShortcuts.calendarInputs[num].focus();</span>
+            <span class="s1">DateTimeShortcuts.dismissCalendar(num);</span>
+        <span class="s1">}</span>
+    <span class="s1">};</span>
+
+    <span class="s1">window.addEventListener(</span><span class="s2">'load'</span><span class="s1">, DateTimeShortcuts.init);</span>
+    <span class="s1">window.DateTimeShortcuts = DateTimeShortcuts;</span>
+<span class="s1">}</span>
+</pre>
+</body>
+</html>

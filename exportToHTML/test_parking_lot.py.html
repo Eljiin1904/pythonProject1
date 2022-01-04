@@ -1,0 +1,218 @@
+<html>
+<head>
+<title>test_parking_lot.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_parking_lot.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">... </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">...testing </span><span class="s0">import </span><span class="s1">wait_all_tasks_blocked</span>
+<span class="s0">from </span><span class="s1">.._parking_lot </span><span class="s0">import </span><span class="s1">ParkingLot</span>
+<span class="s0">from </span><span class="s1">.tutil </span><span class="s0">import </span><span class="s1">check_sequence_matches</span>
+
+
+<span class="s0">async def </span><span class="s1">test_parking_lot_basic():</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">waiter(i</span><span class="s0">, </span><span class="s1">lot):</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;sleep {}&quot;</span><span class="s1">.format(i))</span>
+        <span class="s0">await </span><span class="s1">lot.park()</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;wake {}&quot;</span><span class="s1">.format(i))</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">lot = ParkingLot()</span>
+        <span class="s0">assert not </span><span class="s1">lot</span>
+        <span class="s0">assert </span><span class="s1">len(lot) == </span><span class="s3">0</span>
+        <span class="s0">assert </span><span class="s1">lot.statistics().tasks_waiting == </span><span class="s3">0</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">3</span><span class="s1">):</span>
+            <span class="s1">nursery.start_soon(waiter</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">lot)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">3</span>
+        <span class="s0">assert </span><span class="s1">bool(lot)</span>
+        <span class="s0">assert </span><span class="s1">len(lot) == </span><span class="s3">3</span>
+        <span class="s0">assert </span><span class="s1">lot.statistics().tasks_waiting == </span><span class="s3">3</span>
+        <span class="s1">lot.unpark_all()</span>
+        <span class="s0">assert </span><span class="s1">lot.statistics().tasks_waiting == </span><span class="s3">0</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">6</span>
+
+    <span class="s1">check_sequence_matches(</span>
+        <span class="s1">record</span><span class="s0">, </span><span class="s1">[{</span><span class="s2">&quot;sleep 0&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 1&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 2&quot;</span><span class="s1">}</span><span class="s0">, </span><span class="s1">{</span><span class="s2">&quot;wake 0&quot;</span><span class="s0">, </span><span class="s2">&quot;wake 1&quot;</span><span class="s0">, </span><span class="s2">&quot;wake 2&quot;</span><span class="s1">}]</span>
+    <span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">record = []</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">3</span><span class="s1">):</span>
+            <span class="s1">nursery.start_soon(waiter</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">lot)</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">3</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">3</span><span class="s1">):</span>
+            <span class="s1">lot.unpark()</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s4"># 1-by-1 wakeups are strict FIFO</span>
+        <span class="s0">assert </span><span class="s1">record == [</span>
+            <span class="s2">&quot;sleep 0&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 2&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 0&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 2&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+    <span class="s4"># It's legal (but a no-op) to try and unpark while there's nothing parked</span>
+    <span class="s1">lot.unpark()</span>
+    <span class="s1">lot.unpark(count=</span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s1">lot.unpark(count=</span><span class="s3">100</span><span class="s1">)</span>
+
+    <span class="s4"># Check unpark with count</span>
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">record = []</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">3</span><span class="s1">):</span>
+            <span class="s1">nursery.start_soon(waiter</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">lot)</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">lot.unpark(count=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">check_sequence_matches(</span>
+            <span class="s1">record</span><span class="s0">, </span><span class="s1">[</span><span class="s2">&quot;sleep 0&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 1&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 2&quot;</span><span class="s0">, </span><span class="s1">{</span><span class="s2">&quot;wake 0&quot;</span><span class="s0">, </span><span class="s2">&quot;wake 1&quot;</span><span class="s1">}]</span>
+        <span class="s1">)</span>
+        <span class="s1">lot.unpark_all()</span>
+
+
+<span class="s0">async def </span><span class="s1">cancellable_waiter(name</span><span class="s0">, </span><span class="s1">lot</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record):</span>
+    <span class="s0">with </span><span class="s1">_core.CancelScope() </span><span class="s0">as </span><span class="s1">scope:</span>
+        <span class="s1">scopes[name] = scope</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;sleep {}&quot;</span><span class="s1">.format(name))</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">lot.park()</span>
+        <span class="s0">except </span><span class="s1">_core.Cancelled:</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;cancelled {}&quot;</span><span class="s1">.format(name))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;wake {}&quot;</span><span class="s1">.format(name))</span>
+
+
+<span class="s0">async def </span><span class="s1">test_parking_lot_cancel():</span>
+    <span class="s1">record = []</span>
+    <span class="s1">scopes = {}</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">lot = ParkingLot()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">1</span><span class="s0">, </span><span class="s1">lot</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">2</span><span class="s0">, </span><span class="s1">lot</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">3</span><span class="s0">, </span><span class="s1">lot</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">3</span>
+
+        <span class="s1">scopes[</span><span class="s3">2</span><span class="s1">].cancel()</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">4</span>
+        <span class="s1">lot.unpark_all()</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">6</span>
+
+    <span class="s1">check_sequence_matches(</span>
+        <span class="s1">record</span><span class="s0">, </span><span class="s1">[</span><span class="s2">&quot;sleep 1&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 2&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 3&quot;</span><span class="s0">, </span><span class="s2">&quot;cancelled 2&quot;</span><span class="s0">, </span><span class="s1">{</span><span class="s2">&quot;wake 1&quot;</span><span class="s0">, </span><span class="s2">&quot;wake 3&quot;</span><span class="s1">}]</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_parking_lot_repark():</span>
+    <span class="s1">record = []</span>
+    <span class="s1">scopes = {}</span>
+    <span class="s1">lot1 = ParkingLot()</span>
+    <span class="s1">lot2 = ParkingLot()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">lot1.repark([])</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">1</span><span class="s0">, </span><span class="s1">lot1</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">2</span><span class="s0">, </span><span class="s1">lot1</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">3</span><span class="s0">, </span><span class="s1">lot1</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">3</span>
+
+        <span class="s0">assert </span><span class="s1">len(lot1) == </span><span class="s3">3</span>
+        <span class="s1">lot1.repark(lot2)</span>
+        <span class="s0">assert </span><span class="s1">len(lot1) == </span><span class="s3">2</span>
+        <span class="s0">assert </span><span class="s1">len(lot2) == </span><span class="s3">1</span>
+        <span class="s1">lot2.unpark_all()</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">4</span>
+        <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;sleep 1&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 2&quot;</span><span class="s0">, </span><span class="s2">&quot;sleep 3&quot;</span><span class="s0">, </span><span class="s2">&quot;wake 1&quot;</span><span class="s1">]</span>
+
+        <span class="s1">lot1.repark_all(lot2)</span>
+        <span class="s0">assert </span><span class="s1">len(lot1) == </span><span class="s3">0</span>
+        <span class="s0">assert </span><span class="s1">len(lot2) == </span><span class="s3">2</span>
+
+        <span class="s1">scopes[</span><span class="s3">2</span><span class="s1">].cancel()</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(lot2) == </span><span class="s3">1</span>
+        <span class="s0">assert </span><span class="s1">record == [</span>
+            <span class="s2">&quot;sleep 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 2&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 3&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;cancelled 2&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+        <span class="s1">lot2.unpark_all()</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">record == [</span>
+            <span class="s2">&quot;sleep 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 2&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 3&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;cancelled 2&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 3&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_parking_lot_repark_with_count():</span>
+    <span class="s1">record = []</span>
+    <span class="s1">scopes = {}</span>
+    <span class="s1">lot1 = ParkingLot()</span>
+    <span class="s1">lot2 = ParkingLot()</span>
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">1</span><span class="s0">, </span><span class="s1">lot1</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">2</span><span class="s0">, </span><span class="s1">lot1</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(cancellable_waiter</span><span class="s0">, </span><span class="s3">3</span><span class="s0">, </span><span class="s1">lot1</span><span class="s0">, </span><span class="s1">scopes</span><span class="s0">, </span><span class="s1">record)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s3">3</span>
+
+        <span class="s0">assert </span><span class="s1">len(lot1) == </span><span class="s3">3</span>
+        <span class="s0">assert </span><span class="s1">len(lot2) == </span><span class="s3">0</span>
+        <span class="s1">lot1.repark(lot2</span><span class="s0">, </span><span class="s1">count=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">len(lot1) == </span><span class="s3">1</span>
+        <span class="s0">assert </span><span class="s1">len(lot2) == </span><span class="s3">2</span>
+        <span class="s0">while </span><span class="s1">lot2:</span>
+            <span class="s1">lot2.unpark()</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">record == [</span>
+            <span class="s2">&quot;sleep 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 2&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;sleep 3&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 1&quot;</span><span class="s0">,</span>
+            <span class="s2">&quot;wake 2&quot;</span><span class="s0">,</span>
+        <span class="s1">]</span>
+        <span class="s1">lot1.unpark_all()</span>
+</pre>
+</body>
+</html>

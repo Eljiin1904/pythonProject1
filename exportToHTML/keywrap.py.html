@@ -1,0 +1,195 @@
+<html>
+<head>
+<title>keywrap.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+keywrap.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">struct</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.ciphers </span><span class="s2">import </span><span class="s1">Cipher</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.ciphers.algorithms </span><span class="s2">import </span><span class="s1">AES</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.ciphers.modes </span><span class="s2">import </span><span class="s1">ECB</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.constant_time </span><span class="s2">import </span><span class="s1">bytes_eq</span>
+
+
+<span class="s2">def </span><span class="s1">_wrap_core(</span>
+    <span class="s1">wrapping_key: bytes</span><span class="s2">, </span><span class="s1">a: bytes</span><span class="s2">, </span><span class="s1">r: typing.List[bytes]</span><span class="s2">, </span><span class="s1">backend</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s0"># RFC 3394 Key Wrap - 2.2.1 (index method)</span>
+    <span class="s1">encryptor = Cipher(AES(wrapping_key)</span><span class="s2">, </span><span class="s1">ECB()</span><span class="s2">, </span><span class="s1">backend).encryptor()</span>
+    <span class="s1">n = len(r)</span>
+    <span class="s2">for </span><span class="s1">j </span><span class="s2">in </span><span class="s1">range(</span><span class="s3">6</span><span class="s1">):</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(n):</span>
+            <span class="s0"># every encryption operation is a discrete 16 byte chunk (because</span>
+            <span class="s0"># AES has a 128-bit block size) and since we're using ECB it is</span>
+            <span class="s0"># safe to reuse the encryptor for the entire operation</span>
+            <span class="s1">b = encryptor.update(a + r[i])</span>
+            <span class="s0"># pack/unpack are safe as these are always 64-bit chunks</span>
+            <span class="s1">a = struct.pack(</span>
+                <span class="s4">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">struct.unpack(</span><span class="s4">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">b[:</span><span class="s3">8</span><span class="s1">])[</span><span class="s3">0</span><span class="s1">] ^ ((n * j) + i + </span><span class="s3">1</span><span class="s1">)</span>
+            <span class="s1">)</span>
+            <span class="s1">r[i] = b[-</span><span class="s3">8</span><span class="s1">:]</span>
+
+    <span class="s2">assert </span><span class="s1">encryptor.finalize() == </span><span class="s5">b&quot;&quot;</span>
+
+    <span class="s2">return </span><span class="s1">a + </span><span class="s5">b&quot;&quot;</span><span class="s1">.join(r)</span>
+
+
+<span class="s2">def </span><span class="s1">aes_key_wrap(</span>
+    <span class="s1">wrapping_key: bytes</span><span class="s2">, </span><span class="s1">key_to_wrap: bytes</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">if </span><span class="s1">len(wrapping_key) </span><span class="s2">not in </span><span class="s1">[</span><span class="s3">16</span><span class="s2">, </span><span class="s3">24</span><span class="s2">, </span><span class="s3">32</span><span class="s1">]:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;The wrapping key must be a valid AES key length&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">len(key_to_wrap) &lt; </span><span class="s3">16</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;The key to wrap must be at least 16 bytes&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">len(key_to_wrap) % </span><span class="s3">8 </span><span class="s1">!= </span><span class="s3">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;The key to wrap must be a multiple of 8 bytes&quot;</span><span class="s1">)</span>
+
+    <span class="s1">a = </span><span class="s5">b&quot;</span><span class="s2">\xa6\xa6\xa6\xa6\xa6\xa6\xa6\xa6</span><span class="s5">&quot;</span>
+    <span class="s1">r = [key_to_wrap[i : i + </span><span class="s3">8</span><span class="s1">] </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">len(key_to_wrap)</span><span class="s2">, </span><span class="s3">8</span><span class="s1">)]</span>
+    <span class="s2">return </span><span class="s1">_wrap_core(wrapping_key</span><span class="s2">, </span><span class="s1">a</span><span class="s2">, </span><span class="s1">r</span><span class="s2">, </span><span class="s1">backend)</span>
+
+
+<span class="s2">def </span><span class="s1">_unwrap_core(</span>
+    <span class="s1">wrapping_key: bytes</span><span class="s2">, </span><span class="s1">a: bytes</span><span class="s2">, </span><span class="s1">r: typing.List[bytes]</span><span class="s2">, </span><span class="s1">backend</span>
+<span class="s1">) -&gt; typing.Tuple[bytes</span><span class="s2">, </span><span class="s1">typing.List[bytes]]:</span>
+    <span class="s0"># Implement RFC 3394 Key Unwrap - 2.2.2 (index method)</span>
+    <span class="s1">decryptor = Cipher(AES(wrapping_key)</span><span class="s2">, </span><span class="s1">ECB()</span><span class="s2">, </span><span class="s1">backend).decryptor()</span>
+    <span class="s1">n = len(r)</span>
+    <span class="s2">for </span><span class="s1">j </span><span class="s2">in </span><span class="s1">reversed(range(</span><span class="s3">6</span><span class="s1">)):</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">reversed(range(n)):</span>
+            <span class="s0"># pack/unpack are safe as these are always 64-bit chunks</span>
+            <span class="s1">atr = (</span>
+                <span class="s1">struct.pack(</span>
+                    <span class="s4">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">struct.unpack(</span><span class="s4">&quot;&gt;Q&quot;</span><span class="s2">, </span><span class="s1">a)[</span><span class="s3">0</span><span class="s1">] ^ ((n * j) + i + </span><span class="s3">1</span><span class="s1">)</span>
+                <span class="s1">)</span>
+                <span class="s1">+ r[i]</span>
+            <span class="s1">)</span>
+            <span class="s0"># every decryption operation is a discrete 16 byte chunk so</span>
+            <span class="s0"># it is safe to reuse the decryptor for the entire operation</span>
+            <span class="s1">b = decryptor.update(atr)</span>
+            <span class="s1">a = b[:</span><span class="s3">8</span><span class="s1">]</span>
+            <span class="s1">r[i] = b[-</span><span class="s3">8</span><span class="s1">:]</span>
+
+    <span class="s2">assert </span><span class="s1">decryptor.finalize() == </span><span class="s5">b&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">a</span><span class="s2">, </span><span class="s1">r</span>
+
+
+<span class="s2">def </span><span class="s1">aes_key_wrap_with_padding(</span>
+    <span class="s1">wrapping_key: bytes</span><span class="s2">, </span><span class="s1">key_to_wrap: bytes</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">if </span><span class="s1">len(wrapping_key) </span><span class="s2">not in </span><span class="s1">[</span><span class="s3">16</span><span class="s2">, </span><span class="s3">24</span><span class="s2">, </span><span class="s3">32</span><span class="s1">]:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;The wrapping key must be a valid AES key length&quot;</span><span class="s1">)</span>
+
+    <span class="s1">aiv = </span><span class="s5">b&quot;</span><span class="s2">\xA6\x59\x59\xA6</span><span class="s5">&quot; </span><span class="s1">+ struct.pack(</span><span class="s4">&quot;&gt;i&quot;</span><span class="s2">, </span><span class="s1">len(key_to_wrap))</span>
+    <span class="s0"># pad the key to wrap if necessary</span>
+    <span class="s1">pad = (</span><span class="s3">8 </span><span class="s1">- (len(key_to_wrap) % </span><span class="s3">8</span><span class="s1">)) % </span><span class="s3">8</span>
+    <span class="s1">key_to_wrap = key_to_wrap + </span><span class="s5">b&quot;</span><span class="s2">\x00</span><span class="s5">&quot; </span><span class="s1">* pad</span>
+    <span class="s2">if </span><span class="s1">len(key_to_wrap) == </span><span class="s3">8</span><span class="s1">:</span>
+        <span class="s0"># RFC 5649 - 4.1 - exactly 8 octets after padding</span>
+        <span class="s1">encryptor = Cipher(AES(wrapping_key)</span><span class="s2">, </span><span class="s1">ECB()</span><span class="s2">, </span><span class="s1">backend).encryptor()</span>
+        <span class="s1">b = encryptor.update(aiv + key_to_wrap)</span>
+        <span class="s2">assert </span><span class="s1">encryptor.finalize() == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">b</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">r = [key_to_wrap[i : i + </span><span class="s3">8</span><span class="s1">] </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">len(key_to_wrap)</span><span class="s2">, </span><span class="s3">8</span><span class="s1">)]</span>
+        <span class="s2">return </span><span class="s1">_wrap_core(wrapping_key</span><span class="s2">, </span><span class="s1">aiv</span><span class="s2">, </span><span class="s1">r</span><span class="s2">, </span><span class="s1">backend)</span>
+
+
+<span class="s2">def </span><span class="s1">aes_key_unwrap_with_padding(</span>
+    <span class="s1">wrapping_key: bytes</span><span class="s2">, </span><span class="s1">wrapped_key: bytes</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">if </span><span class="s1">len(wrapped_key) &lt; </span><span class="s3">16</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">InvalidUnwrap(</span><span class="s4">&quot;Must be at least 16 bytes&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">len(wrapping_key) </span><span class="s2">not in </span><span class="s1">[</span><span class="s3">16</span><span class="s2">, </span><span class="s3">24</span><span class="s2">, </span><span class="s3">32</span><span class="s1">]:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;The wrapping key must be a valid AES key length&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">len(wrapped_key) == </span><span class="s3">16</span><span class="s1">:</span>
+        <span class="s0"># RFC 5649 - 4.2 - exactly two 64-bit blocks</span>
+        <span class="s1">decryptor = Cipher(AES(wrapping_key)</span><span class="s2">, </span><span class="s1">ECB()</span><span class="s2">, </span><span class="s1">backend).decryptor()</span>
+        <span class="s1">b = decryptor.update(wrapped_key)</span>
+        <span class="s2">assert </span><span class="s1">decryptor.finalize() == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s1">a = b[:</span><span class="s3">8</span><span class="s1">]</span>
+        <span class="s1">data = b[</span><span class="s3">8</span><span class="s1">:]</span>
+        <span class="s1">n = </span><span class="s3">1</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">r = [wrapped_key[i : i + </span><span class="s3">8</span><span class="s1">] </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">len(wrapped_key)</span><span class="s2">, </span><span class="s3">8</span><span class="s1">)]</span>
+        <span class="s1">encrypted_aiv = r.pop(</span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s1">n = len(r)</span>
+        <span class="s1">a</span><span class="s2">, </span><span class="s1">r = _unwrap_core(wrapping_key</span><span class="s2">, </span><span class="s1">encrypted_aiv</span><span class="s2">, </span><span class="s1">r</span><span class="s2">, </span><span class="s1">backend)</span>
+        <span class="s1">data = </span><span class="s5">b&quot;&quot;</span><span class="s1">.join(r)</span>
+
+    <span class="s0"># 1) Check that MSB(32,A) = A65959A6.</span>
+    <span class="s0"># 2) Check that 8*(n-1) &lt; LSB(32,A) &lt;= 8*n.  If so, let</span>
+    <span class="s0">#    MLI = LSB(32,A).</span>
+    <span class="s0"># 3) Let b = (8*n)-MLI, and then check that the rightmost b octets of</span>
+    <span class="s0">#    the output data are zero.</span>
+    <span class="s1">(mli</span><span class="s2">,</span><span class="s1">) = struct.unpack(</span><span class="s4">&quot;&gt;I&quot;</span><span class="s2">, </span><span class="s1">a[</span><span class="s3">4</span><span class="s1">:])</span>
+    <span class="s1">b = (</span><span class="s3">8 </span><span class="s1">* n) - mli</span>
+    <span class="s2">if </span><span class="s1">(</span>
+        <span class="s2">not </span><span class="s1">bytes_eq(a[:</span><span class="s3">4</span><span class="s1">]</span><span class="s2">, </span><span class="s5">b&quot;</span><span class="s2">\xa6\x59\x59\xa6</span><span class="s5">&quot;</span><span class="s1">)</span>
+        <span class="s2">or not </span><span class="s3">8 </span><span class="s1">* (n - </span><span class="s3">1</span><span class="s1">) &lt; mli &lt;= </span><span class="s3">8 </span><span class="s1">* n</span>
+        <span class="s2">or </span><span class="s1">(b != </span><span class="s3">0 </span><span class="s2">and not </span><span class="s1">bytes_eq(data[-b:]</span><span class="s2">, </span><span class="s5">b&quot;</span><span class="s2">\x00</span><span class="s5">&quot; </span><span class="s1">* b))</span>
+    <span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">InvalidUnwrap()</span>
+
+    <span class="s2">if </span><span class="s1">b == </span><span class="s3">0</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">data</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">data[:-b]</span>
+
+
+<span class="s2">def </span><span class="s1">aes_key_unwrap(</span>
+    <span class="s1">wrapping_key: bytes</span><span class="s2">, </span><span class="s1">wrapped_key: bytes</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">if </span><span class="s1">len(wrapped_key) &lt; </span><span class="s3">24</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">InvalidUnwrap(</span><span class="s4">&quot;Must be at least 24 bytes&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">len(wrapped_key) % </span><span class="s3">8 </span><span class="s1">!= </span><span class="s3">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">InvalidUnwrap(</span><span class="s4">&quot;The wrapped key must be a multiple of 8 bytes&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">len(wrapping_key) </span><span class="s2">not in </span><span class="s1">[</span><span class="s3">16</span><span class="s2">, </span><span class="s3">24</span><span class="s2">, </span><span class="s3">32</span><span class="s1">]:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;The wrapping key must be a valid AES key length&quot;</span><span class="s1">)</span>
+
+    <span class="s1">aiv = </span><span class="s5">b&quot;</span><span class="s2">\xa6\xa6\xa6\xa6\xa6\xa6\xa6\xa6</span><span class="s5">&quot;</span>
+    <span class="s1">r = [wrapped_key[i : i + </span><span class="s3">8</span><span class="s1">] </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(</span><span class="s3">0</span><span class="s2">, </span><span class="s1">len(wrapped_key)</span><span class="s2">, </span><span class="s3">8</span><span class="s1">)]</span>
+    <span class="s1">a = r.pop(</span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s1">a</span><span class="s2">, </span><span class="s1">r = _unwrap_core(wrapping_key</span><span class="s2">, </span><span class="s1">a</span><span class="s2">, </span><span class="s1">r</span><span class="s2">, </span><span class="s1">backend)</span>
+    <span class="s2">if not </span><span class="s1">bytes_eq(a</span><span class="s2">, </span><span class="s1">aiv):</span>
+        <span class="s2">raise </span><span class="s1">InvalidUnwrap()</span>
+
+    <span class="s2">return </span><span class="s5">b&quot;&quot;</span><span class="s1">.join(r)</span>
+
+
+<span class="s2">class </span><span class="s1">InvalidUnwrap(Exception):</span>
+    <span class="s2">pass</span>
+</pre>
+</body>
+</html>

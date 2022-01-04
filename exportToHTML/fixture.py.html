@@ -1,0 +1,424 @@
+<html>
+<head>
+<title>fixture.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+fixture.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s0"># STATUS: Basic concept works.</span>
+<span class="s2">&quot;&quot;&quot; 
+A **fixture** provides a concept to simplify test support functionality 
+that needs a setup/cleanup cycle per scenario, feature or test-run. 
+A fixture is provided as fixture-function that contains the setup part and 
+cleanup part similar to :func:`contextlib.contextmanager` or `pytest.fixture`_. 
+ 
+.. _pytest.fixture: https://docs.pytest.org/en/latest/fixture.html 
+ 
+A fixture is used when: 
+ 
+* the (registered) fixture tag is used for a scenario or feature 
+* the :func:`.use_fixture()` is called in the environment file (normally) 
+ 
+.. sourcecode:: python 
+ 
+    # -- FILE: behave4my_project/fixtures.py (or: features/environment.py) 
+    from behave import fixture 
+    from somewhere.browser.firefox import FirefoxBrowser 
+ 
+    @fixture 
+    def browser_firefox(context, timeout=30, **kwargs): 
+        # -- SETUP-FIXTURE PART: 
+        context.browser = FirefoxBrowser(timeout, *args, **kwargs) 
+        yield context.browser 
+        # -- CLEANUP-FIXTURE PART: 
+        context.browser.shutdown() 
+ 
+.. sourcecode:: gherkin 
+ 
+    # -- FILE: features/use_fixture.feature 
+    Feature: Use Fixture in Scenario 
+ 
+        @fixture.browser.firefox 
+        Scenario: Use browser=firefox 
+          Given I use the browser 
+          ... 
+        # -- AFTER-SCENEARIO: Cleanup fixture.browser.firefox 
+ 
+.. sourcecode:: python 
+ 
+    # -- FILE: features/environment.py 
+    from behave import use_fixture 
+    from behave4my_project.fixtures import browser_firefox 
+ 
+    def before_tag(context, tag): 
+        if tag == &quot;fixture.browser.firefox&quot;: 
+            # -- Performs fixture setup and registers fixture cleanup 
+            use_fixture(browser_firefox, context, timeout=10) 
+ 
+.. hidden: 
+ 
+    BEHAVIORAL DECISIONS: 
+ 
+    * Should scenario/feature be executed when fixture-setup fails 
+      (similar to before-hook failures) ? 
+      NO, scope is skipped, but after-hooks and cleanups are executed. 
+ 
+    * Should remaining fixture-setups be performed after first fixture fails? 
+      NO, first setup-error aborts the setup and execution of the scope. 
+ 
+    * Should remaining fixture-cleanups be performed when first cleanup-error 
+      occurs? 
+      YES, try to perform all fixture-cleanups and then reraise the 
+      first cleanup-error. 
+ 
+ 
+    OPEN ISSUES: 
+ 
+    * AUTO_CALL_REGISTERED_FIXTURE (planned in future): 
+        Run fixture setup before or after before-hooks? 
+ 
+    IDEAS: 
+ 
+    * Fixture registers itself in fixture registry (runtime context). 
+    * Code in before_tag() will either be replaced w/ fixture processing function 
+      or will be automatically be executed (AUTO_CALL_REGISTERED_FIXTURE) 
+    * Support fixture tags w/ parameters that are automatically parsed and 
+      passed to fixture function, like: 
+      @fixture(name=&quot;foo&quot;, pattern=&quot;{name}={browser}&quot;) 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">inspect</span>
+
+
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s0"># LOCAL HELPERS:</span>
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">iscoroutinefunction(func):</span>
+    <span class="s2">&quot;&quot;&quot;Checks if a function is a coroutine-function, like: 
+ 
+     * ``async def f(): ...`` (since Python 3.5) 
+     * ``@asyncio.coroutine def f(): ...`` (since Python3) 
+ 
+    .. note:: Compatibility helper 
+ 
+        Avoids to import :mod:`asyncio` module directly (since Python3), 
+        which in turns initializes the :mod:`logging` module as side-effect. 
+ 
+    :param func:  Function to check. 
+    :return: True, if function is a coroutine function. 
+             False, otherwise. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># -- NOTE: inspect.iscoroutinefunction() is available since Python 3.5</span>
+    <span class="s0">#    Checks also if @asyncio.coroutine decorator is not used.</span>
+    <span class="s0"># pylint: disable=no-member</span>
+    <span class="s3">return </span><span class="s1">(getattr(func</span><span class="s3">, </span><span class="s4">&quot;_is_coroutine&quot;</span><span class="s3">, False</span><span class="s1">) </span><span class="s3">or</span>
+            <span class="s1">(hasattr(inspect</span><span class="s3">, </span><span class="s4">&quot;iscoroutinefunction&quot;</span><span class="s1">) </span><span class="s3">and</span>
+             <span class="s1">inspect.iscoroutinefunction(func)))</span>
+
+
+<span class="s3">def </span><span class="s1">is_context_manager(func):</span>
+    <span class="s2">&quot;&quot;&quot;Checks if a fixture function provides context-manager functionality, 
+    similar to :func`contextlib.contextmanager()` function decorator. 
+ 
+    .. code-block:: python 
+ 
+        @fixture 
+        def foo(context, *args, **kwargs): 
+            context.foo = setup_foo() 
+            yield context.foo 
+            cleanup_foo() 
+ 
+        @fixture 
+        def bar(context, *args, **kwargs): 
+            context.bar = setup_bar() 
+            return context.bar 
+ 
+        assert is_context_manager(foo) is True      # Generator-function 
+        assert is_context_manager(bar) is False     # Normal function 
+ 
+    :param func:    Function to check. 
+    :return: True, if function is a generator/context-manager function. 
+             False, otherwise. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">genfunc = inspect.isgeneratorfunction(func)</span>
+    <span class="s3">return </span><span class="s1">genfunc </span><span class="s3">and not </span><span class="s1">iscoroutinefunction(func)</span>
+
+
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s0"># EXCEPTIONS:</span>
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">InvalidFixtureError(RuntimeError):</span>
+    <span class="s2">&quot;&quot;&quot;Raised when a fixture is invalid. 
+    This occurs when a generator-function with more than one yield statement 
+    is used as fixture-function. 
+    &quot;&quot;&quot;</span>
+
+
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s0"># FUNCTIONS: Fixture support</span>
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">_setup_fixture(fixture_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*fixture_args</span><span class="s3">, </span><span class="s1">**fixture_kwargs):</span>
+    <span class="s2">&quot;&quot;&quot;Provides core functionality to setup a fixture and registers its 
+    cleanup part (if needed). 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">is_context_manager(fixture_func):</span>
+        <span class="s0"># -- CASE: Fixture function is a two-step generator (setup, cleanup).</span>
+        <span class="s3">def </span><span class="s1">cleanup_fixture():</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">next(func_it)           </span><span class="s0"># CLEANUP-FIXTURE PART</span>
+                <span class="s0"># -- USE func_it: From outer scope (here).</span>
+            <span class="s3">except </span><span class="s1">StopIteration:</span>
+                <span class="s3">return False</span>
+            <span class="s0"># -- NOT-NEEDED:</span>
+            <span class="s0"># except Exception:</span>
+            <span class="s0">#    raise   # -- CLEANUP-FIXTURE PART raised an error.</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">message = </span><span class="s4">&quot;Has more than one yield: %r&quot; </span><span class="s1">% fixture_func</span>
+                <span class="s3">raise </span><span class="s1">InvalidFixtureError(message)</span>
+
+        <span class="s0"># -- GENERATOR: Get instance via call and register cleanup.</span>
+        <span class="s0">#  Then perform setup_fixture to ensure that cleanup_fixture()</span>
+        <span class="s0">#  is called even if setup-error occurs.</span>
+        <span class="s0">#  NOTE: cleanup_fixture() is called when context layer is removed.</span>
+        <span class="s1">func_it = fixture_func(context</span><span class="s3">, </span><span class="s1">*fixture_args</span><span class="s3">, </span><span class="s1">**fixture_kwargs)</span>
+        <span class="s1">context.add_cleanup(cleanup_fixture)</span>
+        <span class="s1">setup_result = next(func_it) </span><span class="s0"># SETUP-FIXTURE PART (may raise error)</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s0"># -- CASE: Fixture is a simple function (setup-only)</span>
+        <span class="s0"># NOTE: No cleanup is registered (not needed by intention of user)</span>
+        <span class="s1">setup_result = fixture_func(context</span><span class="s3">, </span><span class="s1">*fixture_args</span><span class="s3">, </span><span class="s1">**fixture_kwargs)</span>
+    <span class="s3">return </span><span class="s1">setup_result</span>
+
+
+<span class="s3">def </span><span class="s1">use_fixture(fixture_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*fixture_args</span><span class="s3">, </span><span class="s1">**fixture_kwargs):</span>
+    <span class="s2">&quot;&quot;&quot;Use fixture (function) and call it to perform its setup-part. 
+ 
+    The fixture-function is similar to a :func:`contextlib.contextmanager` 
+    (and contains a yield-statement to seperate setup and cleanup part). 
+    If it contains a yield-statement, it registers a context-cleanup function 
+    to the context object to perform the fixture-cleanup at the end of the 
+    current scoped when the context layer is removed 
+    (and all context-cleanup functions are called). 
+ 
+    Therefore, fixture-cleanup is performed after scenario, feature or test-run 
+    (depending when its fixture-setup is performed). 
+ 
+    .. code-block:: python 
+ 
+        # -- FILE: behave4my_project/fixtures.py (or: features/environment.py) 
+        from behave import fixture 
+        from somewhere.browser import FirefoxBrowser 
+ 
+        @fixture(name=&quot;fixture.browser.firefox&quot;) 
+        def browser_firefox(context, *args, **kwargs): 
+            # -- SETUP-FIXTURE PART: 
+            context.browser = FirefoxBrowser(*args, **kwargs) 
+            yield context.browser 
+            # -- CLEANUP-FIXTURE PART: 
+            context.browser.shutdown() 
+ 
+    .. code-block:: python 
+ 
+        # -- FILE: features/environment.py 
+        from behave import use_fixture 
+        from behave4my_project.fixtures import browser_firefox 
+ 
+        def before_tag(context, tag): 
+            if tag == &quot;fixture.browser.firefox&quot;: 
+                use_fixture(browser_firefox, context, timeout=10) 
+ 
+ 
+    :param fixture_func: Fixture function to use. 
+    :param context: Context object to use 
+    :param fixture_kwargs: Positional args, passed to the fixture function. 
+    :param fixture_kwargs: Additional kwargs, passed to the fixture function. 
+    :return: Setup result object (may be None). 
+    &quot;&quot;&quot;</span>
+    <span class="s3">return </span><span class="s1">_setup_fixture(fixture_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*fixture_args</span><span class="s3">, </span><span class="s1">**fixture_kwargs)</span>
+
+
+<span class="s3">def </span><span class="s1">use_fixture_by_tag(tag</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">fixture_registry):</span>
+    <span class="s2">&quot;&quot;&quot;Process any fixture-tag to perform :func:`use_fixture()` for its fixture. 
+    If the fixture-tag is known, the fixture data is retrieved from the 
+    fixture registry. 
+ 
+    .. code-block:: python 
+ 
+        # -- FILE: features/environment.py 
+        from behave.fixture import use_fixture_by_tag 
+        from behave4my_project.fixtures import browser_firefox, browser_chrome 
+ 
+        # -- SCHEMA 1: fixture_func 
+        fixture_registry1 = { 
+            &quot;fixture.browser.firefox&quot;: browser_firefox, 
+            &quot;fixture.browser.chrome&quot;:  browser_chrome, 
+        } 
+        # -- SCHEMA 2: fixture_func, fixture_args, fixture_kwargs 
+        fixture_registry2 = { 
+            &quot;fixture.browser.firefox&quot;: (browser_firefox, (), dict(timeout=10)), 
+            &quot;fixture.browser.chrome&quot;:  (browser_chrome,  (), dict(timeout=12)), 
+        } 
+ 
+        def before_tag(context, tag): 
+            if tag.startswith(&quot;fixture.&quot;): 
+                return use_fixture_by_tag(tag, context, fixture_registry1): 
+            # -- MORE: Tag processing steps ... 
+ 
+ 
+    :param tag:     Fixture tag to process. 
+    :param context: Runtime context object, used for :func:`use_fixture()`. 
+    :param fixture_registry:  Registry maps fixture-tag to fixture data. 
+    :return: Fixture-setup result (same as: use_fixture()) 
+    :raises LookupError: If fixture-tag/fixture is unknown. 
+    :raises ValueError: If fixture data type is not supported. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">fixture_data = fixture_registry.get(tag</span><span class="s3">, None</span><span class="s1">)</span>
+    <span class="s3">if </span><span class="s1">fixture_data </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s3">raise </span><span class="s1">LookupError(</span><span class="s4">&quot;Unknown fixture-tag: %s&quot; </span><span class="s1">% tag)</span>
+
+    <span class="s3">if </span><span class="s1">callable(fixture_data):</span>
+        <span class="s1">fixture_func = fixture_data</span>
+        <span class="s1">use_fixture(fixture_func</span><span class="s3">, </span><span class="s1">context)</span>
+    <span class="s3">elif </span><span class="s1">isinstance(fixture_data</span><span class="s3">, </span><span class="s1">(tuple</span><span class="s3">, </span><span class="s1">list)):</span>
+        <span class="s3">assert </span><span class="s1">len(fixture_data) == </span><span class="s5">3</span>
+        <span class="s1">fixture_func</span><span class="s3">, </span><span class="s1">fixture_args</span><span class="s3">, </span><span class="s1">fixture_kwargs = fixture_data</span>
+        <span class="s3">return </span><span class="s1">use_fixture(fixture_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*fixture_args</span><span class="s3">, </span><span class="s1">**fixture_kwargs)</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s1">message = </span><span class="s4">&quot;fixture_data: Expected tuple or fixture-func, but is: %r&quot;</span>
+        <span class="s3">raise </span><span class="s1">ValueError(message % fixture_data)</span>
+
+
+<span class="s3">def </span><span class="s1">fixture_call_params(fixture_func</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+    <span class="s0"># -- SEE: use_composite_fixture_with()</span>
+    <span class="s3">return </span><span class="s1">(fixture_func</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">kwargs)</span>
+
+
+<span class="s3">def </span><span class="s1">use_composite_fixture_with(context</span><span class="s3">, </span><span class="s1">fixture_funcs_with_params):</span>
+    <span class="s2">&quot;&quot;&quot;Helper function when complex fixtures should be created and 
+    safe-cleanup is needed even if an setup-fixture-error occurs. 
+ 
+    This function ensures that fixture-cleanup is performed 
+    for every fixture that was setup before the setup-error occured. 
+ 
+    .. code-block:: python 
+ 
+        # -- BAD-EXAMPLE: Simplistic composite-fixture 
+        # NOTE: Created fixtures (fixture1) are not cleaned up. 
+        @fixture 
+        def foo_and_bad0(context, *args, **kwargs): 
+            the_fixture1 = setup_fixture_foo(*args, **kwargs) 
+            the_fixture2 = setup_fixture_bar_with_error(&quot;OOPS-HERE&quot;) 
+            yield (the_fixture1, the_fixture2)  # NOT_REACHED. 
+            # -- NOT_REACHED: Due to fixture2-setup-error. 
+            the_fixture1.cleanup()  # NOT-CALLED (SAD). 
+            the_fixture2.cleanup()  # OOPS, the_fixture2 is None (if called). 
+ 
+    .. code-block:: python 
+ 
+        # -- GOOD-EXAMPLE: Sane composite-fixture 
+        # NOTE: Fixture foo.cleanup() occurs even after fixture2-setup-error. 
+        @fixture 
+        def foo(context, *args, **kwargs): 
+            the_fixture = setup_fixture_foo(*args, **kwargs) 
+            yield the_fixture 
+            cleanup_fixture_foo(the_fixture) 
+ 
+        @fixture 
+        def bad_with_setup_error(context, *args, **kwargs): 
+            raise RuntimeError(&quot;BAD-FIXTURE-SETUP&quot;) 
+ 
+        # -- SOLUTION 1: With use_fixture() 
+        @fixture 
+        def foo_and_bad1(context, *args, **kwargs): 
+            the_fixture1 = use_fixture(foo, context, *args, **kwargs) 
+            the_fixture2 = use_fixture(bad_with_setup_error, context, &quot;OOPS&quot;) 
+            return (the_fixture1, the_fixture2) # NOT_REACHED 
+ 
+        # -- SOLUTION 2: With use_composite_fixture_with() 
+        @fixture 
+        def foo_and_bad2(context, *args, **kwargs): 
+            the_fixture = use_composite_fixture_with(context, [ 
+                fixture_call_params(foo, *args, **kwargs), 
+                fixture_call_params(bad_with_setup_error, &quot;OOPS&quot;) 
+             ]) 
+            return the_fixture 
+ 
+    :param context:     Runtime context object, used for all fixtures. 
+    :param fixture_funcs_with_params: List of fixture functions with params. 
+    :return: List of created fixture objects. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">composite_fixture = []</span>
+    <span class="s3">for </span><span class="s1">fixture_func</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">kwargs </span><span class="s3">in </span><span class="s1">fixture_funcs_with_params:</span>
+        <span class="s1">the_fixture = use_fixture(fixture_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">composite_fixture.append(the_fixture)</span>
+    <span class="s3">return </span><span class="s1">composite_fixture</span>
+
+
+
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s0"># DECORATORS:</span>
+<span class="s0"># -------------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">fixture(func=</span><span class="s3">None, </span><span class="s1">name=</span><span class="s3">None, </span><span class="s1">pattern=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Fixture decorator (currently mostly syntactic sugar). 
+ 
+    .. code-block:: python 
+ 
+        # -- FILE: features/environment.py 
+        # CASE FIXTURE-GENERATOR-FUNCTION (like @contextlib.contextmanager): 
+        @fixture 
+        def foo(context, *args, **kwargs): 
+            the_fixture = setup_fixture_foo(*args, **kwargs) 
+            context.foo = the_fixture 
+            yield the_fixture 
+            cleanup_fixture_foo(the_fixture) 
+ 
+        # CASE FIXTURE-FUNCTION: No cleanup or cleanup via context-cleanup. 
+        @fixture(name=&quot;fixture.bar&quot;) 
+        def bar(context, *args, **kwargs): 
+            the_fixture = setup_fixture_bar(*args, **kwargs) 
+            context.bar = the_fixture 
+            context.add_cleanup(cleanup_fixture_bar, the_fixture.cleanup) 
+            return the_fixture 
+ 
+    :param name:    Specifies the fixture tag name (as string). 
+ 
+    .. seealso:: 
+ 
+        * :func:`contextlib.contextmanager` decorator 
+        * `@pytest.fixture`_ 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">mark_as_fixture(func</span><span class="s3">, </span><span class="s1">name=</span><span class="s3">None, </span><span class="s1">pattern=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">func.name = name</span>
+        <span class="s1">func.pattern = pattern</span>
+        <span class="s1">func.behave_fixture = </span><span class="s3">True</span>
+        <span class="s3">return </span><span class="s1">func</span>
+
+    <span class="s3">if </span><span class="s1">func </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s0"># CASE: @fixture()</span>
+        <span class="s0"># CASE: @fixture(name=&quot;foo&quot;)</span>
+        <span class="s3">def </span><span class="s1">decorator(func):</span>
+            <span class="s3">return </span><span class="s1">mark_as_fixture(func</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">pattern=pattern)</span>
+        <span class="s3">return </span><span class="s1">decorator</span>
+    <span class="s3">elif </span><span class="s1">callable(func):</span>
+        <span class="s0"># CASE: @fixture</span>
+        <span class="s3">return </span><span class="s1">mark_as_fixture(func</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">pattern=pattern)</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s0"># -- OOPS: Should be callable-object or None</span>
+        <span class="s1">message = </span><span class="s4">&quot;Invalid func: func=%r, name=%r&quot; </span><span class="s1">% (func</span><span class="s3">, </span><span class="s1">name)</span>
+        <span class="s3">raise </span><span class="s1">TypeError(message)</span>
+</pre>
+</body>
+</html>

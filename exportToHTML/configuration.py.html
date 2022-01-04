@@ -1,0 +1,817 @@
+<html>
+<head>
+<title>configuration.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+configuration.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">print_function</span>
+<span class="s2">import </span><span class="s1">argparse</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">re</span>
+<span class="s2">import </span><span class="s1">sys</span>
+<span class="s2">import </span><span class="s1">shlex</span>
+<span class="s2">import </span><span class="s1">six</span>
+<span class="s2">from </span><span class="s1">six.moves </span><span class="s2">import </span><span class="s1">configparser</span>
+
+<span class="s2">from </span><span class="s1">behave.model </span><span class="s2">import </span><span class="s1">ScenarioOutline</span>
+<span class="s2">from </span><span class="s1">behave.model_core </span><span class="s2">import </span><span class="s1">FileLocation</span>
+<span class="s2">from </span><span class="s1">behave.reporter.junit </span><span class="s2">import </span><span class="s1">JUnitReporter</span>
+<span class="s2">from </span><span class="s1">behave.reporter.summary </span><span class="s2">import </span><span class="s1">SummaryReporter</span>
+<span class="s2">from </span><span class="s1">behave.tag_expression </span><span class="s2">import </span><span class="s1">TagExpression</span>
+<span class="s2">from </span><span class="s1">behave.formatter.base </span><span class="s2">import </span><span class="s1">StreamOpener</span>
+<span class="s2">from </span><span class="s1">behave.formatter </span><span class="s2">import </span><span class="s1">_registry </span><span class="s2">as </span><span class="s1">_format_registry</span>
+<span class="s2">from </span><span class="s1">behave.userdata </span><span class="s2">import </span><span class="s1">UserData</span><span class="s2">, </span><span class="s1">parse_user_define</span>
+<span class="s2">from </span><span class="s1">behave._types </span><span class="s2">import </span><span class="s1">Unknown</span>
+<span class="s2">from </span><span class="s1">behave.textutil </span><span class="s2">import </span><span class="s1">select_best_encoding</span><span class="s2">, </span><span class="s1">to_texts</span>
+
+<span class="s0"># -- PYTHON 2/3 COMPATIBILITY:</span>
+<span class="s0"># SINCE Python 3.2: ConfigParser = SafeConfigParser</span>
+<span class="s1">ConfigParser = configparser.ConfigParser</span>
+<span class="s2">if </span><span class="s1">six.PY2:</span>
+    <span class="s1">ConfigParser = configparser.SafeConfigParser</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># CONFIGURATION DATA TYPES:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s2">class </span><span class="s1">LogLevel(object):</span>
+    <span class="s1">names = [</span>
+        <span class="s3">&quot;NOTSET&quot;</span><span class="s2">, </span><span class="s3">&quot;CRITICAL&quot;</span><span class="s2">, </span><span class="s3">&quot;FATAL&quot;</span><span class="s2">, </span><span class="s3">&quot;ERROR&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;WARNING&quot;</span><span class="s2">, </span><span class="s3">&quot;WARN&quot;</span><span class="s2">, </span><span class="s3">&quot;INFO&quot;</span><span class="s2">, </span><span class="s3">&quot;DEBUG&quot;</span><span class="s2">,</span>
+    <span class="s1">]</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">parse(levelname</span><span class="s2">, </span><span class="s1">unknown_level=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Convert levelname into a numeric log level. 
+ 
+        :param levelname: Logging levelname (as string) 
+        :param unknown_level: Used if levelname is unknown (optional). 
+        :return: Numeric log-level or unknown_level, if levelname is unknown. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">getattr(logging</span><span class="s2">, </span><span class="s1">levelname.upper()</span><span class="s2">, </span><span class="s1">unknown_level)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">parse_type(cls</span><span class="s2">, </span><span class="s1">levelname):</span>
+        <span class="s1">level = cls.parse(levelname</span><span class="s2">, </span><span class="s1">Unknown)</span>
+        <span class="s2">if </span><span class="s1">level </span><span class="s2">is </span><span class="s1">Unknown:</span>
+            <span class="s1">message = </span><span class="s3">&quot;%s is unknown, use: %s&quot; </span><span class="s1">% \</span>
+                      <span class="s1">(levelname</span><span class="s2">, </span><span class="s3">&quot;, &quot;</span><span class="s1">.join(cls.names[</span><span class="s5">1</span><span class="s1">:]))</span>
+            <span class="s2">raise </span><span class="s1">argparse.ArgumentTypeError(message)</span>
+        <span class="s2">return </span><span class="s1">level</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">to_string(level):</span>
+        <span class="s2">return </span><span class="s1">logging.getLevelName(level)</span>
+
+
+<span class="s2">class </span><span class="s1">ConfigError(Exception):</span>
+    <span class="s2">pass</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># CONFIGURATION SCHEMA:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s1">options = [</span>
+    <span class="s1">((</span><span class="s3">&quot;-c&quot;</span><span class="s2">, </span><span class="s3">&quot;--no-color&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;color&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Disable the use of ANSI color escapes.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--color&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;color&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Use ANSI color escapes. This is the default 
+                  behaviour. This switch is used to override a 
+                  configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-d&quot;</span><span class="s2">, </span><span class="s3">&quot;--dry-run&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Invokes formatters without executing the steps.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-D&quot;</span><span class="s2">, </span><span class="s3">&quot;--define&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(dest=</span><span class="s3">&quot;userdata_defines&quot;</span><span class="s2">, </span><span class="s1">type=parse_user_define</span><span class="s2">, </span><span class="s1">action=</span><span class="s3">&quot;append&quot;</span><span class="s2">,</span>
+          <span class="s1">metavar=</span><span class="s3">&quot;NAME=VALUE&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Define user-specific data for the config.userdata dictionary. 
+                  Example: -D foo=bar to store it in config.userdata[&quot;foo&quot;].&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-e&quot;</span><span class="s2">, </span><span class="s3">&quot;--exclude&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(metavar=</span><span class="s3">&quot;PATTERN&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;exclude_re&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't run feature files matching regular expression 
+                  PATTERN.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-i&quot;</span><span class="s2">, </span><span class="s3">&quot;--include&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(metavar=</span><span class="s3">&quot;PATTERN&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;include_re&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Only run feature files matching regular expression PATTERN.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--no-junit&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;junit&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Don't output JUnit-compatible reports.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--junit&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Output JUnit-compatible reports. 
+                  When junit is enabled, all stdout and stderr 
+                  will be redirected and dumped to the junit report, 
+                  regardless of the &quot;--capture&quot; and &quot;--no-capture&quot; options. 
+                  &quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--junit-directory&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(metavar=</span><span class="s3">&quot;PATH&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;junit_directory&quot;</span><span class="s2">,</span>
+          <span class="s1">default=</span><span class="s3">&quot;reports&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Directory in which to store JUnit reports.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">(()</span><span class="s2">,  </span><span class="s0"># -- CONFIGFILE only</span>
+     <span class="s1">dict(dest=</span><span class="s3">&quot;default_format&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Specify default formatter (default: pretty).&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+
+    <span class="s1">((</span><span class="s3">&quot;-f&quot;</span><span class="s2">, </span><span class="s3">&quot;--format&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;append&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Specify a formatter. If none is specified the default 
+                  formatter is used. Pass &quot;--format help&quot; to get a 
+                  list of available formatters.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--steps-catalog&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;steps_catalog&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Show a catalog of all available step definitions. 
+                  SAME AS: --format=steps.catalog --dry-run --no-summary -q&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">(()</span><span class="s2">,  </span><span class="s0"># -- CONFIGFILE only</span>
+     <span class="s1">dict(dest=</span><span class="s3">&quot;scenario_outline_annotation_schema&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Specify name annotation schema for scenario outline 
+                  (default=&quot;{name} -- @{row.id} {examples.name}&quot;).&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-k&quot;</span><span class="s2">, </span><span class="s3">&quot;--no-skipped&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_skipped&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Don't print skipped steps (due to tags).&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--show-skipped&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Print skipped steps. 
+                  This is the default behaviour. This switch is used to 
+                  override a configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--no-snippets&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_snippets&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Don't print snippets for unimplemented steps.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+    <span class="s1">((</span><span class="s3">&quot;--snippets&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_snippets&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Print snippets for unimplemented steps. 
+                  This is the default behaviour. This switch is used to 
+                  override a configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-m&quot;</span><span class="s2">, </span><span class="s3">&quot;--no-multiline&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_multiline&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't print multiline strings and tables under 
+                  steps.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--multiline&quot;</span><span class="s2">, </span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_multiline&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Print multiline strings and tables under steps. 
+                  This is the default behaviour. This switch is used to 
+                  override a configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-n&quot;</span><span class="s2">, </span><span class="s3">&quot;--name&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;append&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Only execute the feature elements which match part 
+                  of the given name. If this option is given more 
+                  than once, it will match against all the given 
+                  names.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--no-capture&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;stdout_capture&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't capture stdout (any stdout output will be 
+                  printed immediately.)&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--capture&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;stdout_capture&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Capture stdout (any stdout output will be 
+                  printed if there is a failure.) 
+                  This is the default behaviour. This switch is used to 
+                  override a configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--no-capture-stderr&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;stderr_capture&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't capture stderr (any stderr output will be 
+                  printed immediately.)&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--capture-stderr&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;stderr_capture&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Capture stderr (any stderr output will be 
+                  printed if there is a failure.) 
+                  This is the default behaviour. This switch is used to 
+                  override a configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--no-logcapture&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;log_capture&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't capture logging. Logging configuration will 
+                  be left intact.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--logcapture&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;log_capture&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Capture logging. All logging during a step will be captured 
+                  and displayed in the event of a failure. 
+                  This is the default behaviour. This switch is used to 
+                  override a configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--logging-level&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(type=LogLevel.parse_type</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Specify a level to capture logging at. The default 
+                  is INFO - capturing everything.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--logging-format&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(help=</span><span class="s3">&quot;&quot;&quot;Specify custom format to print statements. Uses the 
+                  same format as used by standard logging handlers. The 
+                  default is &quot;%%(levelname)s:%%(name)s:%%(message)s&quot;.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--logging-datefmt&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(help=</span><span class="s3">&quot;&quot;&quot;Specify custom date/time format to print 
+                  statements. 
+                  Uses the same format as used by standard logging 
+                  handlers.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--logging-filter&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(help=</span><span class="s3">&quot;&quot;&quot;Specify which statements to filter in/out. By default, 
+                  everything is captured. If the output is too verbose, use 
+                  this option to filter out needless output. 
+                  Example: --logging-filter=foo will capture statements issued 
+                  ONLY to foo or foo.what.ever.sub but not foobar or other 
+                  logger. Specify multiple loggers with comma: 
+                  filter=foo,bar,baz. 
+                  If any logger name is prefixed with a minus, eg filter=-foo, 
+                  it will be excluded rather than included.&quot;&quot;&quot;</span><span class="s2">,</span>
+          <span class="s1">config_help=</span><span class="s3">&quot;&quot;&quot;Specify which statements to filter in/out. By default, 
+                         everything is captured. If the output is too verbose, 
+                         use this option to filter out needless output. 
+                         Example: ``logging_filter = foo`` will capture 
+                         statements issued ONLY to &quot;foo&quot; or &quot;foo.what.ever.sub&quot; 
+                         but not &quot;foobar&quot; or other logger. Specify multiple 
+                         loggers with comma: ``logging_filter = foo,bar,baz``. 
+                         If any logger name is prefixed with a minus, eg 
+                         ``logging_filter = -foo``, it will be excluded rather 
+                         than included.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--logging-clear-handlers&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Clear all other logging handlers.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--no-summary&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;summary&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't display the summary at the end of the run.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--summary&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;summary&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Display the summary at the end of the run.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-o&quot;</span><span class="s2">, </span><span class="s3">&quot;--outfile&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;append&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;outfiles&quot;</span><span class="s2">, </span><span class="s1">metavar=</span><span class="s3">&quot;FILE&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Write to specified file instead of stdout.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">(()</span><span class="s2">,  </span><span class="s0"># -- CONFIGFILE only</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;append&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;paths&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Specify default feature paths, used when none are provided.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-q&quot;</span><span class="s2">, </span><span class="s3">&quot;--quiet&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Alias for --no-snippets --no-source.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-s&quot;</span><span class="s2">, </span><span class="s3">&quot;--no-source&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_source&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't print the file and line of the step definition with the 
+                  steps.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--show-source&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_source&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Print the file and line of the step 
+                  definition with the steps. This is the default 
+                  behaviour. This switch is used to override a 
+                  configuration file setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--stage&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(help=</span><span class="s3">&quot;&quot;&quot;Defines the current test stage. 
+                  The test stage name is used as name prefix for the environment 
+                  file and the steps directory (instead of default path names). 
+                  &quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--stop&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Stop running tests at the first failure.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s0"># -- DISABLE-UNUSED-OPTION: Not used anywhere.</span>
+    <span class="s0"># ((&quot;-S&quot;, &quot;--strict&quot;),</span>
+    <span class="s0"># dict(action=&quot;store_true&quot;,</span>
+    <span class="s0">#    help=&quot;Fail if there are any undefined or pending steps.&quot;)),</span>
+
+    <span class="s1">(()</span><span class="s2">,  </span><span class="s0"># -- CONFIGFILE only</span>
+     <span class="s1">dict(dest=</span><span class="s3">&quot;default_tags&quot;</span><span class="s2">, </span><span class="s1">metavar=</span><span class="s3">&quot;TAG_EXPRESSION&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Define default tags when non are provided. 
+                  See --tags for more information.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-t&quot;</span><span class="s2">, </span><span class="s3">&quot;--tags&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;append&quot;</span><span class="s2">, </span><span class="s1">metavar=</span><span class="s3">&quot;TAG_EXPRESSION&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Only execute features or scenarios with tags 
+                  matching TAG_EXPRESSION. Pass &quot;--tags-help&quot; for 
+                  more information.&quot;&quot;&quot;</span><span class="s2">,</span>
+          <span class="s1">config_help=</span><span class="s3">&quot;&quot;&quot;Only execute certain features or scenarios based 
+                         on the tag expression given. See below for how to code 
+                         tag expressions in configuration files.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-T&quot;</span><span class="s2">, </span><span class="s3">&quot;--no-timings&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_false&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_timings&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Don't print the time taken for each step.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--show-timings&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;show_timings&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Print the time taken, in seconds, of each step after the 
+                  step has completed. This is the default behaviour. This 
+                  switch is used to override a configuration file 
+                  setting.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-v&quot;</span><span class="s2">, </span><span class="s3">&quot;--verbose&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Show the files and features loaded.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-w&quot;</span><span class="s2">, </span><span class="s3">&quot;--wip&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;&quot;&quot;Only run scenarios tagged with &quot;wip&quot;. Additionally: use the 
+                  &quot;plain&quot; formatter, do not capture stdout or logging output 
+                  and stop at the first failure.&quot;&quot;&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;-x&quot;</span><span class="s2">, </span><span class="s3">&quot;--expand&quot;</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Expand scenario outline tables in output.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--lang&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(metavar=</span><span class="s3">&quot;LANG&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Use keywords for a language other than English.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--lang-list&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;List the languages available for --lang.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--lang-help&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(metavar=</span><span class="s3">&quot;LANG&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;List the translations accepted for one language.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--tags-help&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+          <span class="s1">help=</span><span class="s3">&quot;Show help for tag expressions.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+
+    <span class="s1">((</span><span class="s3">&quot;--version&quot;</span><span class="s2">,</span><span class="s1">)</span><span class="s2">,</span>
+     <span class="s1">dict(action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s1">help=</span><span class="s3">&quot;Show version.&quot;</span><span class="s1">))</span><span class="s2">,</span>
+<span class="s1">]</span>
+
+<span class="s0"># -- OPTIONS: With raw value access semantics in configuration file.</span>
+<span class="s1">raw_value_options = frozenset([</span>
+    <span class="s3">&quot;logging_format&quot;</span><span class="s2">,</span>
+    <span class="s3">&quot;logging_datefmt&quot;</span><span class="s2">,</span>
+    <span class="s0"># -- MAYBE: &quot;scenario_outline_annotation_schema&quot;,</span>
+<span class="s1">])</span>
+
+
+<span class="s2">def </span><span class="s1">read_configuration(path):</span>
+    <span class="s0"># pylint: disable=too-many-locals, too-many-branches</span>
+    <span class="s1">config = ConfigParser()</span>
+    <span class="s1">config.optionxform = str    </span><span class="s0"># -- SUPPORT: case-sensitive keys</span>
+    <span class="s1">config.read(path)</span>
+    <span class="s1">config_dir = os.path.dirname(path)</span>
+    <span class="s1">result = {}</span>
+    <span class="s2">for </span><span class="s1">fixed</span><span class="s2">, </span><span class="s1">keywords </span><span class="s2">in </span><span class="s1">options:</span>
+        <span class="s2">if </span><span class="s3">&quot;dest&quot; </span><span class="s2">in </span><span class="s1">keywords:</span>
+            <span class="s1">dest = keywords[</span><span class="s3">&quot;dest&quot;</span><span class="s1">]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">opt </span><span class="s2">in </span><span class="s1">fixed:</span>
+                <span class="s2">if </span><span class="s1">opt.startswith(</span><span class="s3">&quot;--&quot;</span><span class="s1">):</span>
+                    <span class="s1">dest = opt[</span><span class="s5">2</span><span class="s1">:].replace(</span><span class="s3">&quot;-&quot;</span><span class="s2">, </span><span class="s3">&quot;_&quot;</span><span class="s1">)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">assert </span><span class="s1">len(opt) == </span><span class="s5">2</span>
+                    <span class="s1">dest = opt[</span><span class="s5">1</span><span class="s1">:]</span>
+        <span class="s2">if </span><span class="s1">dest </span><span class="s2">in </span><span class="s3">&quot;tags_help lang_list lang_help version&quot;</span><span class="s1">.split():</span>
+            <span class="s2">continue</span>
+        <span class="s2">if not </span><span class="s1">config.has_option(</span><span class="s3">&quot;behave&quot;</span><span class="s2">, </span><span class="s1">dest):</span>
+            <span class="s2">continue</span>
+        <span class="s1">action = keywords.get(</span><span class="s3">&quot;action&quot;</span><span class="s2">, </span><span class="s3">&quot;store&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">action == </span><span class="s3">&quot;store&quot;</span><span class="s1">:</span>
+            <span class="s1">use_raw_value = dest </span><span class="s2">in </span><span class="s1">raw_value_options</span>
+            <span class="s1">result[dest] = config.get(</span><span class="s3">&quot;behave&quot;</span><span class="s2">, </span><span class="s1">dest</span><span class="s2">, </span><span class="s1">raw=use_raw_value)</span>
+        <span class="s2">elif </span><span class="s1">action </span><span class="s2">in </span><span class="s1">(</span><span class="s3">&quot;store_true&quot;</span><span class="s2">, </span><span class="s3">&quot;store_false&quot;</span><span class="s1">):</span>
+            <span class="s1">result[dest] = config.getboolean(</span><span class="s3">&quot;behave&quot;</span><span class="s2">, </span><span class="s1">dest)</span>
+        <span class="s2">elif </span><span class="s1">action == </span><span class="s3">&quot;append&quot;</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">dest == </span><span class="s3">&quot;userdata_defines&quot;</span><span class="s1">:</span>
+                <span class="s2">continue    </span><span class="s0"># -- SKIP-CONFIGFILE: Command-line only option.</span>
+            <span class="s1">result[dest] = \</span>
+                <span class="s1">[s.strip() </span><span class="s2">for </span><span class="s1">s </span><span class="s2">in </span><span class="s1">config.get(</span><span class="s3">&quot;behave&quot;</span><span class="s2">, </span><span class="s1">dest).splitlines()]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">'action &quot;%s&quot; not implemented' </span><span class="s1">% action)</span>
+
+    <span class="s0"># -- STEP: format/outfiles coupling</span>
+    <span class="s2">if </span><span class="s3">&quot;format&quot; </span><span class="s2">in </span><span class="s1">result:</span>
+        <span class="s0"># -- OPTIONS: format/outfiles are coupled in configuration file.</span>
+        <span class="s1">formatters = result[</span><span class="s3">&quot;format&quot;</span><span class="s1">]</span>
+        <span class="s1">formatter_size = len(formatters)</span>
+        <span class="s1">outfiles = result.get(</span><span class="s3">&quot;outfiles&quot;</span><span class="s2">, </span><span class="s1">[])</span>
+        <span class="s1">outfiles_size = len(outfiles)</span>
+        <span class="s2">if </span><span class="s1">outfiles_size &lt; formatter_size:</span>
+            <span class="s2">for </span><span class="s1">formatter_name </span><span class="s2">in </span><span class="s1">formatters[outfiles_size:]:</span>
+                <span class="s1">outfile = </span><span class="s3">&quot;%s.output&quot; </span><span class="s1">% formatter_name</span>
+                <span class="s1">outfiles.append(outfile)</span>
+            <span class="s1">result[</span><span class="s3">&quot;outfiles&quot;</span><span class="s1">] = outfiles</span>
+        <span class="s2">elif </span><span class="s1">len(outfiles) &gt; formatter_size:</span>
+            <span class="s1">print(</span><span class="s3">&quot;CONFIG-ERROR: Too many outfiles (%d) provided.&quot; </span><span class="s1">%</span>
+                  <span class="s1">outfiles_size)</span>
+            <span class="s1">result[</span><span class="s3">&quot;outfiles&quot;</span><span class="s1">] = outfiles[:formatter_size]</span>
+
+    <span class="s2">for </span><span class="s1">paths_name </span><span class="s2">in </span><span class="s1">(</span><span class="s3">&quot;paths&quot;</span><span class="s2">, </span><span class="s3">&quot;outfiles&quot;</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">paths_name </span><span class="s2">in </span><span class="s1">result:</span>
+            <span class="s0"># -- Evaluate relative paths relative to location.</span>
+            <span class="s0"># NOTE: Absolute paths are preserved by os.path.join().</span>
+            <span class="s1">paths = result[paths_name]</span>
+            <span class="s1">result[paths_name] = \</span>
+                <span class="s1">[os.path.normpath(os.path.join(config_dir</span><span class="s2">, </span><span class="s1">p)) </span><span class="s2">for </span><span class="s1">p </span><span class="s2">in </span><span class="s1">paths]</span>
+
+    <span class="s0"># -- STEP: Special additional configuration sections.</span>
+    <span class="s0"># SCHEMA: config_section: data_name</span>
+    <span class="s1">special_config_section_map = {</span>
+        <span class="s3">&quot;behave.formatters&quot;</span><span class="s1">: </span><span class="s3">&quot;more_formatters&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;behave.userdata&quot;</span><span class="s1">:   </span><span class="s3">&quot;userdata&quot;</span><span class="s2">,</span>
+    <span class="s1">}</span>
+    <span class="s2">for </span><span class="s1">section_name</span><span class="s2">, </span><span class="s1">data_name </span><span class="s2">in </span><span class="s1">special_config_section_map.items():</span>
+        <span class="s1">result[data_name] = {}</span>
+        <span class="s2">if </span><span class="s1">config.has_section(section_name):</span>
+            <span class="s1">result[data_name].update(config.items(section_name))</span>
+
+    <span class="s2">return </span><span class="s1">result</span>
+
+
+<span class="s2">def </span><span class="s1">config_filenames():</span>
+    <span class="s1">paths = [</span><span class="s3">&quot;./&quot;</span><span class="s2">, </span><span class="s1">os.path.expanduser(</span><span class="s3">&quot;~&quot;</span><span class="s1">)]</span>
+    <span class="s2">if </span><span class="s1">sys.platform </span><span class="s2">in </span><span class="s1">(</span><span class="s3">&quot;cygwin&quot;</span><span class="s2">, </span><span class="s3">&quot;win32&quot;</span><span class="s1">) </span><span class="s2">and </span><span class="s3">&quot;APPDATA&quot; </span><span class="s2">in </span><span class="s1">os.environ:</span>
+        <span class="s1">paths.append(os.path.join(os.environ[</span><span class="s3">&quot;APPDATA&quot;</span><span class="s1">]))</span>
+
+    <span class="s2">for </span><span class="s1">path </span><span class="s2">in </span><span class="s1">reversed(paths):</span>
+        <span class="s2">for </span><span class="s1">filename </span><span class="s2">in </span><span class="s1">reversed(</span>
+                <span class="s1">(</span><span class="s3">&quot;behave.ini&quot;</span><span class="s2">, </span><span class="s3">&quot;.behaverc&quot;</span><span class="s2">, </span><span class="s3">&quot;setup.cfg&quot;</span><span class="s2">, </span><span class="s3">&quot;tox.ini&quot;</span><span class="s1">)):</span>
+            <span class="s1">filename = os.path.join(path</span><span class="s2">, </span><span class="s1">filename)</span>
+            <span class="s2">if </span><span class="s1">os.path.isfile(filename):</span>
+                <span class="s2">yield </span><span class="s1">filename</span>
+
+
+<span class="s2">def </span><span class="s1">load_configuration(defaults</span><span class="s2">, </span><span class="s1">verbose=</span><span class="s2">False</span><span class="s1">):</span>
+    <span class="s2">for </span><span class="s1">filename </span><span class="s2">in </span><span class="s1">config_filenames():</span>
+        <span class="s2">if </span><span class="s1">verbose:</span>
+            <span class="s1">print(</span><span class="s3">'Loading config defaults from &quot;%s&quot;' </span><span class="s1">% filename)</span>
+        <span class="s1">defaults.update(read_configuration(filename))</span>
+
+    <span class="s2">if </span><span class="s1">verbose:</span>
+        <span class="s1">print(</span><span class="s3">&quot;Using defaults:&quot;</span><span class="s1">)</span>
+        <span class="s2">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">six.iteritems(defaults):</span>
+            <span class="s1">print(</span><span class="s3">&quot;%15s %s&quot; </span><span class="s1">% (k</span><span class="s2">, </span><span class="s1">v))</span>
+
+
+<span class="s2">def </span><span class="s1">setup_parser():</span>
+    <span class="s0"># construct the parser</span>
+    <span class="s0"># usage = &quot;%(prog)s [options] [ [FILE|DIR|URL][:LINE[:LINE]*] ]+&quot;</span>
+    <span class="s1">usage = </span><span class="s3">&quot;%(prog)s [options] [ [DIR|FILE|FILE:LINE] ]+&quot;</span>
+    <span class="s1">description = </span><span class="s3">&quot;&quot;&quot;</span><span class="s2">\ 
+    </span><span class="s3">Run a number of feature tests with behave.&quot;&quot;&quot;</span>
+    <span class="s1">more = </span><span class="s3">&quot;&quot;&quot; 
+    EXAMPLES: 
+    behave features/ 
+    behave features/one.feature features/two.feature 
+    behave features/one.feature:10 
+    behave @features.txt 
+    &quot;&quot;&quot;</span>
+    <span class="s1">parser = argparse.ArgumentParser(usage=usage</span><span class="s2">, </span><span class="s1">description=description)</span>
+    <span class="s2">for </span><span class="s1">fixed</span><span class="s2">, </span><span class="s1">keywords </span><span class="s2">in </span><span class="s1">options:</span>
+        <span class="s2">if not </span><span class="s1">fixed:</span>
+            <span class="s2">continue    </span><span class="s0"># -- CONFIGFILE only.</span>
+        <span class="s2">if </span><span class="s3">&quot;config_help&quot; </span><span class="s2">in </span><span class="s1">keywords:</span>
+            <span class="s1">keywords = dict(keywords)</span>
+            <span class="s2">del </span><span class="s1">keywords[</span><span class="s3">&quot;config_help&quot;</span><span class="s1">]</span>
+        <span class="s1">parser.add_argument(*fixed</span><span class="s2">, </span><span class="s1">**keywords)</span>
+    <span class="s1">parser.add_argument(</span><span class="s3">&quot;paths&quot;</span><span class="s2">, </span><span class="s1">nargs=</span><span class="s3">&quot;*&quot;</span><span class="s2">,</span>
+                        <span class="s1">help=</span><span class="s3">&quot;Feature directory, file or file location (FILE:LINE).&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">parser</span>
+
+
+<span class="s2">class </span><span class="s1">Configuration(object):</span>
+    <span class="s4">&quot;&quot;&quot;Configuration object for behave and behave runners.&quot;&quot;&quot;</span>
+    <span class="s0"># pylint: disable=too-many-instance-attributes</span>
+    <span class="s1">defaults = dict(</span>
+        <span class="s1">color=sys.platform != </span><span class="s3">&quot;win32&quot;</span><span class="s2">,</span>
+        <span class="s1">show_snippets=</span><span class="s2">True,</span>
+        <span class="s1">show_skipped=</span><span class="s2">True,</span>
+        <span class="s1">dry_run=</span><span class="s2">False,</span>
+        <span class="s1">show_source=</span><span class="s2">True,</span>
+        <span class="s1">show_timings=</span><span class="s2">True,</span>
+        <span class="s1">stdout_capture=</span><span class="s2">True,</span>
+        <span class="s1">stderr_capture=</span><span class="s2">True,</span>
+        <span class="s1">log_capture=</span><span class="s2">True,</span>
+        <span class="s1">logging_format=</span><span class="s3">&quot;%(levelname)s:%(name)s:%(message)s&quot;</span><span class="s2">,</span>
+        <span class="s1">logging_level=logging.INFO</span><span class="s2">,</span>
+        <span class="s1">steps_catalog=</span><span class="s2">False,</span>
+        <span class="s1">summary=</span><span class="s2">True,</span>
+        <span class="s1">junit=</span><span class="s2">False,</span>
+        <span class="s1">stage=</span><span class="s2">None,</span>
+        <span class="s1">userdata={}</span><span class="s2">,</span>
+        <span class="s0"># -- SPECIAL:</span>
+        <span class="s1">default_format=</span><span class="s3">&quot;pretty&quot;</span><span class="s2">,    </span><span class="s0"># -- Used when no formatters are configured.</span>
+        <span class="s1">default_tags=</span><span class="s3">&quot;&quot;</span><span class="s2">,            </span><span class="s0"># -- Used when no tags are defined.</span>
+        <span class="s1">scenario_outline_annotation_schema=</span><span class="s3">u&quot;{name} -- @{row.id} {examples.name}&quot;</span>
+    <span class="s1">)</span>
+    <span class="s1">cmdline_only_options = set(</span><span class="s3">&quot;userdata_defines&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">command_args=</span><span class="s2">None, </span><span class="s1">load_config=</span><span class="s2">True, </span><span class="s1">verbose=</span><span class="s2">None,</span>
+                 <span class="s1">**kwargs):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Constructs a behave configuration object. 
+          * loads the configuration defaults (if needed). 
+          * process the command-line args 
+          * store the configuration results 
+ 
+        :param command_args: Provide command args (as sys.argv). 
+            If command_args is None, sys.argv[1:] is used. 
+        :type command_args: list&lt;str&gt;, str 
+        :param load_config: Indicate if configfile should be loaded (=true) 
+        :param verbose: Indicate if diagnostic output is enabled 
+        :param kwargs:  Used to hand-over/overwrite default values. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># pylint: disable=too-many-branches, too-many-statements</span>
+        <span class="s2">if </span><span class="s1">command_args </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">command_args = sys.argv[</span><span class="s5">1</span><span class="s1">:]</span>
+        <span class="s2">elif </span><span class="s1">isinstance(command_args</span><span class="s2">, </span><span class="s1">six.string_types):</span>
+            <span class="s1">encoding = select_best_encoding() </span><span class="s2">or </span><span class="s3">&quot;utf-8&quot;</span>
+            <span class="s2">if </span><span class="s1">six.PY2 </span><span class="s2">and </span><span class="s1">isinstance(command_args</span><span class="s2">, </span><span class="s1">six.text_type):</span>
+                <span class="s1">command_args = command_args.encode(encoding)</span>
+            <span class="s2">elif </span><span class="s1">six.PY3 </span><span class="s2">and </span><span class="s1">isinstance(command_args</span><span class="s2">, </span><span class="s1">six.binary_type):</span>
+                <span class="s1">command_args = command_args.decode(encoding)</span>
+            <span class="s1">command_args = shlex.split(command_args)</span>
+        <span class="s2">elif </span><span class="s1">isinstance(command_args</span><span class="s2">, </span><span class="s1">(list</span><span class="s2">, </span><span class="s1">tuple)):</span>
+            <span class="s1">command_args = to_texts(command_args)</span>
+
+        <span class="s2">if </span><span class="s1">verbose </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s0"># -- AUTO-DISCOVER: Verbose mode from command-line args.</span>
+            <span class="s1">verbose = (</span><span class="s3">&quot;-v&quot; </span><span class="s2">in </span><span class="s1">command_args) </span><span class="s2">or </span><span class="s1">(</span><span class="s3">&quot;--verbose&quot; </span><span class="s2">in </span><span class="s1">command_args)</span>
+
+        <span class="s1">self.version = </span><span class="s2">None</span>
+        <span class="s1">self.tags_help = </span><span class="s2">None</span>
+        <span class="s1">self.lang_list = </span><span class="s2">None</span>
+        <span class="s1">self.lang_help = </span><span class="s2">None</span>
+        <span class="s1">self.default_tags = </span><span class="s2">None</span>
+        <span class="s1">self.junit = </span><span class="s2">None</span>
+        <span class="s1">self.logging_format = </span><span class="s2">None</span>
+        <span class="s1">self.logging_datefmt = </span><span class="s2">None</span>
+        <span class="s1">self.name = </span><span class="s2">None</span>
+        <span class="s1">self.scope = </span><span class="s2">None</span>
+        <span class="s1">self.steps_catalog = </span><span class="s2">None</span>
+        <span class="s1">self.userdata = </span><span class="s2">None</span>
+        <span class="s1">self.wip = </span><span class="s2">None</span>
+
+        <span class="s1">defaults = self.defaults.copy()</span>
+        <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">six.iteritems(kwargs):</span>
+            <span class="s1">defaults[name] = value</span>
+        <span class="s1">self.defaults = defaults</span>
+        <span class="s1">self.formatters = []</span>
+        <span class="s1">self.reporters = []</span>
+        <span class="s1">self.name_re = </span><span class="s2">None</span>
+        <span class="s1">self.outputs = []</span>
+        <span class="s1">self.include_re = </span><span class="s2">None</span>
+        <span class="s1">self.exclude_re = </span><span class="s2">None</span>
+        <span class="s1">self.scenario_outline_annotation_schema = </span><span class="s2">None  </span><span class="s0"># pylint: disable=invalid-name</span>
+        <span class="s1">self.steps_dir = </span><span class="s3">&quot;steps&quot;</span>
+        <span class="s1">self.environment_file = </span><span class="s3">&quot;environment.py&quot;</span>
+        <span class="s1">self.userdata_defines = </span><span class="s2">None</span>
+        <span class="s1">self.more_formatters = </span><span class="s2">None</span>
+        <span class="s2">if </span><span class="s1">load_config:</span>
+            <span class="s1">load_configuration(self.defaults</span><span class="s2">, </span><span class="s1">verbose=verbose)</span>
+        <span class="s1">parser = setup_parser()</span>
+        <span class="s1">parser.set_defaults(**self.defaults)</span>
+        <span class="s1">args = parser.parse_args(command_args)</span>
+        <span class="s2">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">six.iteritems(args.__dict__):</span>
+            <span class="s2">if </span><span class="s1">key.startswith(</span><span class="s3">&quot;_&quot;</span><span class="s1">) </span><span class="s2">and </span><span class="s1">key </span><span class="s2">not in </span><span class="s1">self.cmdline_only_options:</span>
+                <span class="s2">continue</span>
+            <span class="s1">setattr(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value)</span>
+
+        <span class="s1">self.paths = [os.path.normpath(path) </span><span class="s2">for </span><span class="s1">path </span><span class="s2">in </span><span class="s1">self.paths]</span>
+        <span class="s1">self.setup_outputs(args.outfiles)</span>
+
+        <span class="s2">if </span><span class="s1">self.steps_catalog:</span>
+            <span class="s0"># -- SHOW STEP-CATALOG: As step summary.</span>
+            <span class="s1">self.default_format = </span><span class="s3">&quot;steps.catalog&quot;</span>
+            <span class="s1">self.format = [</span><span class="s3">&quot;steps.catalog&quot;</span><span class="s1">]</span>
+            <span class="s1">self.dry_run = </span><span class="s2">True</span>
+            <span class="s1">self.summary = </span><span class="s2">False</span>
+            <span class="s1">self.show_skipped = </span><span class="s2">False</span>
+            <span class="s1">self.quiet = </span><span class="s2">True</span>
+
+        <span class="s2">if </span><span class="s1">self.wip:</span>
+            <span class="s0"># Only run scenarios tagged with &quot;wip&quot;.</span>
+            <span class="s0"># Additionally:</span>
+            <span class="s0">#  * use the &quot;plain&quot; formatter (per default)</span>
+            <span class="s0">#  * do not capture stdout or logging output and</span>
+            <span class="s0">#  * stop at the first failure.</span>
+            <span class="s1">self.default_format = </span><span class="s3">&quot;plain&quot;</span>
+            <span class="s1">self.tags = [</span><span class="s3">&quot;wip&quot;</span><span class="s1">] + self.default_tags.split()</span>
+            <span class="s1">self.color = </span><span class="s2">False</span>
+            <span class="s1">self.stop = </span><span class="s2">True</span>
+            <span class="s1">self.log_capture = </span><span class="s2">False</span>
+            <span class="s1">self.stdout_capture = </span><span class="s2">False</span>
+
+        <span class="s1">self.tags = TagExpression(self.tags </span><span class="s2">or </span><span class="s1">self.default_tags.split())</span>
+
+        <span class="s2">if </span><span class="s1">self.quiet:</span>
+            <span class="s1">self.show_source = </span><span class="s2">False</span>
+            <span class="s1">self.show_snippets = </span><span class="s2">False</span>
+
+        <span class="s2">if </span><span class="s1">self.exclude_re:</span>
+            <span class="s1">self.exclude_re = re.compile(self.exclude_re)</span>
+
+        <span class="s2">if </span><span class="s1">self.include_re:</span>
+            <span class="s1">self.include_re = re.compile(self.include_re)</span>
+        <span class="s2">if </span><span class="s1">self.name:</span>
+            <span class="s0"># -- SELECT: Scenario-by-name, build regular expression.</span>
+            <span class="s1">self.name_re = self.build_name_re(self.name)</span>
+
+        <span class="s2">if </span><span class="s1">self.stage </span><span class="s2">is None</span><span class="s1">:  </span><span class="s0"># pylint: disable=access-member-before-definition</span>
+            <span class="s0"># -- USE ENVIRONMENT-VARIABLE, if stage is undefined.</span>
+            <span class="s1">self.stage = os.environ.get(</span><span class="s3">&quot;BEHAVE_STAGE&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s1">self.setup_stage(self.stage)</span>
+        <span class="s1">self.setup_model()</span>
+        <span class="s1">self.setup_userdata()</span>
+
+        <span class="s0"># -- FINALLY: Setup Reporters and Formatters</span>
+        <span class="s0"># NOTE: Reporters and Formatters can now use userdata information.</span>
+        <span class="s2">if </span><span class="s1">self.junit:</span>
+            <span class="s0"># Buffer the output (it will be put into Junit report)</span>
+            <span class="s1">self.stdout_capture = </span><span class="s2">True</span>
+            <span class="s1">self.stderr_capture = </span><span class="s2">True</span>
+            <span class="s1">self.log_capture = </span><span class="s2">True</span>
+            <span class="s1">self.reporters.append(JUnitReporter(self))</span>
+        <span class="s2">if </span><span class="s1">self.summary:</span>
+            <span class="s1">self.reporters.append(SummaryReporter(self))</span>
+
+        <span class="s1">self.setup_formats()</span>
+        <span class="s1">unknown_formats = self.collect_unknown_formats()</span>
+        <span class="s2">if </span><span class="s1">unknown_formats:</span>
+            <span class="s1">parser.error(</span><span class="s3">&quot;format=%s is unknown&quot; </span><span class="s1">% </span><span class="s3">&quot;, &quot;</span><span class="s1">.join(unknown_formats))</span>
+
+
+    <span class="s2">def </span><span class="s1">setup_outputs(self</span><span class="s2">, </span><span class="s1">args_outfiles=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">self.outputs:</span>
+            <span class="s2">assert not </span><span class="s1">args_outfiles</span><span class="s2">, </span><span class="s3">&quot;ONLY-ONCE&quot;</span>
+            <span class="s2">return</span>
+
+        <span class="s0"># -- NORMAL CASE: Setup only initially (once).</span>
+        <span class="s2">if not </span><span class="s1">args_outfiles:</span>
+            <span class="s1">self.outputs.append(StreamOpener(stream=sys.stdout))</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">outfile </span><span class="s2">in </span><span class="s1">args_outfiles:</span>
+                <span class="s2">if </span><span class="s1">outfile </span><span class="s2">and </span><span class="s1">outfile != </span><span class="s3">&quot;-&quot;</span><span class="s1">:</span>
+                    <span class="s1">self.outputs.append(StreamOpener(outfile))</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">self.outputs.append(StreamOpener(stream=sys.stdout))</span>
+
+    <span class="s2">def </span><span class="s1">setup_formats(self):</span>
+        <span class="s4">&quot;&quot;&quot;Register more, user-defined formatters by name.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.more_formatters:</span>
+            <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">scoped_class_name </span><span class="s2">in </span><span class="s1">self.more_formatters.items():</span>
+                <span class="s1">_format_registry.register_as(name</span><span class="s2">, </span><span class="s1">scoped_class_name)</span>
+
+    <span class="s2">def </span><span class="s1">collect_unknown_formats(self):</span>
+        <span class="s1">unknown_formats = []</span>
+        <span class="s2">if </span><span class="s1">self.format:</span>
+            <span class="s2">for </span><span class="s1">format_name </span><span class="s2">in </span><span class="s1">self.format:</span>
+                <span class="s2">if </span><span class="s1">(format_name == </span><span class="s3">&quot;help&quot; </span><span class="s2">or</span>
+                        <span class="s1">_format_registry.is_formatter_valid(format_name)):</span>
+                    <span class="s2">continue</span>
+                <span class="s1">unknown_formats.append(format_name)</span>
+        <span class="s2">return </span><span class="s1">unknown_formats</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">build_name_re(names):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Build regular expression for scenario selection by name 
+        by using a list of name parts or name regular expressions. 
+ 
+        :param names: List of name parts or regular expressions (as text). 
+        :return: Compiled regular expression to use. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># -- NOTE: re.LOCALE is removed in Python 3.6 (deprecated in Python 3.5)</span>
+        <span class="s0"># flags = (re.UNICODE | re.LOCALE)</span>
+        <span class="s0"># -- ENSURE: Names are all unicode/text values (for issue #606).</span>
+        <span class="s1">names = to_texts(names)</span>
+        <span class="s1">pattern = </span><span class="s3">u&quot;|&quot;</span><span class="s1">.join(names)</span>
+        <span class="s2">return </span><span class="s1">re.compile(pattern</span><span class="s2">, </span><span class="s1">flags=re.UNICODE)</span>
+
+    <span class="s2">def </span><span class="s1">exclude(self</span><span class="s2">, </span><span class="s1">filename):</span>
+        <span class="s2">if </span><span class="s1">isinstance(filename</span><span class="s2">, </span><span class="s1">FileLocation):</span>
+            <span class="s1">filename = six.text_type(filename)</span>
+
+        <span class="s2">if </span><span class="s1">self.include_re </span><span class="s2">and </span><span class="s1">self.include_re.search(filename) </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return True</span>
+        <span class="s2">if </span><span class="s1">self.exclude_re </span><span class="s2">and </span><span class="s1">self.exclude_re.search(filename) </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">return True</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">setup_logging(self</span><span class="s2">, </span><span class="s1">level=</span><span class="s2">None, </span><span class="s1">configfile=</span><span class="s2">None, </span><span class="s1">**kwargs):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Support simple setup of logging subsystem. 
+        Ensures that the logging level is set. 
+        But note that the logging setup can only occur once. 
+ 
+        SETUP MODES: 
+          * :func:`logging.config.fileConfig()`, if ``configfile`` is provided. 
+          * :func:`logging.basicConfig()`, otherwise. 
+ 
+        .. code-block: python 
+            # -- FILE: features/environment.py 
+            def before_all(context): 
+                context.config.setup_logging() 
+ 
+        :param level:       Logging level of root logger. 
+                            If None, use :attr:`logging_level` value. 
+        :param configfile:  Configuration filename for fileConfig() setup. 
+        :param kwargs:      Passed to :func:`logging.basicConfig()` 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">level </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">level = self.logging_level      </span><span class="s0"># pylint: disable=no-member</span>
+
+        <span class="s2">if </span><span class="s1">configfile:</span>
+            <span class="s2">from </span><span class="s1">logging.config </span><span class="s2">import </span><span class="s1">fileConfig</span>
+            <span class="s1">fileConfig(configfile)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># pylint: disable=no-member</span>
+            <span class="s1">format_ = kwargs.pop(</span><span class="s3">&quot;format&quot;</span><span class="s2">, </span><span class="s1">self.logging_format)</span>
+            <span class="s1">datefmt = kwargs.pop(</span><span class="s3">&quot;datefmt&quot;</span><span class="s2">, </span><span class="s1">self.logging_datefmt)</span>
+            <span class="s1">logging.basicConfig(format=format_</span><span class="s2">, </span><span class="s1">datefmt=datefmt</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s0"># -- ENSURE: Default log level is set</span>
+        <span class="s0">#    (even if logging subsystem is already configured).</span>
+        <span class="s1">logging.getLogger().setLevel(level)</span>
+
+    <span class="s2">def </span><span class="s1">setup_model(self):</span>
+        <span class="s2">if </span><span class="s1">self.scenario_outline_annotation_schema:</span>
+            <span class="s1">name_schema = six.text_type(self.scenario_outline_annotation_schema)</span>
+            <span class="s1">ScenarioOutline.annotation_schema = name_schema.strip()</span>
+
+    <span class="s2">def </span><span class="s1">setup_stage(self</span><span class="s2">, </span><span class="s1">stage=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot;Setup the test stage that selects a different set of 
+        steps and environment implementations. 
+ 
+        :param stage:   Name of current test stage (as string or None). 
+ 
+        EXAMPLE:: 
+ 
+            # -- SETUP DEFAULT TEST STAGE (unnamed): 
+            config = Configuration() 
+            config.setup_stage() 
+            assert config.steps_dir == &quot;steps&quot; 
+            assert config.environment_file == &quot;environment.py&quot; 
+ 
+            # -- SETUP PRODUCT TEST STAGE: 
+            config.setup_stage(&quot;product&quot;) 
+            assert config.steps_dir == &quot;product_steps&quot; 
+            assert config.environment_file == &quot;product_environment.py&quot; 
+        &quot;&quot;&quot;</span>
+        <span class="s1">steps_dir = </span><span class="s3">&quot;steps&quot;</span>
+        <span class="s1">environment_file = </span><span class="s3">&quot;environment.py&quot;</span>
+        <span class="s2">if </span><span class="s1">stage:</span>
+            <span class="s0"># -- USE A TEST STAGE: Select different set of implementations.</span>
+            <span class="s1">prefix = stage + </span><span class="s3">&quot;_&quot;</span>
+            <span class="s1">steps_dir = prefix + steps_dir</span>
+            <span class="s1">environment_file = prefix + environment_file</span>
+        <span class="s1">self.steps_dir = steps_dir</span>
+        <span class="s1">self.environment_file = environment_file</span>
+
+    <span class="s2">def </span><span class="s1">setup_userdata(self):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(self.userdata</span><span class="s2">, </span><span class="s1">UserData):</span>
+            <span class="s1">self.userdata = UserData(self.userdata)</span>
+        <span class="s2">if </span><span class="s1">self.userdata_defines:</span>
+            <span class="s0"># -- ENSURE: Cmd-line overrides configuration file parameters.</span>
+            <span class="s1">self.userdata.update(self.userdata_defines)</span>
+
+    <span class="s2">def </span><span class="s1">update_userdata(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s4">&quot;&quot;&quot;Update userdata with data and reapply userdata defines (cmdline). 
+        :param data:  Provides (partial) userdata (as dict) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.userdata.update(data)</span>
+        <span class="s2">if </span><span class="s1">self.userdata_defines:</span>
+            <span class="s0"># -- REAPPLY: Cmd-line defines (override configuration file data).</span>
+            <span class="s1">self.userdata.update(self.userdata_defines)</span>
+</pre>
+</body>
+</html>

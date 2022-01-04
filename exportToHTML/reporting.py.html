@@ -1,0 +1,175 @@
+<html>
+<head>
+<title>reporting.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+reporting.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Reporting functionality. 
+ 
+Collection of the scenario execution statuses, timing and other information 
+that enriches the pytest test reporting. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">time</span>
+
+
+<span class="s2">class </span><span class="s1">StepReport:</span>
+    <span class="s0">&quot;&quot;&quot;Step execution report.&quot;&quot;&quot;</span>
+
+    <span class="s1">failed = </span><span class="s2">False</span>
+    <span class="s1">stopped = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">step):</span>
+        <span class="s0">&quot;&quot;&quot;Step report constructor. 
+ 
+        :param pytest_bdd.parser.Step step: Step. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.step = step</span>
+        <span class="s1">self.started = time.perf_counter()</span>
+
+    <span class="s2">def </span><span class="s1">serialize(self):</span>
+        <span class="s0">&quot;&quot;&quot;Serialize the step execution report. 
+ 
+        :return: Serialized step execution report. 
+        :rtype: dict 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">{</span>
+            <span class="s3">&quot;name&quot;</span><span class="s1">: self.step.name</span><span class="s2">,</span>
+            <span class="s3">&quot;type&quot;</span><span class="s1">: self.step.type</span><span class="s2">,</span>
+            <span class="s3">&quot;keyword&quot;</span><span class="s1">: self.step.keyword</span><span class="s2">,</span>
+            <span class="s3">&quot;line_number&quot;</span><span class="s1">: self.step.line_number</span><span class="s2">,</span>
+            <span class="s3">&quot;failed&quot;</span><span class="s1">: self.failed</span><span class="s2">,</span>
+            <span class="s3">&quot;duration&quot;</span><span class="s1">: self.duration</span><span class="s2">,</span>
+        <span class="s1">}</span>
+
+    <span class="s2">def </span><span class="s1">finalize(self</span><span class="s2">, </span><span class="s1">failed):</span>
+        <span class="s0">&quot;&quot;&quot;Stop collecting information and finalize the report. 
+ 
+        :param bool failed: Whether the step execution is failed. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.stopped = time.perf_counter()</span>
+        <span class="s1">self.failed = failed</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">duration(self):</span>
+        <span class="s0">&quot;&quot;&quot;Step execution duration. 
+ 
+        :return: Step execution duration. 
+        :rtype: float 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.stopped </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s4">0</span>
+
+        <span class="s2">return </span><span class="s1">self.stopped - self.started</span>
+
+
+<span class="s2">class </span><span class="s1">ScenarioReport:</span>
+    <span class="s0">&quot;&quot;&quot;Scenario execution report.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">node):</span>
+        <span class="s0">&quot;&quot;&quot;Scenario report constructor. 
+ 
+        :param pytest_bdd.parser.Scenario scenario: Scenario. 
+        :param node: pytest test node object 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.scenario = scenario</span>
+        <span class="s1">self.step_reports = []</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">current_step_report(self):</span>
+        <span class="s0">&quot;&quot;&quot;Get current step report. 
+ 
+        :return: Last or current step report. 
+        :rtype: pytest_bdd.reporting.StepReport 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.step_reports[-</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s2">def </span><span class="s1">add_step_report(self</span><span class="s2">, </span><span class="s1">step_report):</span>
+        <span class="s0">&quot;&quot;&quot;Add new step report. 
+ 
+        :param step_report: New current step report. 
+        :type step_report: pytest_bdd.reporting.StepReport 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.step_reports.append(step_report)</span>
+
+    <span class="s2">def </span><span class="s1">serialize(self):</span>
+        <span class="s0">&quot;&quot;&quot;Serialize scenario execution report in order to transfer reporting from nodes in the distributed mode. 
+ 
+        :return: Serialized report. 
+        :rtype: dict 
+        &quot;&quot;&quot;</span>
+        <span class="s1">scenario = self.scenario</span>
+        <span class="s1">feature = scenario.feature</span>
+
+        <span class="s2">return </span><span class="s1">{</span>
+            <span class="s3">&quot;steps&quot;</span><span class="s1">: [step_report.serialize() </span><span class="s2">for </span><span class="s1">step_report </span><span class="s2">in </span><span class="s1">self.step_reports]</span><span class="s2">,</span>
+            <span class="s3">&quot;name&quot;</span><span class="s1">: scenario.name</span><span class="s2">,</span>
+            <span class="s3">&quot;line_number&quot;</span><span class="s1">: scenario.line_number</span><span class="s2">,</span>
+            <span class="s3">&quot;tags&quot;</span><span class="s1">: sorted(scenario.tags)</span><span class="s2">,</span>
+            <span class="s3">&quot;feature&quot;</span><span class="s1">: {</span>
+                <span class="s3">&quot;name&quot;</span><span class="s1">: feature.name</span><span class="s2">,</span>
+                <span class="s3">&quot;filename&quot;</span><span class="s1">: feature.filename</span><span class="s2">,</span>
+                <span class="s3">&quot;rel_filename&quot;</span><span class="s1">: feature.rel_filename</span><span class="s2">,</span>
+                <span class="s3">&quot;line_number&quot;</span><span class="s1">: feature.line_number</span><span class="s2">,</span>
+                <span class="s3">&quot;description&quot;</span><span class="s1">: feature.description</span><span class="s2">,</span>
+                <span class="s3">&quot;tags&quot;</span><span class="s1">: sorted(feature.tags)</span><span class="s2">,</span>
+            <span class="s1">}</span><span class="s2">,</span>
+        <span class="s1">}</span>
+
+    <span class="s2">def </span><span class="s1">fail(self):</span>
+        <span class="s0">&quot;&quot;&quot;Stop collecting information and finalize the report as failed.&quot;&quot;&quot;</span>
+        <span class="s1">self.current_step_report.finalize(failed=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">remaining_steps = self.scenario.steps[len(self.step_reports) :]</span>
+
+        <span class="s5"># Fail the rest of the steps and make reports.</span>
+        <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">remaining_steps:</span>
+            <span class="s1">report = StepReport(step=step)</span>
+            <span class="s1">report.finalize(failed=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">self.add_step_report(report)</span>
+
+
+<span class="s2">def </span><span class="s1">runtest_makereport(item</span><span class="s2">, </span><span class="s1">call</span><span class="s2">, </span><span class="s1">rep):</span>
+    <span class="s0">&quot;&quot;&quot;Store item in the report object.&quot;&quot;&quot;</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">scenario_report = item.__scenario_report__</span>
+    <span class="s2">except </span><span class="s1">AttributeError:</span>
+        <span class="s2">pass</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">rep.scenario = scenario_report.serialize()</span>
+        <span class="s1">rep.item = {</span><span class="s3">&quot;name&quot;</span><span class="s1">: item.name}</span>
+
+
+<span class="s2">def </span><span class="s1">before_scenario(request</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">, </span><span class="s1">scenario):</span>
+    <span class="s0">&quot;&quot;&quot;Create scenario report for the item.&quot;&quot;&quot;</span>
+    <span class="s1">request.node.__scenario_report__ = ScenarioReport(scenario=scenario</span><span class="s2">, </span><span class="s1">node=request.node)</span>
+
+
+<span class="s2">def </span><span class="s1">step_error(request</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">step_func</span><span class="s2">, </span><span class="s1">step_func_args</span><span class="s2">, </span><span class="s1">exception):</span>
+    <span class="s0">&quot;&quot;&quot;Finalize the step report as failed.&quot;&quot;&quot;</span>
+    <span class="s1">request.node.__scenario_report__.fail()</span>
+
+
+<span class="s2">def </span><span class="s1">before_step(request</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">step_func):</span>
+    <span class="s0">&quot;&quot;&quot;Store step start time.&quot;&quot;&quot;</span>
+    <span class="s1">request.node.__scenario_report__.add_step_report(StepReport(step=step))</span>
+
+
+<span class="s2">def </span><span class="s1">after_step(request</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">step_func</span><span class="s2">, </span><span class="s1">step_func_args):</span>
+    <span class="s0">&quot;&quot;&quot;Finalize the step report as successful.&quot;&quot;&quot;</span>
+    <span class="s1">request.node.__scenario_report__.current_step_report.finalize(failed=</span><span class="s2">False</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

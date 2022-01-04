@@ -1,0 +1,101 @@
+<html>
+<head>
+<title>formatter_missing_steps.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+formatter_missing_steps.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides a formatter that writes prototypes for missing step functions 
+into a step module file by using step snippets. 
+ 
+NOTE: This is only simplistic, proof-of-concept code. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span><span class="s3">, </span><span class="s1">print_function</span>
+<span class="s3">from </span><span class="s1">behave.runner_util </span><span class="s3">import </span><span class="s1">make_undefined_step_snippets</span>
+<span class="s3">from </span><span class="s1">.steps </span><span class="s3">import </span><span class="s1">StepsUsageFormatter</span>
+
+
+<span class="s1">STEP_MODULE_TEMPLATE = </span><span class="s4">'''</span><span class="s3">\ 
+</span><span class="s4"># -*- coding: {encoding} -*- 
+&quot;&quot;&quot; 
+Missing step implementations (proof-of-concept). 
+&quot;&quot;&quot; 
+ 
+from behave import given, when, then, step 
+ 
+{step_snippets} 
+'''</span>
+
+
+<span class="s3">class </span><span class="s1">MissingStepsFormatter(StepsUsageFormatter):</span>
+    <span class="s2">&quot;&quot;&quot;Formatter that writes missing steps snippets into a step module file. 
+ 
+    Reuses StepsUsageFormatter class because it already contains the logic 
+    for discovering missing/undefined steps. 
+ 
+    .. code-block:: ini 
+ 
+        # -- FILE: behave.ini 
+        # NOTE: Long text value needs indentation on following lines. 
+        [behave.userdata] 
+        behave.formatter.missing_steps.template = # -*- coding: {encoding} -*- 
+            # Missing step implementations. 
+            from behave import given, when, then, step 
+ 
+            {step_snippets} 
+    &quot;&quot;&quot;</span>
+    <span class="s1">name = </span><span class="s4">&quot;missing-steps&quot;</span>
+    <span class="s1">description = </span><span class="s4">&quot;Writes implementation for missing step definitions.&quot;</span>
+    <span class="s1">template = STEP_MODULE_TEMPLATE</span>
+    <span class="s1">scope = </span><span class="s4">&quot;behave.formatter.missing_steps&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">stream_opener</span><span class="s3">, </span><span class="s1">config):</span>
+        <span class="s1">super(MissingStepsFormatter</span><span class="s3">, </span><span class="s1">self).__init__(stream_opener</span><span class="s3">, </span><span class="s1">config)</span>
+        <span class="s1">self.template = self.__class__.template</span>
+        <span class="s1">self.init_from_userdata(config.userdata)</span>
+
+    <span class="s3">def </span><span class="s1">init_from_userdata(self</span><span class="s3">, </span><span class="s1">userdata):</span>
+        <span class="s1">scoped_name = </span><span class="s4">&quot;%s.%s&quot; </span><span class="s1">%(self.scope</span><span class="s3">, </span><span class="s4">&quot;template&quot;</span><span class="s1">)</span>
+        <span class="s1">template_text = userdata.get(scoped_name</span><span class="s3">, </span><span class="s1">self.template)</span>
+        <span class="s1">self.template = template_text</span>
+
+    <span class="s3">def </span><span class="s1">close(self):</span>
+        <span class="s2">&quot;&quot;&quot;Called at end of test run. 
+        NOTE: Overwritten to avoid to truncate/overwrite output-file. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.step_registry </span><span class="s3">and </span><span class="s1">self.undefined_steps:</span>
+            <span class="s0"># -- ENSURE: Output stream is open.</span>
+            <span class="s1">self.stream = self.open()</span>
+            <span class="s1">self.report()</span>
+
+        <span class="s0"># -- FINALLY:</span>
+        <span class="s1">self.close_stream()</span>
+
+    <span class="s0"># -- REPORT SPECIFIC-API:</span>
+    <span class="s3">def </span><span class="s1">report(self):</span>
+        <span class="s2">&quot;&quot;&quot;Writes missing step implementations by using step snippets.&quot;&quot;&quot;</span>
+        <span class="s1">step_snippets = make_undefined_step_snippets(undefined_steps)</span>
+        <span class="s1">encoding = self.stream.encoding </span><span class="s3">or </span><span class="s4">&quot;UTF-8&quot;</span>
+        <span class="s1">function_separator = </span><span class="s4">u&quot;</span><span class="s3">\n\n\n</span><span class="s4">&quot;</span>
+        <span class="s1">step_snippets_text = function_separator.join(step_snippets)</span>
+        <span class="s1">module_text = self.template.format(encoding=encoding</span><span class="s3">,</span>
+                                           <span class="s1">step_snippets=step_snippets_text)</span>
+        <span class="s1">self.stream.write(module_text)</span>
+        <span class="s1">self.stream.write(</span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

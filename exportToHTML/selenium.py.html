@@ -1,0 +1,154 @@
+<html>
+<head>
+<title>selenium.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+selenium.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">unittest</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">contextmanager</span>
+
+<span class="s0">from </span><span class="s1">django.test </span><span class="s0">import </span><span class="s1">LiveServerTestCase</span><span class="s0">, </span><span class="s1">tag</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">classproperty</span>
+<span class="s0">from </span><span class="s1">django.utils.module_loading </span><span class="s0">import </span><span class="s1">import_string</span>
+<span class="s0">from </span><span class="s1">django.utils.text </span><span class="s0">import </span><span class="s1">capfirst</span>
+
+
+<span class="s0">class </span><span class="s1">SeleniumTestCaseBase(type(LiveServerTestCase)):</span>
+    <span class="s2"># List of browsers to dynamically create test classes for.</span>
+    <span class="s1">browsers = []</span>
+    <span class="s2"># A selenium hub URL to test against.</span>
+    <span class="s1">selenium_hub = </span><span class="s0">None</span>
+    <span class="s2"># The external host Selenium Hub can reach.</span>
+    <span class="s1">external_host = </span><span class="s0">None</span>
+    <span class="s2"># Sentinel value to differentiate browser-specific instances.</span>
+    <span class="s1">browser = </span><span class="s0">None</span>
+    <span class="s2"># Run browsers in headless mode.</span>
+    <span class="s1">headless = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">__new__(cls</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">bases</span><span class="s0">, </span><span class="s1">attrs):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Dynamically create new classes and add them to the test module when 
+        multiple browsers specs are provided (e.g. --selenium=firefox,chrome). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">test_class = super().__new__(cls</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">bases</span><span class="s0">, </span><span class="s1">attrs)</span>
+        <span class="s2"># If the test class is either browser-specific or a test base, return it.</span>
+        <span class="s0">if </span><span class="s1">test_class.browser </span><span class="s0">or not </span><span class="s1">any(name.startswith(</span><span class="s4">'test'</span><span class="s1">) </span><span class="s0">and </span><span class="s1">callable(value) </span><span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">attrs.items()):</span>
+            <span class="s0">return </span><span class="s1">test_class</span>
+        <span class="s0">elif </span><span class="s1">test_class.browsers:</span>
+            <span class="s2"># Reuse the created test class to make it browser-specific.</span>
+            <span class="s2"># We can't rename it to include the browser name or create a</span>
+            <span class="s2"># subclass like we do with the remaining browsers as it would</span>
+            <span class="s2"># either duplicate tests or prevent pickling of its instances.</span>
+            <span class="s1">first_browser = test_class.browsers[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">test_class.browser = first_browser</span>
+            <span class="s2"># Listen on an external interface if using a selenium hub.</span>
+            <span class="s1">host = test_class.host </span><span class="s0">if not </span><span class="s1">test_class.selenium_hub </span><span class="s0">else </span><span class="s4">'0.0.0.0'</span>
+            <span class="s1">test_class.host = host</span>
+            <span class="s1">test_class.external_host = cls.external_host</span>
+            <span class="s2"># Create subclasses for each of the remaining browsers and expose</span>
+            <span class="s2"># them through the test's module namespace.</span>
+            <span class="s1">module = sys.modules[test_class.__module__]</span>
+            <span class="s0">for </span><span class="s1">browser </span><span class="s0">in </span><span class="s1">test_class.browsers[</span><span class="s5">1</span><span class="s1">:]:</span>
+                <span class="s1">browser_test_class = cls.__new__(</span>
+                    <span class="s1">cls</span><span class="s0">,</span>
+                    <span class="s4">&quot;%s%s&quot; </span><span class="s1">% (capfirst(browser)</span><span class="s0">, </span><span class="s1">name)</span><span class="s0">,</span>
+                    <span class="s1">(test_class</span><span class="s0">,</span><span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">{</span>
+                        <span class="s4">'browser'</span><span class="s1">: browser</span><span class="s0">,</span>
+                        <span class="s4">'host'</span><span class="s1">: host</span><span class="s0">,</span>
+                        <span class="s4">'external_host'</span><span class="s1">: cls.external_host</span><span class="s0">,</span>
+                        <span class="s4">'__module__'</span><span class="s1">: test_class.__module__</span><span class="s0">,</span>
+                    <span class="s1">}</span>
+                <span class="s1">)</span>
+                <span class="s1">setattr(module</span><span class="s0">, </span><span class="s1">browser_test_class.__name__</span><span class="s0">, </span><span class="s1">browser_test_class)</span>
+            <span class="s0">return </span><span class="s1">test_class</span>
+        <span class="s2"># If no browsers were specified, skip this class (it'll still be discovered).</span>
+        <span class="s0">return </span><span class="s1">unittest.skip(</span><span class="s4">'No browsers specified.'</span><span class="s1">)(test_class)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">import_webdriver(cls</span><span class="s0">, </span><span class="s1">browser):</span>
+        <span class="s0">return </span><span class="s1">import_string(</span><span class="s4">&quot;selenium.webdriver.%s.webdriver.WebDriver&quot; </span><span class="s1">% browser)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">import_options(cls</span><span class="s0">, </span><span class="s1">browser):</span>
+        <span class="s0">return </span><span class="s1">import_string(</span><span class="s4">'selenium.webdriver.%s.options.Options' </span><span class="s1">% browser)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">get_capability(cls</span><span class="s0">, </span><span class="s1">browser):</span>
+        <span class="s0">from </span><span class="s1">selenium.webdriver.common.desired_capabilities </span><span class="s0">import </span><span class="s1">(</span>
+            <span class="s1">DesiredCapabilities</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">getattr(DesiredCapabilities</span><span class="s0">, </span><span class="s1">browser.upper())</span>
+
+    <span class="s0">def </span><span class="s1">create_options(self):</span>
+        <span class="s1">options = self.import_options(self.browser)()</span>
+        <span class="s0">if </span><span class="s1">self.headless:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">options.headless = </span><span class="s0">True</span>
+            <span class="s0">except </span><span class="s1">AttributeError:</span>
+                <span class="s0">pass  </span><span class="s2"># Only Chrome and Firefox support the headless mode.</span>
+        <span class="s0">return </span><span class="s1">options</span>
+
+    <span class="s0">def </span><span class="s1">create_webdriver(self):</span>
+        <span class="s0">if </span><span class="s1">self.selenium_hub:</span>
+            <span class="s0">from </span><span class="s1">selenium </span><span class="s0">import </span><span class="s1">webdriver</span>
+            <span class="s0">return </span><span class="s1">webdriver.Remote(</span>
+                <span class="s1">command_executor=self.selenium_hub</span><span class="s0">,</span>
+                <span class="s1">desired_capabilities=self.get_capability(self.browser)</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self.import_webdriver(self.browser)(options=self.create_options())</span>
+
+
+<span class="s1">@tag(</span><span class="s4">'selenium'</span><span class="s1">)</span>
+<span class="s0">class </span><span class="s1">SeleniumTestCase(LiveServerTestCase</span><span class="s0">, </span><span class="s1">metaclass=SeleniumTestCaseBase):</span>
+    <span class="s1">implicit_wait = </span><span class="s5">10</span>
+    <span class="s1">external_host = </span><span class="s0">None</span>
+
+    <span class="s1">@classproperty</span>
+    <span class="s0">def </span><span class="s1">live_server_url(cls):</span>
+        <span class="s0">return </span><span class="s4">'http://%s:%s' </span><span class="s1">% (cls.external_host </span><span class="s0">or </span><span class="s1">cls.host</span><span class="s0">, </span><span class="s1">cls.server_thread.port)</span>
+
+    <span class="s1">@classproperty</span>
+    <span class="s0">def </span><span class="s1">allowed_host(cls):</span>
+        <span class="s0">return </span><span class="s1">cls.external_host </span><span class="s0">or </span><span class="s1">cls.host</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">setUpClass(cls):</span>
+        <span class="s1">cls.selenium = cls.create_webdriver()</span>
+        <span class="s1">cls.selenium.implicitly_wait(cls.implicit_wait)</span>
+        <span class="s1">super().setUpClass()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_tearDownClassInternal(cls):</span>
+        <span class="s2"># quit() the WebDriver before attempting to terminate and join the</span>
+        <span class="s2"># single-threaded LiveServerThread to avoid a dead lock if the browser</span>
+        <span class="s2"># kept a connection alive.</span>
+        <span class="s0">if </span><span class="s1">hasattr(cls</span><span class="s0">, </span><span class="s4">'selenium'</span><span class="s1">):</span>
+            <span class="s1">cls.selenium.quit()</span>
+        <span class="s1">super()._tearDownClassInternal()</span>
+
+    <span class="s1">@contextmanager</span>
+    <span class="s0">def </span><span class="s1">disable_implicit_wait(self):</span>
+        <span class="s3">&quot;&quot;&quot;Disable the default implicit wait.&quot;&quot;&quot;</span>
+        <span class="s1">self.selenium.implicitly_wait(</span><span class="s5">0</span><span class="s1">)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">yield</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">self.selenium.implicitly_wait(self.implicit_wait)</span>
+</pre>
+</body>
+</html>

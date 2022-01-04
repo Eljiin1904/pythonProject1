@@ -1,0 +1,152 @@
+<html>
+<head>
+<title>smtp.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+smtp.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;SMTP email backend class.&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">smtplib</span>
+<span class="s2">import </span><span class="s1">ssl</span>
+<span class="s2">import </span><span class="s1">threading</span>
+
+<span class="s2">from </span><span class="s1">django.conf </span><span class="s2">import </span><span class="s1">settings</span>
+<span class="s2">from </span><span class="s1">django.core.mail.backends.base </span><span class="s2">import </span><span class="s1">BaseEmailBackend</span>
+<span class="s2">from </span><span class="s1">django.core.mail.message </span><span class="s2">import </span><span class="s1">sanitize_address</span>
+<span class="s2">from </span><span class="s1">django.core.mail.utils </span><span class="s2">import </span><span class="s1">DNS_NAME</span>
+
+
+<span class="s2">class </span><span class="s1">EmailBackend(BaseEmailBackend):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    A wrapper that manages the SMTP network connection. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">host=</span><span class="s2">None, </span><span class="s1">port=</span><span class="s2">None, </span><span class="s1">username=</span><span class="s2">None, </span><span class="s1">password=</span><span class="s2">None,</span>
+                 <span class="s1">use_tls=</span><span class="s2">None, </span><span class="s1">fail_silently=</span><span class="s2">False, </span><span class="s1">use_ssl=</span><span class="s2">None, </span><span class="s1">timeout=</span><span class="s2">None,</span>
+                 <span class="s1">ssl_keyfile=</span><span class="s2">None, </span><span class="s1">ssl_certfile=</span><span class="s2">None,</span>
+                 <span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(fail_silently=fail_silently)</span>
+        <span class="s1">self.host = host </span><span class="s2">or </span><span class="s1">settings.EMAIL_HOST</span>
+        <span class="s1">self.port = port </span><span class="s2">or </span><span class="s1">settings.EMAIL_PORT</span>
+        <span class="s1">self.username = settings.EMAIL_HOST_USER </span><span class="s2">if </span><span class="s1">username </span><span class="s2">is None else </span><span class="s1">username</span>
+        <span class="s1">self.password = settings.EMAIL_HOST_PASSWORD </span><span class="s2">if </span><span class="s1">password </span><span class="s2">is None else </span><span class="s1">password</span>
+        <span class="s1">self.use_tls = settings.EMAIL_USE_TLS </span><span class="s2">if </span><span class="s1">use_tls </span><span class="s2">is None else </span><span class="s1">use_tls</span>
+        <span class="s1">self.use_ssl = settings.EMAIL_USE_SSL </span><span class="s2">if </span><span class="s1">use_ssl </span><span class="s2">is None else </span><span class="s1">use_ssl</span>
+        <span class="s1">self.timeout = settings.EMAIL_TIMEOUT </span><span class="s2">if </span><span class="s1">timeout </span><span class="s2">is None else </span><span class="s1">timeout</span>
+        <span class="s1">self.ssl_keyfile = settings.EMAIL_SSL_KEYFILE </span><span class="s2">if </span><span class="s1">ssl_keyfile </span><span class="s2">is None else </span><span class="s1">ssl_keyfile</span>
+        <span class="s1">self.ssl_certfile = settings.EMAIL_SSL_CERTFILE </span><span class="s2">if </span><span class="s1">ssl_certfile </span><span class="s2">is None else </span><span class="s1">ssl_certfile</span>
+        <span class="s2">if </span><span class="s1">self.use_ssl </span><span class="s2">and </span><span class="s1">self.use_tls:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;EMAIL_USE_TLS/EMAIL_USE_SSL are mutually exclusive, so only set &quot;</span>
+                <span class="s3">&quot;one of those settings to True.&quot;</span><span class="s1">)</span>
+        <span class="s1">self.connection = </span><span class="s2">None</span>
+        <span class="s1">self._lock = threading.RLock()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">connection_class(self):</span>
+        <span class="s2">return </span><span class="s1">smtplib.SMTP_SSL </span><span class="s2">if </span><span class="s1">self.use_ssl </span><span class="s2">else </span><span class="s1">smtplib.SMTP</span>
+
+    <span class="s2">def </span><span class="s1">open(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Ensure an open connection to the email server. Return whether or not a 
+        new connection was required (True or False) or None if an exception 
+        passed silently. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.connection:</span>
+            <span class="s4"># Nothing to do if the connection is already open.</span>
+            <span class="s2">return False</span>
+
+        <span class="s4"># If local_hostname is not specified, socket.getfqdn() gets used.</span>
+        <span class="s4"># For performance, we use the cached FQDN for local_hostname.</span>
+        <span class="s1">connection_params = {</span><span class="s3">'local_hostname'</span><span class="s1">: DNS_NAME.get_fqdn()}</span>
+        <span class="s2">if </span><span class="s1">self.timeout </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">connection_params[</span><span class="s3">'timeout'</span><span class="s1">] = self.timeout</span>
+        <span class="s2">if </span><span class="s1">self.use_ssl:</span>
+            <span class="s1">connection_params.update({</span>
+                <span class="s3">'keyfile'</span><span class="s1">: self.ssl_keyfile</span><span class="s2">,</span>
+                <span class="s3">'certfile'</span><span class="s1">: self.ssl_certfile</span><span class="s2">,</span>
+            <span class="s1">})</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.connection = self.connection_class(self.host</span><span class="s2">, </span><span class="s1">self.port</span><span class="s2">, </span><span class="s1">**connection_params)</span>
+
+            <span class="s4"># TLS/SSL are mutually exclusive, so only attempt TLS over</span>
+            <span class="s4"># non-secure connections.</span>
+            <span class="s2">if not </span><span class="s1">self.use_ssl </span><span class="s2">and </span><span class="s1">self.use_tls:</span>
+                <span class="s1">self.connection.starttls(keyfile=self.ssl_keyfile</span><span class="s2">, </span><span class="s1">certfile=self.ssl_certfile)</span>
+            <span class="s2">if </span><span class="s1">self.username </span><span class="s2">and </span><span class="s1">self.password:</span>
+                <span class="s1">self.connection.login(self.username</span><span class="s2">, </span><span class="s1">self.password)</span>
+            <span class="s2">return True</span>
+        <span class="s2">except </span><span class="s1">OSError:</span>
+            <span class="s2">if not </span><span class="s1">self.fail_silently:</span>
+                <span class="s2">raise</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s0">&quot;&quot;&quot;Close the connection to the email server.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.connection </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">self.connection.quit()</span>
+            <span class="s2">except </span><span class="s1">(ssl.SSLError</span><span class="s2">, </span><span class="s1">smtplib.SMTPServerDisconnected):</span>
+                <span class="s4"># This happens when calling quit() on a TLS connection</span>
+                <span class="s4"># sometimes, or when the connection was already disconnected</span>
+                <span class="s4"># by the server.</span>
+                <span class="s1">self.connection.close()</span>
+            <span class="s2">except </span><span class="s1">smtplib.SMTPException:</span>
+                <span class="s2">if </span><span class="s1">self.fail_silently:</span>
+                    <span class="s2">return</span>
+                <span class="s2">raise</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">self.connection = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">send_messages(self</span><span class="s2">, </span><span class="s1">email_messages):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Send one or more EmailMessage objects and return the number of email 
+        messages sent. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">email_messages:</span>
+            <span class="s2">return </span><span class="s5">0</span>
+        <span class="s2">with </span><span class="s1">self._lock:</span>
+            <span class="s1">new_conn_created = self.open()</span>
+            <span class="s2">if not </span><span class="s1">self.connection </span><span class="s2">or </span><span class="s1">new_conn_created </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s4"># We failed silently on open().</span>
+                <span class="s4"># Trying to send would be pointless.</span>
+                <span class="s2">return </span><span class="s5">0</span>
+            <span class="s1">num_sent = </span><span class="s5">0</span>
+            <span class="s2">for </span><span class="s1">message </span><span class="s2">in </span><span class="s1">email_messages:</span>
+                <span class="s1">sent = self._send(message)</span>
+                <span class="s2">if </span><span class="s1">sent:</span>
+                    <span class="s1">num_sent += </span><span class="s5">1</span>
+            <span class="s2">if </span><span class="s1">new_conn_created:</span>
+                <span class="s1">self.close()</span>
+        <span class="s2">return </span><span class="s1">num_sent</span>
+
+    <span class="s2">def </span><span class="s1">_send(self</span><span class="s2">, </span><span class="s1">email_message):</span>
+        <span class="s0">&quot;&quot;&quot;A helper method that does the actual sending.&quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">email_message.recipients():</span>
+            <span class="s2">return False</span>
+        <span class="s1">encoding = email_message.encoding </span><span class="s2">or </span><span class="s1">settings.DEFAULT_CHARSET</span>
+        <span class="s1">from_email = sanitize_address(email_message.from_email</span><span class="s2">, </span><span class="s1">encoding)</span>
+        <span class="s1">recipients = [sanitize_address(addr</span><span class="s2">, </span><span class="s1">encoding) </span><span class="s2">for </span><span class="s1">addr </span><span class="s2">in </span><span class="s1">email_message.recipients()]</span>
+        <span class="s1">message = email_message.message()</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.connection.sendmail(from_email</span><span class="s2">, </span><span class="s1">recipients</span><span class="s2">, </span><span class="s1">message.as_bytes(linesep=</span><span class="s3">'</span><span class="s2">\r\n</span><span class="s3">'</span><span class="s1">))</span>
+        <span class="s2">except </span><span class="s1">smtplib.SMTPException:</span>
+            <span class="s2">if not </span><span class="s1">self.fail_silently:</span>
+                <span class="s2">raise</span>
+            <span class="s2">return False</span>
+        <span class="s2">return True</span>
+</pre>
+</body>
+</html>

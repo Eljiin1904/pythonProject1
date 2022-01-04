@@ -1,0 +1,327 @@
+<html>
+<head>
+<title>pygen.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+pygen.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># mako/pygen.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">&quot;&quot;&quot;utilities for generating and formatting literal Python code.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">re</span>
+
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">exceptions</span>
+
+
+<span class="s3">class </span><span class="s1">PythonPrinter(object):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">stream):</span>
+        <span class="s0"># indentation counter</span>
+        <span class="s1">self.indent = </span><span class="s4">0</span>
+
+        <span class="s0"># a stack storing information about why we incremented</span>
+        <span class="s0"># the indentation counter, to help us determine if we</span>
+        <span class="s0"># should decrement it</span>
+        <span class="s1">self.indent_detail = []</span>
+
+        <span class="s0"># the string of whitespace multiplied by the indent</span>
+        <span class="s0"># counter to produce a line</span>
+        <span class="s1">self.indentstring = </span><span class="s5">&quot;    &quot;</span>
+
+        <span class="s0"># the stream we are writing to</span>
+        <span class="s1">self.stream = stream</span>
+
+        <span class="s0"># current line number</span>
+        <span class="s1">self.lineno = </span><span class="s4">1</span>
+
+        <span class="s0"># a list of lines that represents a buffered &quot;block&quot; of code,</span>
+        <span class="s0"># which can be later printed relative to an indent level</span>
+        <span class="s1">self.line_buffer = []</span>
+
+        <span class="s1">self.in_indent_lines = </span><span class="s3">False</span>
+
+        <span class="s1">self._reset_multi_line_flags()</span>
+
+        <span class="s0"># mapping of generated python lines to template</span>
+        <span class="s0"># source lines</span>
+        <span class="s1">self.source_map = {}</span>
+
+    <span class="s3">def </span><span class="s1">_update_lineno(self</span><span class="s3">, </span><span class="s1">num):</span>
+        <span class="s1">self.lineno += num</span>
+
+    <span class="s3">def </span><span class="s1">start_source(self</span><span class="s3">, </span><span class="s1">lineno):</span>
+        <span class="s3">if </span><span class="s1">self.lineno </span><span class="s3">not in </span><span class="s1">self.source_map:</span>
+            <span class="s1">self.source_map[self.lineno] = lineno</span>
+
+    <span class="s3">def </span><span class="s1">write_blanks(self</span><span class="s3">, </span><span class="s1">num):</span>
+        <span class="s1">self.stream.write(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">* num)</span>
+        <span class="s1">self._update_lineno(num)</span>
+
+    <span class="s3">def </span><span class="s1">write_indented_block(self</span><span class="s3">, </span><span class="s1">block</span><span class="s3">, </span><span class="s1">starting_lineno=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;print a line or lines of python which already contain indentation. 
+ 
+        The indentation of the total block of lines will be adjusted to that of 
+        the current indent level.&quot;&quot;&quot;</span>
+        <span class="s1">self.in_indent_lines = </span><span class="s3">False</span>
+        <span class="s3">for </span><span class="s1">i</span><span class="s3">, </span><span class="s1">l </span><span class="s3">in </span><span class="s1">enumerate(re.split(</span><span class="s5">r&quot;\r?\n&quot;</span><span class="s3">, </span><span class="s1">block)):</span>
+            <span class="s1">self.line_buffer.append(l)</span>
+            <span class="s3">if </span><span class="s1">starting_lineno </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">self.start_source(starting_lineno + i)</span>
+            <span class="s1">self._update_lineno(</span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">writelines(self</span><span class="s3">, </span><span class="s1">*lines):</span>
+        <span class="s2">&quot;&quot;&quot;print a series of lines of python.&quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">line </span><span class="s3">in </span><span class="s1">lines:</span>
+            <span class="s1">self.writeline(line)</span>
+
+    <span class="s3">def </span><span class="s1">writeline(self</span><span class="s3">, </span><span class="s1">line):</span>
+        <span class="s2">&quot;&quot;&quot;print a line of python, indenting it according to the current 
+        indent level. 
+ 
+        this also adjusts the indentation counter according to the 
+        content of the line. 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s3">if not </span><span class="s1">self.in_indent_lines:</span>
+            <span class="s1">self._flush_adjusted_lines()</span>
+            <span class="s1">self.in_indent_lines = </span><span class="s3">True</span>
+
+        <span class="s3">if </span><span class="s1">(</span>
+            <span class="s1">line </span><span class="s3">is None</span>
+            <span class="s3">or </span><span class="s1">re.match(</span><span class="s5">r&quot;^\s*#&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+            <span class="s3">or </span><span class="s1">re.match(</span><span class="s5">r&quot;^\s*$&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+        <span class="s1">):</span>
+            <span class="s1">hastext = </span><span class="s3">False</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">hastext = </span><span class="s3">True</span>
+
+        <span class="s1">is_comment = line </span><span class="s3">and </span><span class="s1">len(line) </span><span class="s3">and </span><span class="s1">line[</span><span class="s4">0</span><span class="s1">] == </span><span class="s5">&quot;#&quot;</span>
+
+        <span class="s0"># see if this line should decrease the indentation level</span>
+        <span class="s3">if not </span><span class="s1">is_comment </span><span class="s3">and </span><span class="s1">(</span><span class="s3">not </span><span class="s1">hastext </span><span class="s3">or </span><span class="s1">self._is_unindentor(line)):</span>
+
+            <span class="s3">if </span><span class="s1">self.indent &gt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s1">self.indent -= </span><span class="s4">1</span>
+                <span class="s0"># if the indent_detail stack is empty, the user</span>
+                <span class="s0"># probably put extra closures - the resulting</span>
+                <span class="s0"># module wont compile.</span>
+                <span class="s3">if </span><span class="s1">len(self.indent_detail) == </span><span class="s4">0</span><span class="s1">:</span>
+                    <span class="s3">raise </span><span class="s1">exceptions.SyntaxException(</span>
+                        <span class="s5">&quot;Too many whitespace closures&quot;</span>
+                    <span class="s1">)</span>
+                <span class="s1">self.indent_detail.pop()</span>
+
+        <span class="s3">if </span><span class="s1">line </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return</span>
+
+        <span class="s0"># write the line</span>
+        <span class="s1">self.stream.write(self._indent_line(line) + </span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+        <span class="s1">self._update_lineno(len(line.split(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)))</span>
+
+        <span class="s0"># see if this line should increase the indentation level.</span>
+        <span class="s0"># note that a line can both decrase (before printing) and</span>
+        <span class="s0"># then increase (after printing) the indentation level.</span>
+
+        <span class="s3">if </span><span class="s1">re.search(</span><span class="s5">r&quot;:[ \t]*(?:#.*)?$&quot;</span><span class="s3">, </span><span class="s1">line):</span>
+            <span class="s0"># increment indentation count, and also</span>
+            <span class="s0"># keep track of what the keyword was that indented us,</span>
+            <span class="s0"># if it is a python compound statement keyword</span>
+            <span class="s0"># where we might have to look for an &quot;unindent&quot; keyword</span>
+            <span class="s1">match = re.match(</span><span class="s5">r&quot;^\s*(if|try|elif|while|for|with)&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+            <span class="s3">if </span><span class="s1">match:</span>
+                <span class="s0"># its a &quot;compound&quot; keyword, so we will check for &quot;unindentors&quot;</span>
+                <span class="s1">indentor = match.group(</span><span class="s4">1</span><span class="s1">)</span>
+                <span class="s1">self.indent += </span><span class="s4">1</span>
+                <span class="s1">self.indent_detail.append(indentor)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">indentor = </span><span class="s3">None</span>
+                <span class="s0"># its not a &quot;compound&quot; keyword.  but lets also</span>
+                <span class="s0"># test for valid Python keywords that might be indenting us,</span>
+                <span class="s0"># else assume its a non-indenting line</span>
+                <span class="s1">m2 = re.match(</span>
+                    <span class="s5">r&quot;^\s*(def|class|else|elif|except|finally)&quot;</span><span class="s3">, </span><span class="s1">line</span>
+                <span class="s1">)</span>
+                <span class="s3">if </span><span class="s1">m2:</span>
+                    <span class="s1">self.indent += </span><span class="s4">1</span>
+                    <span class="s1">self.indent_detail.append(indentor)</span>
+
+    <span class="s3">def </span><span class="s1">close(self):</span>
+        <span class="s2">&quot;&quot;&quot;close this printer, flushing any remaining lines.&quot;&quot;&quot;</span>
+        <span class="s1">self._flush_adjusted_lines()</span>
+
+    <span class="s3">def </span><span class="s1">_is_unindentor(self</span><span class="s3">, </span><span class="s1">line):</span>
+        <span class="s2">&quot;&quot;&quot;return true if the given line is an 'unindentor', 
+        relative to the last 'indent' event received. 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0"># no indentation detail has been pushed on; return False</span>
+        <span class="s3">if </span><span class="s1">len(self.indent_detail) == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s3">return False</span>
+
+        <span class="s1">indentor = self.indent_detail[-</span><span class="s4">1</span><span class="s1">]</span>
+
+        <span class="s0"># the last indent keyword we grabbed is not a</span>
+        <span class="s0"># compound statement keyword; return False</span>
+        <span class="s3">if </span><span class="s1">indentor </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return False</span>
+
+        <span class="s0"># if the current line doesnt have one of the &quot;unindentor&quot; keywords,</span>
+        <span class="s0"># return False</span>
+        <span class="s1">match = re.match(</span><span class="s5">r&quot;^\s*(else|elif|except|finally).*\:&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+        <span class="s3">if not </span><span class="s1">match:</span>
+            <span class="s3">return False</span>
+
+        <span class="s0"># whitespace matches up, we have a compound indentor,</span>
+        <span class="s0"># and this line has an unindentor, this</span>
+        <span class="s0"># is probably good enough</span>
+        <span class="s3">return True</span>
+
+        <span class="s0"># should we decide that its not good enough, heres</span>
+        <span class="s0"># more stuff to check.</span>
+        <span class="s0"># keyword = match.group(1)</span>
+
+        <span class="s0"># match the original indent keyword</span>
+        <span class="s0"># for crit in [</span>
+        <span class="s0">#   (r'if|elif', r'else|elif'),</span>
+        <span class="s0">#   (r'try', r'except|finally|else'),</span>
+        <span class="s0">#   (r'while|for', r'else'),</span>
+        <span class="s0"># ]:</span>
+        <span class="s0">#   if re.match(crit[0], indentor) and re.match(crit[1], keyword):</span>
+        <span class="s0">#        return True</span>
+
+        <span class="s0"># return False</span>
+
+    <span class="s3">def </span><span class="s1">_indent_line(self</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">stripspace=</span><span class="s5">&quot;&quot;</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;indent the given line according to the current indent level. 
+ 
+        stripspace is a string of space that will be truncated from the 
+        start of the line before indenting.&quot;&quot;&quot;</span>
+
+        <span class="s3">return </span><span class="s1">re.sub(</span>
+            <span class="s5">r&quot;^%s&quot; </span><span class="s1">% stripspace</span><span class="s3">, </span><span class="s1">self.indentstring * self.indent</span><span class="s3">, </span><span class="s1">line</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_reset_multi_line_flags(self):</span>
+        <span class="s2">&quot;&quot;&quot;reset the flags which would indicate we are in a backslashed 
+        or triple-quoted section.&quot;&quot;&quot;</span>
+
+        <span class="s1">self.backslashed</span><span class="s3">, </span><span class="s1">self.triplequoted = </span><span class="s3">False, False</span>
+
+    <span class="s3">def </span><span class="s1">_in_multi_line(self</span><span class="s3">, </span><span class="s1">line):</span>
+        <span class="s2">&quot;&quot;&quot;return true if the given line is part of a multi-line block, 
+        via backslash or triple-quote.&quot;&quot;&quot;</span>
+
+        <span class="s0"># we are only looking for explicitly joined lines here, not</span>
+        <span class="s0"># implicit ones (i.e. brackets, braces etc.).  this is just to</span>
+        <span class="s0"># guard against the possibility of modifying the space inside of</span>
+        <span class="s0"># a literal multiline string with unfortunately placed</span>
+        <span class="s0"># whitespace</span>
+
+        <span class="s1">current_state = self.backslashed </span><span class="s3">or </span><span class="s1">self.triplequoted</span>
+
+        <span class="s3">if </span><span class="s1">re.search(</span><span class="s5">r&quot;\\$&quot;</span><span class="s3">, </span><span class="s1">line):</span>
+            <span class="s1">self.backslashed = </span><span class="s3">True</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.backslashed = </span><span class="s3">False</span>
+
+        <span class="s1">triples = len(re.findall(</span><span class="s5">r&quot;\&quot;\&quot;\&quot;|\'\'\'&quot;</span><span class="s3">, </span><span class="s1">line))</span>
+        <span class="s3">if </span><span class="s1">triples == </span><span class="s4">1 </span><span class="s3">or </span><span class="s1">triples % </span><span class="s4">2 </span><span class="s1">!= </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s1">self.triplequoted = </span><span class="s3">not </span><span class="s1">self.triplequoted</span>
+
+        <span class="s3">return </span><span class="s1">current_state</span>
+
+    <span class="s3">def </span><span class="s1">_flush_adjusted_lines(self):</span>
+        <span class="s1">stripspace = </span><span class="s3">None</span>
+        <span class="s1">self._reset_multi_line_flags()</span>
+
+        <span class="s3">for </span><span class="s1">entry </span><span class="s3">in </span><span class="s1">self.line_buffer:</span>
+            <span class="s3">if </span><span class="s1">self._in_multi_line(entry):</span>
+                <span class="s1">self.stream.write(entry + </span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">entry = entry.expandtabs()</span>
+                <span class="s3">if </span><span class="s1">stripspace </span><span class="s3">is None and </span><span class="s1">re.search(</span><span class="s5">r&quot;^[ \t]*[^# \t]&quot;</span><span class="s3">, </span><span class="s1">entry):</span>
+                    <span class="s1">stripspace = re.match(</span><span class="s5">r&quot;^([ \t]*)&quot;</span><span class="s3">, </span><span class="s1">entry).group(</span><span class="s4">1</span><span class="s1">)</span>
+                <span class="s1">self.stream.write(self._indent_line(entry</span><span class="s3">, </span><span class="s1">stripspace) + </span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self.line_buffer = []</span>
+        <span class="s1">self._reset_multi_line_flags()</span>
+
+
+<span class="s3">def </span><span class="s1">adjust_whitespace(text):</span>
+    <span class="s2">&quot;&quot;&quot;remove the left-whitespace margin of a block of Python code.&quot;&quot;&quot;</span>
+
+    <span class="s1">state = [</span><span class="s3">False, False</span><span class="s1">]</span>
+    <span class="s1">(backslashed</span><span class="s3">, </span><span class="s1">triplequoted) = (</span><span class="s4">0</span><span class="s3">, </span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">in_multi_line(line):</span>
+        <span class="s1">start_state = state[backslashed] </span><span class="s3">or </span><span class="s1">state[triplequoted]</span>
+
+        <span class="s3">if </span><span class="s1">re.search(</span><span class="s5">r&quot;\\$&quot;</span><span class="s3">, </span><span class="s1">line):</span>
+            <span class="s1">state[backslashed] = </span><span class="s3">True</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">state[backslashed] = </span><span class="s3">False</span>
+
+        <span class="s3">def </span><span class="s1">match(reg</span><span class="s3">, </span><span class="s1">t):</span>
+            <span class="s1">m = re.match(reg</span><span class="s3">, </span><span class="s1">t)</span>
+            <span class="s3">if </span><span class="s1">m:</span>
+                <span class="s3">return </span><span class="s1">m</span><span class="s3">, </span><span class="s1">t[len(m.group(</span><span class="s4">0</span><span class="s1">)) :]</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">return None, </span><span class="s1">t</span>
+
+        <span class="s3">while </span><span class="s1">line:</span>
+            <span class="s3">if </span><span class="s1">state[triplequoted]:</span>
+                <span class="s1">m</span><span class="s3">, </span><span class="s1">line = match(</span><span class="s5">r&quot;%s&quot; </span><span class="s1">% state[triplequoted]</span><span class="s3">, </span><span class="s1">line)</span>
+                <span class="s3">if </span><span class="s1">m:</span>
+                    <span class="s1">state[triplequoted] = </span><span class="s3">False</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s1">m</span><span class="s3">, </span><span class="s1">line = match(</span><span class="s5">r&quot;.*?(?=%s|$)&quot; </span><span class="s1">% state[triplequoted]</span><span class="s3">, </span><span class="s1">line)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">m</span><span class="s3">, </span><span class="s1">line = match(</span><span class="s5">r&quot;#&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+                <span class="s3">if </span><span class="s1">m:</span>
+                    <span class="s3">return </span><span class="s1">start_state</span>
+
+                <span class="s1">m</span><span class="s3">, </span><span class="s1">line = match(</span><span class="s5">r&quot;\&quot;\&quot;\&quot;|\'\'\'&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+                <span class="s3">if </span><span class="s1">m:</span>
+                    <span class="s1">state[triplequoted] = m.group(</span><span class="s4">0</span><span class="s1">)</span>
+                    <span class="s3">continue</span>
+
+                <span class="s1">m</span><span class="s3">, </span><span class="s1">line = match(</span><span class="s5">r&quot;.*?(?=\&quot;\&quot;\&quot;|\'\'\'|#|$)&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+
+        <span class="s3">return </span><span class="s1">start_state</span>
+
+    <span class="s3">def </span><span class="s1">_indent_line(line</span><span class="s3">, </span><span class="s1">stripspace=</span><span class="s5">&quot;&quot;</span><span class="s1">):</span>
+        <span class="s3">return </span><span class="s1">re.sub(</span><span class="s5">r&quot;^%s&quot; </span><span class="s1">% stripspace</span><span class="s3">, </span><span class="s5">&quot;&quot;</span><span class="s3">, </span><span class="s1">line)</span>
+
+    <span class="s1">lines = []</span>
+    <span class="s1">stripspace = </span><span class="s3">None</span>
+
+    <span class="s3">for </span><span class="s1">line </span><span class="s3">in </span><span class="s1">re.split(</span><span class="s5">r&quot;\r?\n&quot;</span><span class="s3">, </span><span class="s1">text):</span>
+        <span class="s3">if </span><span class="s1">in_multi_line(line):</span>
+            <span class="s1">lines.append(line)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">line = line.expandtabs()</span>
+            <span class="s3">if </span><span class="s1">stripspace </span><span class="s3">is None and </span><span class="s1">re.search(</span><span class="s5">r&quot;^[ \t]*[^# \t]&quot;</span><span class="s3">, </span><span class="s1">line):</span>
+                <span class="s1">stripspace = re.match(</span><span class="s5">r&quot;^([ \t]*)&quot;</span><span class="s3">, </span><span class="s1">line).group(</span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s1">lines.append(_indent_line(line</span><span class="s3">, </span><span class="s1">stripspace))</span>
+    <span class="s3">return </span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">.join(lines)</span>
+</pre>
+</body>
+</html>

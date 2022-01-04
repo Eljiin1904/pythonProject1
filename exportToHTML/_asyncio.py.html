@@ -1,0 +1,85 @@
+<html>
+<head>
+<title>_asyncio.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_asyncio.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">from </span><span class="s1">asyncio </span><span class="s2">import </span><span class="s1">ensure_future</span><span class="s2">, </span><span class="s1">Future</span><span class="s2">, </span><span class="s1">iscoroutine</span>
+<span class="s2">from </span><span class="s1">pyee._base </span><span class="s2">import </span><span class="s1">EventEmitter</span>
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;AsyncIOEventEmitter&quot;</span><span class="s1">]</span>
+
+
+<span class="s2">class </span><span class="s1">AsyncIOEventEmitter(EventEmitter):</span>
+    <span class="s4">&quot;&quot;&quot;An event emitter class which can run asyncio coroutines in addition to 
+    synchronous blocking functions. For example:: 
+ 
+        @ee.on('event') 
+        async def async_handler(*args, **kwargs): 
+            await returns_a_future() 
+ 
+    On emit, the event emitter  will automatically schedule the coroutine using 
+    ``asyncio.ensure_future`` and the configured event loop (defaults to 
+    ``asyncio.get_event_loop()``). 
+ 
+    Unlike the case with the BaseEventEmitter, all exceptions raised by 
+    event handlers are automatically emitted on the ``error`` event. This is 
+    important for asyncio coroutines specifically but is also handled for 
+    synchronous functions for consistency. 
+ 
+    When ``loop`` is specified, the supplied event loop will be used when 
+    scheduling work with ``ensure_future``. Otherwise, the default asyncio 
+    event loop is used. 
+ 
+    For asyncio coroutine event handlers, calling emit is non-blocking. 
+    In other words, you do not have to await any results from emit, and the 
+    coroutine is scheduled in a fire-and-forget fashion. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">loop=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">super(AsyncIOEventEmitter</span><span class="s2">, </span><span class="s1">self).__init__()</span>
+        <span class="s1">self._loop = loop</span>
+
+    <span class="s2">def </span><span class="s1">_emit_run(self</span><span class="s2">, </span><span class="s1">f</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">coro = f(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s2">except </span><span class="s1">Exception </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s1">self.emit(</span><span class="s3">&quot;error&quot;</span><span class="s2">, </span><span class="s1">exc)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">iscoroutine(coro):</span>
+                <span class="s2">if </span><span class="s1">self._loop:</span>
+                    <span class="s1">f = ensure_future(coro</span><span class="s2">, </span><span class="s1">loop=self._loop)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">f = ensure_future(coro)</span>
+            <span class="s2">elif </span><span class="s1">isinstance(coro</span><span class="s2">, </span><span class="s1">Future):</span>
+                <span class="s1">f = coro</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">f = </span><span class="s2">None</span>
+
+            <span class="s2">if </span><span class="s1">f:</span>
+
+                <span class="s1">@f.add_done_callback</span>
+                <span class="s2">def </span><span class="s1">_callback(f):</span>
+                    <span class="s2">if </span><span class="s1">f.cancelled():</span>
+                        <span class="s2">return</span>
+
+                    <span class="s1">exc = f.exception()</span>
+                    <span class="s2">if </span><span class="s1">exc:</span>
+                        <span class="s1">self.emit(</span><span class="s3">&quot;error&quot;</span><span class="s2">, </span><span class="s1">exc)</span>
+</pre>
+</body>
+</html>

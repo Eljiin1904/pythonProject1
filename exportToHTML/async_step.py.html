@@ -1,0 +1,304 @@
+<html>
+<head>
+<title>async_step.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+async_step.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s0"># pylint: disable=line-too-long</span>
+<span class="s2">&quot;&quot;&quot; 
+This module provides functionality to support &quot;async steps&quot; (coroutines) 
+in a step-module with behave. This functionality simplifies to test 
+frameworks and protocols that make use of `asyncio.coroutines`_ or 
+provide `asyncio.coroutines`_. 
+ 
+EXAMPLE: 
+ 
+.. code-block:: python 
+ 
+    # -- FILE: features/steps/my_async_steps.py 
+    # EXAMPLE REQUIRES: Python &gt;= 3.5 
+    from behave import step 
+    from behave.api.async_step import async_run_until_complete 
+ 
+    @step('an async coroutine step waits {duration:f} seconds') 
+    @async_run_until_complete 
+    async def step_async_step_waits_seconds(context, duration): 
+        await asyncio.sleep(duration) 
+ 
+.. code-block:: python 
+ 
+    # -- FILE: features/steps/my_async_steps2.py 
+    # EXAMPLE REQUIRES: Python &gt;= 3.4 
+    from behave import step 
+    from behave.api.async_step import async_run_until_complete 
+    import asyncio 
+ 
+    @step('a tagged-coroutine async step waits {duration:f} seconds') 
+    @async_run_until_complete 
+    @asyncio.coroutine 
+    def step_async_step_waits_seconds2(context, duration): 
+        yield from asyncio.sleep(duration) 
+ 
+ 
+.. requires:: Python 3.5 (or 3.4) or :mod:`asyncio` backport (like :pypi:`trollius`) 
+.. seealso:: 
+    https://docs.python.org/3/library/asyncio.html 
+ 
+.. _asyncio.coroutines: https://docs.python.org/3/library/asyncio-task.html#coroutines 
+&quot;&quot;&quot;</span>
+<span class="s0"># pylint: enable=line-too-long</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">print_function</span>
+<span class="s0"># -- REQUIRES: Python &gt;= 3.4</span>
+<span class="s0"># MAYBE BACKPORT: trollius</span>
+<span class="s3">import </span><span class="s1">functools</span>
+<span class="s3">from </span><span class="s1">six </span><span class="s3">import </span><span class="s1">string_types</span>
+<span class="s3">try</span><span class="s1">:</span>
+    <span class="s3">import </span><span class="s1">asyncio</span>
+    <span class="s1">has_asyncio = </span><span class="s3">True</span>
+<span class="s3">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_asyncio = </span><span class="s3">False</span>
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># ASYNC STEP DECORATORS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">async_run_until_complete(astep_func=</span><span class="s3">None, </span><span class="s1">loop=</span><span class="s3">None, </span><span class="s1">timeout=</span><span class="s3">None,</span>
+                             <span class="s1">async_context=</span><span class="s3">None, </span><span class="s1">should_close=</span><span class="s3">False</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Provides a function decorator for async-steps (coroutines). 
+    Provides an async event loop and runs the async-step until completion 
+    (or timeout, if specified). 
+ 
+    .. code-block:: python 
+ 
+        from behave import step 
+        from behave.api.async_step import async_run_until_complete 
+        import asyncio 
+ 
+        @step(&quot;an async step is executed&quot;) 
+        @async_run_until_complete 
+        async def astep_impl(context) 
+            await asycio.sleep(0.1) 
+ 
+        @step(&quot;an async step is executed&quot;) 
+        @async_run_until_complete(timeout=1.2) 
+        async def astep_impl2(context) 
+            # -- NOTE: Wrapped event loop waits with timeout=1.2 seconds. 
+            await asycio.sleep(0.3) 
+ 
+    Parameters: 
+        astep_func: Async step function (coroutine) 
+        loop (asyncio.EventLoop):   Event loop to use or None. 
+        timeout (int, float):       Timeout to wait for async-step completion. 
+        async_context (name):       Async_context name or object to use. 
+        should_close (bool):        Indicates if event lopp should be closed. 
+ 
+    .. note:: 
+ 
+        * If :param:`loop` is None, the default event loop will be used 
+          or a new event loop is created. 
+        * If :param:`timeout` is provided, the event loop waits only the 
+          specified time. 
+        * :param:`async_context` is only used, if :param:`loop` is None. 
+        * If :param:`async_context` is a name, it will be used to retrieve 
+          the real async_context object from the context. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">@functools.wraps(astep_func)</span>
+    <span class="s3">def </span><span class="s1">step_decorator(astep_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">loop = kwargs.pop(</span><span class="s4">&quot;_loop&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">timeout = kwargs.pop(</span><span class="s4">&quot;_timeout&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">async_context = kwargs.pop(</span><span class="s4">&quot;_async_context&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">should_close = kwargs.pop(</span><span class="s4">&quot;_should_close&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(loop</span><span class="s3">, </span><span class="s1">string_types):</span>
+            <span class="s1">loop = getattr(context</span><span class="s3">, </span><span class="s1">loop</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">elif </span><span class="s1">async_context:</span>
+            <span class="s3">if </span><span class="s1">isinstance(async_context</span><span class="s3">, </span><span class="s1">string_types):</span>
+                <span class="s1">name = async_context</span>
+                <span class="s1">async_context = use_or_create_async_context(context</span><span class="s3">, </span><span class="s1">name)</span>
+                <span class="s1">loop = async_context.loop</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">assert </span><span class="s1">isinstance(async_context</span><span class="s3">, </span><span class="s1">AsyncContext)</span>
+                <span class="s1">loop = async_context.loop</span>
+        <span class="s3">if </span><span class="s1">loop </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">loop = asyncio.get_event_loop() </span><span class="s3">or </span><span class="s1">asyncio.new_event_loop()</span>
+
+        <span class="s0"># -- WORKHORSE:</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">if </span><span class="s1">timeout </span><span class="s3">is None</span><span class="s1">:</span>
+                <span class="s1">loop.run_until_complete(astep_func(context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs))</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># MAYBE: loop = asyncio.new_event_loop()</span>
+                <span class="s0"># MAYBE: should_close = True</span>
+                <span class="s1">task = loop.create_task(astep_func(context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs))</span>
+                <span class="s1">done</span><span class="s3">, </span><span class="s1">pending = loop.run_until_complete(</span>
+                    <span class="s1">asyncio.wait([task]</span><span class="s3">, </span><span class="s1">timeout=timeout))</span>
+                <span class="s3">assert not </span><span class="s1">pending</span><span class="s3">, </span><span class="s4">&quot;TIMEOUT-OCCURED: timeout=%s&quot; </span><span class="s1">% timeout</span>
+        <span class="s3">finally</span><span class="s1">:</span>
+            <span class="s3">if </span><span class="s1">loop </span><span class="s3">and </span><span class="s1">should_close:</span>
+                <span class="s0"># -- MAYBE-AVOID:</span>
+                <span class="s1">loop.close()</span>
+
+    <span class="s3">if </span><span class="s1">astep_func </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s0"># -- CASE: @decorator(timeout=1.2, ...)</span>
+        <span class="s0"># MAYBE: return functools.partial(step_decorator,</span>
+        <span class="s3">def </span><span class="s1">wrapped_decorator1(astep_func):</span>
+            <span class="s1">@functools.wraps(astep_func)</span>
+            <span class="s3">def </span><span class="s1">wrapped_decorator2(context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+                <span class="s3">return </span><span class="s1">step_decorator(astep_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">,</span>
+                                      <span class="s1">_loop=loop</span><span class="s3">,</span>
+                                      <span class="s1">_timeout=timeout</span><span class="s3">,</span>
+                                      <span class="s1">_async_context=async_context</span><span class="s3">,</span>
+                                      <span class="s1">_should_close=should_close</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+            <span class="s3">assert </span><span class="s1">callable(astep_func)</span>
+            <span class="s3">return </span><span class="s1">wrapped_decorator2</span>
+        <span class="s3">return </span><span class="s1">wrapped_decorator1</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s0"># -- CASE: @decorator ... or astep = decorator(astep)</span>
+        <span class="s0"># MAYBE: return functools.partial(step_decorator, astep_func=astep_func)</span>
+        <span class="s3">assert </span><span class="s1">callable(astep_func)</span>
+        <span class="s1">@functools.wraps(astep_func)</span>
+        <span class="s3">def </span><span class="s1">wrapped_decorator(context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+            <span class="s3">return </span><span class="s1">step_decorator(astep_func</span><span class="s3">, </span><span class="s1">context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+        <span class="s3">return </span><span class="s1">wrapped_decorator</span>
+
+<span class="s0"># -- ALIAS:</span>
+<span class="s1">run_until_complete = async_run_until_complete</span>
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># ASYNC STEP UTILITY CLASSES:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">AsyncContext(object):</span>
+    <span class="s0"># pylint: disable=line-too-long</span>
+    <span class="s2">&quot;&quot;&quot;Provides a context object for &quot;async steps&quot; to keep track: 
+ 
+    * which event loop is used 
+    * which (asyncio) tasks are used or of interest 
+ 
+    .. attribute:: loop 
+        Event loop object to use. 
+        If none is provided, the current event-loop is used 
+        (or a new one is created). 
+ 
+    .. attribute:: tasks 
+        List of started :mod:`asyncio` tasks (of interest). 
+ 
+    .. attribute:: name 
+ 
+        Optional name of this object (in the behave context). 
+        If none is provided, :attr:`AsyncContext.default_name` is used. 
+ 
+    .. attribute:: should_close 
+        Indicates if the :attr:`loop` (event-loop) should be closed or not. 
+ 
+    EXAMPLE: 
+ 
+    .. code-block:: python 
+ 
+        # -- FILE: features/steps/my_async_steps.py 
+        # REQUIRES: Python 3.5 
+        from behave import given, when, then, step 
+        from behave.api.async_step import AsyncContext 
+ 
+        @when('I dispatch an async-call with param &quot;{param}&quot;') 
+        def step_impl(context, param): 
+            async_context = getattr(context, &quot;async_context&quot;, None) 
+            if async_context is None: 
+                async_context = context.async_context = AsyncContext() 
+            task = async_context.loop.create_task(my_async_func(param)) 
+            async_context.tasks.append(task) 
+ 
+        @then('I wait at most {duration:f} seconds until all async-calls are completed') 
+        def step_impl(context, duration): 
+            async_context = context.async_context 
+            assert async_context.tasks 
+            done, pending = async_context.loop.run_until_complete(asyncio.wait( 
+                async_context.tasks, loop=async_context.loop, timeout=duration)) 
+            assert len(pending) == 0 
+ 
+        # -- COROUTINE: 
+        async def my_async_func(param): 
+            await asyncio.sleep(0.5) 
+            return param.upper() 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># pylint: enable=line-too-long</span>
+    <span class="s1">default_name = </span><span class="s4">&quot;async_context&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">loop=</span><span class="s3">None, </span><span class="s1">name=</span><span class="s3">None, </span><span class="s1">should_close=</span><span class="s3">False, </span><span class="s1">tasks=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.loop = loop </span><span class="s3">or </span><span class="s1">asyncio.get_event_loop() </span><span class="s3">or </span><span class="s1">asyncio.new_event_loop()</span>
+        <span class="s1">self.tasks = tasks </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self.name = name </span><span class="s3">or </span><span class="s1">self.default_name</span>
+        <span class="s1">self.should_close = should_close</span>
+
+    <span class="s3">def </span><span class="s1">__del__(self):</span>
+        <span class="s3">if </span><span class="s1">self.loop </span><span class="s3">and </span><span class="s1">self.should_close:</span>
+            <span class="s1">self.close()</span>
+
+    <span class="s3">def </span><span class="s1">close(self):</span>
+        <span class="s3">if </span><span class="s1">self.loop </span><span class="s3">and not </span><span class="s1">self.loop.is_closed():</span>
+            <span class="s1">self.loop.close()</span>
+            <span class="s1">self.loop = </span><span class="s3">None</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># ASYNC STEP UTILITY FUNCTIONS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">use_or_create_async_context(context</span><span class="s3">, </span><span class="s1">name=</span><span class="s3">None, </span><span class="s1">loop=</span><span class="s3">None, </span><span class="s1">**kwargs):</span>
+    <span class="s2">&quot;&quot;&quot;Utility function to be used in step implementations to ensure that an 
+    :class:`AsyncContext` object is stored in the :param:`context` object. 
+ 
+    If no such attribute exists (under the given name), 
+    a new :class:`AsyncContext` object is created with the provided args. 
+    Otherwise, the existing context attribute is used. 
+ 
+    EXAMPLE: 
+ 
+    .. code-block:: python 
+ 
+        # -- FILE: features/steps/my_async_steps.py 
+        # EXAMPLE REQUIRES: Python 3.5 
+        from behave import when 
+        from behave.api.async_step import use_or_create_async_context 
+ 
+        @when('I dispatch an async-call with param &quot;{param}&quot;') 
+        def step_impl(context, param): 
+            async_context = use_or_create_async_context(context, &quot;async_context&quot;) 
+            task = async_context.loop.create_task(my_async_func(param)) 
+            async_context.tasks.append(task) 
+ 
+        # -- COROUTINE: 
+        async def my_async_func(param): 
+            await asyncio.sleep(0.5) 
+            return param.upper() 
+ 
+    :param context:     Behave context object to use. 
+    :param name:        Optional name of async-context object (as string or None). 
+    :param loop:        Optional event_loop object to use for create call. 
+    :param kwargs:      Optional :class:`AsyncContext` params for create call. 
+    :return: :class:`AsyncContext` object from the param:`context`. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">name </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s1">name = AsyncContext.default_name</span>
+    <span class="s1">async_context = getattr(context</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, None</span><span class="s1">)</span>
+    <span class="s3">if </span><span class="s1">async_context </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s1">async_context = AsyncContext(loop=loop</span><span class="s3">, </span><span class="s1">name=name</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">setattr(context</span><span class="s3">, </span><span class="s1">async_context.name</span><span class="s3">, </span><span class="s1">async_context)</span>
+    <span class="s3">assert </span><span class="s1">isinstance(async_context</span><span class="s3">, </span><span class="s1">AsyncContext)</span>
+    <span class="s3">assert </span><span class="s1">getattr(context</span><span class="s3">, </span><span class="s1">async_context.name) </span><span class="s3">is </span><span class="s1">async_context</span>
+    <span class="s3">return </span><span class="s1">async_context</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,272 @@
+<html>
+<head>
+<title>band.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+band.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">ctypes </span><span class="s0">import </span><span class="s1">byref</span><span class="s0">, </span><span class="s1">c_double</span><span class="s0">, </span><span class="s1">c_int</span><span class="s0">, </span><span class="s1">c_void_p</span>
+
+<span class="s0">from </span><span class="s1">django.contrib.gis.gdal.error </span><span class="s0">import </span><span class="s1">GDALException</span>
+<span class="s0">from </span><span class="s1">django.contrib.gis.gdal.prototypes </span><span class="s0">import </span><span class="s1">raster </span><span class="s0">as </span><span class="s1">capi</span>
+<span class="s0">from </span><span class="s1">django.contrib.gis.gdal.raster.base </span><span class="s0">import </span><span class="s1">GDALRasterBase</span>
+<span class="s0">from </span><span class="s1">django.contrib.gis.shortcuts </span><span class="s0">import </span><span class="s1">numpy</span>
+<span class="s0">from </span><span class="s1">django.utils.encoding </span><span class="s0">import </span><span class="s1">force_str</span>
+
+<span class="s0">from </span><span class="s1">.const </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">GDAL_COLOR_TYPES</span><span class="s0">, </span><span class="s1">GDAL_INTEGER_TYPES</span><span class="s0">, </span><span class="s1">GDAL_PIXEL_TYPES</span><span class="s0">, </span><span class="s1">GDAL_TO_CTYPES</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">GDALBand(GDALRasterBase):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Wrap a GDAL raster band, needs to be obtained from a GDALRaster object. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">source</span><span class="s0">, </span><span class="s1">index):</span>
+        <span class="s1">self.source = source</span>
+        <span class="s1">self._ptr = capi.get_ds_raster_band(source._ptr</span><span class="s0">, </span><span class="s1">index)</span>
+
+    <span class="s0">def </span><span class="s1">_flush(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Call the flush method on the Band's parent raster and force a refresh 
+        of the statistics attribute when requested the next time. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.source._flush()</span>
+        <span class="s1">self._stats_refresh = </span><span class="s0">True</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">description(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the description string of the band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">force_str(capi.get_band_description(self._ptr))</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">width(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Width (X axis) in pixels of the band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">capi.get_band_xsize(self._ptr)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">height(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Height (Y axis) in pixels of the band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">capi.get_band_ysize(self._ptr)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">pixel_count(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the total number of pixels in this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.width * self.height</span>
+
+    <span class="s1">_stats_refresh = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">statistics(self</span><span class="s0">, </span><span class="s1">refresh=</span><span class="s0">False, </span><span class="s1">approximate=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Compute statistics on the pixel values of this band. 
+ 
+        The return value is a tuple with the following structure: 
+        (minimum, maximum, mean, standard deviation). 
+ 
+        If approximate=True, the statistics may be computed based on overviews 
+        or a subset of image tiles. 
+ 
+        If refresh=True, the statistics will be computed from the data directly, 
+        and the cache will be updated where applicable. 
+ 
+        For empty bands (where all pixel values are nodata), all statistics 
+        values are returned as None. 
+ 
+        For raster formats using Persistent Auxiliary Metadata (PAM) services, 
+        the statistics might be cached in an auxiliary file. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Prepare array with arguments for capi function</span>
+        <span class="s1">smin</span><span class="s0">, </span><span class="s1">smax</span><span class="s0">, </span><span class="s1">smean</span><span class="s0">, </span><span class="s1">sstd = c_double()</span><span class="s0">, </span><span class="s1">c_double()</span><span class="s0">, </span><span class="s1">c_double()</span><span class="s0">, </span><span class="s1">c_double()</span>
+        <span class="s1">stats_args = [</span>
+            <span class="s1">self._ptr</span><span class="s0">, </span><span class="s1">c_int(approximate)</span><span class="s0">, </span><span class="s1">byref(smin)</span><span class="s0">, </span><span class="s1">byref(smax)</span><span class="s0">,</span>
+            <span class="s1">byref(smean)</span><span class="s0">, </span><span class="s1">byref(sstd)</span><span class="s0">, </span><span class="s1">c_void_p()</span><span class="s0">, </span><span class="s1">c_void_p()</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+        <span class="s0">if </span><span class="s1">refresh </span><span class="s0">or </span><span class="s1">self._stats_refresh:</span>
+            <span class="s1">func = capi.compute_band_statistics</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s3"># Add additional argument to force computation if there is no</span>
+            <span class="s3"># existing PAM file to take the values from.</span>
+            <span class="s1">force = </span><span class="s0">True</span>
+            <span class="s1">stats_args.insert(</span><span class="s4">2</span><span class="s0">, </span><span class="s1">c_int(force))</span>
+            <span class="s1">func = capi.get_band_statistics</span>
+
+        <span class="s3"># Computation of statistics fails for empty bands.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">func(*stats_args)</span>
+            <span class="s1">result = smin.value</span><span class="s0">, </span><span class="s1">smax.value</span><span class="s0">, </span><span class="s1">smean.value</span><span class="s0">, </span><span class="s1">sstd.value</span>
+        <span class="s0">except </span><span class="s1">GDALException:</span>
+            <span class="s1">result = (</span><span class="s0">None, None, None, None</span><span class="s1">)</span>
+
+        <span class="s1">self._stats_refresh = </span><span class="s0">False</span>
+
+        <span class="s0">return </span><span class="s1">result</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">min(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the minimum pixel value for this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.statistics()[</span><span class="s4">0</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">max(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the maximum pixel value for this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.statistics()[</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">mean(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the mean of all pixel values of this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.statistics()[</span><span class="s4">2</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">std(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the standard deviation of all pixel values of this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.statistics()[</span><span class="s4">3</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">nodata_value(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the nodata value for this band, or None if it isn't set. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Get value and nodata exists flag</span>
+        <span class="s1">nodata_exists = c_int()</span>
+        <span class="s1">value = capi.get_band_nodata_value(self._ptr</span><span class="s0">, </span><span class="s1">nodata_exists)</span>
+        <span class="s0">if not </span><span class="s1">nodata_exists:</span>
+            <span class="s1">value = </span><span class="s0">None</span>
+        <span class="s3"># If the pixeltype is an integer, convert to int</span>
+        <span class="s0">elif </span><span class="s1">self.datatype() </span><span class="s0">in </span><span class="s1">GDAL_INTEGER_TYPES:</span>
+            <span class="s1">value = int(value)</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+    <span class="s1">@nodata_value.setter</span>
+    <span class="s0">def </span><span class="s1">nodata_value(self</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Set the nodata value for this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">value </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">capi.delete_band_nodata_value(self._ptr)</span>
+        <span class="s0">elif not </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(int</span><span class="s0">, </span><span class="s1">float)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s5">'Nodata value must be numeric or None.'</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">capi.set_band_nodata_value(self._ptr</span><span class="s0">, </span><span class="s1">value)</span>
+        <span class="s1">self._flush()</span>
+
+    <span class="s0">def </span><span class="s1">datatype(self</span><span class="s0">, </span><span class="s1">as_string=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the GDAL Pixel Datatype for this band. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">dtype = capi.get_band_datatype(self._ptr)</span>
+        <span class="s0">if </span><span class="s1">as_string:</span>
+            <span class="s1">dtype = GDAL_PIXEL_TYPES[dtype]</span>
+        <span class="s0">return </span><span class="s1">dtype</span>
+
+    <span class="s0">def </span><span class="s1">color_interp(self</span><span class="s0">, </span><span class="s1">as_string=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Return the GDAL color interpretation for this band.&quot;&quot;&quot;</span>
+        <span class="s1">color = capi.get_band_color_interp(self._ptr)</span>
+        <span class="s0">if </span><span class="s1">as_string:</span>
+            <span class="s1">color = GDAL_COLOR_TYPES[color]</span>
+        <span class="s0">return </span><span class="s1">color</span>
+
+    <span class="s0">def </span><span class="s1">data(self</span><span class="s0">, </span><span class="s1">data=</span><span class="s0">None, </span><span class="s1">offset=</span><span class="s0">None, </span><span class="s1">size=</span><span class="s0">None, </span><span class="s1">shape=</span><span class="s0">None, </span><span class="s1">as_memoryview=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Read or writes pixel values for this band. Blocks of data can 
+        be accessed by specifying the width, height and offset of the 
+        desired block. The same specification can be used to update 
+        parts of a raster by providing an array of values. 
+ 
+        Allowed input data types are bytes, memoryview, list, tuple, and array. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">offset = offset </span><span class="s0">or </span><span class="s1">(</span><span class="s4">0</span><span class="s0">, </span><span class="s4">0</span><span class="s1">)</span>
+        <span class="s1">size = size </span><span class="s0">or </span><span class="s1">(self.width - offset[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">self.height - offset[</span><span class="s4">1</span><span class="s1">])</span>
+        <span class="s1">shape = shape </span><span class="s0">or </span><span class="s1">size</span>
+        <span class="s0">if </span><span class="s1">any(x &lt;= </span><span class="s4">0 </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">size):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s5">'Offset too big for this raster.'</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">size[</span><span class="s4">0</span><span class="s1">] &gt; self.width </span><span class="s0">or </span><span class="s1">size[</span><span class="s4">1</span><span class="s1">] &gt; self.height:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s5">'Size is larger than raster.'</span><span class="s1">)</span>
+
+        <span class="s3"># Create ctypes type array generator</span>
+        <span class="s1">ctypes_array = GDAL_TO_CTYPES[self.datatype()] * (shape[</span><span class="s4">0</span><span class="s1">] * shape[</span><span class="s4">1</span><span class="s1">])</span>
+
+        <span class="s0">if </span><span class="s1">data </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s3"># Set read mode</span>
+            <span class="s1">access_flag = </span><span class="s4">0</span>
+            <span class="s3"># Prepare empty ctypes array</span>
+            <span class="s1">data_array = ctypes_array()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s3"># Set write mode</span>
+            <span class="s1">access_flag = </span><span class="s4">1</span>
+
+            <span class="s3"># Instantiate ctypes array holding the input data</span>
+            <span class="s0">if </span><span class="s1">isinstance(data</span><span class="s0">, </span><span class="s1">(bytes</span><span class="s0">, </span><span class="s1">memoryview)) </span><span class="s0">or </span><span class="s1">(numpy </span><span class="s0">and </span><span class="s1">isinstance(data</span><span class="s0">, </span><span class="s1">numpy.ndarray)):</span>
+                <span class="s1">data_array = ctypes_array.from_buffer_copy(data)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">data_array = ctypes_array(*data)</span>
+
+        <span class="s3"># Access band</span>
+        <span class="s1">capi.band_io(self._ptr</span><span class="s0">, </span><span class="s1">access_flag</span><span class="s0">, </span><span class="s1">offset[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">offset[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">,</span>
+                     <span class="s1">size[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">size[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">byref(data_array)</span><span class="s0">, </span><span class="s1">shape[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">,</span>
+                     <span class="s1">shape[</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">self.datatype()</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s4">0</span><span class="s1">)</span>
+
+        <span class="s3"># Return data as numpy array if possible, otherwise as list</span>
+        <span class="s0">if </span><span class="s1">data </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">as_memoryview:</span>
+                <span class="s0">return </span><span class="s1">memoryview(data_array)</span>
+            <span class="s0">elif </span><span class="s1">numpy:</span>
+                <span class="s3"># reshape() needs a reshape parameter with the height first.</span>
+                <span class="s0">return </span><span class="s1">numpy.frombuffer(</span>
+                    <span class="s1">data_array</span><span class="s0">, </span><span class="s1">dtype=numpy.dtype(data_array)</span>
+                <span class="s1">).reshape(tuple(reversed(size)))</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">list(data_array)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self._flush()</span>
+
+
+<span class="s0">class </span><span class="s1">BandList(list):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">source):</span>
+        <span class="s1">self.source = source</span>
+        <span class="s1">super().__init__()</span>
+
+    <span class="s0">def </span><span class="s1">__iter__(self):</span>
+        <span class="s0">for </span><span class="s1">idx </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">1</span><span class="s0">, </span><span class="s1">len(self) + </span><span class="s4">1</span><span class="s1">):</span>
+            <span class="s0">yield </span><span class="s1">GDALBand(self.source</span><span class="s0">, </span><span class="s1">idx)</span>
+
+    <span class="s0">def </span><span class="s1">__len__(self):</span>
+        <span class="s0">return </span><span class="s1">capi.get_ds_raster_count(self.source._ptr)</span>
+
+    <span class="s0">def </span><span class="s1">__getitem__(self</span><span class="s0">, </span><span class="s1">index):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">GDALBand(self.source</span><span class="s0">, </span><span class="s1">index + </span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">GDALException:</span>
+            <span class="s0">raise </span><span class="s1">GDALException(</span><span class="s5">'Unable to get band index %d' </span><span class="s1">% index)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,170 @@
+<html>
+<head>
+<title>fake.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+fake.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">absolute_import</span><span class="s2">, </span><span class="s1">unicode_literals</span>
+
+<span class="s2">import </span><span class="s1">random</span>
+<span class="s2">from </span><span class="s1">threading </span><span class="s2">import </span><span class="s1">Lock</span>
+
+<span class="s2">from </span><span class="s1">fake_useragent </span><span class="s2">import </span><span class="s1">settings</span>
+<span class="s2">from </span><span class="s1">fake_useragent.errors </span><span class="s2">import </span><span class="s1">FakeUserAgentError</span>
+<span class="s2">from </span><span class="s1">fake_useragent.log </span><span class="s2">import </span><span class="s1">logger</span>
+<span class="s2">from </span><span class="s1">fake_useragent.utils </span><span class="s2">import </span><span class="s1">load</span><span class="s2">, </span><span class="s1">load_cached</span><span class="s2">, </span><span class="s1">str_types</span><span class="s2">, </span><span class="s1">update</span>
+
+
+<span class="s2">class </span><span class="s1">FakeUserAgent(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">cache=</span><span class="s2">True,</span>
+        <span class="s1">use_cache_server=</span><span class="s2">True,</span>
+        <span class="s1">path=settings.DB</span><span class="s2">,</span>
+        <span class="s1">fallback=</span><span class="s2">None,</span>
+        <span class="s1">verify_ssl=</span><span class="s2">True,</span>
+        <span class="s1">safe_attrs=tuple()</span><span class="s2">,</span>
+    <span class="s1">):</span>
+        <span class="s2">assert </span><span class="s1">isinstance(cache</span><span class="s2">, </span><span class="s1">bool)</span><span class="s2">, </span><span class="s1">\</span>
+            <span class="s3">'cache must be True or False'</span>
+
+        <span class="s1">self.cache = cache</span>
+
+        <span class="s2">assert </span><span class="s1">isinstance(use_cache_server</span><span class="s2">, </span><span class="s1">bool)</span><span class="s2">, </span><span class="s1">\</span>
+            <span class="s3">'use_cache_server must be True or False'</span>
+
+        <span class="s1">self.use_cache_server = use_cache_server</span>
+
+        <span class="s2">assert </span><span class="s1">isinstance(path</span><span class="s2">, </span><span class="s1">str_types)</span><span class="s2">, </span><span class="s1">\</span>
+            <span class="s3">'path must be string or unicode'</span>
+
+        <span class="s1">self.path = path</span>
+
+        <span class="s2">if </span><span class="s1">fallback </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">assert </span><span class="s1">isinstance(fallback</span><span class="s2">, </span><span class="s1">str_types)</span><span class="s2">, </span><span class="s1">\</span>
+                <span class="s3">'fallback must be string or unicode'</span>
+
+        <span class="s1">self.fallback = fallback</span>
+
+        <span class="s2">assert </span><span class="s1">isinstance(verify_ssl</span><span class="s2">, </span><span class="s1">bool)</span><span class="s2">, </span><span class="s1">\</span>
+            <span class="s3">'verify_ssl must be True or False'</span>
+
+        <span class="s1">self.verify_ssl = verify_ssl</span>
+
+        <span class="s2">assert </span><span class="s1">isinstance(safe_attrs</span><span class="s2">, </span><span class="s1">(list</span><span class="s2">, </span><span class="s1">set</span><span class="s2">, </span><span class="s1">tuple))</span><span class="s2">, </span><span class="s1">\</span>
+            <span class="s3">'safe_attrs must be list</span><span class="s2">\\</span><span class="s3">tuple</span><span class="s2">\\</span><span class="s3">set of strings or unicode'</span>
+
+        <span class="s2">if </span><span class="s1">safe_attrs:</span>
+            <span class="s1">str_types_safe_attrs = [</span>
+                <span class="s1">isinstance(attr</span><span class="s2">, </span><span class="s1">str_types) </span><span class="s2">for </span><span class="s1">attr </span><span class="s2">in </span><span class="s1">safe_attrs</span>
+            <span class="s1">]</span>
+
+            <span class="s2">assert </span><span class="s1">all(str_types_safe_attrs)</span><span class="s2">, </span><span class="s1">\</span>
+                <span class="s3">'safe_attrs must be list</span><span class="s2">\\</span><span class="s3">tuple</span><span class="s2">\\</span><span class="s3">set of strings or unicode'</span>
+
+        <span class="s1">self.safe_attrs = set(safe_attrs)</span>
+
+        <span class="s0"># initial empty data</span>
+        <span class="s1">self.data = {}</span>
+        <span class="s0"># TODO: change source file format</span>
+        <span class="s0"># version 0.1.4+ migration tool</span>
+        <span class="s1">self.data_randomize = []</span>
+        <span class="s1">self.data_browsers = {}</span>
+
+        <span class="s1">self.load()</span>
+
+    <span class="s2">def </span><span class="s1">load(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">with </span><span class="s1">self.load.lock:</span>
+                <span class="s2">if </span><span class="s1">self.cache:</span>
+                    <span class="s1">self.data = load_cached(</span>
+                        <span class="s1">self.path</span><span class="s2">,</span>
+                        <span class="s1">use_cache_server=self.use_cache_server</span><span class="s2">,</span>
+                        <span class="s1">verify_ssl=self.verify_ssl</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">self.data = load(</span>
+                        <span class="s1">use_cache_server=self.use_cache_server</span><span class="s2">,</span>
+                        <span class="s1">verify_ssl=self.verify_ssl</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+
+                <span class="s0"># TODO: change source file format</span>
+                <span class="s0"># version 0.1.4+ migration tool</span>
+                <span class="s1">self.data_randomize = list(self.data[</span><span class="s3">'randomize'</span><span class="s1">].values())</span>
+                <span class="s1">self.data_browsers = self.data[</span><span class="s3">'browsers'</span><span class="s1">]</span>
+        <span class="s2">except </span><span class="s1">FakeUserAgentError:</span>
+            <span class="s2">if </span><span class="s1">self.fallback </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">logger.warning(</span>
+                    <span class="s3">'Error occurred during fetching data, '</span>
+                    <span class="s3">'but was suppressed with fallback.'</span><span class="s2">,</span>
+                <span class="s1">)</span>
+    <span class="s1">load.lock = Lock()</span>
+
+    <span class="s2">def </span><span class="s1">update(self</span><span class="s2">, </span><span class="s1">cache=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">with </span><span class="s1">self.update.lock:</span>
+            <span class="s2">if </span><span class="s1">cache </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s2">assert </span><span class="s1">isinstance(cache</span><span class="s2">, </span><span class="s1">bool)</span><span class="s2">, </span><span class="s1">\</span>
+                    <span class="s3">'cache must be True or False'</span>
+
+                <span class="s1">self.cache = cache</span>
+
+            <span class="s2">if </span><span class="s1">self.cache:</span>
+                <span class="s1">update(</span>
+                    <span class="s1">self.path</span><span class="s2">,</span>
+                    <span class="s1">use_cache_server=self.use_cache_server</span><span class="s2">,</span>
+                    <span class="s1">verify_ssl=self.verify_ssl</span><span class="s2">,</span>
+                <span class="s1">)</span>
+
+            <span class="s1">self.load()</span>
+    <span class="s1">update.lock = Lock()</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">attr):</span>
+        <span class="s2">return </span><span class="s1">self.__getattr__(attr)</span>
+
+    <span class="s2">def </span><span class="s1">__getattr__(self</span><span class="s2">, </span><span class="s1">attr):</span>
+        <span class="s2">if </span><span class="s1">attr </span><span class="s2">in </span><span class="s1">self.safe_attrs:</span>
+            <span class="s2">return </span><span class="s1">super(UserAgent</span><span class="s2">, </span><span class="s1">self).__getattr__(attr)</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">value</span><span class="s2">, </span><span class="s1">replacement </span><span class="s2">in </span><span class="s1">settings.REPLACEMENTS.items():</span>
+                <span class="s1">attr = attr.replace(value</span><span class="s2">, </span><span class="s1">replacement)</span>
+
+            <span class="s1">attr = attr.lower()</span>
+
+            <span class="s2">if </span><span class="s1">attr == </span><span class="s3">'random'</span><span class="s1">:</span>
+                <span class="s1">browser = random.choice(self.data_randomize)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">browser = settings.SHORTCUTS.get(attr</span><span class="s2">, </span><span class="s1">attr)</span>
+
+            <span class="s2">return </span><span class="s1">random.choice(self.data_browsers[browser])</span>
+        <span class="s2">except </span><span class="s1">(KeyError</span><span class="s2">, </span><span class="s1">IndexError):</span>
+            <span class="s2">if </span><span class="s1">self.fallback </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">FakeUserAgentError(</span><span class="s3">'Error occurred during getting browser'</span><span class="s1">)  </span><span class="s0"># noqa</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">logger.warning(</span>
+                    <span class="s3">'Error occurred during getting browser, '</span>
+                    <span class="s3">'but was suppressed with fallback.'</span><span class="s2">,</span>
+                <span class="s1">)</span>
+
+                <span class="s2">return </span><span class="s1">self.fallback</span>
+
+
+<span class="s0"># common alias</span>
+<span class="s1">UserAgent = FakeUserAgent</span>
+</pre>
+</body>
+</html>

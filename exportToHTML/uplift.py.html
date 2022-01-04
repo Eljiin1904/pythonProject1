@@ -1,0 +1,157 @@
+<html>
+<head>
+<title>uplift.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+uplift.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">from </span><span class="s1">functools </span><span class="s2">import </span><span class="s1">wraps</span>
+
+
+<span class="s2">def </span><span class="s1">_wrap(left</span><span class="s2">, </span><span class="s1">right</span><span class="s2">, </span><span class="s1">error_handler</span><span class="s2">, </span><span class="s1">proxy_new_listener):</span>
+    <span class="s1">left_emit = left.emit</span>
+    <span class="s1">left_unwrap = getattr(left</span><span class="s2">, </span><span class="s3">&quot;unwrap&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+
+    <span class="s1">@wraps(left_emit)</span>
+    <span class="s2">def </span><span class="s1">wrapped_emit(event</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">left_handled = left._call_handlers(event</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs)</span>
+
+        <span class="s0"># Do it for the right side</span>
+        <span class="s2">if </span><span class="s1">proxy_new_listener </span><span class="s2">or </span><span class="s1">event != </span><span class="s3">&quot;new_listener&quot;</span><span class="s1">:</span>
+            <span class="s1">right_handled = right._call_handlers(event</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">right_handled = </span><span class="s2">False</span>
+
+        <span class="s1">handled = left_handled </span><span class="s2">or </span><span class="s1">right_handled</span>
+
+        <span class="s0"># Use the error handling on ``error_handler`` (should either be</span>
+        <span class="s0"># ``left`` or ``right``)</span>
+        <span class="s2">if not </span><span class="s1">handled:</span>
+            <span class="s1">error_handler._emit_handle_potential_error(event</span><span class="s2">, </span><span class="s1">args[</span><span class="s4">0</span><span class="s1">] </span><span class="s2">if </span><span class="s1">args </span><span class="s2">else None</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">handled</span>
+
+    <span class="s2">def </span><span class="s1">unwrap():</span>
+        <span class="s1">left.emit = left_emit</span>
+        <span class="s2">if </span><span class="s1">left_unwrap:</span>
+            <span class="s1">left.unwrap = left_unwrap</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">del </span><span class="s1">left.unwrap</span>
+        <span class="s1">left.emit = left_emit</span>
+
+        <span class="s2">if </span><span class="s1">hasattr(right</span><span class="s2">, </span><span class="s3">&quot;unwrap&quot;</span><span class="s1">):</span>
+            <span class="s1">right.unwrap()</span>
+
+    <span class="s1">left.emit = wrapped_emit</span>
+    <span class="s1">left.unwrap = unwrap</span>
+
+
+<span class="s1">_PROXY_NEW_LISTENER_SETTINGS = dict(</span>
+    <span class="s1">forward=(</span><span class="s2">False, True</span><span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">backward=(</span><span class="s2">True, False</span><span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">both=(</span><span class="s2">True, True</span><span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">neither=(</span><span class="s2">False, False</span><span class="s1">)</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">uplift(</span>
+    <span class="s1">cls</span><span class="s2">, </span><span class="s1">underlying</span><span class="s2">, </span><span class="s1">error_handling=</span><span class="s3">&quot;new&quot;</span><span class="s2">, </span><span class="s1">proxy_new_listener=</span><span class="s3">&quot;forward&quot;</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs</span>
+<span class="s1">):</span>
+    <span class="s5">&quot;&quot;&quot;A helper to create instances of an event emitter ``cls`` that inherits 
+    event behavior from an ``underlying`` event emitter instance. 
+ 
+    This is mostly helpful if you have a simple underlying event emitter 
+    that you don't have direct control over, but you want to use that 
+    event emitter in a new context - for example, you may want to ``uplift`` a 
+    ``BaseEventEmitter`` supplied by a third party library into an 
+    ``AsyncIOEventEmitter`` so that you may register async event handlers 
+    in your ``asyncio`` app but still be able to receive events from the 
+    underlying event emitter and call the underlying event emitter's existing 
+    handlers. This trick will also often work for a deprecated 
+    ``EventEmitter`` instance. 
+ 
+    When called, ``uplift`` instantiates a new instance of ``cls``, passing 
+    along any unrecognized arguments, and overwrites the ``emit`` method on 
+    the ``underlying`` event emitter to also emit events on the new event 
+    emitter and vice versa. In both cases, they return whether the ``emit`` 
+    method was handled by either emitter. Execution order prefers the event 
+    emitter on which ``emit`` was called. 
+ 
+    ``uplift`` also adds an ``unwrap`` method to both instances, either of 
+    which will unwrap both ``emit`` methods when called. 
+ 
+    The ``error_handling`` flag can be configured to control what happens to 
+    unhandled errors: 
+ 
+    - 'new': Error handling for the new event emitter is always used and the 
+      underlying library's non-event-based error handling is inert. 
+    - 'underlying': Error handling on the underlying event emitter is always 
+      used and the new event emitter can not implement non-event-based error 
+      handling. 
+    - 'neither': Error handling for the new event emitter is used if the 
+      handler was registered on the new event emitter, and vice versa. 
+ 
+    Tuning this option can be useful depending on how the underlying event 
+    emitter does error handling. The default is 'new'. 
+ 
+    The ``proxy_new_listener`` option can be configured to control how 
+    ``new_listener`` events are treated: 
+ 
+    - 'forward': ``new_listener`` events are propagated from the underlying 
+    - 'both': ``new_listener`` events are propagated as with other events. 
+    - 'neither': ``new_listener`` events are only fired on their respective 
+      event emitters. 
+      event emitter to the new event emitter but not vice versa. 
+    - 'backward': ``new_listener`` events are propagated from the new event 
+      emitter to the underlying event emitter, but not vice versa. 
+ 
+    Tuning this option can be useful depending on how the ``new_listener`` 
+    event is used by the underlying event emitter, if at all. The default is 
+    'forward', since ``underlying`` may not know how to handle certain 
+    handlers, such as asyncio coroutines. 
+ 
+    Each event emitter tracks its own internal table of handlers. 
+    ``remove_listener``, ``remove_all_listeners`` and ``listeners`` all 
+    work independently. This means you will have to remember which event 
+    emitter an event handler was added to! 
+ 
+    Note that both the new event emitter returned by ``cls`` and the 
+    underlying event emitter should inherit from ``BaseEventEmitter``, or at 
+    least implement the interface for the undocumented ``_call_handlers`` and 
+    ``_emit_handle_potential_error`` methods. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">(</span>
+        <span class="s1">new_proxy_new_listener</span><span class="s2">,</span>
+        <span class="s1">underlying_proxy_new_listener</span><span class="s2">,</span>
+    <span class="s1">) = _PROXY_NEW_LISTENER_SETTINGS[proxy_new_listener]</span>
+
+    <span class="s1">new = cls(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s1">uplift_error_handlers = dict(</span>
+        <span class="s1">new=(new</span><span class="s2">, </span><span class="s1">new)</span><span class="s2">, </span><span class="s1">underlying=(underlying</span><span class="s2">, </span><span class="s1">underlying)</span><span class="s2">, </span><span class="s1">neither=(new</span><span class="s2">, </span><span class="s1">underlying)</span>
+    <span class="s1">)</span>
+
+    <span class="s1">new_error_handler</span><span class="s2">, </span><span class="s1">underlying_error_handler = uplift_error_handlers[error_handling]</span>
+
+    <span class="s1">_wrap(new</span><span class="s2">, </span><span class="s1">underlying</span><span class="s2">, </span><span class="s1">new_error_handler</span><span class="s2">, </span><span class="s1">new_proxy_new_listener)</span>
+    <span class="s1">_wrap(underlying</span><span class="s2">, </span><span class="s1">new</span><span class="s2">, </span><span class="s1">underlying_error_handler</span><span class="s2">, </span><span class="s1">underlying_proxy_new_listener)</span>
+
+    <span class="s2">return </span><span class="s1">new</span>
+</pre>
+</body>
+</html>

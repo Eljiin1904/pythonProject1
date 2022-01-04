@@ -1,0 +1,315 @@
+<html>
+<head>
+<title>dispatcher.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dispatcher.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">import </span><span class="s1">weakref</span>
+
+<span class="s0">from </span><span class="s1">django.utils.inspect </span><span class="s0">import </span><span class="s1">func_accepts_kwargs</span>
+
+<span class="s1">logger = logging.getLogger(</span><span class="s2">'django.dispatch'</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">_make_id(target):</span>
+    <span class="s0">if </span><span class="s1">hasattr(target</span><span class="s0">, </span><span class="s2">'__func__'</span><span class="s1">):</span>
+        <span class="s0">return </span><span class="s1">(id(target.__self__)</span><span class="s0">, </span><span class="s1">id(target.__func__))</span>
+    <span class="s0">return </span><span class="s1">id(target)</span>
+
+
+<span class="s1">NONE_ID = _make_id(</span><span class="s0">None</span><span class="s1">)</span>
+
+<span class="s3"># A marker for caching</span>
+<span class="s1">NO_RECEIVERS = object()</span>
+
+
+<span class="s0">class </span><span class="s1">Signal:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Base class for all signals 
+ 
+    Internal attributes: 
+ 
+        receivers 
+            { receiverkey (id) : weakref(receiver) } 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">use_caching=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Create a new signal. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.receivers = []</span>
+        <span class="s1">self.lock = threading.Lock()</span>
+        <span class="s1">self.use_caching = use_caching</span>
+        <span class="s3"># For convenience we create empty caches even if they are not used.</span>
+        <span class="s3"># A note about caching: if use_caching is defined, then for each</span>
+        <span class="s3"># distinct sender we cache the receivers that sender has in</span>
+        <span class="s3"># 'sender_receivers_cache'. The cache is cleaned when .connect() or</span>
+        <span class="s3"># .disconnect() is called and populated on send().</span>
+        <span class="s1">self.sender_receivers_cache = weakref.WeakKeyDictionary() </span><span class="s0">if </span><span class="s1">use_caching </span><span class="s0">else </span><span class="s1">{}</span>
+        <span class="s1">self._dead_receivers = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">connect(self</span><span class="s0">, </span><span class="s1">receiver</span><span class="s0">, </span><span class="s1">sender=</span><span class="s0">None, </span><span class="s1">weak=</span><span class="s0">True, </span><span class="s1">dispatch_uid=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Connect receiver to sender for signal. 
+ 
+        Arguments: 
+ 
+            receiver 
+                A function or an instance method which is to receive signals. 
+                Receivers must be hashable objects. 
+ 
+                If weak is True, then receiver must be weak referenceable. 
+ 
+                Receivers must be able to accept keyword arguments. 
+ 
+                If a receiver is connected with a dispatch_uid argument, it 
+                will not be added if another receiver was already connected 
+                with that dispatch_uid. 
+ 
+            sender 
+                The sender to which the receiver should respond. Must either be 
+                a Python object, or None to receive events from any sender. 
+ 
+            weak 
+                Whether to use weak references to the receiver. By default, the 
+                module will attempt to use weak references to the receiver 
+                objects. If this parameter is false, then strong references will 
+                be used. 
+ 
+            dispatch_uid 
+                An identifier used to uniquely identify a particular instance of 
+                a receiver. This will usually be a string, though it may be 
+                anything hashable. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+
+        <span class="s3"># If DEBUG is on, check that we got a good receiver</span>
+        <span class="s0">if </span><span class="s1">settings.configured </span><span class="s0">and </span><span class="s1">settings.DEBUG:</span>
+            <span class="s0">if not </span><span class="s1">callable(receiver):</span>
+                <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">'Signal receivers must be callable.'</span><span class="s1">)</span>
+            <span class="s3"># Check for **kwargs</span>
+            <span class="s0">if not </span><span class="s1">func_accepts_kwargs(receiver):</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;Signal receivers must accept keyword arguments (**kwargs).&quot;</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">dispatch_uid:</span>
+            <span class="s1">lookup_key = (dispatch_uid</span><span class="s0">, </span><span class="s1">_make_id(sender))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">lookup_key = (_make_id(receiver)</span><span class="s0">, </span><span class="s1">_make_id(sender))</span>
+
+        <span class="s0">if </span><span class="s1">weak:</span>
+            <span class="s1">ref = weakref.ref</span>
+            <span class="s1">receiver_object = receiver</span>
+            <span class="s3"># Check for bound methods</span>
+            <span class="s0">if </span><span class="s1">hasattr(receiver</span><span class="s0">, </span><span class="s2">'__self__'</span><span class="s1">) </span><span class="s0">and </span><span class="s1">hasattr(receiver</span><span class="s0">, </span><span class="s2">'__func__'</span><span class="s1">):</span>
+                <span class="s1">ref = weakref.WeakMethod</span>
+                <span class="s1">receiver_object = receiver.__self__</span>
+            <span class="s1">receiver = ref(receiver)</span>
+            <span class="s1">weakref.finalize(receiver_object</span><span class="s0">, </span><span class="s1">self._remove_receiver)</span>
+
+        <span class="s0">with </span><span class="s1">self.lock:</span>
+            <span class="s1">self._clear_dead_receivers()</span>
+            <span class="s0">if not </span><span class="s1">any(r_key == lookup_key </span><span class="s0">for </span><span class="s1">r_key</span><span class="s0">, </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">self.receivers):</span>
+                <span class="s1">self.receivers.append((lookup_key</span><span class="s0">, </span><span class="s1">receiver))</span>
+            <span class="s1">self.sender_receivers_cache.clear()</span>
+
+    <span class="s0">def </span><span class="s1">disconnect(self</span><span class="s0">, </span><span class="s1">receiver=</span><span class="s0">None, </span><span class="s1">sender=</span><span class="s0">None, </span><span class="s1">dispatch_uid=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Disconnect receiver from sender for signal. 
+ 
+        If weak references are used, disconnect need not be called. The receiver 
+        will be removed from dispatch automatically. 
+ 
+        Arguments: 
+ 
+            receiver 
+                The registered receiver to disconnect. May be none if 
+                dispatch_uid is specified. 
+ 
+            sender 
+                The registered sender to disconnect 
+ 
+            dispatch_uid 
+                the unique identifier of the receiver to disconnect 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">dispatch_uid:</span>
+            <span class="s1">lookup_key = (dispatch_uid</span><span class="s0">, </span><span class="s1">_make_id(sender))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">lookup_key = (_make_id(receiver)</span><span class="s0">, </span><span class="s1">_make_id(sender))</span>
+
+        <span class="s1">disconnected = </span><span class="s0">False</span>
+        <span class="s0">with </span><span class="s1">self.lock:</span>
+            <span class="s1">self._clear_dead_receivers()</span>
+            <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">range(len(self.receivers)):</span>
+                <span class="s1">(r_key</span><span class="s0">, </span><span class="s1">_) = self.receivers[index]</span>
+                <span class="s0">if </span><span class="s1">r_key == lookup_key:</span>
+                    <span class="s1">disconnected = </span><span class="s0">True</span>
+                    <span class="s0">del </span><span class="s1">self.receivers[index]</span>
+                    <span class="s0">break</span>
+            <span class="s1">self.sender_receivers_cache.clear()</span>
+        <span class="s0">return </span><span class="s1">disconnected</span>
+
+    <span class="s0">def </span><span class="s1">has_listeners(self</span><span class="s0">, </span><span class="s1">sender=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">return </span><span class="s1">bool(self._live_receivers(sender))</span>
+
+    <span class="s0">def </span><span class="s1">send(self</span><span class="s0">, </span><span class="s1">sender</span><span class="s0">, </span><span class="s1">**named):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Send signal from sender to all connected receivers. 
+ 
+        If any receiver raises an error, the error propagates back through send, 
+        terminating the dispatch loop. So it's possible that all receivers 
+        won't be called if an error is raised. 
+ 
+        Arguments: 
+ 
+            sender 
+                The sender of the signal. Either a specific object or None. 
+ 
+            named 
+                Named arguments which will be passed to receivers. 
+ 
+        Return a list of tuple pairs [(receiver, response), ... ]. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self.receivers </span><span class="s0">or </span><span class="s1">self.sender_receivers_cache.get(sender) </span><span class="s0">is </span><span class="s1">NO_RECEIVERS:</span>
+            <span class="s0">return </span><span class="s1">[]</span>
+
+        <span class="s0">return </span><span class="s1">[</span>
+            <span class="s1">(receiver</span><span class="s0">, </span><span class="s1">receiver(signal=self</span><span class="s0">, </span><span class="s1">sender=sender</span><span class="s0">, </span><span class="s1">**named))</span>
+            <span class="s0">for </span><span class="s1">receiver </span><span class="s0">in </span><span class="s1">self._live_receivers(sender)</span>
+        <span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">send_robust(self</span><span class="s0">, </span><span class="s1">sender</span><span class="s0">, </span><span class="s1">**named):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Send signal from sender to all connected receivers catching errors. 
+ 
+        Arguments: 
+ 
+            sender 
+                The sender of the signal. Can be any Python object (normally one 
+                registered with a connect if you actually want something to 
+                occur). 
+ 
+            named 
+                Named arguments which will be passed to receivers. 
+ 
+        Return a list of tuple pairs [(receiver, response), ... ]. 
+ 
+        If any receiver raises an error (specifically any subclass of 
+        Exception), return the error instance as the result for that receiver. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self.receivers </span><span class="s0">or </span><span class="s1">self.sender_receivers_cache.get(sender) </span><span class="s0">is </span><span class="s1">NO_RECEIVERS:</span>
+            <span class="s0">return </span><span class="s1">[]</span>
+
+        <span class="s3"># Call each receiver with whatever arguments it can accept.</span>
+        <span class="s3"># Return a list of tuple pairs [(receiver, response), ... ].</span>
+        <span class="s1">responses = []</span>
+        <span class="s0">for </span><span class="s1">receiver </span><span class="s0">in </span><span class="s1">self._live_receivers(sender):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">response = receiver(signal=self</span><span class="s0">, </span><span class="s1">sender=sender</span><span class="s0">, </span><span class="s1">**named)</span>
+            <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">err:</span>
+                <span class="s1">logger.error(</span>
+                    <span class="s2">'Error calling %s in Signal.send_robust() (%s)'</span><span class="s0">,</span>
+                    <span class="s1">receiver.__qualname__</span><span class="s0">,</span>
+                    <span class="s1">err</span><span class="s0">,</span>
+                    <span class="s1">exc_info=err</span><span class="s0">,</span>
+                <span class="s1">)</span>
+                <span class="s1">responses.append((receiver</span><span class="s0">, </span><span class="s1">err))</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">responses.append((receiver</span><span class="s0">, </span><span class="s1">response))</span>
+        <span class="s0">return </span><span class="s1">responses</span>
+
+    <span class="s0">def </span><span class="s1">_clear_dead_receivers(self):</span>
+        <span class="s3"># Note: caller is assumed to hold self.lock.</span>
+        <span class="s0">if </span><span class="s1">self._dead_receivers:</span>
+            <span class="s1">self._dead_receivers = </span><span class="s0">False</span>
+            <span class="s1">self.receivers = [</span>
+                <span class="s1">r </span><span class="s0">for </span><span class="s1">r </span><span class="s0">in </span><span class="s1">self.receivers</span>
+                <span class="s0">if not</span><span class="s1">(isinstance(r[</span><span class="s5">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">weakref.ReferenceType) </span><span class="s0">and </span><span class="s1">r[</span><span class="s5">1</span><span class="s1">]() </span><span class="s0">is None</span><span class="s1">)</span>
+            <span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">_live_receivers(self</span><span class="s0">, </span><span class="s1">sender):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Filter sequence of receivers to get resolved, live receivers. 
+ 
+        This checks for weak references and resolves them, then returning only 
+        live receivers. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">receivers = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">self.use_caching </span><span class="s0">and not </span><span class="s1">self._dead_receivers:</span>
+            <span class="s1">receivers = self.sender_receivers_cache.get(sender)</span>
+            <span class="s3"># We could end up here with NO_RECEIVERS even if we do check this case in</span>
+            <span class="s3"># .send() prior to calling _live_receivers() due to concurrent .send() call.</span>
+            <span class="s0">if </span><span class="s1">receivers </span><span class="s0">is </span><span class="s1">NO_RECEIVERS:</span>
+                <span class="s0">return </span><span class="s1">[]</span>
+        <span class="s0">if </span><span class="s1">receivers </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">with </span><span class="s1">self.lock:</span>
+                <span class="s1">self._clear_dead_receivers()</span>
+                <span class="s1">senderkey = _make_id(sender)</span>
+                <span class="s1">receivers = []</span>
+                <span class="s0">for </span><span class="s1">(receiverkey</span><span class="s0">, </span><span class="s1">r_senderkey)</span><span class="s0">, </span><span class="s1">receiver </span><span class="s0">in </span><span class="s1">self.receivers:</span>
+                    <span class="s0">if </span><span class="s1">r_senderkey == NONE_ID </span><span class="s0">or </span><span class="s1">r_senderkey == senderkey:</span>
+                        <span class="s1">receivers.append(receiver)</span>
+                <span class="s0">if </span><span class="s1">self.use_caching:</span>
+                    <span class="s0">if not </span><span class="s1">receivers:</span>
+                        <span class="s1">self.sender_receivers_cache[sender] = NO_RECEIVERS</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s3"># Note, we must cache the weakref versions.</span>
+                        <span class="s1">self.sender_receivers_cache[sender] = receivers</span>
+        <span class="s1">non_weak_receivers = []</span>
+        <span class="s0">for </span><span class="s1">receiver </span><span class="s0">in </span><span class="s1">receivers:</span>
+            <span class="s0">if </span><span class="s1">isinstance(receiver</span><span class="s0">, </span><span class="s1">weakref.ReferenceType):</span>
+                <span class="s3"># Dereference the weak reference.</span>
+                <span class="s1">receiver = receiver()</span>
+                <span class="s0">if </span><span class="s1">receiver </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s1">non_weak_receivers.append(receiver)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">non_weak_receivers.append(receiver)</span>
+        <span class="s0">return </span><span class="s1">non_weak_receivers</span>
+
+    <span class="s0">def </span><span class="s1">_remove_receiver(self</span><span class="s0">, </span><span class="s1">receiver=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3"># Mark that the self.receivers list has dead weakrefs. If so, we will</span>
+        <span class="s3"># clean those up in connect, disconnect and _live_receivers while</span>
+        <span class="s3"># holding self.lock. Note that doing the cleanup here isn't a good</span>
+        <span class="s3"># idea, _remove_receiver() will be called as side effect of garbage</span>
+        <span class="s3"># collection, and so the call can happen while we are already holding</span>
+        <span class="s3"># self.lock.</span>
+        <span class="s1">self._dead_receivers = </span><span class="s0">True</span>
+
+
+<span class="s0">def </span><span class="s1">receiver(signal</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    A decorator for connecting receivers to signals. Used by passing in the 
+    signal (or list of signals) and keyword arguments to connect:: 
+ 
+        @receiver(post_save, sender=MyModel) 
+        def signal_receiver(sender, **kwargs): 
+            ... 
+ 
+        @receiver([post_save, post_delete], sender=MyModel) 
+        def signals_receiver(sender, **kwargs): 
+            ... 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">_decorator(func):</span>
+        <span class="s0">if </span><span class="s1">isinstance(signal</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s0">for </span><span class="s1">s </span><span class="s0">in </span><span class="s1">signal:</span>
+                <span class="s1">s.connect(func</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">signal.connect(func</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">return </span><span class="s1">func</span>
+    <span class="s0">return </span><span class="s1">_decorator</span>
+</pre>
+</body>
+</html>

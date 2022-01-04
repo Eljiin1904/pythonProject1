@@ -1,0 +1,259 @@
+<html>
+<head>
+<title>archive.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+archive.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Based on &quot;python-archive&quot; -- https://pypi.org/project/python-archive/ 
+ 
+Copyright (c) 2010 Gary Wilson Jr. &lt;gary.wilson@gmail.com&gt; and contributors. 
+ 
+Permission is hereby granted, free of charge, to any person obtaining a copy 
+of this software and associated documentation files (the &quot;Software&quot;), to deal 
+in the Software without restriction, including without limitation the rights 
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+copies of the Software, and to permit persons to whom the Software is 
+furnished to do so, subject to the following conditions: 
+ 
+The above copyright notice and this permission notice shall be included in 
+all copies or substantial portions of the Software. 
+ 
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN 
+THE SOFTWARE. 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">shutil</span>
+<span class="s2">import </span><span class="s1">stat</span>
+<span class="s2">import </span><span class="s1">tarfile</span>
+<span class="s2">import </span><span class="s1">zipfile</span>
+
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">SuspiciousOperation</span>
+
+
+<span class="s2">class </span><span class="s1">ArchiveException(Exception):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Base exception class for all archive errors. 
+    &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">UnrecognizedArchiveFormat(ArchiveException):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Error raised when passed file is not a recognized archive format. 
+    &quot;&quot;&quot;</span>
+
+
+<span class="s2">def </span><span class="s1">extract(path</span><span class="s2">, </span><span class="s1">to_path):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Unpack the tar or zip file at the specified path to the directory 
+    specified by to_path. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">with </span><span class="s1">Archive(path) </span><span class="s2">as </span><span class="s1">archive:</span>
+        <span class="s1">archive.extract(to_path)</span>
+
+
+<span class="s2">class </span><span class="s1">Archive:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    The external API class that encapsulates an archive implementation. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">file):</span>
+        <span class="s1">self._archive = self._archive_cls(file)(file)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_archive_cls(file):</span>
+        <span class="s1">cls = </span><span class="s2">None</span>
+        <span class="s2">if </span><span class="s1">isinstance(file</span><span class="s2">, </span><span class="s1">str):</span>
+            <span class="s1">filename = file</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">filename = file.name</span>
+            <span class="s2">except </span><span class="s1">AttributeError:</span>
+                <span class="s2">raise </span><span class="s1">UnrecognizedArchiveFormat(</span>
+                    <span class="s3">&quot;File object not a recognized archive format.&quot;</span><span class="s1">)</span>
+        <span class="s1">base</span><span class="s2">, </span><span class="s1">tail_ext = os.path.splitext(filename.lower())</span>
+        <span class="s1">cls = extension_map.get(tail_ext)</span>
+        <span class="s2">if not </span><span class="s1">cls:</span>
+            <span class="s1">base</span><span class="s2">, </span><span class="s1">ext = os.path.splitext(base)</span>
+            <span class="s1">cls = extension_map.get(ext)</span>
+        <span class="s2">if not </span><span class="s1">cls:</span>
+            <span class="s2">raise </span><span class="s1">UnrecognizedArchiveFormat(</span>
+                <span class="s3">&quot;Path not a recognized archive format: %s&quot; </span><span class="s1">% filename)</span>
+        <span class="s2">return </span><span class="s1">cls</span>
+
+    <span class="s2">def </span><span class="s1">__enter__(self):</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">__exit__(self</span><span class="s2">, </span><span class="s1">exc_type</span><span class="s2">, </span><span class="s1">exc_value</span><span class="s2">, </span><span class="s1">traceback):</span>
+        <span class="s1">self.close()</span>
+
+    <span class="s2">def </span><span class="s1">extract(self</span><span class="s2">, </span><span class="s1">to_path):</span>
+        <span class="s1">self._archive.extract(to_path)</span>
+
+    <span class="s2">def </span><span class="s1">list(self):</span>
+        <span class="s1">self._archive.list()</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s1">self._archive.close()</span>
+
+
+<span class="s2">class </span><span class="s1">BaseArchive:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Base Archive class.  Implementations should inherit this class. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_copy_permissions(mode</span><span class="s2">, </span><span class="s1">filename):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        If the file in the archive has some permissions (this assumes a file 
+        won't be writable/executable without being readable), apply those 
+        permissions to the unarchived file. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">mode &amp; stat.S_IROTH:</span>
+            <span class="s1">os.chmod(filename</span><span class="s2">, </span><span class="s1">mode)</span>
+
+    <span class="s2">def </span><span class="s1">split_leading_dir(self</span><span class="s2">, </span><span class="s1">path):</span>
+        <span class="s1">path = str(path)</span>
+        <span class="s1">path = path.lstrip(</span><span class="s3">'/'</span><span class="s1">).lstrip(</span><span class="s3">'</span><span class="s2">\\</span><span class="s3">'</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s3">'/' </span><span class="s2">in </span><span class="s1">path </span><span class="s2">and </span><span class="s1">((</span><span class="s3">'</span><span class="s2">\\</span><span class="s3">' </span><span class="s2">in </span><span class="s1">path </span><span class="s2">and </span><span class="s1">path.find(</span><span class="s3">'/'</span><span class="s1">) &lt; path.find(</span><span class="s3">'</span><span class="s2">\\</span><span class="s3">'</span><span class="s1">)) </span><span class="s2">or </span><span class="s3">'</span><span class="s2">\\</span><span class="s3">' </span><span class="s2">not in </span><span class="s1">path):</span>
+            <span class="s2">return </span><span class="s1">path.split(</span><span class="s3">'/'</span><span class="s2">, </span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s2">elif </span><span class="s3">'</span><span class="s2">\\</span><span class="s3">' </span><span class="s2">in </span><span class="s1">path:</span>
+            <span class="s2">return </span><span class="s1">path.split(</span><span class="s3">'</span><span class="s2">\\</span><span class="s3">'</span><span class="s2">, </span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">path</span><span class="s2">, </span><span class="s3">''</span>
+
+    <span class="s2">def </span><span class="s1">has_leading_dir(self</span><span class="s2">, </span><span class="s1">paths):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return True if all the paths have the same leading path name 
+        (i.e., everything is in one subdirectory in an archive). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">common_prefix = </span><span class="s2">None</span>
+        <span class="s2">for </span><span class="s1">path </span><span class="s2">in </span><span class="s1">paths:</span>
+            <span class="s1">prefix</span><span class="s2">, </span><span class="s1">rest = self.split_leading_dir(path)</span>
+            <span class="s2">if not </span><span class="s1">prefix:</span>
+                <span class="s2">return False</span>
+            <span class="s2">elif </span><span class="s1">common_prefix </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">common_prefix = prefix</span>
+            <span class="s2">elif </span><span class="s1">prefix != common_prefix:</span>
+                <span class="s2">return False</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">target_filename(self</span><span class="s2">, </span><span class="s1">to_path</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s1">target_path = os.path.abspath(to_path)</span>
+        <span class="s1">filename = os.path.abspath(os.path.join(target_path</span><span class="s2">, </span><span class="s1">name))</span>
+        <span class="s2">if not </span><span class="s1">filename.startswith(target_path):</span>
+            <span class="s2">raise </span><span class="s1">SuspiciousOperation(</span><span class="s3">&quot;Archive contains invalid path: '%s'&quot; </span><span class="s1">% name)</span>
+        <span class="s2">return </span><span class="s1">filename</span>
+
+    <span class="s2">def </span><span class="s1">extract(self):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s3">'subclasses of BaseArchive must provide an extract() method'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">list(self):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s3">'subclasses of BaseArchive must provide a list() method'</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">TarArchive(BaseArchive):</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">file):</span>
+        <span class="s1">self._archive = tarfile.open(file)</span>
+
+    <span class="s2">def </span><span class="s1">list(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self._archive.list(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">extract(self</span><span class="s2">, </span><span class="s1">to_path):</span>
+        <span class="s1">members = self._archive.getmembers()</span>
+        <span class="s1">leading = self.has_leading_dir(x.name </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">members)</span>
+        <span class="s2">for </span><span class="s1">member </span><span class="s2">in </span><span class="s1">members:</span>
+            <span class="s1">name = member.name</span>
+            <span class="s2">if </span><span class="s1">leading:</span>
+                <span class="s1">name = self.split_leading_dir(name)[</span><span class="s4">1</span><span class="s1">]</span>
+            <span class="s1">filename = self.target_filename(to_path</span><span class="s2">, </span><span class="s1">name)</span>
+            <span class="s2">if </span><span class="s1">member.isdir():</span>
+                <span class="s2">if </span><span class="s1">filename:</span>
+                    <span class="s1">os.makedirs(filename</span><span class="s2">, </span><span class="s1">exist_ok=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">extracted = self._archive.extractfile(member)</span>
+                <span class="s2">except </span><span class="s1">(KeyError</span><span class="s2">, </span><span class="s1">AttributeError) </span><span class="s2">as </span><span class="s1">exc:</span>
+                    <span class="s5"># Some corrupt tar files seem to produce this</span>
+                    <span class="s5"># (specifically bad symlinks)</span>
+                    <span class="s1">print(</span><span class="s3">&quot;In the tar file %s the member %s is invalid: %s&quot; </span><span class="s1">%</span>
+                          <span class="s1">(name</span><span class="s2">, </span><span class="s1">member.name</span><span class="s2">, </span><span class="s1">exc))</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">dirname = os.path.dirname(filename)</span>
+                    <span class="s2">if </span><span class="s1">dirname:</span>
+                        <span class="s1">os.makedirs(dirname</span><span class="s2">, </span><span class="s1">exist_ok=</span><span class="s2">True</span><span class="s1">)</span>
+                    <span class="s2">with </span><span class="s1">open(filename</span><span class="s2">, </span><span class="s3">'wb'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">outfile:</span>
+                        <span class="s1">shutil.copyfileobj(extracted</span><span class="s2">, </span><span class="s1">outfile)</span>
+                        <span class="s1">self._copy_permissions(member.mode</span><span class="s2">, </span><span class="s1">filename)</span>
+                <span class="s2">finally</span><span class="s1">:</span>
+                    <span class="s2">if </span><span class="s1">extracted:</span>
+                        <span class="s1">extracted.close()</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s1">self._archive.close()</span>
+
+
+<span class="s2">class </span><span class="s1">ZipArchive(BaseArchive):</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">file):</span>
+        <span class="s1">self._archive = zipfile.ZipFile(file)</span>
+
+    <span class="s2">def </span><span class="s1">list(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self._archive.printdir(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">extract(self</span><span class="s2">, </span><span class="s1">to_path):</span>
+        <span class="s1">namelist = self._archive.namelist()</span>
+        <span class="s1">leading = self.has_leading_dir(namelist)</span>
+        <span class="s2">for </span><span class="s1">name </span><span class="s2">in </span><span class="s1">namelist:</span>
+            <span class="s1">data = self._archive.read(name)</span>
+            <span class="s1">info = self._archive.getinfo(name)</span>
+            <span class="s2">if </span><span class="s1">leading:</span>
+                <span class="s1">name = self.split_leading_dir(name)[</span><span class="s4">1</span><span class="s1">]</span>
+            <span class="s2">if not </span><span class="s1">name:</span>
+                <span class="s2">continue</span>
+            <span class="s1">filename = self.target_filename(to_path</span><span class="s2">, </span><span class="s1">name)</span>
+            <span class="s2">if </span><span class="s1">name.endswith((</span><span class="s3">'/'</span><span class="s2">, </span><span class="s3">'</span><span class="s2">\\</span><span class="s3">'</span><span class="s1">)):</span>
+                <span class="s5"># A directory</span>
+                <span class="s1">os.makedirs(filename</span><span class="s2">, </span><span class="s1">exist_ok=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">dirname = os.path.dirname(filename)</span>
+                <span class="s2">if </span><span class="s1">dirname:</span>
+                    <span class="s1">os.makedirs(dirname</span><span class="s2">, </span><span class="s1">exist_ok=</span><span class="s2">True</span><span class="s1">)</span>
+                <span class="s2">with </span><span class="s1">open(filename</span><span class="s2">, </span><span class="s3">'wb'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">outfile:</span>
+                    <span class="s1">outfile.write(data)</span>
+                <span class="s5"># Convert ZipInfo.external_attr to mode</span>
+                <span class="s1">mode = info.external_attr &gt;&gt; </span><span class="s4">16</span>
+                <span class="s1">self._copy_permissions(mode</span><span class="s2">, </span><span class="s1">filename)</span>
+
+    <span class="s2">def </span><span class="s1">close(self):</span>
+        <span class="s1">self._archive.close()</span>
+
+
+<span class="s1">extension_map = dict.fromkeys((</span>
+    <span class="s3">'.tar'</span><span class="s2">,</span>
+    <span class="s3">'.tar.bz2'</span><span class="s2">, </span><span class="s3">'.tbz2'</span><span class="s2">, </span><span class="s3">'.tbz'</span><span class="s2">, </span><span class="s3">'.tz2'</span><span class="s2">,</span>
+    <span class="s3">'.tar.gz'</span><span class="s2">, </span><span class="s3">'.tgz'</span><span class="s2">, </span><span class="s3">'.taz'</span><span class="s2">,</span>
+    <span class="s3">'.tar.lzma'</span><span class="s2">, </span><span class="s3">'.tlz'</span><span class="s2">,</span>
+    <span class="s3">'.tar.xz'</span><span class="s2">, </span><span class="s3">'.txz'</span><span class="s2">,</span>
+<span class="s1">)</span><span class="s2">, </span><span class="s1">TarArchive)</span>
+<span class="s1">extension_map[</span><span class="s3">'.zip'</span><span class="s1">] = ZipArchive</span>
+</pre>
+</body>
+</html>

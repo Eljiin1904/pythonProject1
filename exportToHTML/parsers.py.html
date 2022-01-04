@@ -1,0 +1,159 @@
+<html>
+<head>
+<title>parsers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parsers.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Additional parsers for BDD 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">re</span>
+<span class="s2">from </span><span class="s1">abc </span><span class="s2">import </span><span class="s1">ABC</span>
+
+<span class="s2">from </span><span class="s1">pytest_bdd.parsers </span><span class="s2">import </span><span class="s1">StepParser</span><span class="s2">, </span><span class="s1">string</span>
+
+
+<span class="s2">class </span><span class="s1">MultiLineStepParser(StepParser</span><span class="s2">, </span><span class="s1">ABC):</span>
+    <span class="s0">&quot;&quot;&quot;Base class for multi line parsers 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">converters=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type name: StepParser|str 
+        :param converters: 
+            Dict with converters for data table values. 
+            Converter is called with original string value from scenario. 
+        :type converters: dict 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._name_parser = (</span>
+            <span class="s1">name </span><span class="s2">if </span><span class="s1">isinstance(name</span><span class="s2">, </span><span class="s1">StepParser) </span><span class="s2">else </span><span class="s1">string(name)</span>
+        <span class="s1">)</span>
+        <span class="s1">self._converters = converters </span><span class="s2">or </span><span class="s1">dict()</span>
+        <span class="s1">super(MultiLineStepParser</span><span class="s2">, </span><span class="s1">self).__init__(self._name_parser.name)</span>
+
+    <span class="s2">def </span><span class="s1">_convert_values(self</span><span class="s2">, </span><span class="s1">arguments):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type arguments: dict 
+        :rtype: dict 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">{</span>
+            <span class="s1">key: self._converters.get(key</span><span class="s2">, </span><span class="s1">str)(value)</span>
+            <span class="s2">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">arguments.items()</span>
+        <span class="s1">}</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_split_name_and_body(name):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type name: str 
+        :rtype: tuple[str, list[str]] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">lines = name.strip().split(</span><span class="s3">'</span><span class="s2">\n</span><span class="s3">'</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">lines[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">lines[</span><span class="s4">1</span><span class="s1">:]</span>
+
+
+<span class="s2">class </span><span class="s1">dtparser(MultiLineStepParser):</span>
+    <span class="s0">&quot;&quot;&quot;Parser for steps with DataTable 
+    Example: 
+        Given accounts: 
+          | login | email       | 
+          | test1 | test1@email | 
+          | test2 | test1@email | 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">parse_arguments(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type name: str 
+        :rtype: dict 
+        &quot;&quot;&quot;</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s1">body = self._split_name_and_body(name)</span>
+        <span class="s1">arguments = self._name_parser.parse_arguments(name)</span>
+
+        <span class="s1">header_line</span><span class="s2">, </span><span class="s1">dt_lines = body[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">body[</span><span class="s4">1</span><span class="s1">:]</span>
+        <span class="s1">headers = self._split_dt_line(header_line)</span>
+
+        <span class="s1">arguments[</span><span class="s3">'datatable'</span><span class="s1">] = [</span>
+            <span class="s1">self._convert_values(</span>
+                <span class="s1">dict(zip(headers</span><span class="s2">, </span><span class="s1">self._split_dt_line(line)))</span>
+            <span class="s1">)</span>
+            <span class="s2">for </span><span class="s1">line </span><span class="s2">in </span><span class="s1">dt_lines</span>
+        <span class="s1">]</span>
+        <span class="s2">return </span><span class="s1">arguments</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_split_dt_line(line):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type line: str 
+        :rtype: list[str] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">[col.strip() </span><span class="s2">for </span><span class="s1">col </span><span class="s2">in </span><span class="s1">line.strip().split(</span><span class="s3">'|'</span><span class="s1">) </span><span class="s2">if </span><span class="s1">col.strip()]</span>
+
+    <span class="s2">def </span><span class="s1">is_matching(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type name: str 
+        :rtype: bool 
+        &quot;&quot;&quot;</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s1">body = self._split_name_and_body(name)</span>
+        <span class="s2">if </span><span class="s1">len(body) &lt; len([</span><span class="s3">'header'</span><span class="s2">, </span><span class="s3">'data line'</span><span class="s1">]):</span>
+            <span class="s2">return False</span>
+
+        <span class="s1">header</span><span class="s2">, </span><span class="s1">dt = body[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">body[</span><span class="s4">1</span><span class="s1">:]</span>
+        <span class="s2">if not </span><span class="s1">self._name_parser.is_matching(name):</span>
+            <span class="s2">return False</span>
+
+        <span class="s1">col_splitters = header.count(</span><span class="s3">'|'</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">col_splitters &lt; len([</span><span class="s3">'opening'</span><span class="s2">, </span><span class="s3">'closing'</span><span class="s1">]):</span>
+            <span class="s2">return False</span>
+
+        <span class="s2">if </span><span class="s1">any([l.count(</span><span class="s3">'|'</span><span class="s1">) != col_splitters </span><span class="s2">for </span><span class="s1">l </span><span class="s2">in </span><span class="s1">dt]):</span>
+            <span class="s2">return False</span>
+
+        <span class="s2">return True</span>
+
+
+<span class="s2">class </span><span class="s1">mvparser(MultiLineStepParser):</span>
+    <span class="s2">def </span><span class="s1">parse_arguments(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type name: str 
+        :rtype: dict 
+        &quot;&quot;&quot;</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s1">body = self._split_name_and_body(name)</span>
+        <span class="s1">arguments = self._name_parser.parse_arguments(name)</span>
+        <span class="s1">values = dict(self._split_value_line(line) </span><span class="s2">for </span><span class="s1">line </span><span class="s2">in </span><span class="s1">body)</span>
+        <span class="s1">arguments[</span><span class="s3">'values'</span><span class="s1">] = self._convert_values(values)</span>
+        <span class="s2">return </span><span class="s1">arguments</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_split_value_line(line):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type line: str 
+        :rtype: tuple[str, str] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s1">value = line.strip().split(</span><span class="s3">':'</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">name.strip()</span><span class="s2">, </span><span class="s1">value.strip()</span>
+
+    <span class="s2">def </span><span class="s1">is_matching(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type name: str 
+        :rtype: bool 
+        &quot;&quot;&quot;</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s1">body = self._split_name_and_body(name)</span>
+        <span class="s2">if not </span><span class="s1">body:</span>
+            <span class="s2">return False</span>
+
+        <span class="s1">value_line_pattern = re.compile(</span><span class="s3">r'\s*[A-Za-z0-9_]+\s*:.*'</span><span class="s1">)</span>
+        <span class="s2">if not </span><span class="s1">all(map(value_line_pattern.match</span><span class="s2">, </span><span class="s1">body)):</span>
+            <span class="s2">return False</span>
+
+        <span class="s2">return True</span>
+</pre>
+</body>
+</html>

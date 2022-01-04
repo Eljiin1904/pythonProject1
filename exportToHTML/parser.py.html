@@ -1,0 +1,481 @@
+<html>
+<head>
+<title>parser.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parser.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">os.path</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">import </span><span class="s1">textwrap</span>
+<span class="s0">import </span><span class="s1">typing</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">OrderedDict</span>
+
+<span class="s0">from </span><span class="s1">. </span><span class="s0">import </span><span class="s1">exceptions</span><span class="s0">, </span><span class="s1">types</span>
+
+<span class="s1">SPLIT_LINE_RE = re.compile(</span><span class="s2">r&quot;(?&lt;!\\)\|&quot;</span><span class="s1">)</span>
+<span class="s1">STEP_PARAM_RE = re.compile(</span><span class="s2">r&quot;&lt;(.+?)&gt;&quot;</span><span class="s1">)</span>
+<span class="s1">COMMENT_RE = re.compile(</span><span class="s2">r&quot;(^|(?&lt;=\s))#&quot;</span><span class="s1">)</span>
+<span class="s1">STEP_PREFIXES = [</span>
+    <span class="s1">(</span><span class="s2">&quot;Feature: &quot;</span><span class="s0">, </span><span class="s1">types.FEATURE)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Scenario Outline: &quot;</span><span class="s0">, </span><span class="s1">types.SCENARIO_OUTLINE)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Examples: Vertical&quot;</span><span class="s0">, </span><span class="s1">types.EXAMPLES_VERTICAL)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Examples:&quot;</span><span class="s0">, </span><span class="s1">types.EXAMPLES)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Scenario: &quot;</span><span class="s0">, </span><span class="s1">types.SCENARIO)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Background:&quot;</span><span class="s0">, </span><span class="s1">types.BACKGROUND)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Given &quot;</span><span class="s0">, </span><span class="s1">types.GIVEN)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;When &quot;</span><span class="s0">, </span><span class="s1">types.WHEN)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;Then &quot;</span><span class="s0">, </span><span class="s1">types.THEN)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;@&quot;</span><span class="s0">, </span><span class="s1">types.TAG)</span><span class="s0">,</span>
+    <span class="s3"># Continuation of the previously mentioned step type</span>
+    <span class="s1">(</span><span class="s2">&quot;And &quot;</span><span class="s0">, None</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">(</span><span class="s2">&quot;But &quot;</span><span class="s0">, None</span><span class="s1">)</span><span class="s0">,</span>
+<span class="s1">]</span>
+
+
+<span class="s0">def </span><span class="s1">split_line(line):</span>
+    <span class="s4">&quot;&quot;&quot;Split the given Examples line. 
+ 
+    :param str|unicode line: Feature file Examples line. 
+ 
+    :return: List of strings. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">[cell.replace(</span><span class="s2">&quot;</span><span class="s0">\\</span><span class="s2">|&quot;</span><span class="s0">, </span><span class="s2">&quot;|&quot;</span><span class="s1">).strip() </span><span class="s0">for </span><span class="s1">cell </span><span class="s0">in </span><span class="s1">SPLIT_LINE_RE.split(line)[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]]</span>
+
+
+<span class="s0">def </span><span class="s1">parse_line(line):</span>
+    <span class="s4">&quot;&quot;&quot;Parse step line to get the step prefix (Scenario, Given, When, Then or And) and the actual step name. 
+ 
+    :param line: Line of the Feature file. 
+ 
+    :return: `tuple` in form (&quot;&lt;prefix&gt;&quot;, &quot;&lt;Line without the prefix&gt;&quot;). 
+    &quot;&quot;&quot;</span>
+    <span class="s0">for </span><span class="s1">prefix</span><span class="s0">, </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">STEP_PREFIXES:</span>
+        <span class="s0">if </span><span class="s1">line.startswith(prefix):</span>
+            <span class="s0">return </span><span class="s1">prefix.strip()</span><span class="s0">, </span><span class="s1">line[len(prefix) :].strip()</span>
+    <span class="s0">return </span><span class="s2">&quot;&quot;</span><span class="s0">, </span><span class="s1">line</span>
+
+
+<span class="s0">def </span><span class="s1">strip_comments(line):</span>
+    <span class="s4">&quot;&quot;&quot;Remove comments. 
+ 
+    :param str line: Line of the Feature file. 
+ 
+    :return: Stripped line. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">res = COMMENT_RE.search(line)</span>
+    <span class="s0">if </span><span class="s1">res:</span>
+        <span class="s1">line = line[: res.start()]</span>
+    <span class="s0">return </span><span class="s1">line.strip()</span>
+
+
+<span class="s0">def </span><span class="s1">get_step_type(line):</span>
+    <span class="s4">&quot;&quot;&quot;Detect step type by the beginning of the line. 
+ 
+    :param str line: Line of the Feature file. 
+ 
+    :return: SCENARIO, GIVEN, WHEN, THEN, or `None` if can't be detected. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">for </span><span class="s1">prefix</span><span class="s0">, </span><span class="s1">_type </span><span class="s0">in </span><span class="s1">STEP_PREFIXES:</span>
+        <span class="s0">if </span><span class="s1">line.startswith(prefix):</span>
+            <span class="s0">return </span><span class="s1">_type</span>
+
+
+<span class="s0">def </span><span class="s1">parse_feature(basedir: str</span><span class="s0">, </span><span class="s1">filename: str</span><span class="s0">, </span><span class="s1">encoding: str = </span><span class="s2">&quot;utf-8&quot;</span><span class="s1">) -&gt; </span><span class="s2">&quot;Feature&quot;</span><span class="s1">:</span>
+    <span class="s4">&quot;&quot;&quot;Parse the feature file. 
+ 
+    :param str basedir: Feature files base directory. 
+    :param str filename: Relative path to the feature file. 
+    :param str encoding: Feature file encoding (utf-8 by default). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">abs_filename = os.path.abspath(os.path.join(basedir</span><span class="s0">, </span><span class="s1">filename))</span>
+    <span class="s1">rel_filename = os.path.join(os.path.basename(basedir)</span><span class="s0">, </span><span class="s1">filename)</span>
+    <span class="s1">feature = Feature(</span>
+        <span class="s1">scenarios=OrderedDict()</span><span class="s0">,</span>
+        <span class="s1">filename=abs_filename</span><span class="s0">,</span>
+        <span class="s1">rel_filename=rel_filename</span><span class="s0">,</span>
+        <span class="s1">line_number=</span><span class="s5">1</span><span class="s0">,</span>
+        <span class="s1">name=</span><span class="s0">None,</span>
+        <span class="s1">tags=set()</span><span class="s0">,</span>
+        <span class="s1">examples=Examples()</span><span class="s0">,</span>
+        <span class="s1">background=</span><span class="s0">None,</span>
+        <span class="s1">description=</span><span class="s2">&quot;&quot;</span><span class="s0">,</span>
+    <span class="s1">)</span>
+    <span class="s1">scenario: typing.Optional[ScenarioTemplate] = </span><span class="s0">None</span>
+    <span class="s1">mode = </span><span class="s0">None</span>
+    <span class="s1">prev_mode = </span><span class="s0">None</span>
+    <span class="s1">description: typing.List[str] = []</span>
+    <span class="s1">step = </span><span class="s0">None</span>
+    <span class="s1">multiline_step = </span><span class="s0">False</span>
+    <span class="s1">prev_line = </span><span class="s0">None</span>
+
+    <span class="s0">with </span><span class="s1">open(abs_filename</span><span class="s0">, </span><span class="s1">encoding=encoding) </span><span class="s0">as </span><span class="s1">f:</span>
+        <span class="s1">content = f.read()</span>
+
+    <span class="s0">for </span><span class="s1">line_number</span><span class="s0">, </span><span class="s1">line </span><span class="s0">in </span><span class="s1">enumerate(content.splitlines()</span><span class="s0">, </span><span class="s1">start=</span><span class="s5">1</span><span class="s1">):</span>
+        <span class="s1">unindented_line = line.lstrip()</span>
+        <span class="s1">line_indent = len(line) - len(unindented_line)</span>
+        <span class="s0">if </span><span class="s1">step </span><span class="s0">and </span><span class="s1">(step.indent &lt; line_indent </span><span class="s0">or </span><span class="s1">((</span><span class="s0">not </span><span class="s1">unindented_line) </span><span class="s0">and </span><span class="s1">multiline_step)):</span>
+            <span class="s1">multiline_step = </span><span class="s0">True</span>
+            <span class="s3"># multiline step, so just add line and continue</span>
+            <span class="s1">step.add_line(line)</span>
+            <span class="s0">continue</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">step = </span><span class="s0">None</span>
+            <span class="s1">multiline_step = </span><span class="s0">False</span>
+        <span class="s1">stripped_line = line.strip()</span>
+        <span class="s1">clean_line = strip_comments(line)</span>
+        <span class="s0">if not </span><span class="s1">clean_line </span><span class="s0">and </span><span class="s1">(</span><span class="s0">not </span><span class="s1">prev_mode </span><span class="s0">or </span><span class="s1">prev_mode </span><span class="s0">not in </span><span class="s1">types.FEATURE):</span>
+            <span class="s0">continue</span>
+        <span class="s1">mode = get_step_type(clean_line) </span><span class="s0">or </span><span class="s1">mode</span>
+
+        <span class="s1">allowed_prev_mode = (types.BACKGROUND</span><span class="s0">, </span><span class="s1">types.GIVEN</span><span class="s0">, </span><span class="s1">types.WHEN)</span>
+
+        <span class="s0">if not </span><span class="s1">scenario </span><span class="s0">and </span><span class="s1">prev_mode </span><span class="s0">not in </span><span class="s1">allowed_prev_mode </span><span class="s0">and </span><span class="s1">mode </span><span class="s0">in </span><span class="s1">types.STEP_TYPES:</span>
+            <span class="s0">raise </span><span class="s1">exceptions.FeatureError(</span>
+                <span class="s2">&quot;Step definition outside of a Scenario or a Background&quot;</span><span class="s0">, </span><span class="s1">line_number</span><span class="s0">, </span><span class="s1">clean_line</span><span class="s0">, </span><span class="s1">filename</span>
+            <span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">mode == types.FEATURE:</span>
+            <span class="s0">if </span><span class="s1">prev_mode </span><span class="s0">is None or </span><span class="s1">prev_mode == types.TAG:</span>
+                <span class="s1">_</span><span class="s0">, </span><span class="s1">feature.name = parse_line(clean_line)</span>
+                <span class="s1">feature.line_number = line_number</span>
+                <span class="s1">feature.tags = get_tags(prev_line)</span>
+            <span class="s0">elif </span><span class="s1">prev_mode == types.FEATURE:</span>
+                <span class="s1">description.append(clean_line)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">exceptions.FeatureError(</span>
+                    <span class="s2">&quot;Multiple features are not allowed in a single feature file&quot;</span><span class="s0">,</span>
+                    <span class="s1">line_number</span><span class="s0">,</span>
+                    <span class="s1">clean_line</span><span class="s0">,</span>
+                    <span class="s1">filename</span><span class="s0">,</span>
+                <span class="s1">)</span>
+
+        <span class="s1">prev_mode = mode</span>
+
+        <span class="s3"># Remove Feature, Given, When, Then, And</span>
+        <span class="s1">keyword</span><span class="s0">, </span><span class="s1">parsed_line = parse_line(clean_line)</span>
+        <span class="s0">if </span><span class="s1">mode </span><span class="s0">in </span><span class="s1">[types.SCENARIO</span><span class="s0">, </span><span class="s1">types.SCENARIO_OUTLINE]:</span>
+            <span class="s1">tags = get_tags(prev_line)</span>
+            <span class="s1">feature.scenarios[parsed_line] = scenario = ScenarioTemplate(</span>
+                <span class="s1">feature=feature</span><span class="s0">, </span><span class="s1">name=parsed_line</span><span class="s0">, </span><span class="s1">line_number=line_number</span><span class="s0">, </span><span class="s1">tags=tags</span>
+            <span class="s1">)</span>
+        <span class="s0">elif </span><span class="s1">mode == types.BACKGROUND:</span>
+            <span class="s1">feature.background = Background(feature=feature</span><span class="s0">, </span><span class="s1">line_number=line_number)</span>
+        <span class="s0">elif </span><span class="s1">mode == types.EXAMPLES:</span>
+            <span class="s1">mode = types.EXAMPLES_HEADERS</span>
+            <span class="s1">(scenario </span><span class="s0">or </span><span class="s1">feature).examples.line_number = line_number</span>
+        <span class="s0">elif </span><span class="s1">mode == types.EXAMPLES_VERTICAL:</span>
+            <span class="s1">mode = types.EXAMPLE_LINE_VERTICAL</span>
+            <span class="s1">(scenario </span><span class="s0">or </span><span class="s1">feature).examples.line_number = line_number</span>
+        <span class="s0">elif </span><span class="s1">mode == types.EXAMPLES_HEADERS:</span>
+            <span class="s1">(scenario </span><span class="s0">or </span><span class="s1">feature).examples.set_param_names([l </span><span class="s0">for </span><span class="s1">l </span><span class="s0">in </span><span class="s1">split_line(parsed_line) </span><span class="s0">if </span><span class="s1">l])</span>
+            <span class="s1">mode = types.EXAMPLE_LINE</span>
+        <span class="s0">elif </span><span class="s1">mode == types.EXAMPLE_LINE:</span>
+            <span class="s1">(scenario </span><span class="s0">or </span><span class="s1">feature).examples.add_example([l </span><span class="s0">for </span><span class="s1">l </span><span class="s0">in </span><span class="s1">split_line(stripped_line)])</span>
+        <span class="s0">elif </span><span class="s1">mode == types.EXAMPLE_LINE_VERTICAL:</span>
+            <span class="s1">param_line_parts = [l </span><span class="s0">for </span><span class="s1">l </span><span class="s0">in </span><span class="s1">split_line(stripped_line)]</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">(scenario </span><span class="s0">or </span><span class="s1">feature).examples.add_example_row(param_line_parts[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">param_line_parts[</span><span class="s5">1</span><span class="s1">:])</span>
+            <span class="s0">except </span><span class="s1">exceptions.ExamplesNotValidError </span><span class="s0">as </span><span class="s1">exc:</span>
+                <span class="s0">if </span><span class="s1">scenario:</span>
+                    <span class="s0">raise </span><span class="s1">exceptions.FeatureError(</span>
+                        <span class="s2">f&quot;Scenario has not valid examples. </span><span class="s0">{</span><span class="s1">exc.args[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s0">,</span>
+                        <span class="s1">line_number</span><span class="s0">,</span>
+                        <span class="s1">clean_line</span><span class="s0">,</span>
+                        <span class="s1">filename</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">exceptions.FeatureError(</span>
+                        <span class="s2">f&quot;Feature has not valid examples. </span><span class="s0">{</span><span class="s1">exc.args[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">}</span><span class="s2">&quot;</span><span class="s0">,</span>
+                        <span class="s1">line_number</span><span class="s0">,</span>
+                        <span class="s1">clean_line</span><span class="s0">,</span>
+                        <span class="s1">filename</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+        <span class="s0">elif </span><span class="s1">mode </span><span class="s0">and </span><span class="s1">mode </span><span class="s0">not in </span><span class="s1">(types.FEATURE</span><span class="s0">, </span><span class="s1">types.TAG):</span>
+            <span class="s1">step = Step(name=parsed_line</span><span class="s0">, </span><span class="s1">type=mode</span><span class="s0">, </span><span class="s1">indent=line_indent</span><span class="s0">, </span><span class="s1">line_number=line_number</span><span class="s0">, </span><span class="s1">keyword=keyword)</span>
+            <span class="s0">if </span><span class="s1">feature.background </span><span class="s0">and not </span><span class="s1">scenario:</span>
+                <span class="s1">target = feature.background</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">target = scenario</span>
+            <span class="s1">target.add_step(step)</span>
+        <span class="s1">prev_line = clean_line</span>
+
+    <span class="s1">feature.description = </span><span class="s2">&quot;</span><span class="s0">\n</span><span class="s2">&quot;</span><span class="s1">.join(description).strip()</span>
+    <span class="s0">return </span><span class="s1">feature</span>
+
+
+<span class="s0">class </span><span class="s1">Feature:</span>
+    <span class="s4">&quot;&quot;&quot;Feature.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">scenarios</span><span class="s0">, </span><span class="s1">filename</span><span class="s0">, </span><span class="s1">rel_filename</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">tags</span><span class="s0">, </span><span class="s1">examples</span><span class="s0">, </span><span class="s1">background</span><span class="s0">, </span><span class="s1">line_number</span><span class="s0">, </span><span class="s1">description):</span>
+        <span class="s1">self.scenarios: typing.Dict[str</span><span class="s0">, </span><span class="s1">ScenarioTemplate] = scenarios</span>
+        <span class="s1">self.rel_filename = rel_filename</span>
+        <span class="s1">self.filename = filename</span>
+        <span class="s1">self.tags = tags</span>
+        <span class="s1">self.examples = examples</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.line_number = line_number</span>
+        <span class="s1">self.description = description</span>
+        <span class="s1">self.background = background</span>
+
+
+<span class="s0">class </span><span class="s1">ScenarioTemplate:</span>
+    <span class="s4">&quot;&quot;&quot;A scenario template. 
+ 
+    Created when parsing the feature file, it will then be combined with the examples to create a Scenario.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">feature: Feature</span><span class="s0">, </span><span class="s1">name: str</span><span class="s0">, </span><span class="s1">line_number: int</span><span class="s0">, </span><span class="s1">tags=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+ 
+        :param str name: Scenario name. 
+        :param int line_number: Scenario line number. 
+        :param set tags: Set of tags. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.feature = feature</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self._steps: typing.List[Step] = []</span>
+        <span class="s1">self.examples = Examples()</span>
+        <span class="s1">self.line_number = line_number</span>
+        <span class="s1">self.tags = tags </span><span class="s0">or </span><span class="s1">set()</span>
+
+    <span class="s0">def </span><span class="s1">add_step(self</span><span class="s0">, </span><span class="s1">step):</span>
+        <span class="s4">&quot;&quot;&quot;Add step to the scenario. 
+ 
+        :param pytest_bdd.parser.Step step: Step. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">step.scenario = self</span>
+        <span class="s1">self._steps.append(step)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">steps(self):</span>
+        <span class="s1">background = self.feature.background</span>
+        <span class="s0">return </span><span class="s1">(background.steps </span><span class="s0">if </span><span class="s1">background </span><span class="s0">else </span><span class="s1">[]) + self._steps</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">context: typing.Mapping[str</span><span class="s0">, </span><span class="s1">typing.Any]) -&gt; </span><span class="s2">&quot;Scenario&quot;</span><span class="s1">:</span>
+        <span class="s1">steps = [</span>
+            <span class="s1">Step(</span>
+                <span class="s1">name=templated_step.render(context)</span><span class="s0">,</span>
+                <span class="s1">type=templated_step.type</span><span class="s0">,</span>
+                <span class="s1">indent=templated_step.indent</span><span class="s0">,</span>
+                <span class="s1">line_number=templated_step.line_number</span><span class="s0">,</span>
+                <span class="s1">keyword=templated_step.keyword</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s0">for </span><span class="s1">templated_step </span><span class="s0">in </span><span class="s1">self.steps</span>
+        <span class="s1">]</span>
+        <span class="s0">return </span><span class="s1">Scenario(feature=self.feature</span><span class="s0">, </span><span class="s1">name=self.name</span><span class="s0">, </span><span class="s1">line_number=self.line_number</span><span class="s0">, </span><span class="s1">steps=steps</span><span class="s0">, </span><span class="s1">tags=self.tags)</span>
+
+    <span class="s0">def </span><span class="s1">validate(self):</span>
+        <span class="s4">&quot;&quot;&quot;Validate the scenario. 
+ 
+        :raises ScenarioValidationError: when scenario is not valid 
+        &quot;&quot;&quot;</span>
+        <span class="s1">params = frozenset(sum((list(step.params) </span><span class="s0">for </span><span class="s1">step </span><span class="s0">in </span><span class="s1">self.steps)</span><span class="s0">, </span><span class="s1">[]))</span>
+        <span class="s1">example_params = set(self.examples.example_params + self.feature.examples.example_params)</span>
+        <span class="s0">if </span><span class="s1">params </span><span class="s0">and </span><span class="s1">example_params </span><span class="s0">and </span><span class="s1">params != example_params:</span>
+            <span class="s0">raise </span><span class="s1">exceptions.ScenarioExamplesNotValidError(</span>
+                <span class="s2">&quot;&quot;&quot;Scenario &quot;{}&quot; in the feature &quot;{}&quot; has not valid examples. &quot;&quot;&quot;</span>
+                <span class="s2">&quot;&quot;&quot;Set of step parameters {} should match set of example values {}.&quot;&quot;&quot;</span><span class="s1">.format(</span>
+                    <span class="s1">self.name</span><span class="s0">, </span><span class="s1">self.feature.filename</span><span class="s0">, </span><span class="s1">sorted(params)</span><span class="s0">, </span><span class="s1">sorted(example_params)</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">Scenario:</span>
+
+    <span class="s4">&quot;&quot;&quot;Scenario.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">feature: Feature</span><span class="s0">, </span><span class="s1">name: str</span><span class="s0">, </span><span class="s1">line_number: int</span><span class="s0">, </span><span class="s1">steps: </span><span class="s2">&quot;typing.List[Step]&quot;</span><span class="s0">, </span><span class="s1">tags=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot;Scenario constructor. 
+ 
+        :param pytest_bdd.parser.Feature feature: Feature. 
+        :param str name: Scenario name. 
+        :param int line_number: Scenario line number. 
+        :param set tags: Set of tags. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.feature = feature</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.steps = steps</span>
+        <span class="s1">self.line_number = line_number</span>
+        <span class="s1">self.tags = tags </span><span class="s0">or </span><span class="s1">set()</span>
+        <span class="s1">self.failed = </span><span class="s0">False</span>
+
+
+<span class="s0">class </span><span class="s1">Step:</span>
+
+    <span class="s4">&quot;&quot;&quot;Step.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">type</span><span class="s0">, </span><span class="s1">indent</span><span class="s0">, </span><span class="s1">line_number</span><span class="s0">, </span><span class="s1">keyword):</span>
+        <span class="s4">&quot;&quot;&quot;Step constructor. 
+ 
+        :param str name: step name. 
+        :param str type: step type. 
+        :param int indent: step text indent. 
+        :param int line_number: line number. 
+        :param str keyword: step keyword. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.keyword = keyword</span>
+        <span class="s1">self.lines = []</span>
+        <span class="s1">self.indent = indent</span>
+        <span class="s1">self.type = type</span>
+        <span class="s1">self.line_number = line_number</span>
+        <span class="s1">self.failed = </span><span class="s0">False</span>
+        <span class="s1">self.start = </span><span class="s5">0</span>
+        <span class="s1">self.stop = </span><span class="s5">0</span>
+        <span class="s1">self.scenario = </span><span class="s0">None</span>
+        <span class="s1">self.background = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">add_line(self</span><span class="s0">, </span><span class="s1">line):</span>
+        <span class="s4">&quot;&quot;&quot;Add line to the multiple step. 
+ 
+        :param str line: Line of text - the continuation of the step name. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.lines.append(line)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">name(self):</span>
+        <span class="s4">&quot;&quot;&quot;Get step name.&quot;&quot;&quot;</span>
+        <span class="s1">multilines_content = textwrap.dedent(</span><span class="s2">&quot;</span><span class="s0">\n</span><span class="s2">&quot;</span><span class="s1">.join(self.lines)) </span><span class="s0">if </span><span class="s1">self.lines </span><span class="s0">else </span><span class="s2">&quot;&quot;</span>
+
+        <span class="s3"># Remove the multiline quotes, if present.</span>
+        <span class="s1">multilines_content = re.sub(</span>
+            <span class="s1">pattern=</span><span class="s2">r'^&quot;&quot;&quot;\n(?P&lt;content&gt;.*)\n&quot;&quot;&quot;$'</span><span class="s0">,</span>
+            <span class="s1">repl=</span><span class="s2">r&quot;\g&lt;content&gt;&quot;</span><span class="s0">,</span>
+            <span class="s1">string=multilines_content</span><span class="s0">,</span>
+            <span class="s1">flags=re.DOTALL</span><span class="s0">,  </span><span class="s3"># Needed to make the &quot;.&quot; match also new lines</span>
+        <span class="s1">)</span>
+
+        <span class="s1">lines = [self._name] + [multilines_content]</span>
+        <span class="s0">return </span><span class="s2">&quot;</span><span class="s0">\n</span><span class="s2">&quot;</span><span class="s1">.join(lines).strip()</span>
+
+    <span class="s1">@name.setter</span>
+    <span class="s0">def </span><span class="s1">name(self</span><span class="s0">, </span><span class="s1">value):</span>
+        <span class="s4">&quot;&quot;&quot;Set step name.&quot;&quot;&quot;</span>
+        <span class="s1">self._name = value</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s4">&quot;&quot;&quot;Full step name including the type.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s2">f'</span><span class="s0">{</span><span class="s1">self.type.capitalize()</span><span class="s0">} </span><span class="s2">&quot;</span><span class="s0">{</span><span class="s1">self.name</span><span class="s0">}</span><span class="s2">&quot;'</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">params(self):</span>
+        <span class="s4">&quot;&quot;&quot;Get step params.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">tuple(frozenset(STEP_PARAM_RE.findall(self.name)))</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">context: typing.Mapping[str</span><span class="s0">, </span><span class="s1">typing.Any]):</span>
+        <span class="s0">def </span><span class="s1">replacer(m: typing.Match):</span>
+            <span class="s1">varname = m.group(</span><span class="s5">1</span><span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">str(context[varname])</span>
+
+        <span class="s0">return </span><span class="s1">STEP_PARAM_RE.sub(replacer</span><span class="s0">, </span><span class="s1">self.name)</span>
+
+
+<span class="s0">class </span><span class="s1">Background:</span>
+
+    <span class="s4">&quot;&quot;&quot;Background.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">feature</span><span class="s0">, </span><span class="s1">line_number):</span>
+        <span class="s4">&quot;&quot;&quot;Background constructor. 
+ 
+        :param pytest_bdd.parser.Feature feature: Feature. 
+        :param int line_number: Line number. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.feature = feature</span>
+        <span class="s1">self.line_number = line_number</span>
+        <span class="s1">self.steps = []</span>
+
+    <span class="s0">def </span><span class="s1">add_step(self</span><span class="s0">, </span><span class="s1">step):</span>
+        <span class="s4">&quot;&quot;&quot;Add step to the background.&quot;&quot;&quot;</span>
+        <span class="s1">step.background = self</span>
+        <span class="s1">self.steps.append(step)</span>
+
+
+<span class="s0">class </span><span class="s1">Examples:</span>
+
+    <span class="s4">&quot;&quot;&quot;Example table.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s4">&quot;&quot;&quot;Initialize examples instance.&quot;&quot;&quot;</span>
+        <span class="s1">self.example_params = []</span>
+        <span class="s1">self.examples = []</span>
+        <span class="s1">self.vertical_examples = []</span>
+        <span class="s1">self.line_number = </span><span class="s0">None</span>
+        <span class="s1">self.name = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">set_param_names(self</span><span class="s0">, </span><span class="s1">keys):</span>
+        <span class="s4">&quot;&quot;&quot;Set parameter names. 
+ 
+        :param names: `list` of `string` parameter names. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.example_params = [str(key) </span><span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">keys]</span>
+
+    <span class="s0">def </span><span class="s1">add_example(self</span><span class="s0">, </span><span class="s1">values):</span>
+        <span class="s4">&quot;&quot;&quot;Add example. 
+ 
+        :param values: `list` of `string` parameter values. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.examples.append(values)</span>
+
+    <span class="s0">def </span><span class="s1">add_example_row(self</span><span class="s0">, </span><span class="s1">param</span><span class="s0">, </span><span class="s1">values):</span>
+        <span class="s4">&quot;&quot;&quot;Add example row. 
+ 
+        :param param: `str` parameter name 
+        :param values: `list` of `string` parameter values 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">param </span><span class="s0">in </span><span class="s1">self.example_params:</span>
+            <span class="s0">raise </span><span class="s1">exceptions.ExamplesNotValidError(</span>
+                <span class="s2">f&quot;&quot;&quot;Example rows should contain unique parameters. &quot;</span><span class="s0">{</span><span class="s1">param</span><span class="s0">}</span><span class="s2">&quot; appeared more than once&quot;&quot;&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">self.example_params.append(param)</span>
+        <span class="s1">self.vertical_examples.append(values)</span>
+
+    <span class="s0">def </span><span class="s1">as_contexts(self) -&gt; typing.Iterable[typing.Dict[str</span><span class="s0">, </span><span class="s1">typing.Any]]:</span>
+        <span class="s1">param_count = len(self.example_params)</span>
+        <span class="s0">if </span><span class="s1">self.vertical_examples </span><span class="s0">and not </span><span class="s1">self.examples:</span>
+            <span class="s0">for </span><span class="s1">value_index </span><span class="s0">in </span><span class="s1">range(len(self.vertical_examples[</span><span class="s5">0</span><span class="s1">])):</span>
+                <span class="s1">example = []</span>
+                <span class="s0">for </span><span class="s1">param_index </span><span class="s0">in </span><span class="s1">range(param_count):</span>
+                    <span class="s1">example.append(self.vertical_examples[param_index][value_index])</span>
+                <span class="s1">self.examples.append(example)</span>
+
+        <span class="s0">if not </span><span class="s1">self.examples:</span>
+            <span class="s0">return</span>
+
+        <span class="s1">header</span><span class="s0">, </span><span class="s1">rows = self.example_params</span><span class="s0">, </span><span class="s1">self.examples</span>
+
+        <span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">rows:</span>
+            <span class="s0">assert </span><span class="s1">len(header) == len(row)</span>
+
+            <span class="s0">yield </span><span class="s1">dict(zip(header</span><span class="s0">, </span><span class="s1">row))</span>
+
+    <span class="s0">def </span><span class="s1">__bool__(self):</span>
+        <span class="s4">&quot;&quot;&quot;Bool comparison.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">bool(self.vertical_examples </span><span class="s0">or </span><span class="s1">self.examples)</span>
+
+
+<span class="s0">def </span><span class="s1">get_tags(line):</span>
+    <span class="s4">&quot;&quot;&quot;Get tags out of the given line. 
+ 
+    :param str line: Feature file text line. 
+ 
+    :return: List of tags. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">line </span><span class="s0">or not </span><span class="s1">line.strip().startswith(</span><span class="s2">&quot;@&quot;</span><span class="s1">):</span>
+        <span class="s0">return </span><span class="s1">set()</span>
+    <span class="s0">return </span><span class="s1">{tag.lstrip(</span><span class="s2">&quot;@&quot;</span><span class="s1">) </span><span class="s0">for </span><span class="s1">tag </span><span class="s0">in </span><span class="s1">line.strip().split(</span><span class="s2">&quot; @&quot;</span><span class="s1">) </span><span class="s0">if </span><span class="s1">len(tag) &gt; </span><span class="s5">1</span><span class="s1">}</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<html>
+<head>
+<title>introspection.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+introspection.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.contrib.gis.gdal </span><span class="s0">import </span><span class="s1">OGRGeomType</span>
+<span class="s0">from </span><span class="s1">django.db.backends.sqlite3.introspection </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">DatabaseIntrospection</span><span class="s0">, </span><span class="s1">FlexibleFieldLookupDict</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">GeoFlexibleFieldLookupDict(FlexibleFieldLookupDict):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Subclass that includes updates the `base_data_types_reverse` dict 
+    for geometry field types. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">base_data_types_reverse = {</span>
+        <span class="s1">**FlexibleFieldLookupDict.base_data_types_reverse</span><span class="s0">,</span>
+        <span class="s3">'point'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+        <span class="s3">'linestring'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+        <span class="s3">'polygon'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+        <span class="s3">'multipoint'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+        <span class="s3">'multilinestring'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+        <span class="s3">'multipolygon'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+        <span class="s3">'geometrycollection'</span><span class="s1">: </span><span class="s3">'GeometryField'</span><span class="s0">,</span>
+    <span class="s1">}</span>
+
+
+<span class="s0">class </span><span class="s1">SpatiaLiteIntrospection(DatabaseIntrospection):</span>
+    <span class="s1">data_types_reverse = GeoFlexibleFieldLookupDict()</span>
+
+    <span class="s0">def </span><span class="s1">get_geometry_type(self</span><span class="s0">, </span><span class="s1">table_name</span><span class="s0">, </span><span class="s1">description):</span>
+        <span class="s0">with </span><span class="s1">self.connection.cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+            <span class="s4"># Querying the `geometry_columns` table to get additional metadata.</span>
+            <span class="s1">cursor.execute(</span><span class="s3">'SELECT coord_dimension, srid, geometry_type '</span>
+                           <span class="s3">'FROM geometry_columns '</span>
+                           <span class="s3">'WHERE f_table_name=%s AND f_geometry_column=%s'</span><span class="s0">,</span>
+                           <span class="s1">(table_name</span><span class="s0">, </span><span class="s1">description.name))</span>
+            <span class="s1">row = cursor.fetchone()</span>
+            <span class="s0">if not </span><span class="s1">row:</span>
+                <span class="s0">raise </span><span class="s1">Exception(</span><span class="s3">'Could not find a geometry column for &quot;%s&quot;.&quot;%s&quot;' </span><span class="s1">%</span>
+                                <span class="s1">(table_name</span><span class="s0">, </span><span class="s1">description.name))</span>
+
+            <span class="s4"># OGRGeomType does not require GDAL and makes it easy to convert</span>
+            <span class="s4"># from OGC geom type name to Django field.</span>
+            <span class="s1">ogr_type = row[</span><span class="s5">2</span><span class="s1">]</span>
+            <span class="s0">if </span><span class="s1">isinstance(ogr_type</span><span class="s0">, </span><span class="s1">int) </span><span class="s0">and </span><span class="s1">ogr_type &gt; </span><span class="s5">1000</span><span class="s1">:</span>
+                <span class="s4"># SpatiaLite uses SFSQL 1.2 offsets 1000 (Z), 2000 (M), and</span>
+                <span class="s4"># 3000 (ZM) to indicate the presence of higher dimensional</span>
+                <span class="s4"># coordinates (M not yet supported by Django).</span>
+                <span class="s1">ogr_type = ogr_type % </span><span class="s5">1000 </span><span class="s1">+ OGRGeomType.wkb25bit</span>
+            <span class="s1">field_type = OGRGeomType(ogr_type).django</span>
+
+            <span class="s4"># Getting any GeometryField keyword arguments that are not the default.</span>
+            <span class="s1">dim = row[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">srid = row[</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s1">field_params = {}</span>
+            <span class="s0">if </span><span class="s1">srid != </span><span class="s5">4326</span><span class="s1">:</span>
+                <span class="s1">field_params[</span><span class="s3">'srid'</span><span class="s1">] = srid</span>
+            <span class="s0">if </span><span class="s1">(isinstance(dim</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">and </span><span class="s3">'Z' </span><span class="s0">in </span><span class="s1">dim) </span><span class="s0">or </span><span class="s1">dim == </span><span class="s5">3</span><span class="s1">:</span>
+                <span class="s1">field_params[</span><span class="s3">'dim'</span><span class="s1">] = </span><span class="s5">3</span>
+        <span class="s0">return </span><span class="s1">field_type</span><span class="s0">, </span><span class="s1">field_params</span>
+
+    <span class="s0">def </span><span class="s1">get_constraints(self</span><span class="s0">, </span><span class="s1">cursor</span><span class="s0">, </span><span class="s1">table_name):</span>
+        <span class="s1">constraints = super().get_constraints(cursor</span><span class="s0">, </span><span class="s1">table_name)</span>
+        <span class="s1">cursor.execute(</span><span class="s3">'SELECT f_geometry_column '</span>
+                       <span class="s3">'FROM geometry_columns '</span>
+                       <span class="s3">'WHERE f_table_name=%s AND spatial_index_enabled=1'</span><span class="s0">, </span><span class="s1">(table_name</span><span class="s0">,</span><span class="s1">))</span>
+        <span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">cursor.fetchall():</span>
+            <span class="s1">constraints[</span><span class="s3">'%s__spatial__index' </span><span class="s1">% row[</span><span class="s5">0</span><span class="s1">]] = {</span>
+                <span class="s3">&quot;columns&quot;</span><span class="s1">: [row[</span><span class="s5">0</span><span class="s1">]]</span><span class="s0">,</span>
+                <span class="s3">&quot;primary_key&quot;</span><span class="s1">: </span><span class="s0">False,</span>
+                <span class="s3">&quot;unique&quot;</span><span class="s1">: </span><span class="s0">False,</span>
+                <span class="s3">&quot;foreign_key&quot;</span><span class="s1">: </span><span class="s0">None,</span>
+                <span class="s3">&quot;check&quot;</span><span class="s1">: </span><span class="s0">False,</span>
+                <span class="s3">&quot;index&quot;</span><span class="s1">: </span><span class="s0">True,</span>
+            <span class="s1">}</span>
+        <span class="s0">return </span><span class="s1">constraints</span>
+</pre>
+</body>
+</html>

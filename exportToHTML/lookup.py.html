@@ -1,0 +1,394 @@
+<html>
+<head>
+<title>lookup.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+lookup.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># mako/lookup.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">posixpath</span>
+<span class="s2">import </span><span class="s1">re</span>
+<span class="s2">import </span><span class="s1">stat</span>
+
+<span class="s2">from </span><span class="s1">mako </span><span class="s2">import </span><span class="s1">exceptions</span>
+<span class="s2">from </span><span class="s1">mako </span><span class="s2">import </span><span class="s1">util</span>
+<span class="s2">from </span><span class="s1">mako.template </span><span class="s2">import </span><span class="s1">Template</span>
+
+<span class="s2">try</span><span class="s1">:</span>
+    <span class="s2">import </span><span class="s1">threading</span>
+<span class="s2">except</span><span class="s1">:</span>
+    <span class="s2">import </span><span class="s1">dummy_threading </span><span class="s2">as </span><span class="s1">threading</span>
+
+
+<span class="s2">class </span><span class="s1">TemplateCollection(object):</span>
+
+    <span class="s3">&quot;&quot;&quot;Represent a collection of :class:`.Template` objects, 
+    identifiable via URI. 
+ 
+    A :class:`.TemplateCollection` is linked to the usage of 
+    all template tags that address other templates, such 
+    as ``&lt;%include&gt;``, ``&lt;%namespace&gt;``, and ``&lt;%inherit&gt;``. 
+    The ``file`` attribute of each of those tags refers 
+    to a string URI that is passed to that :class:`.Template` 
+    object's :class:`.TemplateCollection` for resolution. 
+ 
+    :class:`.TemplateCollection` is an abstract class, 
+    with the usual default implementation being :class:`.TemplateLookup`. 
+ 
+     &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">has_template(self</span><span class="s2">, </span><span class="s1">uri):</span>
+        <span class="s3">&quot;&quot;&quot;Return ``True`` if this :class:`.TemplateLookup` is 
+        capable of returning a :class:`.Template` object for the 
+        given ``uri``. 
+ 
+        :param uri: String URI of the template to be resolved. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.get_template(uri)</span>
+            <span class="s2">return True</span>
+        <span class="s2">except </span><span class="s1">exceptions.TemplateLookupException:</span>
+            <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">get_template(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">relativeto=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Return a :class:`.Template` object corresponding to the given 
+        ``uri``. 
+ 
+        The default implementation raises 
+        :class:`.NotImplementedError`. Implementations should 
+        raise :class:`.TemplateLookupException` if the given ``uri`` 
+        cannot be resolved. 
+ 
+        :param uri: String URI of the template to be resolved. 
+        :param relativeto: if present, the given ``uri`` is assumed to 
+         be relative to this URI. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError()</span>
+
+    <span class="s2">def </span><span class="s1">filename_to_uri(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">filename):</span>
+        <span class="s3">&quot;&quot;&quot;Convert the given ``filename`` to a URI relative to 
+           this :class:`.TemplateCollection`.&quot;&quot;&quot;</span>
+
+        <span class="s2">return </span><span class="s1">uri</span>
+
+    <span class="s2">def </span><span class="s1">adjust_uri(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">filename):</span>
+        <span class="s3">&quot;&quot;&quot;Adjust the given ``uri`` based on the calling ``filename``. 
+ 
+        When this method is called from the runtime, the 
+        ``filename`` parameter is taken directly to the ``filename`` 
+        attribute of the calling template. Therefore a custom 
+        :class:`.TemplateCollection` subclass can place any string 
+        identifier desired in the ``filename`` parameter of the 
+        :class:`.Template` objects it constructs and have them come back 
+        here. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">uri</span>
+
+
+<span class="s2">class </span><span class="s1">TemplateLookup(TemplateCollection):</span>
+
+    <span class="s3">&quot;&quot;&quot;Represent a collection of templates that locates template source files 
+    from the local filesystem. 
+ 
+    The primary argument is the ``directories`` argument, the list of 
+    directories to search: 
+ 
+    .. sourcecode:: python 
+ 
+        lookup = TemplateLookup([&quot;/path/to/templates&quot;]) 
+        some_template = lookup.get_template(&quot;/index.html&quot;) 
+ 
+    The :class:`.TemplateLookup` can also be given :class:`.Template` objects 
+    programatically using :meth:`.put_string` or :meth:`.put_template`: 
+ 
+    .. sourcecode:: python 
+ 
+        lookup = TemplateLookup() 
+        lookup.put_string(&quot;base.html&quot;, ''' 
+            &lt;html&gt;&lt;body&gt;${self.next()}&lt;/body&gt;&lt;/html&gt; 
+        ''') 
+        lookup.put_string(&quot;hello.html&quot;, ''' 
+            &lt;%include file='base.html'/&gt; 
+ 
+            Hello, world ! 
+        ''') 
+ 
+ 
+    :param directories: A list of directory names which will be 
+     searched for a particular template URI. The URI is appended 
+     to each directory and the filesystem checked. 
+ 
+    :param collection_size: Approximate size of the collection used 
+     to store templates. If left at its default of ``-1``, the size 
+     is unbounded, and a plain Python dictionary is used to 
+     relate URI strings to :class:`.Template` instances. 
+     Otherwise, a least-recently-used cache object is used which 
+     will maintain the size of the collection approximately to 
+     the number given. 
+ 
+    :param filesystem_checks: When at its default value of ``True``, 
+     each call to :meth:`.TemplateLookup.get_template()` will 
+     compare the filesystem last modified time to the time in 
+     which an existing :class:`.Template` object was created. 
+     This allows the :class:`.TemplateLookup` to regenerate a 
+     new :class:`.Template` whenever the original source has 
+     been updated. Set this to ``False`` for a very minor 
+     performance increase. 
+ 
+    :param modulename_callable: A callable which, when present, 
+     is passed the path of the source file as well as the 
+     requested URI, and then returns the full path of the 
+     generated Python module file. This is used to inject 
+     alternate schemes for Python module location. If left at 
+     its default of ``None``, the built in system of generation 
+     based on ``module_directory`` plus ``uri`` is used. 
+ 
+    All other keyword parameters available for 
+    :class:`.Template` are mirrored here. When new 
+    :class:`.Template` objects are created, the keywords 
+    established with this :class:`.TemplateLookup` are passed on 
+    to each new :class:`.Template`. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">directories=</span><span class="s2">None,</span>
+        <span class="s1">module_directory=</span><span class="s2">None,</span>
+        <span class="s1">filesystem_checks=</span><span class="s2">True,</span>
+        <span class="s1">collection_size=-</span><span class="s4">1</span><span class="s2">,</span>
+        <span class="s1">format_exceptions=</span><span class="s2">False,</span>
+        <span class="s1">error_handler=</span><span class="s2">None,</span>
+        <span class="s1">disable_unicode=</span><span class="s2">False,</span>
+        <span class="s1">bytestring_passthrough=</span><span class="s2">False,</span>
+        <span class="s1">output_encoding=</span><span class="s2">None,</span>
+        <span class="s1">encoding_errors=</span><span class="s5">&quot;strict&quot;</span><span class="s2">,</span>
+        <span class="s1">cache_args=</span><span class="s2">None,</span>
+        <span class="s1">cache_impl=</span><span class="s5">&quot;beaker&quot;</span><span class="s2">,</span>
+        <span class="s1">cache_enabled=</span><span class="s2">True,</span>
+        <span class="s1">cache_type=</span><span class="s2">None,</span>
+        <span class="s1">cache_dir=</span><span class="s2">None,</span>
+        <span class="s1">cache_url=</span><span class="s2">None,</span>
+        <span class="s1">modulename_callable=</span><span class="s2">None,</span>
+        <span class="s1">module_writer=</span><span class="s2">None,</span>
+        <span class="s1">default_filters=</span><span class="s2">None,</span>
+        <span class="s1">buffer_filters=()</span><span class="s2">,</span>
+        <span class="s1">strict_undefined=</span><span class="s2">False,</span>
+        <span class="s1">imports=</span><span class="s2">None,</span>
+        <span class="s1">future_imports=</span><span class="s2">None,</span>
+        <span class="s1">enable_loop=</span><span class="s2">True,</span>
+        <span class="s1">input_encoding=</span><span class="s2">None,</span>
+        <span class="s1">preprocessor=</span><span class="s2">None,</span>
+        <span class="s1">lexer_cls=</span><span class="s2">None,</span>
+        <span class="s1">include_error_handler=</span><span class="s2">None,</span>
+    <span class="s1">):</span>
+
+        <span class="s1">self.directories = [</span>
+            <span class="s1">posixpath.normpath(d) </span><span class="s2">for </span><span class="s1">d </span><span class="s2">in </span><span class="s1">util.to_list(directories</span><span class="s2">, </span><span class="s1">())</span>
+        <span class="s1">]</span>
+        <span class="s1">self.module_directory = module_directory</span>
+        <span class="s1">self.modulename_callable = modulename_callable</span>
+        <span class="s1">self.filesystem_checks = filesystem_checks</span>
+        <span class="s1">self.collection_size = collection_size</span>
+
+        <span class="s2">if </span><span class="s1">cache_args </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">cache_args = {}</span>
+        <span class="s0"># transfer deprecated cache_* args</span>
+        <span class="s2">if </span><span class="s1">cache_dir:</span>
+            <span class="s1">cache_args.setdefault(</span><span class="s5">&quot;dir&quot;</span><span class="s2">, </span><span class="s1">cache_dir)</span>
+        <span class="s2">if </span><span class="s1">cache_url:</span>
+            <span class="s1">cache_args.setdefault(</span><span class="s5">&quot;url&quot;</span><span class="s2">, </span><span class="s1">cache_url)</span>
+        <span class="s2">if </span><span class="s1">cache_type:</span>
+            <span class="s1">cache_args.setdefault(</span><span class="s5">&quot;type&quot;</span><span class="s2">, </span><span class="s1">cache_type)</span>
+
+        <span class="s1">self.template_args = {</span>
+            <span class="s5">&quot;format_exceptions&quot;</span><span class="s1">: format_exceptions</span><span class="s2">,</span>
+            <span class="s5">&quot;error_handler&quot;</span><span class="s1">: error_handler</span><span class="s2">,</span>
+            <span class="s5">&quot;include_error_handler&quot;</span><span class="s1">: include_error_handler</span><span class="s2">,</span>
+            <span class="s5">&quot;disable_unicode&quot;</span><span class="s1">: disable_unicode</span><span class="s2">,</span>
+            <span class="s5">&quot;bytestring_passthrough&quot;</span><span class="s1">: bytestring_passthrough</span><span class="s2">,</span>
+            <span class="s5">&quot;output_encoding&quot;</span><span class="s1">: output_encoding</span><span class="s2">,</span>
+            <span class="s5">&quot;cache_impl&quot;</span><span class="s1">: cache_impl</span><span class="s2">,</span>
+            <span class="s5">&quot;encoding_errors&quot;</span><span class="s1">: encoding_errors</span><span class="s2">,</span>
+            <span class="s5">&quot;input_encoding&quot;</span><span class="s1">: input_encoding</span><span class="s2">,</span>
+            <span class="s5">&quot;module_directory&quot;</span><span class="s1">: module_directory</span><span class="s2">,</span>
+            <span class="s5">&quot;module_writer&quot;</span><span class="s1">: module_writer</span><span class="s2">,</span>
+            <span class="s5">&quot;cache_args&quot;</span><span class="s1">: cache_args</span><span class="s2">,</span>
+            <span class="s5">&quot;cache_enabled&quot;</span><span class="s1">: cache_enabled</span><span class="s2">,</span>
+            <span class="s5">&quot;default_filters&quot;</span><span class="s1">: default_filters</span><span class="s2">,</span>
+            <span class="s5">&quot;buffer_filters&quot;</span><span class="s1">: buffer_filters</span><span class="s2">,</span>
+            <span class="s5">&quot;strict_undefined&quot;</span><span class="s1">: strict_undefined</span><span class="s2">,</span>
+            <span class="s5">&quot;imports&quot;</span><span class="s1">: imports</span><span class="s2">,</span>
+            <span class="s5">&quot;future_imports&quot;</span><span class="s1">: future_imports</span><span class="s2">,</span>
+            <span class="s5">&quot;enable_loop&quot;</span><span class="s1">: enable_loop</span><span class="s2">,</span>
+            <span class="s5">&quot;preprocessor&quot;</span><span class="s1">: preprocessor</span><span class="s2">,</span>
+            <span class="s5">&quot;lexer_cls&quot;</span><span class="s1">: lexer_cls</span><span class="s2">,</span>
+        <span class="s1">}</span>
+
+        <span class="s2">if </span><span class="s1">collection_size == -</span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s1">self._collection = {}</span>
+            <span class="s1">self._uri_cache = {}</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._collection = util.LRUCache(collection_size)</span>
+            <span class="s1">self._uri_cache = util.LRUCache(collection_size)</span>
+        <span class="s1">self._mutex = threading.Lock()</span>
+
+    <span class="s2">def </span><span class="s1">get_template(self</span><span class="s2">, </span><span class="s1">uri):</span>
+        <span class="s3">&quot;&quot;&quot;Return a :class:`.Template` object corresponding to the given 
+        ``uri``. 
+ 
+        .. note:: The ``relativeto`` argument is not supported here at 
+           the moment. 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">self.filesystem_checks:</span>
+                <span class="s2">return </span><span class="s1">self._check(uri</span><span class="s2">, </span><span class="s1">self._collection[uri])</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">self._collection[uri]</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s1">u = re.sub(</span><span class="s5">r&quot;^\/+&quot;</span><span class="s2">, </span><span class="s5">&quot;&quot;</span><span class="s2">, </span><span class="s1">uri)</span>
+            <span class="s2">for </span><span class="s1">dir_ </span><span class="s2">in </span><span class="s1">self.directories:</span>
+                <span class="s0"># make sure the path seperators are posix - os.altsep is empty</span>
+                <span class="s0"># on POSIX and cannot be used.</span>
+                <span class="s1">dir_ = dir_.replace(os.path.sep</span><span class="s2">, </span><span class="s1">posixpath.sep)</span>
+                <span class="s1">srcfile = posixpath.normpath(posixpath.join(dir_</span><span class="s2">, </span><span class="s1">u))</span>
+                <span class="s2">if </span><span class="s1">os.path.isfile(srcfile):</span>
+                    <span class="s2">return </span><span class="s1">self._load(srcfile</span><span class="s2">, </span><span class="s1">uri)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">exceptions.TopLevelLookupException(</span>
+                    <span class="s5">&quot;Cant locate template for uri %r&quot; </span><span class="s1">% uri</span>
+                <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">adjust_uri(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">relativeto):</span>
+        <span class="s3">&quot;&quot;&quot;Adjust the given ``uri`` based on the given relative URI.&quot;&quot;&quot;</span>
+
+        <span class="s1">key = (uri</span><span class="s2">, </span><span class="s1">relativeto)</span>
+        <span class="s2">if </span><span class="s1">key </span><span class="s2">in </span><span class="s1">self._uri_cache:</span>
+            <span class="s2">return </span><span class="s1">self._uri_cache[key]</span>
+
+        <span class="s2">if </span><span class="s1">uri[</span><span class="s4">0</span><span class="s1">] != </span><span class="s5">&quot;/&quot;</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">relativeto </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">v = self._uri_cache[key] = posixpath.join(</span>
+                    <span class="s1">posixpath.dirname(relativeto)</span><span class="s2">, </span><span class="s1">uri</span>
+                <span class="s1">)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">v = self._uri_cache[key] = </span><span class="s5">&quot;/&quot; </span><span class="s1">+ uri</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">v = self._uri_cache[key] = uri</span>
+        <span class="s2">return </span><span class="s1">v</span>
+
+    <span class="s2">def </span><span class="s1">filename_to_uri(self</span><span class="s2">, </span><span class="s1">filename):</span>
+        <span class="s3">&quot;&quot;&quot;Convert the given ``filename`` to a URI relative to 
+           this :class:`.TemplateCollection`.&quot;&quot;&quot;</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._uri_cache[filename]</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s1">value = self._relativeize(filename)</span>
+            <span class="s1">self._uri_cache[filename] = value</span>
+            <span class="s2">return </span><span class="s1">value</span>
+
+    <span class="s2">def </span><span class="s1">_relativeize(self</span><span class="s2">, </span><span class="s1">filename):</span>
+        <span class="s3">&quot;&quot;&quot;Return the portion of a filename that is 'relative' 
+           to the directories in this lookup. 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s1">filename = posixpath.normpath(filename)</span>
+        <span class="s2">for </span><span class="s1">dir_ </span><span class="s2">in </span><span class="s1">self.directories:</span>
+            <span class="s2">if </span><span class="s1">filename[</span><span class="s4">0 </span><span class="s1">: len(dir_)] == dir_:</span>
+                <span class="s2">return </span><span class="s1">filename[len(dir_) :]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+
+    <span class="s2">def </span><span class="s1">_load(self</span><span class="s2">, </span><span class="s1">filename</span><span class="s2">, </span><span class="s1">uri):</span>
+        <span class="s1">self._mutex.acquire()</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s0"># try returning from collection one</span>
+                <span class="s0"># more time in case concurrent thread already loaded</span>
+                <span class="s2">return </span><span class="s1">self._collection[uri]</span>
+            <span class="s2">except </span><span class="s1">KeyError:</span>
+                <span class="s2">pass</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s1">self.modulename_callable </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s1">module_filename = self.modulename_callable(filename</span><span class="s2">, </span><span class="s1">uri)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">module_filename = </span><span class="s2">None</span>
+                <span class="s1">self._collection[uri] = template = Template(</span>
+                    <span class="s1">uri=uri</span><span class="s2">,</span>
+                    <span class="s1">filename=posixpath.normpath(filename)</span><span class="s2">,</span>
+                    <span class="s1">lookup=self</span><span class="s2">,</span>
+                    <span class="s1">module_filename=module_filename</span><span class="s2">,</span>
+                    <span class="s1">**self.template_args</span>
+                <span class="s1">)</span>
+                <span class="s2">return </span><span class="s1">template</span>
+            <span class="s2">except</span><span class="s1">:</span>
+                <span class="s0"># if compilation fails etc, ensure</span>
+                <span class="s0"># template is removed from collection,</span>
+                <span class="s0"># re-raise</span>
+                <span class="s1">self._collection.pop(uri</span><span class="s2">, None</span><span class="s1">)</span>
+                <span class="s2">raise</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">self._mutex.release()</span>
+
+    <span class="s2">def </span><span class="s1">_check(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">template):</span>
+        <span class="s2">if </span><span class="s1">template.filename </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">template</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">template_stat = os.stat(template.filename)</span>
+            <span class="s2">if </span><span class="s1">template.module._modified_time &lt; template_stat[stat.ST_MTIME]:</span>
+                <span class="s1">self._collection.pop(uri</span><span class="s2">, None</span><span class="s1">)</span>
+                <span class="s2">return </span><span class="s1">self._load(template.filename</span><span class="s2">, </span><span class="s1">uri)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">template</span>
+        <span class="s2">except </span><span class="s1">OSError:</span>
+            <span class="s1">self._collection.pop(uri</span><span class="s2">, None</span><span class="s1">)</span>
+            <span class="s2">raise </span><span class="s1">exceptions.TemplateLookupException(</span>
+                <span class="s5">&quot;Cant locate template for uri %r&quot; </span><span class="s1">% uri</span>
+            <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">put_string(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">text):</span>
+        <span class="s3">&quot;&quot;&quot;Place a new :class:`.Template` object into this 
+        :class:`.TemplateLookup`, based on the given string of 
+        ``text``. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._collection[uri] = Template(</span>
+            <span class="s1">text</span><span class="s2">, </span><span class="s1">lookup=self</span><span class="s2">, </span><span class="s1">uri=uri</span><span class="s2">, </span><span class="s1">**self.template_args</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">put_template(self</span><span class="s2">, </span><span class="s1">uri</span><span class="s2">, </span><span class="s1">template):</span>
+        <span class="s3">&quot;&quot;&quot;Place a new :class:`.Template` object into this 
+        :class:`.TemplateLookup`, based on the given 
+        :class:`.Template` object. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._collection[uri] = template</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,1677 @@
+<html>
+<head>
+<title>pyquery.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+pyquery.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright (C) 2008 - Olivier Lauzanne &lt;olauzanne@gmail.com&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># Distributed under the BSD license, see LICENSE.txt</span>
+<span class="s2">from </span><span class="s1">.cssselectpatch </span><span class="s2">import </span><span class="s1">JQueryTranslator</span>
+<span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">OrderedDict</span>
+<span class="s2">from </span><span class="s1">urllib.parse </span><span class="s2">import </span><span class="s1">urlencode</span>
+<span class="s2">from </span><span class="s1">urllib.parse </span><span class="s2">import </span><span class="s1">urljoin</span>
+<span class="s2">from </span><span class="s1">.openers </span><span class="s2">import </span><span class="s1">url_opener</span>
+<span class="s2">from </span><span class="s1">.text </span><span class="s2">import </span><span class="s1">extract_text</span>
+<span class="s2">from </span><span class="s1">copy </span><span class="s2">import </span><span class="s1">deepcopy</span>
+<span class="s2">from </span><span class="s1">lxml </span><span class="s2">import </span><span class="s1">etree</span>
+<span class="s2">import </span><span class="s1">lxml.html</span>
+<span class="s2">import </span><span class="s1">inspect</span>
+<span class="s2">import </span><span class="s1">types</span>
+
+<span class="s1">basestring = (str</span><span class="s2">, </span><span class="s1">bytes)</span>
+
+
+<span class="s2">def </span><span class="s1">getargspec(func):</span>
+    <span class="s1">args = inspect.signature(func).parameters.values()</span>
+    <span class="s2">return </span><span class="s1">[p.name </span><span class="s2">for </span><span class="s1">p </span><span class="s2">in </span><span class="s1">args</span>
+            <span class="s2">if </span><span class="s1">p.kind == p.POSITIONAL_OR_KEYWORD]</span>
+
+
+<span class="s2">def </span><span class="s1">with_camel_case_alias(func):</span>
+    <span class="s3">&quot;&quot;&quot;decorator for methods who required a camelcase alias&quot;&quot;&quot;</span>
+    <span class="s1">_camel_case_aliases.add(func.__name__)</span>
+    <span class="s2">return </span><span class="s1">func</span>
+
+
+<span class="s1">_camel_case_aliases = set()</span>
+
+
+<span class="s2">def </span><span class="s1">build_camel_case_aliases(PyQuery):</span>
+    <span class="s3">&quot;&quot;&quot;add camelcase aliases to PyQuery&quot;&quot;&quot;</span>
+    <span class="s2">for </span><span class="s1">alias </span><span class="s2">in </span><span class="s1">_camel_case_aliases:</span>
+        <span class="s1">parts = list(alias.split(</span><span class="s4">'_'</span><span class="s1">))</span>
+        <span class="s1">name = parts[</span><span class="s5">0</span><span class="s1">] + </span><span class="s4">''</span><span class="s1">.join([p.title() </span><span class="s2">for </span><span class="s1">p </span><span class="s2">in </span><span class="s1">parts[</span><span class="s5">1</span><span class="s1">:]])</span>
+        <span class="s1">func = getattr(PyQuery</span><span class="s2">, </span><span class="s1">alias)</span>
+        <span class="s1">f = types.FunctionType(func.__code__</span><span class="s2">, </span><span class="s1">func.__globals__</span><span class="s2">,</span>
+                               <span class="s1">name</span><span class="s2">, </span><span class="s1">func.__defaults__)</span>
+        <span class="s1">f.__doc__ = (</span>
+            <span class="s4">'Alias for :func:`~pyquery.pyquery.PyQuery.%s`'</span><span class="s1">) % func.__name__</span>
+        <span class="s1">setattr(PyQuery</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">f.__get__(</span><span class="s2">None, </span><span class="s1">PyQuery))</span>
+
+
+<span class="s2">def </span><span class="s1">fromstring(context</span><span class="s2">, </span><span class="s1">parser=</span><span class="s2">None, </span><span class="s1">custom_parser=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot;use html parser if we don't have clean xml 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">hasattr(context</span><span class="s2">, </span><span class="s4">'read'</span><span class="s1">) </span><span class="s2">and </span><span class="s1">hasattr(context.read</span><span class="s2">, </span><span class="s4">'__call__'</span><span class="s1">):</span>
+        <span class="s1">meth = </span><span class="s4">'parse'</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">meth = </span><span class="s4">'fromstring'</span>
+    <span class="s2">if </span><span class="s1">custom_parser </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">parser </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">result = getattr(etree</span><span class="s2">, </span><span class="s1">meth)(context)</span>
+            <span class="s2">except </span><span class="s1">etree.XMLSyntaxError:</span>
+                <span class="s2">if </span><span class="s1">hasattr(context</span><span class="s2">, </span><span class="s4">'seek'</span><span class="s1">):</span>
+                    <span class="s1">context.seek(</span><span class="s5">0</span><span class="s1">)</span>
+                <span class="s1">result = getattr(lxml.html</span><span class="s2">, </span><span class="s1">meth)(context)</span>
+            <span class="s2">if </span><span class="s1">isinstance(result</span><span class="s2">, </span><span class="s1">etree._ElementTree):</span>
+                <span class="s2">return </span><span class="s1">[result.getroot()]</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">[result]</span>
+        <span class="s2">elif </span><span class="s1">parser == </span><span class="s4">'xml'</span><span class="s1">:</span>
+            <span class="s1">custom_parser = getattr(etree</span><span class="s2">, </span><span class="s1">meth)</span>
+        <span class="s2">elif </span><span class="s1">parser == </span><span class="s4">'html'</span><span class="s1">:</span>
+            <span class="s1">custom_parser = getattr(lxml.html</span><span class="s2">, </span><span class="s1">meth)</span>
+        <span class="s2">elif </span><span class="s1">parser == </span><span class="s4">'html5'</span><span class="s1">:</span>
+            <span class="s2">from </span><span class="s1">lxml.html </span><span class="s2">import </span><span class="s1">html5parser</span>
+            <span class="s1">custom_parser = getattr(html5parser</span><span class="s2">, </span><span class="s1">meth)</span>
+        <span class="s2">elif </span><span class="s1">parser == </span><span class="s4">'soup'</span><span class="s1">:</span>
+            <span class="s2">from </span><span class="s1">lxml.html </span><span class="s2">import </span><span class="s1">soupparser</span>
+            <span class="s1">custom_parser = getattr(soupparser</span><span class="s2">, </span><span class="s1">meth)</span>
+        <span class="s2">elif </span><span class="s1">parser == </span><span class="s4">'html_fragments'</span><span class="s1">:</span>
+            <span class="s1">custom_parser = lxml.html.fragments_fromstring</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'No such parser: &quot;%s&quot;' </span><span class="s1">% parser)</span>
+
+    <span class="s1">result = custom_parser(context)</span>
+    <span class="s2">if </span><span class="s1">type(result) </span><span class="s2">is </span><span class="s1">list:</span>
+        <span class="s2">return </span><span class="s1">result</span>
+    <span class="s2">elif </span><span class="s1">isinstance(result</span><span class="s2">, </span><span class="s1">etree._ElementTree):</span>
+        <span class="s2">return </span><span class="s1">[result.getroot()]</span>
+    <span class="s2">elif </span><span class="s1">result </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">[result]</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">[]</span>
+
+
+<span class="s2">def </span><span class="s1">callback(func</span><span class="s2">, </span><span class="s1">*args):</span>
+    <span class="s2">return </span><span class="s1">func(*args[:func.__code__.co_argcount])</span>
+
+
+<span class="s2">class </span><span class="s1">NoDefault(object):</span>
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">&quot;&quot;&quot;clean representation in Sphinx&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s4">'&lt;NoDefault&gt;'</span>
+
+
+<span class="s1">no_default = NoDefault()</span>
+<span class="s2">del </span><span class="s1">NoDefault</span>
+
+
+<span class="s2">class </span><span class="s1">FlexibleElement(object):</span>
+    <span class="s3">&quot;&quot;&quot;property to allow a flexible api&quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">pget</span><span class="s2">, </span><span class="s1">pset=no_default</span><span class="s2">, </span><span class="s1">pdel=no_default):</span>
+        <span class="s1">self.pget = pget</span>
+        <span class="s1">self.pset = pset</span>
+        <span class="s1">self.pdel = pdel</span>
+
+    <span class="s2">def </span><span class="s1">__get__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">klass):</span>
+        <span class="s2">class </span><span class="s1">_element(object):</span>
+            <span class="s3">&quot;&quot;&quot;real element to support set/get/del attr and item and js call 
+            style&quot;&quot;&quot;</span>
+            <span class="s2">def </span><span class="s1">__call__(prop</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+                <span class="s2">return </span><span class="s1">self.pget(instance</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">__getattr__ = __getitem__ = __setattr__ = __setitem__ = __call__</span>
+
+            <span class="s2">def </span><span class="s1">__delitem__(prop</span><span class="s2">, </span><span class="s1">name):</span>
+                <span class="s2">if </span><span class="s1">self.pdel </span><span class="s2">is not </span><span class="s1">no_default:</span>
+                    <span class="s2">return </span><span class="s1">self.pdel(instance</span><span class="s2">, </span><span class="s1">name)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">raise </span><span class="s1">NotImplementedError()</span>
+            <span class="s1">__delattr__ = __delitem__</span>
+
+            <span class="s2">def </span><span class="s1">__repr__(prop):</span>
+                <span class="s2">return </span><span class="s4">'&lt;flexible_element %s&gt;' </span><span class="s1">% self.pget.__name__</span>
+        <span class="s2">return </span><span class="s1">_element()</span>
+
+    <span class="s2">def </span><span class="s1">__set__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s2">if </span><span class="s1">self.pset </span><span class="s2">is not </span><span class="s1">no_default:</span>
+            <span class="s1">self.pset(instance</span><span class="s2">, </span><span class="s1">value)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">NotImplementedError()</span>
+
+
+<span class="s2">class </span><span class="s1">PyQuery(list):</span>
+    <span class="s3">&quot;&quot;&quot;The main class 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">_translator_class = JQueryTranslator</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">html = </span><span class="s2">None</span>
+        <span class="s1">elements = []</span>
+        <span class="s1">self._base_url = </span><span class="s2">None</span>
+        <span class="s1">self.parser = kwargs.pop(</span><span class="s4">'parser'</span><span class="s2">, None</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">(len(args) &gt;= </span><span class="s5">1 </span><span class="s2">and</span>
+                <span class="s1">isinstance(args[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">str) </span><span class="s2">and</span>
+                <span class="s1">args[</span><span class="s5">0</span><span class="s1">].split(</span><span class="s4">'://'</span><span class="s2">, </span><span class="s5">1</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">] </span><span class="s2">in </span><span class="s1">(</span><span class="s4">'http'</span><span class="s2">, </span><span class="s4">'https'</span><span class="s1">)):</span>
+            <span class="s1">kwargs[</span><span class="s4">'url'</span><span class="s1">] = args[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s2">if </span><span class="s1">len(args) &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+                <span class="s1">kwargs[</span><span class="s4">'data'</span><span class="s1">] = args[</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s1">args = []</span>
+
+        <span class="s2">if </span><span class="s4">'parent' </span><span class="s2">in </span><span class="s1">kwargs:</span>
+            <span class="s1">self._parent = kwargs.pop(</span><span class="s4">'parent'</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._parent = no_default</span>
+
+        <span class="s2">if </span><span class="s4">'css_translator' </span><span class="s2">in </span><span class="s1">kwargs:</span>
+            <span class="s1">self._translator = kwargs.pop(</span><span class="s4">'css_translator'</span><span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">self.parser </span><span class="s2">in </span><span class="s1">(</span><span class="s4">'xml'</span><span class="s2">,</span><span class="s1">):</span>
+            <span class="s1">self._translator = self._translator_class(xhtml=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">self._parent </span><span class="s2">is not </span><span class="s1">no_default:</span>
+            <span class="s1">self._translator = self._parent._translator</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._translator = self._translator_class(xhtml=</span><span class="s2">False</span><span class="s1">)</span>
+
+        <span class="s1">self.namespaces = kwargs.pop(</span><span class="s4">'namespaces'</span><span class="s2">, None</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">kwargs:</span>
+            <span class="s0"># specific case to get the dom</span>
+            <span class="s2">if </span><span class="s4">'filename' </span><span class="s2">in </span><span class="s1">kwargs:</span>
+                <span class="s1">html = open(kwargs[</span><span class="s4">'filename'</span><span class="s1">])</span>
+            <span class="s2">elif </span><span class="s4">'url' </span><span class="s2">in </span><span class="s1">kwargs:</span>
+                <span class="s1">url = kwargs.pop(</span><span class="s4">'url'</span><span class="s1">)</span>
+                <span class="s2">if </span><span class="s4">'opener' </span><span class="s2">in </span><span class="s1">kwargs:</span>
+                    <span class="s1">opener = kwargs.pop(</span><span class="s4">'opener'</span><span class="s1">)</span>
+                    <span class="s1">html = opener(url</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">html = url_opener(url</span><span class="s2">, </span><span class="s1">kwargs)</span>
+                <span class="s2">if not </span><span class="s1">self.parser:</span>
+                    <span class="s1">self.parser = </span><span class="s4">'html'</span>
+                <span class="s1">self._base_url = url</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'Invalid keyword arguments %s' </span><span class="s1">% kwargs)</span>
+
+            <span class="s1">elements = fromstring(html</span><span class="s2">, </span><span class="s1">self.parser)</span>
+            <span class="s0"># close open descriptor if possible</span>
+            <span class="s2">if </span><span class="s1">hasattr(html</span><span class="s2">, </span><span class="s4">'close'</span><span class="s1">):</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">html.close()</span>
+                <span class="s2">except </span><span class="s1">Exception:</span>
+                    <span class="s2">pass</span>
+
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># get nodes</span>
+
+            <span class="s0"># determine context and selector if any</span>
+            <span class="s1">selector = context = no_default</span>
+            <span class="s1">length = len(args)</span>
+            <span class="s2">if </span><span class="s1">length == </span><span class="s5">1</span><span class="s1">:</span>
+                <span class="s1">context = args[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s2">elif </span><span class="s1">length == </span><span class="s5">2</span><span class="s1">:</span>
+                <span class="s1">selector</span><span class="s2">, </span><span class="s1">context = args</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s4">&quot;You can't do that. Please, provide arguments&quot;</span><span class="s1">)</span>
+
+            <span class="s0"># get context</span>
+            <span class="s2">if </span><span class="s1">isinstance(context</span><span class="s2">, </span><span class="s1">basestring):</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">elements = fromstring(context</span><span class="s2">, </span><span class="s1">self.parser)</span>
+                <span class="s2">except </span><span class="s1">Exception:</span>
+                    <span class="s2">raise</span>
+            <span class="s2">elif </span><span class="s1">isinstance(context</span><span class="s2">, </span><span class="s1">self.__class__):</span>
+                <span class="s0"># copy</span>
+                <span class="s1">elements = context[:]</span>
+            <span class="s2">elif </span><span class="s1">isinstance(context</span><span class="s2">, </span><span class="s1">list):</span>
+                <span class="s1">elements = context</span>
+            <span class="s2">elif </span><span class="s1">isinstance(context</span><span class="s2">, </span><span class="s1">etree._Element):</span>
+                <span class="s1">elements = [context]</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">TypeError(context)</span>
+
+            <span class="s0"># select nodes</span>
+            <span class="s2">if </span><span class="s1">elements </span><span class="s2">and </span><span class="s1">selector </span><span class="s2">is not </span><span class="s1">no_default:</span>
+                <span class="s1">xpath = self._css_to_xpath(selector)</span>
+                <span class="s1">results = []</span>
+                <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">elements:</span>
+                    <span class="s1">results.extend(</span>
+                        <span class="s1">tag.xpath(xpath</span><span class="s2">, </span><span class="s1">namespaces=self.namespaces))</span>
+                <span class="s1">elements = results</span>
+
+        <span class="s1">list.__init__(self</span><span class="s2">, </span><span class="s1">elements)</span>
+
+    <span class="s2">def </span><span class="s1">_css_to_xpath(self</span><span class="s2">, </span><span class="s1">selector</span><span class="s2">, </span><span class="s1">prefix=</span><span class="s4">'descendant-or-self::'</span><span class="s1">):</span>
+        <span class="s1">selector = selector.replace(</span><span class="s4">'[@'</span><span class="s2">, </span><span class="s4">'['</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._translator.css_to_xpath(selector</span><span class="s2">, </span><span class="s1">prefix)</span>
+
+    <span class="s2">def </span><span class="s1">_copy(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">kwargs.setdefault(</span><span class="s4">'namespaces'</span><span class="s2">, </span><span class="s1">self.namespaces)</span>
+        <span class="s2">return </span><span class="s1">self.__class__(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot;return a new PyQuery instance 
+        &quot;&quot;&quot;</span>
+        <span class="s1">length = len(args)</span>
+        <span class="s2">if </span><span class="s1">length == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'You must provide at least a selector'</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">args[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">''</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._copy([])</span>
+        <span class="s2">if </span><span class="s1">(len(args) == </span><span class="s5">1 </span><span class="s2">and</span>
+                <span class="s1">isinstance(args[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">str) </span><span class="s2">and</span>
+                <span class="s2">not </span><span class="s1">args[</span><span class="s5">0</span><span class="s1">].startswith(</span><span class="s4">'&lt;'</span><span class="s1">)):</span>
+            <span class="s1">args += (self</span><span class="s2">,</span><span class="s1">)</span>
+        <span class="s1">result = self._copy(*args</span><span class="s2">, </span><span class="s1">parent=self</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s2">return </span><span class="s1">result</span>
+
+    <span class="s0"># keep original list api prefixed with _</span>
+    <span class="s1">_append = list.append</span>
+    <span class="s1">_extend = list.extend</span>
+
+    <span class="s0"># improve pythonic api</span>
+    <span class="s2">def </span><span class="s1">__add__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">assert </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">self.__class__)</span>
+        <span class="s2">return </span><span class="s1">self._copy(self[:] + other[:])</span>
+
+    <span class="s2">def </span><span class="s1">extend(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s3">&quot;&quot;&quot;Extend with anoter PyQuery object&quot;&quot;&quot;</span>
+        <span class="s2">assert </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">self.__class__)</span>
+        <span class="s1">self._extend(other[:])</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">items(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Iter over elements. Return PyQuery objects: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;span&gt;foo&lt;/span&gt;&lt;span&gt;bar&lt;/span&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; [i.text() for i in d.items('span')] 
+            ['foo', 'bar'] 
+            &gt;&gt;&gt; [i.text() for i in d('span').items()] 
+            ['foo', 'bar'] 
+            &gt;&gt;&gt; list(d.items('a')) == list(d('a').items()) 
+            True 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">selector:</span>
+            <span class="s1">elems = self(selector) </span><span class="s2">or </span><span class="s1">[]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">elems = self</span>
+        <span class="s2">for </span><span class="s1">elem </span><span class="s2">in </span><span class="s1">elems:</span>
+            <span class="s2">yield </span><span class="s1">self._copy(elem</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">xhtml_to_html(self):</span>
+        <span class="s3">&quot;&quot;&quot;Remove xhtml namespace: 
+ 
+            &gt;&gt;&gt; doc = PyQuery( 
+            ...         '&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;&lt;/html&gt;') 
+            &gt;&gt;&gt; doc 
+            [&lt;{http://www.w3.org/1999/xhtml}html&gt;] 
+            &gt;&gt;&gt; doc.xhtml_to_html() 
+            [&lt;html&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">root = self[</span><span class="s5">0</span><span class="s1">].getroottree()</span>
+        <span class="s2">except </span><span class="s1">IndexError:</span>
+            <span class="s2">pass</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">lxml.html.xhtml_to_html(root)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">remove_namespaces(self):</span>
+        <span class="s3">&quot;&quot;&quot;Remove all namespaces: 
+ 
+            &gt;&gt;&gt; doc = PyQuery('&lt;foo xmlns=&quot;http://example.com/foo&quot;&gt;&lt;/foo&gt;') 
+            &gt;&gt;&gt; doc 
+            [&lt;{http://example.com/foo}foo&gt;] 
+            &gt;&gt;&gt; doc.remove_namespaces() 
+            [&lt;foo&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">root = self[</span><span class="s5">0</span><span class="s1">].getroottree()</span>
+        <span class="s2">except </span><span class="s1">IndexError:</span>
+            <span class="s2">pass</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">el </span><span class="s2">in </span><span class="s1">root.iter(</span><span class="s4">'{*}*'</span><span class="s1">):</span>
+                <span class="s2">if </span><span class="s1">el.tag.startswith(</span><span class="s4">'{'</span><span class="s1">):</span>
+                    <span class="s1">el.tag = el.tag.split(</span><span class="s4">'}'</span><span class="s2">, </span><span class="s5">1</span><span class="s1">)[</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s3">&quot;&quot;&quot;xml representation of current nodes:: 
+ 
+            &gt;&gt;&gt; xml = PyQuery( 
+            ...   '&lt;script&gt;&lt;![[CDATA[ ]&gt;&lt;/script&gt;', parser='html_fragments') 
+            &gt;&gt;&gt; print(str(xml)) 
+            &lt;script&gt;&amp;lt;![[CDATA[ ]&amp;gt;&lt;/script&gt; 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s4">''</span><span class="s1">.join([etree.tostring(e</span><span class="s2">, </span><span class="s1">encoding=str) </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self])</span>
+
+    <span class="s2">def </span><span class="s1">__unicode__(self):</span>
+        <span class="s3">&quot;&quot;&quot;xml representation of current nodes&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s4">u''</span><span class="s1">.join([etree.tostring(e</span><span class="s2">, </span><span class="s1">encoding=str)</span>
+                         <span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self])</span>
+
+    <span class="s2">def </span><span class="s1">__html__(self):</span>
+        <span class="s3">&quot;&quot;&quot;html representation of current nodes:: 
+ 
+            &gt;&gt;&gt; html = PyQuery( 
+            ...   '&lt;script&gt;&lt;![[CDATA[ ]&gt;&lt;/script&gt;', parser='html_fragments') 
+            &gt;&gt;&gt; print(html.__html__()) 
+            &lt;script&gt;&lt;![[CDATA[ ]&gt;&lt;/script&gt; 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s4">u''</span><span class="s1">.join([lxml.html.tostring(e</span><span class="s2">, </span><span class="s1">encoding=str)</span>
+                         <span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self])</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s1">r = []</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">el </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s1">c = el.get(</span><span class="s4">'class'</span><span class="s1">)</span>
+                <span class="s1">c = c </span><span class="s2">and </span><span class="s4">'.' </span><span class="s1">+ </span><span class="s4">'.'</span><span class="s1">.join(c.split(</span><span class="s4">' '</span><span class="s1">)) </span><span class="s2">or </span><span class="s4">''</span>
+                <span class="s1">id = el.get(</span><span class="s4">'id'</span><span class="s1">)</span>
+                <span class="s1">id = id </span><span class="s2">and </span><span class="s4">'#' </span><span class="s1">+ id </span><span class="s2">or </span><span class="s4">''</span>
+                <span class="s1">r.append(</span><span class="s4">'&lt;%s%s%s&gt;' </span><span class="s1">% (el.tag</span><span class="s2">, </span><span class="s1">id</span><span class="s2">, </span><span class="s1">c))</span>
+            <span class="s2">return </span><span class="s4">'[' </span><span class="s1">+ (</span><span class="s4">', '</span><span class="s1">.join(r)) + </span><span class="s4">']'</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s2">return </span><span class="s1">list.__repr__(self)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">root(self):</span>
+        <span class="s3">&quot;&quot;&quot;return the xml root element 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is not </span><span class="s1">no_default:</span>
+            <span class="s2">return </span><span class="s1">self._parent[</span><span class="s5">0</span><span class="s1">].getroottree()</span>
+        <span class="s2">return </span><span class="s1">self[</span><span class="s5">0</span><span class="s1">].getroottree()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">encoding(self):</span>
+        <span class="s3">&quot;&quot;&quot;return the xml encoding of the root element 
+        &quot;&quot;&quot;</span>
+        <span class="s1">root = self.root</span>
+        <span class="s2">if </span><span class="s1">root </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self.root.docinfo.encoding</span>
+
+    <span class="s0">##############</span>
+    <span class="s0"># Traversing #</span>
+    <span class="s0">##############</span>
+
+    <span class="s2">def </span><span class="s1">_filter_only(self</span><span class="s2">, </span><span class="s1">selector</span><span class="s2">, </span><span class="s1">elements</span><span class="s2">, </span><span class="s1">reverse=</span><span class="s2">False, </span><span class="s1">unique=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Filters the selection set only, as opposed to also including 
+           descendants. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">selector </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">results = elements</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">xpath = self._css_to_xpath(selector</span><span class="s2">, </span><span class="s4">'self::'</span><span class="s1">)</span>
+            <span class="s1">results = []</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">elements:</span>
+                <span class="s1">results.extend(tag.xpath(xpath</span><span class="s2">, </span><span class="s1">namespaces=self.namespaces))</span>
+        <span class="s2">if </span><span class="s1">reverse:</span>
+            <span class="s1">results.reverse()</span>
+        <span class="s2">if </span><span class="s1">unique:</span>
+            <span class="s1">result_list = results</span>
+            <span class="s1">results = []</span>
+            <span class="s2">for </span><span class="s1">item </span><span class="s2">in </span><span class="s1">result_list:</span>
+                <span class="s2">if </span><span class="s1">item </span><span class="s2">not in </span><span class="s1">results:</span>
+                    <span class="s1">results.append(item)</span>
+        <span class="s2">return </span><span class="s1">self._copy(results</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">parent(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(</span>
+            <span class="s1">selector</span><span class="s2">,</span>
+            <span class="s1">[e.getparent() </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self </span><span class="s2">if </span><span class="s1">e.getparent() </span><span class="s2">is not None</span><span class="s1">]</span><span class="s2">,</span>
+            <span class="s1">unique=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">prev(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(</span>
+            <span class="s1">selector</span><span class="s2">,</span>
+            <span class="s1">[e.getprevious() </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self </span><span class="s2">if </span><span class="s1">e.getprevious() </span><span class="s2">is not None</span><span class="s1">])</span>
+
+    <span class="s2">def </span><span class="s1">next(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(</span>
+            <span class="s1">selector</span><span class="s2">,</span>
+            <span class="s1">[e.getnext() </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self </span><span class="s2">if </span><span class="s1">e.getnext() </span><span class="s2">is not None</span><span class="s1">])</span>
+
+    <span class="s2">def </span><span class="s1">_traverse(self</span><span class="s2">, </span><span class="s1">method):</span>
+        <span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">current = getattr(e</span><span class="s2">, </span><span class="s1">method)()</span>
+            <span class="s2">while </span><span class="s1">current </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s2">yield </span><span class="s1">current</span>
+                <span class="s1">current = getattr(current</span><span class="s2">, </span><span class="s1">method)()</span>
+
+    <span class="s2">def </span><span class="s1">_traverse_parent_topdown(self):</span>
+        <span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">this_list = []</span>
+            <span class="s1">current = e.getparent()</span>
+            <span class="s2">while </span><span class="s1">current </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">this_list.append(current)</span>
+                <span class="s1">current = current.getparent()</span>
+            <span class="s1">this_list.reverse()</span>
+            <span class="s2">for </span><span class="s1">j </span><span class="s2">in </span><span class="s1">this_list:</span>
+                <span class="s2">yield </span><span class="s1">j</span>
+
+    <span class="s2">def </span><span class="s1">_next_all(self):</span>
+        <span class="s2">return </span><span class="s1">[e </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self._traverse(</span><span class="s4">'getnext'</span><span class="s1">)]</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">next_all(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        &gt;&gt;&gt; h = '&lt;span&gt;&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;img scr=&quot;&quot;/&gt;&lt;/span&gt;' 
+        &gt;&gt;&gt; d = PyQuery(h) 
+        &gt;&gt;&gt; d('p:last').next_all() 
+        [&lt;img&gt;] 
+        &gt;&gt;&gt; d('p:last').nextAll() 
+        [&lt;img&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(selector</span><span class="s2">, </span><span class="s1">self._next_all())</span>
+
+    <span class="s2">def </span><span class="s1">_prev_all(self):</span>
+        <span class="s2">return </span><span class="s1">[e </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self._traverse(</span><span class="s4">'getprevious'</span><span class="s1">)]</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">prev_all(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        &gt;&gt;&gt; h = '&lt;span&gt;&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;img scr=&quot;&quot;/&gt;&lt;/span&gt;' 
+        &gt;&gt;&gt; d = PyQuery(h) 
+        &gt;&gt;&gt; d('p:last').prev_all() 
+        [&lt;p.hello&gt;] 
+        &gt;&gt;&gt; d('p:last').prevAll() 
+        [&lt;p.hello&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(selector</span><span class="s2">, </span><span class="s1">self._prev_all()</span><span class="s2">, </span><span class="s1">reverse=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">siblings(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+         &gt;&gt;&gt; h = '&lt;span&gt;&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;img scr=&quot;&quot;/&gt;&lt;/span&gt;' 
+         &gt;&gt;&gt; d = PyQuery(h) 
+         &gt;&gt;&gt; d('.hello').siblings() 
+         [&lt;p&gt;, &lt;img&gt;] 
+         &gt;&gt;&gt; d('.hello').siblings('img') 
+         [&lt;img&gt;] 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(selector</span><span class="s2">, </span><span class="s1">self._prev_all() + self._next_all())</span>
+
+    <span class="s2">def </span><span class="s1">parents(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        &gt;&gt;&gt; d = PyQuery('&lt;span&gt;&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;/span&gt;') 
+        &gt;&gt;&gt; d('p').parents() 
+        [&lt;span&gt;] 
+        &gt;&gt;&gt; d('.hello').parents('span') 
+        [&lt;span&gt;] 
+        &gt;&gt;&gt; d('.hello').parents('p') 
+        [] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(</span>
+            <span class="s1">selector</span><span class="s2">,</span>
+            <span class="s1">[e </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self._traverse_parent_topdown()]</span><span class="s2">,</span>
+            <span class="s1">unique=</span><span class="s2">True</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">children(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Filter elements that are direct children of self using optional 
+        selector: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;span&gt;&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;/span&gt;') 
+            &gt;&gt;&gt; d 
+            [&lt;span&gt;] 
+            &gt;&gt;&gt; d.children() 
+            [&lt;p.hello&gt;, &lt;p&gt;] 
+            &gt;&gt;&gt; d.children('.hello') 
+            [&lt;p.hello&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">elements = [child </span><span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self </span><span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">tag.getchildren()]</span>
+        <span class="s2">return </span><span class="s1">self._filter_only(selector</span><span class="s2">, </span><span class="s1">elements)</span>
+
+    <span class="s2">def </span><span class="s1">closest(self</span><span class="s2">, </span><span class="s1">selector=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        &gt;&gt;&gt; d = PyQuery( 
+        ...  '&lt;div class=&quot;hello&quot;&gt;&lt;p&gt;This is a ' 
+        ...  '&lt;strong class=&quot;hello&quot;&gt;test&lt;/strong&gt;&lt;/p&gt;&lt;/div&gt;') 
+        &gt;&gt;&gt; d('strong').closest('div') 
+        [&lt;div.hello&gt;] 
+        &gt;&gt;&gt; d('strong').closest('.hello') 
+        [&lt;strong.hello&gt;] 
+        &gt;&gt;&gt; d('strong').closest('form') 
+        [] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">result = []</span>
+        <span class="s2">for </span><span class="s1">current </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s2">while </span><span class="s1">(current </span><span class="s2">is not None and</span>
+                    <span class="s2">not </span><span class="s1">self._copy(current).is_(selector)):</span>
+                <span class="s1">current = current.getparent()</span>
+            <span class="s2">if </span><span class="s1">current </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">result.append(current)</span>
+        <span class="s2">return </span><span class="s1">self._copy(result</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">contents(self):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Return contents (with text nodes): 
+ 
+            &gt;&gt;&gt; d = PyQuery('hello &lt;b&gt;bold&lt;/b&gt;') 
+            &gt;&gt;&gt; d.contents()  # doctest: +ELLIPSIS 
+            ['hello ', &lt;Element b at ...&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">results = []</span>
+        <span class="s2">for </span><span class="s1">elem </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">results.extend(elem.xpath(</span><span class="s4">'child::text()|child::*'</span><span class="s2">,</span>
+                           <span class="s1">namespaces=self.namespaces))</span>
+        <span class="s2">return </span><span class="s1">self._copy(results</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">filter(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s3">&quot;&quot;&quot;Filter elements in self using selector (string or function): 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;') 
+            &gt;&gt;&gt; d('p') 
+            [&lt;p.hello&gt;, &lt;p&gt;] 
+            &gt;&gt;&gt; d('p').filter('.hello') 
+            [&lt;p.hello&gt;] 
+            &gt;&gt;&gt; d('p').filter(lambda i: i == 1) 
+            [&lt;p&gt;] 
+            &gt;&gt;&gt; d('p').filter(lambda i: PyQuery(this).text() == 'Hi') 
+            [&lt;p.hello&gt;] 
+            &gt;&gt;&gt; d('p').filter(lambda i, this: PyQuery(this).text() == 'Hi') 
+            [&lt;p.hello&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">hasattr(selector</span><span class="s2">, </span><span class="s4">'__call__'</span><span class="s1">):</span>
+            <span class="s2">return </span><span class="s1">self._filter_only(selector</span><span class="s2">, </span><span class="s1">self)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">elements = []</span>
+            <span class="s1">args = getargspec(callback)</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">this </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+                    <span class="s2">if </span><span class="s1">len(args) == </span><span class="s5">1</span><span class="s1">:</span>
+                        <span class="s1">selector.__globals__[</span><span class="s4">'this'</span><span class="s1">] = this</span>
+                    <span class="s2">if </span><span class="s1">callback(selector</span><span class="s2">, </span><span class="s1">i</span><span class="s2">, </span><span class="s1">this):</span>
+                        <span class="s1">elements.append(this)</span>
+            <span class="s2">finally</span><span class="s1">:</span>
+                <span class="s1">f_globals = selector.__globals__</span>
+                <span class="s2">if </span><span class="s4">'this' </span><span class="s2">in </span><span class="s1">f_globals:</span>
+                    <span class="s2">del </span><span class="s1">f_globals[</span><span class="s4">'this'</span><span class="s1">]</span>
+            <span class="s2">return </span><span class="s1">self._copy(elements</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">not_(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s3">&quot;&quot;&quot;Return elements that don't match the given selector: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;div&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d('p').not_('.hello') 
+            [&lt;p&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">exclude = set(self._copy(selector</span><span class="s2">, </span><span class="s1">self))</span>
+        <span class="s2">return </span><span class="s1">self._copy([e </span><span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">self </span><span class="s2">if </span><span class="s1">e </span><span class="s2">not in </span><span class="s1">exclude]</span><span class="s2">,</span>
+                          <span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">is_(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s3">&quot;&quot;&quot;Returns True if selector matches at least one current element, else 
+        False: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;p class=&quot;hello&quot;&gt;&lt;span&gt;Hi&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;') 
+            &gt;&gt;&gt; d('p').eq(0).is_('.hello') 
+            True 
+ 
+            &gt;&gt;&gt; d('p').eq(0).is_('span') 
+            False 
+ 
+            &gt;&gt;&gt; d('p').eq(1).is_('.hello') 
+            False 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">bool(self._filter_only(selector</span><span class="s2">, </span><span class="s1">self))</span>
+
+    <span class="s2">def </span><span class="s1">find(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s3">&quot;&quot;&quot;Find elements using selector traversing down from self: 
+ 
+            &gt;&gt;&gt; m = '&lt;p&gt;&lt;span&gt;&lt;em&gt;Whoah!&lt;/em&gt;&lt;/span&gt;&lt;/p&gt;&lt;p&gt;&lt;em&gt; there&lt;/em&gt;&lt;/p&gt;' 
+            &gt;&gt;&gt; d = PyQuery(m) 
+            &gt;&gt;&gt; d('p').find('em') 
+            [&lt;em&gt;, &lt;em&gt;] 
+            &gt;&gt;&gt; d('p').eq(1).find('em') 
+            [&lt;em&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s1">xpath = self._css_to_xpath(selector)</span>
+        <span class="s1">results = [child.xpath(xpath</span><span class="s2">, </span><span class="s1">namespaces=self.namespaces)</span>
+                   <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self</span>
+                   <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">tag.getchildren()]</span>
+        <span class="s0"># Flatten the results</span>
+        <span class="s1">elements = []</span>
+        <span class="s2">for </span><span class="s1">r </span><span class="s2">in </span><span class="s1">results:</span>
+            <span class="s1">elements.extend(r)</span>
+        <span class="s2">return </span><span class="s1">self._copy(elements</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">eq(self</span><span class="s2">, </span><span class="s1">index):</span>
+        <span class="s3">&quot;&quot;&quot;Return PyQuery of only the element with the provided index:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;p class=&quot;hello&quot;&gt;Hi&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;div&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d('p').eq(0) 
+            [&lt;p.hello&gt;] 
+            &gt;&gt;&gt; d('p').eq(1) 
+            [&lt;p&gt;] 
+            &gt;&gt;&gt; d('p').eq(2) 
+            [] 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># Slicing will return empty list when index=-1</span>
+        <span class="s0"># we should handle out of bound by ourselves</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">items = self[index]</span>
+        <span class="s2">except </span><span class="s1">IndexError:</span>
+            <span class="s1">items = []</span>
+        <span class="s2">return </span><span class="s1">self._copy(items</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s2">def </span><span class="s1">each(self</span><span class="s2">, </span><span class="s1">func):</span>
+        <span class="s3">&quot;&quot;&quot;apply func on each nodes 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+                <span class="s1">func.__globals__[</span><span class="s4">'this'</span><span class="s1">] = element</span>
+                <span class="s2">if </span><span class="s1">callback(func</span><span class="s2">, </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element) </span><span class="s2">is False</span><span class="s1">:</span>
+                    <span class="s2">break</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">f_globals = func.__globals__</span>
+            <span class="s2">if </span><span class="s4">'this' </span><span class="s2">in </span><span class="s1">f_globals:</span>
+                <span class="s2">del </span><span class="s1">f_globals[</span><span class="s4">'this'</span><span class="s1">]</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">map(self</span><span class="s2">, </span><span class="s1">func):</span>
+        <span class="s3">&quot;&quot;&quot;Returns a new PyQuery after transforming current items with func. 
+ 
+        func should take two arguments - 'index' and 'element'.  Elements can 
+        also be referred to as 'this' inside of func:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;p class=&quot;hello&quot;&gt;Hi there&lt;/p&gt;&lt;p&gt;Bye&lt;/p&gt;&lt;br /&gt;') 
+            &gt;&gt;&gt; d('p').map(lambda i, e: PyQuery(e).text()) 
+            ['Hi there', 'Bye'] 
+ 
+            &gt;&gt;&gt; d('p').map(lambda i, e: len(PyQuery(this).text())) 
+            [8, 3] 
+ 
+            &gt;&gt;&gt; d('p').map(lambda i, e: PyQuery(this).text().split()) 
+            ['Hi', 'there', 'Bye'] 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">items = []</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+                <span class="s1">func.__globals__[</span><span class="s4">'this'</span><span class="s1">] = element</span>
+                <span class="s1">result = callback(func</span><span class="s2">, </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element)</span>
+                <span class="s2">if </span><span class="s1">result </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s2">if not </span><span class="s1">isinstance(result</span><span class="s2">, </span><span class="s1">list):</span>
+                        <span class="s1">items.append(result)</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s1">items.extend(result)</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">f_globals = func.__globals__</span>
+            <span class="s2">if </span><span class="s4">'this' </span><span class="s2">in </span><span class="s1">f_globals:</span>
+                <span class="s2">del </span><span class="s1">f_globals[</span><span class="s4">'this'</span><span class="s1">]</span>
+        <span class="s2">return </span><span class="s1">self._copy(items</span><span class="s2">, </span><span class="s1">parent=self)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">length(self):</span>
+        <span class="s2">return </span><span class="s1">len(self)</span>
+
+    <span class="s2">def </span><span class="s1">size(self):</span>
+        <span class="s2">return </span><span class="s1">len(self)</span>
+
+    <span class="s2">def </span><span class="s1">end(self):</span>
+        <span class="s3">&quot;&quot;&quot;Break out of a level of traversal and return to the parent level. 
+ 
+            &gt;&gt;&gt; m = '&lt;p&gt;&lt;span&gt;&lt;em&gt;Whoah!&lt;/em&gt;&lt;/span&gt;&lt;/p&gt;&lt;p&gt;&lt;em&gt; there&lt;/em&gt;&lt;/p&gt;' 
+            &gt;&gt;&gt; d = PyQuery(m) 
+            &gt;&gt;&gt; d('p').eq(1).find('em').end().end() 
+            [&lt;p&gt;, &lt;p&gt;] 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._parent</span>
+
+    <span class="s0">##############</span>
+    <span class="s0"># Attributes #</span>
+    <span class="s0">##############</span>
+    <span class="s2">def </span><span class="s1">attr(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot;Attributes manipulation 
+        &quot;&quot;&quot;</span>
+
+        <span class="s1">mapping = {</span><span class="s4">'class_'</span><span class="s1">: </span><span class="s4">'class'</span><span class="s2">, </span><span class="s4">'for_'</span><span class="s1">: </span><span class="s4">'for'</span><span class="s1">}</span>
+
+        <span class="s1">attr = value = no_default</span>
+        <span class="s1">length = len(args)</span>
+        <span class="s2">if </span><span class="s1">length == </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s1">attr = args[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">attr = mapping.get(attr</span><span class="s2">, </span><span class="s1">attr)</span>
+        <span class="s2">elif </span><span class="s1">length == </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">attr</span><span class="s2">, </span><span class="s1">value = args</span>
+            <span class="s1">attr = mapping.get(attr</span><span class="s2">, </span><span class="s1">attr)</span>
+        <span class="s2">elif </span><span class="s1">kwargs:</span>
+            <span class="s1">attr = {}</span>
+            <span class="s2">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">kwargs.items():</span>
+                <span class="s1">attr[mapping.get(k</span><span class="s2">, </span><span class="s1">k)] = v</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'Invalid arguments %s %s' </span><span class="s1">% (args</span><span class="s2">, </span><span class="s1">kwargs))</span>
+
+        <span class="s2">if not </span><span class="s1">self:</span>
+            <span class="s2">return None</span>
+        <span class="s2">elif </span><span class="s1">isinstance(attr</span><span class="s2">, </span><span class="s1">dict):</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s2">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">attr.items():</span>
+                    <span class="s1">tag.set(key</span><span class="s2">, </span><span class="s1">value)</span>
+        <span class="s2">elif </span><span class="s1">value </span><span class="s2">is </span><span class="s1">no_default:</span>
+            <span class="s2">return </span><span class="s1">self[</span><span class="s5">0</span><span class="s1">].get(attr)</span>
+        <span class="s2">elif </span><span class="s1">value </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self.remove_attr(attr)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s1">tag.set(attr</span><span class="s2">, </span><span class="s1">value)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">remove_attr(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s3">&quot;&quot;&quot;Remove an attribute:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div id=&quot;myid&quot;&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d.remove_attr('id') 
+            [&lt;div&gt;] 
+            &gt;&gt;&gt; d.removeAttr('id') 
+            [&lt;div&gt;] 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">del </span><span class="s1">tag.attrib[name]</span>
+            <span class="s2">except </span><span class="s1">KeyError:</span>
+                <span class="s2">pass</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">attr = FlexibleElement(pget=attr</span><span class="s2">, </span><span class="s1">pdel=remove_attr)</span>
+
+    <span class="s0">#######</span>
+    <span class="s0"># CSS #</span>
+    <span class="s0">#######</span>
+    <span class="s2">def </span><span class="s1">height(self</span><span class="s2">, </span><span class="s1">value=no_default):</span>
+        <span class="s3">&quot;&quot;&quot;set/get height of element 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.attr(</span><span class="s4">'height'</span><span class="s2">, </span><span class="s1">value)</span>
+
+    <span class="s2">def </span><span class="s1">width(self</span><span class="s2">, </span><span class="s1">value=no_default):</span>
+        <span class="s3">&quot;&quot;&quot;set/get width of element 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.attr(</span><span class="s4">'width'</span><span class="s2">, </span><span class="s1">value)</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">has_class(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s3">&quot;&quot;&quot;Return True if element has class:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div class=&quot;myclass&quot;&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d.has_class('myclass') 
+            True 
+            &gt;&gt;&gt; d.hasClass('myclass') 
+            True 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.is_(</span><span class="s4">'.%s' </span><span class="s1">% name)</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">add_class(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;Add a css class to elements:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d.add_class('myclass') 
+            [&lt;div.myclass&gt;] 
+            &gt;&gt;&gt; d.addClass('myclass') 
+            [&lt;div.myclass&gt;] 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">values = value.split(</span><span class="s4">' '</span><span class="s1">)</span>
+            <span class="s1">classes = (tag.get(</span><span class="s4">'class'</span><span class="s1">) </span><span class="s2">or </span><span class="s4">''</span><span class="s1">).split()</span>
+            <span class="s1">classes += [v </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">values </span><span class="s2">if </span><span class="s1">v </span><span class="s2">not in </span><span class="s1">classes]</span>
+            <span class="s1">tag.set(</span><span class="s4">'class'</span><span class="s2">, </span><span class="s4">' '</span><span class="s1">.join(classes))</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">remove_class(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;Remove a css class to elements:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div class=&quot;myclass&quot;&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d.remove_class('myclass') 
+            [&lt;div&gt;] 
+            &gt;&gt;&gt; d.removeClass('myclass') 
+            [&lt;div&gt;] 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">values = value.split(</span><span class="s4">' '</span><span class="s1">)</span>
+            <span class="s1">classes = set((tag.get(</span><span class="s4">'class'</span><span class="s1">) </span><span class="s2">or </span><span class="s4">''</span><span class="s1">).split())</span>
+            <span class="s1">classes.difference_update(values)</span>
+            <span class="s1">classes.difference_update([</span><span class="s4">''</span><span class="s1">])</span>
+            <span class="s1">classes = </span><span class="s4">' '</span><span class="s1">.join(classes)</span>
+            <span class="s2">if </span><span class="s1">classes.strip():</span>
+                <span class="s1">tag.set(</span><span class="s4">'class'</span><span class="s2">, </span><span class="s1">classes)</span>
+            <span class="s2">elif </span><span class="s1">tag.get(</span><span class="s4">'class'</span><span class="s1">):</span>
+                <span class="s1">tag.set(</span><span class="s4">'class'</span><span class="s2">, </span><span class="s1">classes)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">toggle_class(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;Toggle a css class to elements 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; d.toggle_class('myclass') 
+            [&lt;div.myclass&gt;] 
+            &gt;&gt;&gt; d.toggleClass('myclass') 
+            [&lt;div&gt;] 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">values = value.split(</span><span class="s4">' '</span><span class="s1">)</span>
+            <span class="s1">classes = (tag.get(</span><span class="s4">'class'</span><span class="s1">) </span><span class="s2">or </span><span class="s4">''</span><span class="s1">).split()</span>
+            <span class="s1">values_to_add = [v </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">values </span><span class="s2">if </span><span class="s1">v </span><span class="s2">not in </span><span class="s1">classes]</span>
+            <span class="s1">values_to_del = [v </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">values </span><span class="s2">if </span><span class="s1">v </span><span class="s2">in </span><span class="s1">classes]</span>
+            <span class="s1">classes = [v </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">classes </span><span class="s2">if </span><span class="s1">v </span><span class="s2">not in </span><span class="s1">values_to_del]</span>
+            <span class="s1">classes += values_to_add</span>
+            <span class="s1">tag.set(</span><span class="s4">'class'</span><span class="s2">, </span><span class="s4">' '</span><span class="s1">.join(classes))</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">css(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot;css attributes manipulation 
+        &quot;&quot;&quot;</span>
+
+        <span class="s1">attr = value = no_default</span>
+        <span class="s1">length = len(args)</span>
+        <span class="s2">if </span><span class="s1">length == </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s1">attr = args[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s2">elif </span><span class="s1">length == </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">attr</span><span class="s2">, </span><span class="s1">value = args</span>
+        <span class="s2">elif </span><span class="s1">kwargs:</span>
+            <span class="s1">attr = kwargs</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'Invalid arguments %s %s' </span><span class="s1">% (args</span><span class="s2">, </span><span class="s1">kwargs))</span>
+
+        <span class="s2">if </span><span class="s1">isinstance(attr</span><span class="s2">, </span><span class="s1">dict):</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s1">stripped_keys = [key.strip().replace(</span><span class="s4">'_'</span><span class="s2">, </span><span class="s4">'-'</span><span class="s1">)</span>
+                                 <span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">attr.keys()]</span>
+                <span class="s1">current = [el.strip()</span>
+                           <span class="s2">for </span><span class="s1">el </span><span class="s2">in </span><span class="s1">(tag.get(</span><span class="s4">'style'</span><span class="s1">) </span><span class="s2">or </span><span class="s4">''</span><span class="s1">).split(</span><span class="s4">';'</span><span class="s1">)</span>
+                           <span class="s2">if </span><span class="s1">el.strip()</span>
+                           <span class="s2">and not </span><span class="s1">el.split(</span><span class="s4">':'</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">].strip() </span><span class="s2">in </span><span class="s1">stripped_keys]</span>
+                <span class="s2">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">attr.items():</span>
+                    <span class="s1">key = key.replace(</span><span class="s4">'_'</span><span class="s2">, </span><span class="s4">'-'</span><span class="s1">)</span>
+                    <span class="s1">current.append(</span><span class="s4">'%s: %s' </span><span class="s1">% (key</span><span class="s2">, </span><span class="s1">value))</span>
+                <span class="s1">tag.set(</span><span class="s4">'style'</span><span class="s2">, </span><span class="s4">'; '</span><span class="s1">.join(current))</span>
+        <span class="s2">elif </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">basestring):</span>
+            <span class="s1">attr = attr.replace(</span><span class="s4">'_'</span><span class="s2">, </span><span class="s4">'-'</span><span class="s1">)</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s1">current = [</span>
+                    <span class="s1">el.strip()</span>
+                    <span class="s2">for </span><span class="s1">el </span><span class="s2">in </span><span class="s1">(tag.get(</span><span class="s4">'style'</span><span class="s1">) </span><span class="s2">or </span><span class="s4">''</span><span class="s1">).split(</span><span class="s4">';'</span><span class="s1">)</span>
+                    <span class="s2">if </span><span class="s1">(el.strip() </span><span class="s2">and</span>
+                        <span class="s2">not </span><span class="s1">el.split(</span><span class="s4">':'</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">].strip() == attr.strip())]</span>
+                <span class="s1">current.append(</span><span class="s4">'%s: %s' </span><span class="s1">% (attr</span><span class="s2">, </span><span class="s1">value))</span>
+                <span class="s1">tag.set(</span><span class="s4">'style'</span><span class="s2">, </span><span class="s4">'; '</span><span class="s1">.join(current))</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">css = FlexibleElement(pget=css</span><span class="s2">, </span><span class="s1">pset=css)</span>
+
+    <span class="s0">###################</span>
+    <span class="s0"># CORE UI EFFECTS #</span>
+    <span class="s0">###################</span>
+    <span class="s2">def </span><span class="s1">hide(self):</span>
+        <span class="s3">&quot;&quot;&quot;Remove display:none to elements style: 
+ 
+            &gt;&gt;&gt; print(PyQuery('&lt;div style=&quot;display:none;&quot;/&gt;').hide()) 
+            &lt;div style=&quot;display: none&quot;/&gt; 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.css(</span><span class="s4">'display'</span><span class="s2">, </span><span class="s4">'none'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">show(self):</span>
+        <span class="s3">&quot;&quot;&quot;Add display:block to elements style: 
+ 
+            &gt;&gt;&gt; print(PyQuery('&lt;div /&gt;').show()) 
+            &lt;div style=&quot;display: block&quot;/&gt; 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.css(</span><span class="s4">'display'</span><span class="s2">, </span><span class="s4">'block'</span><span class="s1">)</span>
+
+    <span class="s0">########</span>
+    <span class="s0"># HTML #</span>
+    <span class="s0">########</span>
+    <span class="s2">def </span><span class="s1">val(self</span><span class="s2">, </span><span class="s1">value=no_default):</span>
+        <span class="s3">&quot;&quot;&quot;Set the attribute value:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;input /&gt;') 
+            &gt;&gt;&gt; d.val('Youhou') 
+            [&lt;input&gt;] 
+ 
+        Get the attribute value:: 
+ 
+            &gt;&gt;&gt; d.val() 
+            'Youhou' 
+ 
+        Set the selected values for a `select` element with the `multiple` 
+        attribute:: 
+ 
+            &gt;&gt;&gt; d = PyQuery(''' 
+            ...             &lt;select multiple&gt; 
+            ...                 &lt;option value=&quot;you&quot;&gt;&lt;option value=&quot;hou&quot;&gt; 
+            ...             &lt;/select&gt; 
+            ...             ''') 
+            &gt;&gt;&gt; d.val(['you', 'hou']) 
+            [&lt;select&gt;] 
+ 
+        Get the selected values for a `select` element with the `multiple` 
+        attribute:: 
+ 
+            &gt;&gt;&gt; d.val() 
+            ['you', 'hou'] 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">def </span><span class="s1">_get_value(tag):</span>
+            <span class="s0"># &lt;textarea&gt;</span>
+            <span class="s2">if </span><span class="s1">tag.tag == </span><span class="s4">'textarea'</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">self._copy(tag).html()</span>
+            <span class="s0"># &lt;select&gt;</span>
+            <span class="s2">elif </span><span class="s1">tag.tag == </span><span class="s4">'select'</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s4">'multiple' </span><span class="s2">in </span><span class="s1">tag.attrib:</span>
+                    <span class="s0"># Only extract value if selected</span>
+                    <span class="s1">selected = self._copy(tag)(</span><span class="s4">'option[selected]'</span><span class="s1">)</span>
+                    <span class="s0"># Rebuild list to avoid serialization error</span>
+                    <span class="s2">return </span><span class="s1">list(selected.map(</span>
+                        <span class="s2">lambda </span><span class="s1">_</span><span class="s2">, </span><span class="s1">o: self._copy(o).attr(</span><span class="s4">'value'</span><span class="s1">)</span>
+                    <span class="s1">))</span>
+                <span class="s1">selected_option = self._copy(tag)(</span><span class="s4">'option[selected]:last'</span><span class="s1">)</span>
+                <span class="s2">if </span><span class="s1">selected_option:</span>
+                    <span class="s2">return </span><span class="s1">selected_option.attr(</span><span class="s4">'value'</span><span class="s1">)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">return </span><span class="s1">self._copy(tag)(</span><span class="s4">'option'</span><span class="s1">).attr(</span><span class="s4">'value'</span><span class="s1">)</span>
+            <span class="s0"># &lt;input type=&quot;checkbox&quot;&gt; or &lt;input type=&quot;radio&quot;&gt;</span>
+            <span class="s2">elif </span><span class="s1">self.is_(</span><span class="s4">':checkbox,:radio'</span><span class="s1">):</span>
+                <span class="s1">val = self._copy(tag).attr(</span><span class="s4">'value'</span><span class="s1">)</span>
+                <span class="s2">if </span><span class="s1">val </span><span class="s2">is None</span><span class="s1">:</span>
+                    <span class="s2">return </span><span class="s4">'on'</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">return </span><span class="s1">val</span>
+            <span class="s0"># &lt;input&gt;</span>
+            <span class="s2">elif </span><span class="s1">tag.tag == </span><span class="s4">'input'</span><span class="s1">:</span>
+                <span class="s1">val = self._copy(tag).attr(</span><span class="s4">'value'</span><span class="s1">)</span>
+                <span class="s2">return </span><span class="s1">val.replace(</span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s2">, </span><span class="s4">''</span><span class="s1">) </span><span class="s2">if </span><span class="s1">val </span><span class="s2">else </span><span class="s4">''</span>
+            <span class="s0"># everything else.</span>
+            <span class="s2">return </span><span class="s1">self._copy(tag).attr(</span><span class="s4">'value'</span><span class="s1">) </span><span class="s2">or </span><span class="s4">''</span>
+
+        <span class="s2">def </span><span class="s1">_set_value(pq</span><span class="s2">, </span><span class="s1">value):</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">pq:</span>
+                <span class="s0"># &lt;select&gt;</span>
+                <span class="s2">if </span><span class="s1">tag.tag == </span><span class="s4">'select'</span><span class="s1">:</span>
+                    <span class="s2">if not </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">list):</span>
+                        <span class="s1">value = [value]</span>
+
+                    <span class="s2">def </span><span class="s1">_make_option_selected(_</span><span class="s2">, </span><span class="s1">elem):</span>
+                        <span class="s1">pq = self._copy(elem)</span>
+                        <span class="s2">if </span><span class="s1">pq.attr(</span><span class="s4">'value'</span><span class="s1">) </span><span class="s2">in </span><span class="s1">value:</span>
+                            <span class="s1">pq.attr(</span><span class="s4">'selected'</span><span class="s2">, </span><span class="s4">'selected'</span><span class="s1">)</span>
+                            <span class="s2">if </span><span class="s4">'multiple' </span><span class="s2">not in </span><span class="s1">tag.attrib:</span>
+                                <span class="s2">del </span><span class="s1">value[:]  </span><span class="s0"># Ensure it toggles first match</span>
+                        <span class="s2">else</span><span class="s1">:</span>
+                            <span class="s1">pq.removeAttr(</span><span class="s4">'selected'</span><span class="s1">)</span>
+
+                    <span class="s1">self._copy(tag)(</span><span class="s4">'option'</span><span class="s1">).each(_make_option_selected)</span>
+                    <span class="s2">continue</span>
+                <span class="s0"># Stringify array</span>
+                <span class="s2">if </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">list):</span>
+                    <span class="s1">value = </span><span class="s4">','</span><span class="s1">.join(value)</span>
+                <span class="s0"># &lt;textarea&gt;</span>
+                <span class="s2">if </span><span class="s1">tag.tag == </span><span class="s4">'textarea'</span><span class="s1">:</span>
+                    <span class="s1">self._copy(tag).text(value)</span>
+                    <span class="s2">continue</span>
+                <span class="s0"># &lt;input&gt; and everything else.</span>
+                <span class="s1">self._copy(tag).attr(</span><span class="s4">'value'</span><span class="s2">, </span><span class="s1">value)</span>
+
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is </span><span class="s1">no_default:</span>
+            <span class="s2">if </span><span class="s1">len(self):</span>
+                <span class="s2">return </span><span class="s1">_get_value(self[</span><span class="s5">0</span><span class="s1">])</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">_set_value(self</span><span class="s2">, </span><span class="s1">value)</span>
+            <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">html(self</span><span class="s2">, </span><span class="s1">value=no_default</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot;Get or set the html representation of sub nodes. 
+ 
+        Get the text value:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;span&gt;toto&lt;/span&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; print(d.html()) 
+            &lt;span&gt;toto&lt;/span&gt; 
+ 
+        Extra args are passed to ``lxml.etree.tostring``:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;span&gt;&lt;/span&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; print(d.html()) 
+            &lt;span/&gt; 
+            &gt;&gt;&gt; print(d.html(method='html')) 
+            &lt;span&gt;&lt;/span&gt; 
+ 
+        Set the text value:: 
+ 
+            &gt;&gt;&gt; d.html('&lt;span&gt;Youhou !&lt;/span&gt;') 
+            [&lt;div&gt;] 
+            &gt;&gt;&gt; print(d) 
+            &lt;div&gt;&lt;span&gt;Youhou !&lt;/span&gt;&lt;/div&gt; 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is </span><span class="s1">no_default:</span>
+            <span class="s2">if not </span><span class="s1">self:</span>
+                <span class="s2">return None</span>
+            <span class="s1">tag = self[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">children = tag.getchildren()</span>
+            <span class="s2">if not </span><span class="s1">children:</span>
+                <span class="s2">return </span><span class="s1">tag.text </span><span class="s2">or </span><span class="s4">''</span>
+            <span class="s1">html = tag.text </span><span class="s2">or </span><span class="s4">''</span>
+            <span class="s2">if </span><span class="s4">'encoding' </span><span class="s2">not in </span><span class="s1">kwargs:</span>
+                <span class="s1">kwargs[</span><span class="s4">'encoding'</span><span class="s1">] = str</span>
+            <span class="s1">html += </span><span class="s4">u''</span><span class="s1">.join([etree.tostring(e</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+                              <span class="s2">for </span><span class="s1">e </span><span class="s2">in </span><span class="s1">children])</span>
+            <span class="s2">return </span><span class="s1">html</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">self.__class__):</span>
+                <span class="s1">new_html = str(value)</span>
+            <span class="s2">elif </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">basestring):</span>
+                <span class="s1">new_html = value</span>
+            <span class="s2">elif not </span><span class="s1">value:</span>
+                <span class="s1">new_html = </span><span class="s4">''</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(type(value))</span>
+
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">tag.getchildren():</span>
+                    <span class="s1">tag.remove(child)</span>
+                <span class="s1">root = fromstring(</span>
+                    <span class="s4">u'&lt;root&gt;' </span><span class="s1">+ new_html + </span><span class="s4">u'&lt;/root&gt;'</span><span class="s2">,</span>
+                    <span class="s1">self.parser)[</span><span class="s5">0</span><span class="s1">]</span>
+                <span class="s1">children = root.getchildren()</span>
+                <span class="s2">if </span><span class="s1">children:</span>
+                    <span class="s1">tag.extend(children)</span>
+                <span class="s1">tag.text = root.text</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">outer_html(self</span><span class="s2">, </span><span class="s1">method=</span><span class="s4">&quot;html&quot;</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Get the html representation of the first selected element:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;span class=&quot;red&quot;&gt;toto&lt;/span&gt; rocks&lt;/div&gt;') 
+            &gt;&gt;&gt; print(d('span')) 
+            &lt;span class=&quot;red&quot;&gt;toto&lt;/span&gt; rocks 
+            &gt;&gt;&gt; print(d('span').outer_html()) 
+            &lt;span class=&quot;red&quot;&gt;toto&lt;/span&gt; 
+            &gt;&gt;&gt; print(d('span').outerHtml()) 
+            &lt;span class=&quot;red&quot;&gt;toto&lt;/span&gt; 
+ 
+            &gt;&gt;&gt; S = PyQuery('&lt;p&gt;Only &lt;b&gt;me&lt;/b&gt; &amp; myself&lt;/p&gt;') 
+            &gt;&gt;&gt; print(S('b').outer_html()) 
+            &lt;b&gt;me&lt;/b&gt; 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+
+        <span class="s2">if not </span><span class="s1">self:</span>
+            <span class="s2">return None</span>
+        <span class="s1">e0 = self[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s2">if </span><span class="s1">e0.tail:</span>
+            <span class="s1">e0 = deepcopy(e0)</span>
+            <span class="s1">e0.tail = </span><span class="s4">''</span>
+        <span class="s2">return </span><span class="s1">etree.tostring(e0</span><span class="s2">, </span><span class="s1">encoding=str</span><span class="s2">, </span><span class="s1">method=method)</span>
+
+    <span class="s2">def </span><span class="s1">text(self</span><span class="s2">, </span><span class="s1">value=no_default</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot;Get or set the text representation of sub nodes. 
+ 
+        Get the text value:: 
+ 
+            &gt;&gt;&gt; doc = PyQuery('&lt;div&gt;&lt;span&gt;toto&lt;/span&gt;&lt;span&gt;tata&lt;/span&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; print(doc.text()) 
+            tototata 
+            &gt;&gt;&gt; doc = PyQuery('''&lt;div&gt;&lt;span&gt;toto&lt;/span&gt; 
+            ...               &lt;span&gt;tata&lt;/span&gt;&lt;/div&gt;''') 
+            &gt;&gt;&gt; print(doc.text()) 
+            toto tata 
+ 
+        Get the text value, without squashing newlines:: 
+ 
+            &gt;&gt;&gt; doc = PyQuery('''&lt;div&gt;&lt;span&gt;toto&lt;/span&gt; 
+            ...               &lt;span&gt;tata&lt;/span&gt;&lt;/div&gt;''') 
+            &gt;&gt;&gt; print(doc.text(squash_space=False)) 
+            toto 
+            tata 
+ 
+        Set the text value:: 
+ 
+            &gt;&gt;&gt; doc.text('Youhou !') 
+            [&lt;div&gt;] 
+            &gt;&gt;&gt; print(doc) 
+            &lt;div&gt;Youhou !&lt;/div&gt; 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is </span><span class="s1">no_default:</span>
+            <span class="s2">if not </span><span class="s1">self:</span>
+                <span class="s2">return </span><span class="s4">''</span>
+            <span class="s2">return </span><span class="s4">' '</span><span class="s1">.join(</span>
+                <span class="s1">self._copy(tag).html() </span><span class="s2">if </span><span class="s1">tag.tag == </span><span class="s4">'textarea' </span><span class="s2">else</span>
+                <span class="s1">extract_text(tag</span><span class="s2">, </span><span class="s1">**kwargs) </span><span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self</span>
+            <span class="s1">)</span>
+
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">tag.getchildren():</span>
+                <span class="s1">tag.remove(child)</span>
+            <span class="s1">tag.text = value</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s0">################</span>
+    <span class="s0"># Manipulating #</span>
+    <span class="s0">################</span>
+
+    <span class="s2">def </span><span class="s1">_get_root(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s2">if </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">basestring):</span>
+            <span class="s1">root = fromstring(</span><span class="s4">u'&lt;root&gt;' </span><span class="s1">+ value + </span><span class="s4">u'&lt;/root&gt;'</span><span class="s2">,</span>
+                              <span class="s1">self.parser)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s2">elif </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">etree._Element):</span>
+            <span class="s1">root = self._copy(value)</span>
+        <span class="s2">elif </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">PyQuery):</span>
+            <span class="s1">root = value</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">'Value must be string, PyQuery or Element. Got %r' </span><span class="s1">% value)</span>
+        <span class="s2">if </span><span class="s1">hasattr(root</span><span class="s2">, </span><span class="s4">'text'</span><span class="s1">) </span><span class="s2">and </span><span class="s1">isinstance(root.text</span><span class="s2">, </span><span class="s1">basestring):</span>
+            <span class="s1">root_text = root.text</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">root_text = </span><span class="s4">''</span>
+        <span class="s2">return </span><span class="s1">root</span><span class="s2">, </span><span class="s1">root_text</span>
+
+    <span class="s2">def </span><span class="s1">append(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;append value to each nodes 
+        &quot;&quot;&quot;</span>
+        <span class="s1">root</span><span class="s2">, </span><span class="s1">root_text = self._get_root(value)</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+            <span class="s2">if </span><span class="s1">len(tag) &gt; </span><span class="s5">0</span><span class="s1">:  </span><span class="s0"># if the tag has children</span>
+                <span class="s1">last_child = tag[-</span><span class="s5">1</span><span class="s1">]</span>
+                <span class="s2">if not </span><span class="s1">last_child.tail:</span>
+                    <span class="s1">last_child.tail = </span><span class="s4">''</span>
+                <span class="s1">last_child.tail += root_text</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">if not </span><span class="s1">tag.text:</span>
+                    <span class="s1">tag.text = </span><span class="s4">''</span>
+                <span class="s1">tag.text += root_text</span>
+            <span class="s2">if </span><span class="s1">i &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">root = deepcopy(list(root))</span>
+            <span class="s1">tag.extend(root)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">append_to(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;append nodes to value 
+        &quot;&quot;&quot;</span>
+        <span class="s1">value.append(self)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">prepend(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;prepend value to nodes 
+        &quot;&quot;&quot;</span>
+        <span class="s1">root</span><span class="s2">, </span><span class="s1">root_text = self._get_root(value)</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+            <span class="s2">if not </span><span class="s1">tag.text:</span>
+                <span class="s1">tag.text = </span><span class="s4">''</span>
+            <span class="s2">if </span><span class="s1">len(root) &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">root[-</span><span class="s5">1</span><span class="s1">].tail = tag.text</span>
+                <span class="s1">tag.text = root_text</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">tag.text = root_text + tag.text</span>
+            <span class="s2">if </span><span class="s1">i &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">root = deepcopy(list(root))</span>
+            <span class="s1">tag[:</span><span class="s5">0</span><span class="s1">] = root</span>
+            <span class="s1">root = tag[:len(root)]</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">prepend_to(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;prepend nodes to value 
+        &quot;&quot;&quot;</span>
+        <span class="s1">value.prepend(self)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">after(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;add value after nodes 
+        &quot;&quot;&quot;</span>
+        <span class="s1">root</span><span class="s2">, </span><span class="s1">root_text = self._get_root(value)</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+            <span class="s2">if not </span><span class="s1">tag.tail:</span>
+                <span class="s1">tag.tail = </span><span class="s4">''</span>
+            <span class="s1">tag.tail += root_text</span>
+            <span class="s2">if </span><span class="s1">i &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">root = deepcopy(list(root))</span>
+            <span class="s1">parent = tag.getparent()</span>
+            <span class="s1">index = parent.index(tag) + </span><span class="s5">1</span>
+            <span class="s1">parent[index:index] = root</span>
+            <span class="s1">root = parent[index:len(root)]</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">insert_after(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;insert nodes after value 
+        &quot;&quot;&quot;</span>
+        <span class="s1">value.after(self)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">before(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;insert value before nodes 
+        &quot;&quot;&quot;</span>
+        <span class="s1">root</span><span class="s2">, </span><span class="s1">root_text = self._get_root(value)</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+            <span class="s1">previous = tag.getprevious()</span>
+            <span class="s2">if </span><span class="s1">previous </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s2">if not </span><span class="s1">previous.tail:</span>
+                    <span class="s1">previous.tail = </span><span class="s4">''</span>
+                <span class="s1">previous.tail += root_text</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">parent = tag.getparent()</span>
+                <span class="s2">if not </span><span class="s1">parent.text:</span>
+                    <span class="s1">parent.text = </span><span class="s4">''</span>
+                <span class="s1">parent.text += root_text</span>
+            <span class="s2">if </span><span class="s1">i &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">root = deepcopy(list(root))</span>
+            <span class="s1">parent = tag.getparent()</span>
+            <span class="s1">index = parent.index(tag)</span>
+            <span class="s1">parent[index:index] = root</span>
+            <span class="s1">root = parent[index:len(root)]</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">insert_before(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;insert nodes before value 
+        &quot;&quot;&quot;</span>
+        <span class="s1">value.before(self)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">wrap(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;A string of HTML that will be created on the fly and wrapped around 
+        each target: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;span&gt;youhou&lt;/span&gt;') 
+            &gt;&gt;&gt; d.wrap('&lt;div&gt;&lt;/div&gt;') 
+            [&lt;div&gt;] 
+            &gt;&gt;&gt; print(d) 
+            &lt;div&gt;&lt;span&gt;youhou&lt;/span&gt;&lt;/div&gt; 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">assert </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">basestring)</span>
+        <span class="s1">value = fromstring(value)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">nodes = []</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">wrapper = deepcopy(value)</span>
+            <span class="s0"># FIXME: using iterchildren is probably not optimal</span>
+            <span class="s2">if not </span><span class="s1">wrapper.getchildren():</span>
+                <span class="s1">wrapper.append(deepcopy(tag))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">childs = [c </span><span class="s2">for </span><span class="s1">c </span><span class="s2">in </span><span class="s1">wrapper.iterchildren()]</span>
+                <span class="s1">child = childs[-</span><span class="s5">1</span><span class="s1">]</span>
+                <span class="s1">child.append(deepcopy(tag))</span>
+            <span class="s1">nodes.append(wrapper)</span>
+
+            <span class="s1">parent = tag.getparent()</span>
+            <span class="s2">if </span><span class="s1">parent </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s2">for </span><span class="s1">t </span><span class="s2">in </span><span class="s1">parent.iterchildren():</span>
+                    <span class="s2">if </span><span class="s1">t </span><span class="s2">is </span><span class="s1">tag:</span>
+                        <span class="s1">t.addnext(wrapper)</span>
+                        <span class="s1">parent.remove(t)</span>
+                        <span class="s2">break</span>
+        <span class="s1">self[:] = nodes</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">wrap_all(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;Wrap all the elements in the matched set into a single wrapper 
+        element:: 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;span&gt;Hey&lt;/span&gt;&lt;span&gt;you !&lt;/span&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; print(d('span').wrap_all('&lt;div id=&quot;wrapper&quot;&gt;&lt;/div&gt;')) 
+            &lt;div id=&quot;wrapper&quot;&gt;&lt;span&gt;Hey&lt;/span&gt;&lt;span&gt;you !&lt;/span&gt;&lt;/div&gt; 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;div&gt;&lt;span&gt;Hey&lt;/span&gt;&lt;span&gt;you !&lt;/span&gt;&lt;/div&gt;') 
+            &gt;&gt;&gt; print(d('span').wrapAll('&lt;div id=&quot;wrapper&quot;&gt;&lt;/div&gt;')) 
+            &lt;div id=&quot;wrapper&quot;&gt;&lt;span&gt;Hey&lt;/span&gt;&lt;span&gt;you !&lt;/span&gt;&lt;/div&gt; 
+ 
+        .. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self:</span>
+            <span class="s2">return </span><span class="s1">self</span>
+
+        <span class="s2">assert </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">basestring)</span>
+        <span class="s1">value = fromstring(value)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">wrapper = deepcopy(value)</span>
+        <span class="s2">if not </span><span class="s1">wrapper.getchildren():</span>
+            <span class="s1">child = wrapper</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">childs = [c </span><span class="s2">for </span><span class="s1">c </span><span class="s2">in </span><span class="s1">wrapper.iterchildren()]</span>
+            <span class="s1">child = childs[-</span><span class="s5">1</span><span class="s1">]</span>
+
+        <span class="s1">replace_childs = </span><span class="s2">True</span>
+        <span class="s1">parent = self[</span><span class="s5">0</span><span class="s1">].getparent()</span>
+        <span class="s2">if </span><span class="s1">parent </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">parent = no_default</span>
+
+        <span class="s0"># add nodes to wrapper and check parent</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">child.append(deepcopy(tag))</span>
+            <span class="s2">if </span><span class="s1">tag.getparent() </span><span class="s2">is not </span><span class="s1">parent:</span>
+                <span class="s1">replace_childs = </span><span class="s2">False</span>
+
+        <span class="s0"># replace nodes i parent if possible</span>
+        <span class="s2">if </span><span class="s1">parent </span><span class="s2">is not </span><span class="s1">no_default </span><span class="s2">and </span><span class="s1">replace_childs:</span>
+            <span class="s1">childs = [c </span><span class="s2">for </span><span class="s1">c </span><span class="s2">in </span><span class="s1">parent.iterchildren()]</span>
+            <span class="s2">if </span><span class="s1">len(childs) == len(self):</span>
+                <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                    <span class="s1">parent.remove(tag)</span>
+                <span class="s1">parent.append(wrapper)</span>
+
+        <span class="s1">self[:] = [wrapper]</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">replace_with(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s3">&quot;&quot;&quot;replace nodes by value: 
+ 
+            &gt;&gt;&gt; doc = PyQuery(&quot;&lt;html&gt;&lt;div /&gt;&lt;/html&gt;&quot;) 
+            &gt;&gt;&gt; node = PyQuery(&quot;&lt;span /&gt;&quot;) 
+            &gt;&gt;&gt; child = doc.find('div') 
+            &gt;&gt;&gt; child.replace_with(node) 
+            [&lt;div&gt;] 
+            &gt;&gt;&gt; print(doc) 
+            &lt;html&gt;&lt;span/&gt;&lt;/html&gt; 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">PyQuery):</span>
+            <span class="s1">value = str(value)</span>
+        <span class="s2">if </span><span class="s1">hasattr(value</span><span class="s2">, </span><span class="s4">'__call__'</span><span class="s1">):</span>
+            <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element </span><span class="s2">in </span><span class="s1">enumerate(self):</span>
+                <span class="s1">self._copy(element).before(</span>
+                    <span class="s1">value(i</span><span class="s2">, </span><span class="s1">element) + (element.tail </span><span class="s2">or </span><span class="s4">''</span><span class="s1">))</span>
+                <span class="s1">parent = element.getparent()</span>
+                <span class="s1">parent.remove(element)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s1">self._copy(tag).before(value + (tag.tail </span><span class="s2">or </span><span class="s4">''</span><span class="s1">))</span>
+                <span class="s1">parent = tag.getparent()</span>
+                <span class="s1">parent.remove(tag)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">replace_all(self</span><span class="s2">, </span><span class="s1">expr):</span>
+        <span class="s3">&quot;&quot;&quot;replace nodes by expr 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is </span><span class="s1">no_default:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">'replaceAll can only be used with an object with parent'</span><span class="s1">)</span>
+        <span class="s1">self._parent(expr).replace_with(self)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">clone(self):</span>
+        <span class="s3">&quot;&quot;&quot;return a copy of nodes 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">PyQuery([deepcopy(tag) </span><span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self])</span>
+
+    <span class="s2">def </span><span class="s1">empty(self):</span>
+        <span class="s3">&quot;&quot;&quot;remove nodes content 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">tag.text = </span><span class="s2">None</span>
+            <span class="s1">tag[:] = []</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">remove(self</span><span class="s2">, </span><span class="s1">expr=no_default):</span>
+        <span class="s3">&quot;&quot;&quot;Remove nodes: 
+ 
+             &gt;&gt;&gt; h = ( 
+             ... '&lt;div&gt;Maybe &lt;em&gt;she&lt;/em&gt; does &lt;strong&gt;NOT&lt;/strong&gt; know&lt;/div&gt;' 
+             ... ) 
+             &gt;&gt;&gt; d = PyQuery(h) 
+             &gt;&gt;&gt; d('strong').remove() 
+             [&lt;strong&gt;] 
+             &gt;&gt;&gt; print(d) 
+             &lt;div&gt;Maybe &lt;em&gt;she&lt;/em&gt; does   know&lt;/div&gt; 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">expr </span><span class="s2">is </span><span class="s1">no_default:</span>
+            <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">self:</span>
+                <span class="s1">parent = tag.getparent()</span>
+                <span class="s2">if </span><span class="s1">parent </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s2">if </span><span class="s1">tag.tail:</span>
+                        <span class="s1">prev = tag.getprevious()</span>
+                        <span class="s2">if </span><span class="s1">prev </span><span class="s2">is None</span><span class="s1">:</span>
+                            <span class="s2">if not </span><span class="s1">parent.text:</span>
+                                <span class="s1">parent.text = </span><span class="s4">''</span>
+                            <span class="s1">parent.text += </span><span class="s4">' ' </span><span class="s1">+ tag.tail</span>
+                        <span class="s2">else</span><span class="s1">:</span>
+                            <span class="s2">if not </span><span class="s1">prev.tail:</span>
+                                <span class="s1">prev.tail = </span><span class="s4">''</span>
+                            <span class="s1">prev.tail += </span><span class="s4">' ' </span><span class="s1">+ tag.tail</span>
+                    <span class="s1">parent.remove(tag)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">results = self._copy(expr</span><span class="s2">, </span><span class="s1">self)</span>
+            <span class="s1">results.remove()</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">class </span><span class="s1">Fn(object):</span>
+        <span class="s3">&quot;&quot;&quot;Hook for defining custom function (like the jQuery.fn): 
+ 
+        .. sourcecode:: python 
+ 
+         &gt;&gt;&gt; fn = lambda: this.map(lambda i, el: PyQuery(this).outerHtml()) 
+         &gt;&gt;&gt; PyQuery.fn.listOuterHtml = fn 
+         &gt;&gt;&gt; S = PyQuery( 
+         ...   '&lt;ol&gt;   &lt;li&gt;Coffee&lt;/li&gt;   &lt;li&gt;Tea&lt;/li&gt;   &lt;li&gt;Milk&lt;/li&gt;   &lt;/ol&gt;') 
+         &gt;&gt;&gt; S('li').listOuterHtml() 
+         ['&lt;li&gt;Coffee&lt;/li&gt;', '&lt;li&gt;Tea&lt;/li&gt;', '&lt;li&gt;Milk&lt;/li&gt;'] 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">def </span><span class="s1">__setattr__(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">func):</span>
+            <span class="s2">def </span><span class="s1">fn(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+                <span class="s1">func.__globals__[</span><span class="s4">'this'</span><span class="s1">] = self</span>
+                <span class="s2">return </span><span class="s1">func(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">fn.__name__ = name</span>
+            <span class="s1">setattr(PyQuery</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">fn)</span>
+    <span class="s1">fn = Fn()</span>
+
+    <span class="s0">########</span>
+    <span class="s0"># AJAX #</span>
+    <span class="s0">########</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">serialize_array(self):</span>
+        <span class="s3">&quot;&quot;&quot;Serialize form elements as an array of dictionaries, whose structure 
+        mirrors that produced by the jQuery API. Notably, it does not handle 
+        the deprecated `keygen` form element. 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;form&gt;&lt;input name=&quot;order&quot; value=&quot;spam&quot;&gt;&lt;/form&gt;') 
+            &gt;&gt;&gt; d.serialize_array() == [{'name': 'order', 'value': 'spam'}] 
+            True 
+            &gt;&gt;&gt; d.serializeArray() == [{'name': 'order', 'value': 'spam'}] 
+            True 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">list(map(</span>
+            <span class="s2">lambda </span><span class="s1">p: {</span><span class="s4">'name'</span><span class="s1">: p[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s4">'value'</span><span class="s1">: p[</span><span class="s5">1</span><span class="s1">]}</span><span class="s2">,</span>
+            <span class="s1">self.serialize_pairs()</span>
+        <span class="s1">))</span>
+
+    <span class="s2">def </span><span class="s1">serialize(self):</span>
+        <span class="s3">&quot;&quot;&quot;Serialize form elements as a URL-encoded string. 
+ 
+            &gt;&gt;&gt; h = ( 
+            ... '&lt;form&gt;&lt;input name=&quot;order&quot; value=&quot;spam&quot;&gt;' 
+            ... '&lt;input name=&quot;order2&quot; value=&quot;baked beans&quot;&gt;&lt;/form&gt;' 
+            ... ) 
+            &gt;&gt;&gt; d = PyQuery(h) 
+            &gt;&gt;&gt; d.serialize() 
+            'order=spam&amp;order2=baked%20beans' 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">urlencode(self.serialize_pairs()).replace(</span><span class="s4">'+'</span><span class="s2">, </span><span class="s4">'%20'</span><span class="s1">)</span>
+
+    <span class="s0">#####################################################</span>
+    <span class="s0"># Additional methods that are not in the jQuery API #</span>
+    <span class="s0">#####################################################</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">serialize_pairs(self):</span>
+        <span class="s3">&quot;&quot;&quot;Serialize form elements as an array of 2-tuples conventional for 
+        typical URL-parsing operations in Python. 
+ 
+            &gt;&gt;&gt; d = PyQuery('&lt;form&gt;&lt;input name=&quot;order&quot; value=&quot;spam&quot;&gt;&lt;/form&gt;') 
+            &gt;&gt;&gt; d.serialize_pairs() 
+            [('order', 'spam')] 
+            &gt;&gt;&gt; d.serializePairs() 
+            [('order', 'spam')] 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># https://github.com/jquery/jquery/blob</span>
+        <span class="s0"># /2d4f53416e5f74fa98e0c1d66b6f3c285a12f0ce/src/serialize.js#L14</span>
+        <span class="s1">_submitter_types = [</span><span class="s4">'submit'</span><span class="s2">, </span><span class="s4">'button'</span><span class="s2">, </span><span class="s4">'image'</span><span class="s2">, </span><span class="s4">'reset'</span><span class="s2">, </span><span class="s4">'file'</span><span class="s1">]</span>
+
+        <span class="s1">controls = self._copy([])</span>
+        <span class="s0"># Expand list of form controls</span>
+        <span class="s2">for </span><span class="s1">el </span><span class="s2">in </span><span class="s1">self.items():</span>
+            <span class="s2">if </span><span class="s1">el[</span><span class="s5">0</span><span class="s1">].tag == </span><span class="s4">'form'</span><span class="s1">:</span>
+                <span class="s1">form_id = el.attr(</span><span class="s4">'id'</span><span class="s1">)</span>
+                <span class="s2">if </span><span class="s1">form_id:</span>
+                    <span class="s0"># Include inputs outside of their form owner</span>
+                    <span class="s1">root = self._copy(el.root.getroot())</span>
+                    <span class="s1">controls.extend(root(</span>
+                        <span class="s4">'#%s :not([form]):input, [form=&quot;%s&quot;]:input'</span>
+                        <span class="s1">% (form_id</span><span class="s2">, </span><span class="s1">form_id)))</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">controls.extend(el(</span><span class="s4">':not([form]):input'</span><span class="s1">))</span>
+            <span class="s2">elif </span><span class="s1">el[</span><span class="s5">0</span><span class="s1">].tag == </span><span class="s4">'fieldset'</span><span class="s1">:</span>
+                <span class="s1">controls.extend(el(</span><span class="s4">':input'</span><span class="s1">))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">controls.extend(el)</span>
+        <span class="s0"># Filter controls</span>
+        <span class="s1">selector = </span><span class="s4">'[name]:enabled:not(button)'  </span><span class="s0"># Not serializing image button</span>
+        <span class="s1">selector += </span><span class="s4">''</span><span class="s1">.join(map(</span>
+            <span class="s2">lambda </span><span class="s1">s: </span><span class="s4">':not([type=&quot;%s&quot;])' </span><span class="s1">% s</span><span class="s2">,</span>
+            <span class="s1">_submitter_types))</span>
+        <span class="s1">controls = controls.filter(selector)</span>
+
+        <span class="s2">def </span><span class="s1">_filter_out_unchecked(_</span><span class="s2">, </span><span class="s1">el):</span>
+            <span class="s1">el = controls._copy(el)</span>
+            <span class="s2">return not </span><span class="s1">el.is_(</span><span class="s4">':checkbox:not(:checked)'</span><span class="s1">) </span><span class="s2">and </span><span class="s1">\</span>
+                <span class="s2">not </span><span class="s1">el.is_(</span><span class="s4">':radio:not(:checked)'</span><span class="s1">)</span>
+        <span class="s1">controls = controls.filter(_filter_out_unchecked)</span>
+
+        <span class="s0"># jQuery serializes inputs with the datalist element as an ancestor</span>
+        <span class="s0"># contrary to WHATWG spec as of August 2018</span>
+        <span class="s0">#</span>
+        <span class="s0"># xpath = 'self::*[not(ancestor::datalist)]'</span>
+        <span class="s0"># results = []</span>
+        <span class="s0"># for tag in controls:</span>
+        <span class="s0">#     results.extend(tag.xpath(xpath, namespaces=controls.namespaces))</span>
+        <span class="s0"># controls = controls._copy(results)</span>
+
+        <span class="s0"># Serialize values</span>
+        <span class="s1">ret = []</span>
+        <span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">controls:</span>
+            <span class="s1">val = self._copy(field).val()</span>
+            <span class="s2">if </span><span class="s1">isinstance(val</span><span class="s2">, </span><span class="s1">list):</span>
+                <span class="s1">ret.extend(map(</span>
+                    <span class="s2">lambda </span><span class="s1">v: (field.attrib[</span><span class="s4">'name'</span><span class="s1">]</span><span class="s2">, </span><span class="s1">v.replace(</span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s2">, </span><span class="s4">'</span><span class="s2">\r\n</span><span class="s4">'</span><span class="s1">))</span><span class="s2">,</span>
+                    <span class="s1">val</span>
+                <span class="s1">))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">ret.append((field.attrib[</span><span class="s4">'name'</span><span class="s1">]</span><span class="s2">, </span><span class="s1">val.replace(</span><span class="s4">'</span><span class="s2">\n</span><span class="s4">'</span><span class="s2">, </span><span class="s4">'</span><span class="s2">\r\n</span><span class="s4">'</span><span class="s1">)))</span>
+        <span class="s2">return </span><span class="s1">ret</span>
+
+    <span class="s1">@with_camel_case_alias</span>
+    <span class="s2">def </span><span class="s1">serialize_dict(self):</span>
+        <span class="s3">&quot;&quot;&quot;Serialize form elements as an ordered dictionary. Multiple values 
+        corresponding to the same input name are concatenated into one list. 
+ 
+            &gt;&gt;&gt; d = PyQuery('''&lt;form&gt; 
+            ...             &lt;input name=&quot;order&quot; value=&quot;spam&quot;&gt; 
+            ...             &lt;input name=&quot;order&quot; value=&quot;eggs&quot;&gt; 
+            ...             &lt;input name=&quot;order2&quot; value=&quot;ham&quot;&gt; 
+            ...             &lt;/form&gt;''') 
+            &gt;&gt;&gt; d.serialize_dict() 
+            OrderedDict([('order', ['spam', 'eggs']), ('order2', 'ham')]) 
+            &gt;&gt;&gt; d.serializeDict() 
+            OrderedDict([('order', ['spam', 'eggs']), ('order2', 'ham')]) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">ret = OrderedDict()</span>
+        <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">val </span><span class="s2">in </span><span class="s1">self.serialize_pairs():</span>
+            <span class="s2">if </span><span class="s1">name </span><span class="s2">not in </span><span class="s1">ret:</span>
+                <span class="s1">ret[name] = val</span>
+            <span class="s2">elif not </span><span class="s1">isinstance(ret[name]</span><span class="s2">, </span><span class="s1">list):</span>
+                <span class="s1">ret[name] = [ret[name]</span><span class="s2">, </span><span class="s1">val]</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">ret[name].append(val)</span>
+        <span class="s2">return </span><span class="s1">ret</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">base_url(self):</span>
+        <span class="s3">&quot;&quot;&quot;Return the url of current html document or None if not available. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._base_url </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._base_url</span>
+        <span class="s2">if </span><span class="s1">self._parent </span><span class="s2">is not </span><span class="s1">no_default:</span>
+            <span class="s2">return </span><span class="s1">self._parent.base_url</span>
+
+    <span class="s2">def </span><span class="s1">make_links_absolute(self</span><span class="s2">, </span><span class="s1">base_url=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Make all links absolute. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">base_url </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">base_url = self.base_url</span>
+            <span class="s2">if </span><span class="s1">base_url </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError((</span>
+                    <span class="s4">'You need a base URL to make your links'</span>
+                    <span class="s4">'absolute. It can be provided by the base_url parameter.'</span><span class="s1">))</span>
+
+        <span class="s2">def </span><span class="s1">repl(attr):</span>
+            <span class="s2">def </span><span class="s1">rep(i</span><span class="s2">, </span><span class="s1">e):</span>
+                <span class="s1">attr_value = self(e).attr(attr)</span>
+                <span class="s0"># when label hasn't such attr, pass</span>
+                <span class="s2">if </span><span class="s1">attr_value </span><span class="s2">is None</span><span class="s1">:</span>
+                    <span class="s2">return None</span>
+
+                <span class="s0"># skip specific &quot;protocol&quot; schemas</span>
+                <span class="s2">if </span><span class="s1">any(attr_value.startswith(schema)</span>
+                       <span class="s2">for </span><span class="s1">schema </span><span class="s2">in </span><span class="s1">(</span><span class="s4">'tel:'</span><span class="s2">, </span><span class="s4">'callto:'</span><span class="s2">, </span><span class="s4">'sms:'</span><span class="s1">)):</span>
+                    <span class="s2">return None</span>
+
+                <span class="s2">return </span><span class="s1">self(e).attr(attr</span><span class="s2">,</span>
+                                    <span class="s1">urljoin(base_url</span><span class="s2">, </span><span class="s1">attr_value.strip()))</span>
+            <span class="s2">return </span><span class="s1">rep</span>
+
+        <span class="s1">self(</span><span class="s4">'a'</span><span class="s1">).each(repl(</span><span class="s4">'href'</span><span class="s1">))</span>
+        <span class="s1">self(</span><span class="s4">'link'</span><span class="s1">).each(repl(</span><span class="s4">'href'</span><span class="s1">))</span>
+        <span class="s1">self(</span><span class="s4">'script'</span><span class="s1">).each(repl(</span><span class="s4">'src'</span><span class="s1">))</span>
+        <span class="s1">self(</span><span class="s4">'img'</span><span class="s1">).each(repl(</span><span class="s4">'src'</span><span class="s1">))</span>
+        <span class="s1">self(</span><span class="s4">'iframe'</span><span class="s1">).each(repl(</span><span class="s4">'src'</span><span class="s1">))</span>
+        <span class="s1">self(</span><span class="s4">'form'</span><span class="s1">).each(repl(</span><span class="s4">'action'</span><span class="s1">))</span>
+
+        <span class="s2">return </span><span class="s1">self</span>
+
+
+<span class="s1">build_camel_case_aliases(PyQuery)</span>
+</pre>
+</body>
+</html>

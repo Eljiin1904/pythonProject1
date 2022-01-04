@@ -1,0 +1,71 @@
+<html>
+<head>
+<title>emulation_manager.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+emulation_manager.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Emulation Manager module.&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer </span><span class="s3">import </span><span class="s1">helper</span>
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">CDPSession</span>
+
+
+<span class="s3">class </span><span class="s1">EmulationManager(object):</span>
+    <span class="s2">&quot;&quot;&quot;EmulationManager class.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Make new emulation manager.&quot;&quot;&quot;</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._emulatingMobile = </span><span class="s3">False</span>
+        <span class="s1">self._hasTouch = </span><span class="s3">False</span>
+
+    <span class="s3">async def </span><span class="s1">emulateViewport(self</span><span class="s3">, </span><span class="s1">viewport: dict) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Evaluate viewport.&quot;&quot;&quot;</span>
+        <span class="s1">options = dict()</span>
+        <span class="s1">mobile = viewport.get(</span><span class="s4">'isMobile'</span><span class="s3">, False</span><span class="s1">)</span>
+        <span class="s1">options[</span><span class="s4">'mobile'</span><span class="s1">] = mobile</span>
+        <span class="s3">if </span><span class="s4">'width' </span><span class="s3">in </span><span class="s1">viewport:</span>
+            <span class="s1">options[</span><span class="s4">'width'</span><span class="s1">] = helper.get_positive_int(viewport</span><span class="s3">, </span><span class="s4">'width'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s4">'height' </span><span class="s3">in </span><span class="s1">viewport:</span>
+            <span class="s1">options[</span><span class="s4">'height'</span><span class="s1">] = helper.get_positive_int(viewport</span><span class="s3">, </span><span class="s4">'height'</span><span class="s1">)</span>
+
+        <span class="s1">options[</span><span class="s4">'deviceScaleFactor'</span><span class="s1">] = viewport.get(</span><span class="s4">'deviceScaleFactor'</span><span class="s3">, </span><span class="s5">1</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">viewport.get(</span><span class="s4">'isLandscape'</span><span class="s1">):</span>
+            <span class="s1">options[</span><span class="s4">'screenOrientation'</span><span class="s1">] = {</span><span class="s4">'angle'</span><span class="s1">: </span><span class="s5">90</span><span class="s3">,</span>
+                                            <span class="s4">'type'</span><span class="s1">: </span><span class="s4">'landscapePrimary'</span><span class="s1">}</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">options[</span><span class="s4">'screenOrientation'</span><span class="s1">] = {</span><span class="s4">'angle'</span><span class="s1">: </span><span class="s5">0</span><span class="s3">,</span>
+                                            <span class="s4">'type'</span><span class="s1">: </span><span class="s4">'portraitPrimary'</span><span class="s1">}</span>
+        <span class="s1">hasTouch = viewport.get(</span><span class="s4">'hasTouch'</span><span class="s3">, False</span><span class="s1">)</span>
+
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Emulation.setDeviceMetricsOverride'</span><span class="s3">, </span><span class="s1">options)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Emulation.setTouchEmulationEnabled'</span><span class="s3">, </span><span class="s1">{</span>
+            <span class="s4">'enabled'</span><span class="s1">: hasTouch</span><span class="s3">,</span>
+            <span class="s4">'configuration'</span><span class="s1">: </span><span class="s4">'mobile' </span><span class="s3">if </span><span class="s1">mobile </span><span class="s3">else </span><span class="s4">'desktop'</span>
+        <span class="s1">})</span>
+
+        <span class="s1">reloadNeeded = (self._emulatingMobile != mobile </span><span class="s3">or</span>
+                        <span class="s1">self._hasTouch != hasTouch)</span>
+
+        <span class="s1">self._emulatingMobile = mobile</span>
+        <span class="s1">self._hasTouch = hasTouch</span>
+        <span class="s3">return </span><span class="s1">reloadNeeded</span>
+</pre>
+</body>
+</html>

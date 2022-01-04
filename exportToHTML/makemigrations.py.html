@@ -1,0 +1,347 @@
+<html>
+<head>
+<title>makemigrations.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+makemigrations.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">from </span><span class="s1">itertools </span><span class="s0">import </span><span class="s1">takewhile</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span><span class="s0">, </span><span class="s1">no_translations</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">OperationalError</span><span class="s0">, </span><span class="s1">connections</span><span class="s0">, </span><span class="s1">router</span>
+<span class="s0">from </span><span class="s1">django.db.migrations </span><span class="s0">import </span><span class="s1">Migration</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.autodetector </span><span class="s0">import </span><span class="s1">MigrationAutodetector</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.loader </span><span class="s0">import </span><span class="s1">MigrationLoader</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.questioner </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">InteractiveMigrationQuestioner</span><span class="s0">, </span><span class="s1">MigrationQuestioner</span><span class="s0">,</span>
+    <span class="s1">NonInteractiveMigrationQuestioner</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.state </span><span class="s0">import </span><span class="s1">ProjectState</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.utils </span><span class="s0">import </span><span class="s1">get_migration_name_timestamp</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.writer </span><span class="s0">import </span><span class="s1">MigrationWriter</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s2">&quot;Creates new migration(s) for apps.&quot;</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'args'</span><span class="s0">, </span><span class="s1">metavar=</span><span class="s2">'app_label'</span><span class="s0">, </span><span class="s1">nargs=</span><span class="s2">'*'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Specify the app label(s) to create migrations for.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--dry-run'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">&quot;Just show what migrations would be made; don't actually write them.&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--merge'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">&quot;Enable fixing of migration conflicts.&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--empty'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">&quot;Create an empty migration.&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--noinput'</span><span class="s0">, </span><span class="s2">'--no-input'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_false'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'interactive'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Tells Django to NOT prompt the user for input of any kind.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'-n'</span><span class="s0">, </span><span class="s2">'--name'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">&quot;Use this name for migration file(s).&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--no-header'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_false'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'include_header'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Do not add header comments to new migration file(s).'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--check'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'check_changes'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Exit with a non-zero status if model changes are missing migrations.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@no_translations</span>
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">*app_labels</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">self.verbosity = options[</span><span class="s2">'verbosity'</span><span class="s1">]</span>
+        <span class="s1">self.interactive = options[</span><span class="s2">'interactive'</span><span class="s1">]</span>
+        <span class="s1">self.dry_run = options[</span><span class="s2">'dry_run'</span><span class="s1">]</span>
+        <span class="s1">self.merge = options[</span><span class="s2">'merge'</span><span class="s1">]</span>
+        <span class="s1">self.empty = options[</span><span class="s2">'empty'</span><span class="s1">]</span>
+        <span class="s1">self.migration_name = options[</span><span class="s2">'name'</span><span class="s1">]</span>
+        <span class="s0">if </span><span class="s1">self.migration_name </span><span class="s0">and not </span><span class="s1">self.migration_name.isidentifier():</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">'The migration name must be a valid Python identifier.'</span><span class="s1">)</span>
+        <span class="s1">self.include_header = options[</span><span class="s2">'include_header'</span><span class="s1">]</span>
+        <span class="s1">check_changes = options[</span><span class="s2">'check_changes'</span><span class="s1">]</span>
+
+        <span class="s3"># Make sure the app they asked for exists</span>
+        <span class="s1">app_labels = set(app_labels)</span>
+        <span class="s1">has_bad_labels = </span><span class="s0">False</span>
+        <span class="s0">for </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">app_labels:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">apps.get_app_config(app_label)</span>
+            <span class="s0">except </span><span class="s1">LookupError </span><span class="s0">as </span><span class="s1">err:</span>
+                <span class="s1">self.stderr.write(str(err))</span>
+                <span class="s1">has_bad_labels = </span><span class="s0">True</span>
+        <span class="s0">if </span><span class="s1">has_bad_labels:</span>
+            <span class="s1">sys.exit(</span><span class="s4">2</span><span class="s1">)</span>
+
+        <span class="s3"># Load the current graph state. Pass in None for the connection so</span>
+        <span class="s3"># the loader doesn't try to resolve replaced migrations from DB.</span>
+        <span class="s1">loader = MigrationLoader(</span><span class="s0">None, </span><span class="s1">ignore_no_migrations=</span><span class="s0">True</span><span class="s1">)</span>
+
+        <span class="s3"># Raise an error if any migrations are applied before their dependencies.</span>
+        <span class="s1">consistency_check_labels = {config.label </span><span class="s0">for </span><span class="s1">config </span><span class="s0">in </span><span class="s1">apps.get_app_configs()}</span>
+        <span class="s3"># Non-default databases are only checked if database routers used.</span>
+        <span class="s1">aliases_to_check = connections </span><span class="s0">if </span><span class="s1">settings.DATABASE_ROUTERS </span><span class="s0">else </span><span class="s1">[DEFAULT_DB_ALIAS]</span>
+        <span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">sorted(aliases_to_check):</span>
+            <span class="s1">connection = connections[alias]</span>
+            <span class="s0">if </span><span class="s1">(connection.settings_dict[</span><span class="s2">'ENGINE'</span><span class="s1">] != </span><span class="s2">'django.db.backends.dummy' </span><span class="s0">and </span><span class="s1">any(</span>
+                    <span class="s3"># At least one model must be migrated to the database.</span>
+                    <span class="s1">router.allow_migrate(connection.alias</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name=model._meta.object_name)</span>
+                    <span class="s0">for </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">consistency_check_labels</span>
+                    <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">apps.get_app_config(app_label).get_models()</span>
+            <span class="s1">)):</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">loader.check_consistent_history(connection)</span>
+                <span class="s0">except </span><span class="s1">OperationalError </span><span class="s0">as </span><span class="s1">error:</span>
+                    <span class="s1">warnings.warn(</span>
+                        <span class="s2">&quot;Got an error checking a consistent migration history &quot;</span>
+                        <span class="s2">&quot;performed for database connection '%s': %s&quot;</span>
+                        <span class="s1">% (alias</span><span class="s0">, </span><span class="s1">error)</span><span class="s0">,</span>
+                        <span class="s1">RuntimeWarning</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+        <span class="s3"># Before anything else, see if there's conflicting apps and drop out</span>
+        <span class="s3"># hard if there are any and they don't want to merge</span>
+        <span class="s1">conflicts = loader.detect_conflicts()</span>
+
+        <span class="s3"># If app_labels is specified, filter out conflicting migrations for unspecified apps</span>
+        <span class="s0">if </span><span class="s1">app_labels:</span>
+            <span class="s1">conflicts = {</span>
+                <span class="s1">app_label: conflict </span><span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">conflict </span><span class="s0">in </span><span class="s1">conflicts.items()</span>
+                <span class="s0">if </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">app_labels</span>
+            <span class="s1">}</span>
+
+        <span class="s0">if </span><span class="s1">conflicts </span><span class="s0">and not </span><span class="s1">self.merge:</span>
+            <span class="s1">name_str = </span><span class="s2">&quot;; &quot;</span><span class="s1">.join(</span>
+                <span class="s2">&quot;%s in %s&quot; </span><span class="s1">% (</span><span class="s2">&quot;, &quot;</span><span class="s1">.join(names)</span><span class="s0">, </span><span class="s1">app)</span>
+                <span class="s0">for </span><span class="s1">app</span><span class="s0">, </span><span class="s1">names </span><span class="s0">in </span><span class="s1">conflicts.items()</span>
+            <span class="s1">)</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span>
+                <span class="s2">&quot;Conflicting migrations detected; multiple leaf nodes in the &quot;</span>
+                <span class="s2">&quot;migration graph: (%s).</span><span class="s0">\n</span><span class="s2">To fix them run &quot;</span>
+                <span class="s2">&quot;'python manage.py makemigrations --merge'&quot; </span><span class="s1">% name_str</span>
+            <span class="s1">)</span>
+
+        <span class="s3"># If they want to merge and there's nothing to merge, then politely exit</span>
+        <span class="s0">if </span><span class="s1">self.merge </span><span class="s0">and not </span><span class="s1">conflicts:</span>
+            <span class="s1">self.stdout.write(</span><span class="s2">&quot;No conflicts detected to merge.&quot;</span><span class="s1">)</span>
+            <span class="s0">return</span>
+
+        <span class="s3"># If they want to merge and there is something to merge, then</span>
+        <span class="s3"># divert into the merge code</span>
+        <span class="s0">if </span><span class="s1">self.merge </span><span class="s0">and </span><span class="s1">conflicts:</span>
+            <span class="s0">return </span><span class="s1">self.handle_merge(loader</span><span class="s0">, </span><span class="s1">conflicts)</span>
+
+        <span class="s0">if </span><span class="s1">self.interactive:</span>
+            <span class="s1">questioner = InteractiveMigrationQuestioner(specified_apps=app_labels</span><span class="s0">, </span><span class="s1">dry_run=self.dry_run)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">questioner = NonInteractiveMigrationQuestioner(specified_apps=app_labels</span><span class="s0">, </span><span class="s1">dry_run=self.dry_run)</span>
+        <span class="s3"># Set up autodetector</span>
+        <span class="s1">autodetector = MigrationAutodetector(</span>
+            <span class="s1">loader.project_state()</span><span class="s0">,</span>
+            <span class="s1">ProjectState.from_apps(apps)</span><span class="s0">,</span>
+            <span class="s1">questioner</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+        <span class="s3"># If they want to make an empty migration, make one for each app</span>
+        <span class="s0">if </span><span class="s1">self.empty:</span>
+            <span class="s0">if not </span><span class="s1">app_labels:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;You must supply at least one app label when using --empty.&quot;</span><span class="s1">)</span>
+            <span class="s3"># Make a fake changes() result we can pass to arrange_for_graph</span>
+            <span class="s1">changes = {</span>
+                <span class="s1">app: [Migration(</span><span class="s2">&quot;custom&quot;</span><span class="s0">, </span><span class="s1">app)]</span>
+                <span class="s0">for </span><span class="s1">app </span><span class="s0">in </span><span class="s1">app_labels</span>
+            <span class="s1">}</span>
+            <span class="s1">changes = autodetector.arrange_for_graph(</span>
+                <span class="s1">changes=changes</span><span class="s0">,</span>
+                <span class="s1">graph=loader.graph</span><span class="s0">,</span>
+                <span class="s1">migration_name=self.migration_name</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s1">self.write_migration_files(changes)</span>
+            <span class="s0">return</span>
+
+        <span class="s3"># Detect changes</span>
+        <span class="s1">changes = autodetector.changes(</span>
+            <span class="s1">graph=loader.graph</span><span class="s0">,</span>
+            <span class="s1">trim_to_apps=app_labels </span><span class="s0">or None,</span>
+            <span class="s1">convert_apps=app_labels </span><span class="s0">or None,</span>
+            <span class="s1">migration_name=self.migration_name</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+        <span class="s0">if not </span><span class="s1">changes:</span>
+            <span class="s3"># No changes? Tell them.</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s4">1</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">app_labels:</span>
+                    <span class="s0">if </span><span class="s1">len(app_labels) == </span><span class="s4">1</span><span class="s1">:</span>
+                        <span class="s1">self.stdout.write(</span><span class="s2">&quot;No changes detected in app '%s'&quot; </span><span class="s1">% app_labels.pop())</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">self.stdout.write(</span><span class="s2">&quot;No changes detected in apps '%s'&quot; </span><span class="s1">% (</span><span class="s2">&quot;', '&quot;</span><span class="s1">.join(app_labels)))</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self.stdout.write(</span><span class="s2">&quot;No changes detected&quot;</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.write_migration_files(changes)</span>
+            <span class="s0">if </span><span class="s1">check_changes:</span>
+                <span class="s1">sys.exit(</span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">write_migration_files(self</span><span class="s0">, </span><span class="s1">changes):</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Take a changes dict and write them out as migration files. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">directory_created = {}</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">app_migrations </span><span class="s0">in </span><span class="s1">changes.items():</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s4">1</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(self.style.MIGRATE_HEADING(</span><span class="s2">&quot;Migrations for '%s':&quot; </span><span class="s1">% app_label))</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">app_migrations:</span>
+                <span class="s3"># Describe the migration</span>
+                <span class="s1">writer = MigrationWriter(migration</span><span class="s0">, </span><span class="s1">self.include_header)</span>
+                <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s4">1</span><span class="s1">:</span>
+                    <span class="s3"># Display a relative path if it's below the current working</span>
+                    <span class="s3"># directory, or an absolute path otherwise.</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">migration_string = os.path.relpath(writer.path)</span>
+                    <span class="s0">except </span><span class="s1">ValueError:</span>
+                        <span class="s1">migration_string = writer.path</span>
+                    <span class="s0">if </span><span class="s1">migration_string.startswith(</span><span class="s2">'..'</span><span class="s1">):</span>
+                        <span class="s1">migration_string = writer.path</span>
+                    <span class="s1">self.stdout.write(</span><span class="s2">'  %s</span><span class="s0">\n</span><span class="s2">' </span><span class="s1">% self.style.MIGRATE_LABEL(migration_string))</span>
+                    <span class="s0">for </span><span class="s1">operation </span><span class="s0">in </span><span class="s1">migration.operations:</span>
+                        <span class="s1">self.stdout.write(</span><span class="s2">'    - %s' </span><span class="s1">% operation.describe())</span>
+                <span class="s0">if not </span><span class="s1">self.dry_run:</span>
+                    <span class="s3"># Write the migrations file to the disk.</span>
+                    <span class="s1">migrations_directory = os.path.dirname(writer.path)</span>
+                    <span class="s0">if not </span><span class="s1">directory_created.get(app_label):</span>
+                        <span class="s1">os.makedirs(migrations_directory</span><span class="s0">, </span><span class="s1">exist_ok=</span><span class="s0">True</span><span class="s1">)</span>
+                        <span class="s1">init_path = os.path.join(migrations_directory</span><span class="s0">, </span><span class="s2">&quot;__init__.py&quot;</span><span class="s1">)</span>
+                        <span class="s0">if not </span><span class="s1">os.path.isfile(init_path):</span>
+                            <span class="s1">open(init_path</span><span class="s0">, </span><span class="s2">&quot;w&quot;</span><span class="s1">).close()</span>
+                        <span class="s3"># We just do this once per app</span>
+                        <span class="s1">directory_created[app_label] = </span><span class="s0">True</span>
+                    <span class="s1">migration_string = writer.as_string()</span>
+                    <span class="s0">with </span><span class="s1">open(writer.path</span><span class="s0">, </span><span class="s2">&quot;w&quot;</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s2">'utf-8'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">fh:</span>
+                        <span class="s1">fh.write(migration_string)</span>
+                <span class="s0">elif </span><span class="s1">self.verbosity == </span><span class="s4">3</span><span class="s1">:</span>
+                    <span class="s3"># Alternatively, makemigrations --dry-run --verbosity 3</span>
+                    <span class="s3"># will output the migrations to stdout rather than saving</span>
+                    <span class="s3"># the file to the disk.</span>
+                    <span class="s1">self.stdout.write(self.style.MIGRATE_HEADING(</span>
+                        <span class="s2">&quot;Full migrations file '%s':&quot; </span><span class="s1">% writer.filename</span>
+                    <span class="s1">))</span>
+                    <span class="s1">self.stdout.write(writer.as_string())</span>
+
+    <span class="s0">def </span><span class="s1">handle_merge(self</span><span class="s0">, </span><span class="s1">loader</span><span class="s0">, </span><span class="s1">conflicts):</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Handles merging together conflicted migrations interactively, 
+        if it's safe; otherwise, advises on how to fix it. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.interactive:</span>
+            <span class="s1">questioner = InteractiveMigrationQuestioner()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">questioner = MigrationQuestioner(defaults={</span><span class="s2">'ask_merge'</span><span class="s1">: </span><span class="s0">True</span><span class="s1">})</span>
+
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">migration_names </span><span class="s0">in </span><span class="s1">conflicts.items():</span>
+            <span class="s3"># Grab out the migrations in question, and work out their</span>
+            <span class="s3"># common ancestor.</span>
+            <span class="s1">merge_migrations = []</span>
+            <span class="s0">for </span><span class="s1">migration_name </span><span class="s0">in </span><span class="s1">migration_names:</span>
+                <span class="s1">migration = loader.get_migration(app_label</span><span class="s0">, </span><span class="s1">migration_name)</span>
+                <span class="s1">migration.ancestry = [</span>
+                    <span class="s1">mig </span><span class="s0">for </span><span class="s1">mig </span><span class="s0">in </span><span class="s1">loader.graph.forwards_plan((app_label</span><span class="s0">, </span><span class="s1">migration_name))</span>
+                    <span class="s0">if </span><span class="s1">mig[</span><span class="s4">0</span><span class="s1">] == migration.app_label</span>
+                <span class="s1">]</span>
+                <span class="s1">merge_migrations.append(migration)</span>
+
+            <span class="s0">def </span><span class="s1">all_items_equal(seq):</span>
+                <span class="s0">return </span><span class="s1">all(item == seq[</span><span class="s4">0</span><span class="s1">] </span><span class="s0">for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">seq[</span><span class="s4">1</span><span class="s1">:])</span>
+
+            <span class="s1">merge_migrations_generations = zip(*(m.ancestry </span><span class="s0">for </span><span class="s1">m </span><span class="s0">in </span><span class="s1">merge_migrations))</span>
+            <span class="s1">common_ancestor_count = sum(</span><span class="s4">1 </span><span class="s0">for </span><span class="s1">common_ancestor_generation</span>
+                                        <span class="s0">in </span><span class="s1">takewhile(all_items_equal</span><span class="s0">, </span><span class="s1">merge_migrations_generations))</span>
+            <span class="s0">if not </span><span class="s1">common_ancestor_count:</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;Could not find common ancestor of %s&quot; </span><span class="s1">% migration_names)</span>
+            <span class="s3"># Now work out the operations along each divergent branch</span>
+            <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">merge_migrations:</span>
+                <span class="s1">migration.branch = migration.ancestry[common_ancestor_count:]</span>
+                <span class="s1">migrations_ops = (loader.get_migration(node_app</span><span class="s0">, </span><span class="s1">node_name).operations</span>
+                                  <span class="s0">for </span><span class="s1">node_app</span><span class="s0">, </span><span class="s1">node_name </span><span class="s0">in </span><span class="s1">migration.branch)</span>
+                <span class="s1">migration.merged_operations = sum(migrations_ops</span><span class="s0">, </span><span class="s1">[])</span>
+            <span class="s3"># In future, this could use some of the Optimizer code</span>
+            <span class="s3"># (can_optimize_through) to automatically see if they're</span>
+            <span class="s3"># mergeable. For now, we always just prompt the user.</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(self.style.MIGRATE_HEADING(</span><span class="s2">&quot;Merging %s&quot; </span><span class="s1">% app_label))</span>
+                <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">merge_migrations:</span>
+                    <span class="s1">self.stdout.write(self.style.MIGRATE_LABEL(</span><span class="s2">&quot;  Branch %s&quot; </span><span class="s1">% migration.name))</span>
+                    <span class="s0">for </span><span class="s1">operation </span><span class="s0">in </span><span class="s1">migration.merged_operations:</span>
+                        <span class="s1">self.stdout.write(</span><span class="s2">'    - %s' </span><span class="s1">% operation.describe())</span>
+            <span class="s0">if </span><span class="s1">questioner.ask_merge(app_label):</span>
+                <span class="s3"># If they still want to merge it, then write out an empty</span>
+                <span class="s3"># file depending on the migrations needing merging.</span>
+                <span class="s1">numbers = [</span>
+                    <span class="s1">MigrationAutodetector.parse_number(migration.name)</span>
+                    <span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">merge_migrations</span>
+                <span class="s1">]</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">biggest_number = max(x </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">numbers </span><span class="s0">if </span><span class="s1">x </span><span class="s0">is not None</span><span class="s1">)</span>
+                <span class="s0">except </span><span class="s1">ValueError:</span>
+                    <span class="s1">biggest_number = </span><span class="s4">1</span>
+                <span class="s1">subclass = type(</span><span class="s2">&quot;Migration&quot;</span><span class="s0">, </span><span class="s1">(Migration</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">{</span>
+                    <span class="s2">&quot;dependencies&quot;</span><span class="s1">: [(app_label</span><span class="s0">, </span><span class="s1">migration.name) </span><span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">merge_migrations]</span><span class="s0">,</span>
+                <span class="s1">})</span>
+                <span class="s1">parts = [</span><span class="s2">'%04i' </span><span class="s1">% (biggest_number + </span><span class="s4">1</span><span class="s1">)]</span>
+                <span class="s0">if </span><span class="s1">self.migration_name:</span>
+                    <span class="s1">parts.append(self.migration_name)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">parts.append(</span><span class="s2">'merge'</span><span class="s1">)</span>
+                    <span class="s1">leaf_names = </span><span class="s2">'_'</span><span class="s1">.join(sorted(migration.name </span><span class="s0">for </span><span class="s1">migration </span><span class="s0">in </span><span class="s1">merge_migrations))</span>
+                    <span class="s0">if </span><span class="s1">len(leaf_names) &gt; </span><span class="s4">47</span><span class="s1">:</span>
+                        <span class="s1">parts.append(get_migration_name_timestamp())</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">parts.append(leaf_names)</span>
+                <span class="s1">migration_name = </span><span class="s2">'_'</span><span class="s1">.join(parts)</span>
+                <span class="s1">new_migration = subclass(migration_name</span><span class="s0">, </span><span class="s1">app_label)</span>
+                <span class="s1">writer = MigrationWriter(new_migration</span><span class="s0">, </span><span class="s1">self.include_header)</span>
+
+                <span class="s0">if not </span><span class="s1">self.dry_run:</span>
+                    <span class="s3"># Write the merge migrations file to the disk</span>
+                    <span class="s0">with </span><span class="s1">open(writer.path</span><span class="s0">, </span><span class="s2">&quot;w&quot;</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s2">'utf-8'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">fh:</span>
+                        <span class="s1">fh.write(writer.as_string())</span>
+                    <span class="s0">if </span><span class="s1">self.verbosity &gt; </span><span class="s4">0</span><span class="s1">:</span>
+                        <span class="s1">self.stdout.write(</span><span class="s2">&quot;</span><span class="s0">\n</span><span class="s2">Created new merge migration %s&quot; </span><span class="s1">% writer.path)</span>
+                <span class="s0">elif </span><span class="s1">self.verbosity == </span><span class="s4">3</span><span class="s1">:</span>
+                    <span class="s3"># Alternatively, makemigrations --merge --dry-run --verbosity 3</span>
+                    <span class="s3"># will output the merge migrations to stdout rather than saving</span>
+                    <span class="s3"># the file to the disk.</span>
+                    <span class="s1">self.stdout.write(self.style.MIGRATE_HEADING(</span>
+                        <span class="s2">&quot;Full merge migrations file '%s':&quot; </span><span class="s1">% writer.filename</span>
+                    <span class="s1">))</span>
+                    <span class="s1">self.stdout.write(writer.as_string())</span>
+</pre>
+</body>
+</html>

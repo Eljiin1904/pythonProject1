@@ -1,0 +1,608 @@
+<html>
+<head>
+<title>test_threads.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_threads.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">import </span><span class="s1">queue </span><span class="s0">as </span><span class="s1">stdlib_queue</span>
+<span class="s0">import </span><span class="s1">time</span>
+<span class="s0">import </span><span class="s1">weakref</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+<span class="s0">from </span><span class="s1">trio._core </span><span class="s0">import </span><span class="s1">TrioToken</span><span class="s0">, </span><span class="s1">current_trio_token</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">Event</span><span class="s0">, </span><span class="s1">CapacityLimiter</span><span class="s0">, </span><span class="s1">sleep</span>
+<span class="s0">from </span><span class="s1">..testing </span><span class="s0">import </span><span class="s1">wait_all_tasks_blocked</span>
+<span class="s0">from </span><span class="s1">.._core.tests.tutil </span><span class="s0">import </span><span class="s1">buggy_pypy_asyncgens</span>
+<span class="s0">from </span><span class="s1">.._threads </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">to_thread_run_sync</span><span class="s0">,</span>
+    <span class="s1">current_default_thread_limiter</span><span class="s0">,</span>
+    <span class="s1">from_thread_run</span><span class="s0">,</span>
+    <span class="s1">from_thread_run_sync</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+<span class="s0">from </span><span class="s1">.._core.tests.test_ki </span><span class="s0">import </span><span class="s1">ki_self</span>
+
+
+<span class="s0">async def </span><span class="s1">test_do_in_trio_thread():</span>
+    <span class="s1">trio_thread = threading.current_thread()</span>
+
+    <span class="s0">async def </span><span class="s1">check_case(do_in_trio_thread</span><span class="s0">, </span><span class="s1">fn</span><span class="s0">, </span><span class="s1">expected</span><span class="s0">, </span><span class="s1">trio_token=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">record = []</span>
+
+        <span class="s0">def </span><span class="s1">threadfn():</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">record.append((</span><span class="s2">&quot;start&quot;</span><span class="s0">, </span><span class="s1">threading.current_thread()))</span>
+                <span class="s1">x = do_in_trio_thread(fn</span><span class="s0">, </span><span class="s1">record</span><span class="s0">, </span><span class="s1">trio_token=trio_token)</span>
+                <span class="s1">record.append((</span><span class="s2">&quot;got&quot;</span><span class="s0">, </span><span class="s1">x))</span>
+            <span class="s0">except </span><span class="s1">BaseException </span><span class="s0">as </span><span class="s1">exc:</span>
+                <span class="s1">print(exc)</span>
+                <span class="s1">record.append((</span><span class="s2">&quot;error&quot;</span><span class="s0">, </span><span class="s1">type(exc)))</span>
+
+        <span class="s1">child_thread = threading.Thread(target=threadfn</span><span class="s0">, </span><span class="s1">daemon=</span><span class="s0">True</span><span class="s1">)</span>
+        <span class="s1">child_thread.start()</span>
+        <span class="s0">while </span><span class="s1">child_thread.is_alive():</span>
+            <span class="s1">print(</span><span class="s2">&quot;yawn&quot;</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">sleep(</span><span class="s3">0.01</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">record == [(</span><span class="s2">&quot;start&quot;</span><span class="s0">, </span><span class="s1">child_thread)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;f&quot;</span><span class="s0">, </span><span class="s1">trio_thread)</span><span class="s0">, </span><span class="s1">expected]</span>
+
+    <span class="s1">token = _core.current_trio_token()</span>
+
+    <span class="s0">def </span><span class="s1">f(record):</span>
+        <span class="s0">assert not </span><span class="s1">_core.currently_ki_protected()</span>
+        <span class="s1">record.append((</span><span class="s2">&quot;f&quot;</span><span class="s0">, </span><span class="s1">threading.current_thread()))</span>
+        <span class="s0">return </span><span class="s3">2</span>
+
+    <span class="s0">await </span><span class="s1">check_case(from_thread_run_sync</span><span class="s0">, </span><span class="s1">f</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;got&quot;</span><span class="s0">, </span><span class="s3">2</span><span class="s1">)</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+
+    <span class="s0">def </span><span class="s1">f(record):</span>
+        <span class="s0">assert not </span><span class="s1">_core.currently_ki_protected()</span>
+        <span class="s1">record.append((</span><span class="s2">&quot;f&quot;</span><span class="s0">, </span><span class="s1">threading.current_thread()))</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s0">await </span><span class="s1">check_case(from_thread_run_sync</span><span class="s0">, </span><span class="s1">f</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;error&quot;</span><span class="s0">, </span><span class="s1">ValueError)</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+
+    <span class="s0">async def </span><span class="s1">f(record):</span>
+        <span class="s0">assert not </span><span class="s1">_core.currently_ki_protected()</span>
+        <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+        <span class="s1">record.append((</span><span class="s2">&quot;f&quot;</span><span class="s0">, </span><span class="s1">threading.current_thread()))</span>
+        <span class="s0">return </span><span class="s3">3</span>
+
+    <span class="s0">await </span><span class="s1">check_case(from_thread_run</span><span class="s0">, </span><span class="s1">f</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;got&quot;</span><span class="s0">, </span><span class="s3">3</span><span class="s1">)</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+
+    <span class="s0">async def </span><span class="s1">f(record):</span>
+        <span class="s0">assert not </span><span class="s1">_core.currently_ki_protected()</span>
+        <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+        <span class="s1">record.append((</span><span class="s2">&quot;f&quot;</span><span class="s0">, </span><span class="s1">threading.current_thread()))</span>
+        <span class="s0">raise </span><span class="s1">KeyError</span>
+
+    <span class="s0">await </span><span class="s1">check_case(from_thread_run</span><span class="s0">, </span><span class="s1">f</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;error&quot;</span><span class="s0">, </span><span class="s1">KeyError)</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_do_in_trio_thread_from_trio_thread():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s1">from_thread_run_sync(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None</span><span class="s1">)  </span><span class="s4"># pragma: no branch</span>
+
+    <span class="s0">async def </span><span class="s1">foo():  </span><span class="s4"># pragma: no cover</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s1">from_thread_run(foo)</span>
+
+
+<span class="s0">def </span><span class="s1">test_run_in_trio_thread_ki():</span>
+    <span class="s4"># if we get a control-C during a run_in_trio_thread, then it propagates</span>
+    <span class="s4"># back to the caller (slick!)</span>
+    <span class="s1">record = set()</span>
+
+    <span class="s0">async def </span><span class="s1">check_run_in_trio_thread():</span>
+        <span class="s1">token = _core.current_trio_token()</span>
+
+        <span class="s0">def </span><span class="s1">trio_thread_fn():</span>
+            <span class="s1">print(</span><span class="s2">&quot;in Trio thread&quot;</span><span class="s1">)</span>
+            <span class="s0">assert not </span><span class="s1">_core.currently_ki_protected()</span>
+            <span class="s1">print(</span><span class="s2">&quot;ki_self&quot;</span><span class="s1">)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">ki_self()</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s0">import </span><span class="s1">sys</span>
+
+                <span class="s1">print(</span><span class="s2">&quot;finally&quot;</span><span class="s0">, </span><span class="s1">sys.exc_info())</span>
+
+        <span class="s0">async def </span><span class="s1">trio_thread_afn():</span>
+            <span class="s1">trio_thread_fn()</span>
+
+        <span class="s0">def </span><span class="s1">external_thread_fn():</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">print(</span><span class="s2">&quot;running&quot;</span><span class="s1">)</span>
+                <span class="s1">from_thread_run_sync(trio_thread_fn</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+            <span class="s0">except </span><span class="s1">KeyboardInterrupt:</span>
+                <span class="s1">print(</span><span class="s2">&quot;ok1&quot;</span><span class="s1">)</span>
+                <span class="s1">record.add(</span><span class="s2">&quot;ok1&quot;</span><span class="s1">)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">from_thread_run(trio_thread_afn</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+            <span class="s0">except </span><span class="s1">KeyboardInterrupt:</span>
+                <span class="s1">print(</span><span class="s2">&quot;ok2&quot;</span><span class="s1">)</span>
+                <span class="s1">record.add(</span><span class="s2">&quot;ok2&quot;</span><span class="s1">)</span>
+
+        <span class="s1">thread = threading.Thread(target=external_thread_fn)</span>
+        <span class="s1">thread.start()</span>
+        <span class="s1">print(</span><span class="s2">&quot;waiting&quot;</span><span class="s1">)</span>
+        <span class="s0">while </span><span class="s1">thread.is_alive():</span>
+            <span class="s0">await </span><span class="s1">sleep(</span><span class="s3">0.01</span><span class="s1">)</span>
+        <span class="s1">print(</span><span class="s2">&quot;waited, joining&quot;</span><span class="s1">)</span>
+        <span class="s1">thread.join()</span>
+        <span class="s1">print(</span><span class="s2">&quot;done&quot;</span><span class="s1">)</span>
+
+    <span class="s1">_core.run(check_run_in_trio_thread)</span>
+    <span class="s0">assert </span><span class="s1">record == {</span><span class="s2">&quot;ok1&quot;</span><span class="s0">, </span><span class="s2">&quot;ok2&quot;</span><span class="s1">}</span>
+
+
+<span class="s0">def </span><span class="s1">test_await_in_trio_thread_while_main_exits():</span>
+    <span class="s1">record = []</span>
+    <span class="s1">ev = Event()</span>
+
+    <span class="s0">async def </span><span class="s1">trio_fn():</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;sleeping&quot;</span><span class="s1">)</span>
+        <span class="s1">ev.set()</span>
+        <span class="s0">await </span><span class="s1">_core.wait_task_rescheduled(</span><span class="s0">lambda </span><span class="s1">_: _core.Abort.SUCCEEDED)</span>
+
+    <span class="s0">def </span><span class="s1">thread_fn(token):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">from_thread_run(trio_fn</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+        <span class="s0">except </span><span class="s1">_core.Cancelled:</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;cancelled&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">main():</span>
+        <span class="s1">token = _core.current_trio_token()</span>
+        <span class="s1">thread = threading.Thread(target=thread_fn</span><span class="s0">, </span><span class="s1">args=(token</span><span class="s0">,</span><span class="s1">))</span>
+        <span class="s1">thread.start()</span>
+        <span class="s0">await </span><span class="s1">ev.wait()</span>
+        <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;sleeping&quot;</span><span class="s1">]</span>
+        <span class="s0">return </span><span class="s1">thread</span>
+
+    <span class="s1">thread = _core.run(main)</span>
+    <span class="s1">thread.join()</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;sleeping&quot;</span><span class="s0">, </span><span class="s2">&quot;cancelled&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run_in_worker_thread():</span>
+    <span class="s1">trio_thread = threading.current_thread()</span>
+
+    <span class="s0">def </span><span class="s1">f(x):</span>
+        <span class="s0">return </span><span class="s1">(x</span><span class="s0">, </span><span class="s1">threading.current_thread())</span>
+
+    <span class="s1">x</span><span class="s0">, </span><span class="s1">child_thread = </span><span class="s0">await </span><span class="s1">to_thread_run_sync(f</span><span class="s0">, </span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">x == </span><span class="s3">1</span>
+    <span class="s0">assert </span><span class="s1">child_thread != trio_thread</span>
+
+    <span class="s0">def </span><span class="s1">g():</span>
+        <span class="s0">raise </span><span class="s1">ValueError(threading.current_thread())</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(g)</span>
+    <span class="s1">print(excinfo.value.args)</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.args[</span><span class="s3">0</span><span class="s1">] != trio_thread</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run_in_worker_thread_cancellation():</span>
+    <span class="s1">register = [</span><span class="s0">None</span><span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">f(q):</span>
+        <span class="s4"># Make the thread block for a controlled amount of time</span>
+        <span class="s1">register[</span><span class="s3">0</span><span class="s1">] = </span><span class="s2">&quot;blocking&quot;</span>
+        <span class="s1">q.get()</span>
+        <span class="s1">register[</span><span class="s3">0</span><span class="s1">] = </span><span class="s2">&quot;finished&quot;</span>
+
+    <span class="s0">async def </span><span class="s1">child(q</span><span class="s0">, </span><span class="s1">cancellable):</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;start&quot;</span><span class="s1">)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return await </span><span class="s1">to_thread_run_sync(f</span><span class="s0">, </span><span class="s1">q</span><span class="s0">, </span><span class="s1">cancellable=cancellable)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;exit&quot;</span><span class="s1">)</span>
+
+    <span class="s1">record = []</span>
+    <span class="s1">q = stdlib_queue.Queue()</span>
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(child</span><span class="s0">, </span><span class="s1">q</span><span class="s0">, True</span><span class="s1">)</span>
+        <span class="s4"># Give it a chance to get started. (This is important because</span>
+        <span class="s4"># to_thread_run_sync does a checkpoint_if_cancelled before</span>
+        <span class="s4"># blocking on the thread, and we don't want to trigger this.)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;start&quot;</span><span class="s1">]</span>
+        <span class="s4"># Then cancel it.</span>
+        <span class="s1">nursery.cancel_scope.cancel()</span>
+    <span class="s4"># The task exited, but the thread didn't:</span>
+    <span class="s0">assert </span><span class="s1">register[</span><span class="s3">0</span><span class="s1">] != </span><span class="s2">&quot;finished&quot;</span>
+    <span class="s4"># Put the thread out of its misery:</span>
+    <span class="s1">q.put(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">while </span><span class="s1">register[</span><span class="s3">0</span><span class="s1">] != </span><span class="s2">&quot;finished&quot;</span><span class="s1">:</span>
+        <span class="s1">time.sleep(</span><span class="s3">0.01</span><span class="s1">)</span>
+
+    <span class="s4"># This one can't be cancelled</span>
+    <span class="s1">record = []</span>
+    <span class="s1">register[</span><span class="s3">0</span><span class="s1">] = </span><span class="s0">None</span>
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(child</span><span class="s0">, </span><span class="s1">q</span><span class="s0">, False</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.cancel_scope.cancel()</span>
+        <span class="s0">with </span><span class="s1">_core.CancelScope(shield=</span><span class="s0">True</span><span class="s1">):</span>
+            <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">10</span><span class="s1">):</span>
+                <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+        <span class="s4"># It's still running</span>
+        <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;start&quot;</span><span class="s1">]</span>
+        <span class="s1">q.put(</span><span class="s0">None</span><span class="s1">)</span>
+        <span class="s4"># Now it exits</span>
+
+    <span class="s4"># But if we cancel *before* it enters, the entry is itself a cancellation</span>
+    <span class="s4"># point</span>
+    <span class="s0">with </span><span class="s1">_core.CancelScope() </span><span class="s0">as </span><span class="s1">scope:</span>
+        <span class="s1">scope.cancel()</span>
+        <span class="s0">await </span><span class="s1">child(q</span><span class="s0">, False</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">scope.cancelled_caught</span>
+
+
+<span class="s4"># Make sure that if trio.run exits, and then the thread finishes, then that's</span>
+<span class="s4"># handled gracefully. (Requires that the thread result machinery be prepared</span>
+<span class="s4"># for call_soon to raise RunFinishedError.)</span>
+<span class="s0">def </span><span class="s1">test_run_in_worker_thread_abandoned(capfd</span><span class="s0">, </span><span class="s1">monkeypatch):</span>
+    <span class="s1">monkeypatch.setattr(_core._thread_cache</span><span class="s0">, </span><span class="s2">&quot;IDLE_TIMEOUT&quot;</span><span class="s0">, </span><span class="s3">0.01</span><span class="s1">)</span>
+
+    <span class="s1">q1 = stdlib_queue.Queue()</span>
+    <span class="s1">q2 = stdlib_queue.Queue()</span>
+
+    <span class="s0">def </span><span class="s1">thread_fn():</span>
+        <span class="s1">q1.get()</span>
+        <span class="s1">q2.put(threading.current_thread())</span>
+
+    <span class="s0">async def </span><span class="s1">main():</span>
+        <span class="s0">async def </span><span class="s1">child():</span>
+            <span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn</span><span class="s0">, </span><span class="s1">cancellable=</span><span class="s0">True</span><span class="s1">)</span>
+
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(child)</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">nursery.cancel_scope.cancel()</span>
+
+    <span class="s1">_core.run(main)</span>
+
+    <span class="s1">q1.put(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s4"># This makes sure:</span>
+    <span class="s4"># - the thread actually ran</span>
+    <span class="s4"># - that thread has finished before we check for its output</span>
+    <span class="s1">thread = q2.get()</span>
+    <span class="s0">while </span><span class="s1">thread.is_alive():</span>
+        <span class="s1">time.sleep(</span><span class="s3">0.01</span><span class="s1">)  </span><span class="s4"># pragma: no cover</span>
+
+    <span class="s4"># Make sure we don't have a &quot;Exception in thread ...&quot; dump to the console:</span>
+    <span class="s1">out</span><span class="s0">, </span><span class="s1">err = capfd.readouterr()</span>
+    <span class="s0">assert </span><span class="s2">&quot;Exception in thread&quot; </span><span class="s0">not in </span><span class="s1">out</span>
+    <span class="s0">assert </span><span class="s2">&quot;Exception in thread&quot; </span><span class="s0">not in </span><span class="s1">err</span>
+
+
+<span class="s1">@pytest.mark.parametrize(</span><span class="s2">&quot;MAX&quot;</span><span class="s0">, </span><span class="s1">[</span><span class="s3">3</span><span class="s0">, </span><span class="s3">5</span><span class="s0">, </span><span class="s3">10</span><span class="s1">])</span>
+<span class="s1">@pytest.mark.parametrize(</span><span class="s2">&quot;cancel&quot;</span><span class="s0">, </span><span class="s1">[</span><span class="s0">False, True</span><span class="s1">])</span>
+<span class="s1">@pytest.mark.parametrize(</span><span class="s2">&quot;use_default_limiter&quot;</span><span class="s0">, </span><span class="s1">[</span><span class="s0">False, True</span><span class="s1">])</span>
+<span class="s0">async def </span><span class="s1">test_run_in_worker_thread_limiter(MAX</span><span class="s0">, </span><span class="s1">cancel</span><span class="s0">, </span><span class="s1">use_default_limiter):</span>
+    <span class="s4"># This test is a bit tricky. The goal is to make sure that if we set</span>
+    <span class="s4"># limiter=CapacityLimiter(MAX), then in fact only MAX threads are ever</span>
+    <span class="s4"># running at a time, even if there are more concurrent calls to</span>
+    <span class="s4"># to_thread_run_sync, and even if some of those are cancelled. And</span>
+    <span class="s4"># also to make sure that the default limiter actually limits.</span>
+    <span class="s1">COUNT = </span><span class="s3">2 </span><span class="s1">* MAX</span>
+    <span class="s1">gate = threading.Event()</span>
+    <span class="s1">lock = threading.Lock()</span>
+    <span class="s0">if </span><span class="s1">use_default_limiter:</span>
+        <span class="s1">c = current_default_thread_limiter()</span>
+        <span class="s1">orig_total_tokens = c.total_tokens</span>
+        <span class="s1">c.total_tokens = MAX</span>
+        <span class="s1">limiter_arg = </span><span class="s0">None</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">c = CapacityLimiter(MAX)</span>
+        <span class="s1">orig_total_tokens = MAX</span>
+        <span class="s1">limiter_arg = c</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s4"># We used to use regular variables and 'nonlocal' here, but it turns</span>
+        <span class="s4"># out that it's not safe to assign to closed-over variables that are</span>
+        <span class="s4"># visible in multiple threads, at least as of CPython 3.6 and PyPy</span>
+        <span class="s4"># 5.8:</span>
+        <span class="s4">#</span>
+        <span class="s4">#   https://bugs.python.org/issue30744</span>
+        <span class="s4">#   https://bitbucket.org/pypy/pypy/issues/2591/</span>
+        <span class="s4">#</span>
+        <span class="s4"># Mutating them in-place is OK though (as long as you use proper</span>
+        <span class="s4"># locking etc.).</span>
+        <span class="s0">class </span><span class="s1">state:</span>
+            <span class="s0">pass</span>
+
+        <span class="s1">state.ran = </span><span class="s3">0</span>
+        <span class="s1">state.high_water = </span><span class="s3">0</span>
+        <span class="s1">state.running = </span><span class="s3">0</span>
+        <span class="s1">state.parked = </span><span class="s3">0</span>
+
+        <span class="s1">token = _core.current_trio_token()</span>
+
+        <span class="s0">def </span><span class="s1">thread_fn(cancel_scope):</span>
+            <span class="s1">print(</span><span class="s2">&quot;thread_fn start&quot;</span><span class="s1">)</span>
+            <span class="s1">from_thread_run_sync(cancel_scope.cancel</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+            <span class="s0">with </span><span class="s1">lock:</span>
+                <span class="s1">state.ran += </span><span class="s3">1</span>
+                <span class="s1">state.running += </span><span class="s3">1</span>
+                <span class="s1">state.high_water = max(state.high_water</span><span class="s0">, </span><span class="s1">state.running)</span>
+                <span class="s4"># The Trio thread below watches this value and uses it as a</span>
+                <span class="s4"># signal that all the stats calculations have finished.</span>
+                <span class="s1">state.parked += </span><span class="s3">1</span>
+            <span class="s1">gate.wait()</span>
+            <span class="s0">with </span><span class="s1">lock:</span>
+                <span class="s1">state.parked -= </span><span class="s3">1</span>
+                <span class="s1">state.running -= </span><span class="s3">1</span>
+            <span class="s1">print(</span><span class="s2">&quot;thread_fn exiting&quot;</span><span class="s1">)</span>
+
+        <span class="s0">async def </span><span class="s1">run_thread(event):</span>
+            <span class="s0">with </span><span class="s1">_core.CancelScope() </span><span class="s0">as </span><span class="s1">cancel_scope:</span>
+                <span class="s0">await </span><span class="s1">to_thread_run_sync(</span>
+                    <span class="s1">thread_fn</span><span class="s0">, </span><span class="s1">cancel_scope</span><span class="s0">, </span><span class="s1">limiter=limiter_arg</span><span class="s0">, </span><span class="s1">cancellable=cancel</span>
+                <span class="s1">)</span>
+            <span class="s1">print(</span><span class="s2">&quot;run_thread finished, cancelled:&quot;</span><span class="s0">, </span><span class="s1">cancel_scope.cancelled_caught)</span>
+            <span class="s1">event.set()</span>
+
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">print(</span><span class="s2">&quot;spawning&quot;</span><span class="s1">)</span>
+            <span class="s1">events = []</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(COUNT):</span>
+                <span class="s1">events.append(Event())</span>
+                <span class="s1">nursery.start_soon(run_thread</span><span class="s0">, </span><span class="s1">events[-</span><span class="s3">1</span><span class="s1">])</span>
+                <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s4"># In the cancel case, we in particular want to make sure that the</span>
+            <span class="s4"># cancelled tasks don't release the semaphore. So let's wait until</span>
+            <span class="s4"># at least one of them has exited, and that everything has had a</span>
+            <span class="s4"># chance to settle down from this, before we check that everyone</span>
+            <span class="s4"># who's supposed to be waiting is waiting:</span>
+            <span class="s0">if </span><span class="s1">cancel:</span>
+                <span class="s1">print(</span><span class="s2">&quot;waiting for first cancellation to clear&quot;</span><span class="s1">)</span>
+                <span class="s0">await </span><span class="s1">events[</span><span class="s3">0</span><span class="s1">].wait()</span>
+                <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s4"># Then wait until the first MAX threads are parked in gate.wait(),</span>
+            <span class="s4"># and the next MAX threads are parked on the semaphore, to make</span>
+            <span class="s4"># sure no-one is sneaking past, and to make sure the high_water</span>
+            <span class="s4"># check below won't fail due to scheduling issues. (It could still</span>
+            <span class="s4"># fail if too many threads are let through here.)</span>
+            <span class="s0">while </span><span class="s1">state.parked != MAX </span><span class="s0">or </span><span class="s1">c.statistics().tasks_waiting != MAX:</span>
+                <span class="s0">await </span><span class="s1">sleep(</span><span class="s3">0.01</span><span class="s1">)  </span><span class="s4"># pragma: no cover</span>
+            <span class="s4"># Then release the threads</span>
+            <span class="s1">gate.set()</span>
+
+        <span class="s0">assert </span><span class="s1">state.high_water == MAX</span>
+
+        <span class="s0">if </span><span class="s1">cancel:</span>
+            <span class="s4"># Some threads might still be running; need to wait to them to</span>
+            <span class="s4"># finish before checking that all threads ran. We can do this</span>
+            <span class="s4"># using the CapacityLimiter.</span>
+            <span class="s0">while </span><span class="s1">c.borrowed_tokens &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">await </span><span class="s1">sleep(</span><span class="s3">0.01</span><span class="s1">)  </span><span class="s4"># pragma: no cover</span>
+
+        <span class="s0">assert </span><span class="s1">state.ran == COUNT</span>
+        <span class="s0">assert </span><span class="s1">state.running == </span><span class="s3">0</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s1">c.total_tokens = orig_total_tokens</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run_in_worker_thread_custom_limiter():</span>
+    <span class="s4"># Basically just checking that we only call acquire_on_behalf_of and</span>
+    <span class="s4"># release_on_behalf_of, since that's part of our documented API.</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">class </span><span class="s1">CustomLimiter:</span>
+        <span class="s0">async def </span><span class="s1">acquire_on_behalf_of(self</span><span class="s0">, </span><span class="s1">borrower):</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;acquire&quot;</span><span class="s1">)</span>
+            <span class="s1">self._borrower = borrower</span>
+
+        <span class="s0">def </span><span class="s1">release_on_behalf_of(self</span><span class="s0">, </span><span class="s1">borrower):</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;release&quot;</span><span class="s1">)</span>
+            <span class="s0">assert </span><span class="s1">borrower == self._borrower</span>
+
+    <span class="s0">await </span><span class="s1">to_thread_run_sync(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, </span><span class="s1">limiter=CustomLimiter())</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;acquire&quot;</span><span class="s0">, </span><span class="s2">&quot;release&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run_in_worker_thread_limiter_error():</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">class </span><span class="s1">BadCapacityLimiter:</span>
+        <span class="s0">async def </span><span class="s1">acquire_on_behalf_of(self</span><span class="s0">, </span><span class="s1">borrower):</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;acquire&quot;</span><span class="s1">)</span>
+
+        <span class="s0">def </span><span class="s1">release_on_behalf_of(self</span><span class="s0">, </span><span class="s1">borrower):</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;release&quot;</span><span class="s1">)</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s1">bs = BadCapacityLimiter()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None, </span><span class="s1">limiter=bs)</span>
+    <span class="s0">assert </span><span class="s1">excinfo.value.__context__ </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;acquire&quot;</span><span class="s0">, </span><span class="s2">&quot;release&quot;</span><span class="s1">]</span>
+    <span class="s1">record = []</span>
+
+    <span class="s4"># If the original function raised an error, then the semaphore error</span>
+    <span class="s4"># chains with it</span>
+    <span class="s1">d = {}</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(</span><span class="s0">lambda</span><span class="s1">: d[</span><span class="s2">&quot;x&quot;</span><span class="s1">]</span><span class="s0">, </span><span class="s1">limiter=bs)</span>
+    <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__context__</span><span class="s0">, </span><span class="s1">KeyError)</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;acquire&quot;</span><span class="s0">, </span><span class="s2">&quot;release&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_run_in_worker_thread_fail_to_spawn(monkeypatch):</span>
+    <span class="s4"># Test the unlikely but possible case where trying to spawn a thread fails</span>
+    <span class="s0">def </span><span class="s1">bad_start(self</span><span class="s0">, </span><span class="s1">*args):</span>
+        <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s2">&quot;the engines canna take it captain&quot;</span><span class="s1">)</span>
+
+    <span class="s1">monkeypatch.setattr(_core._thread_cache.ThreadCache</span><span class="s0">, </span><span class="s2">&quot;start_thread_soon&quot;</span><span class="s0">, </span><span class="s1">bad_start)</span>
+
+    <span class="s1">limiter = current_default_thread_limiter()</span>
+    <span class="s0">assert </span><span class="s1">limiter.borrowed_tokens == </span><span class="s3">0</span>
+
+    <span class="s4"># We get an appropriate error, and the limiter is cleanly released</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(</span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None</span><span class="s1">)  </span><span class="s4"># pragma: no cover</span>
+    <span class="s0">assert </span><span class="s2">&quot;engines&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s0">assert </span><span class="s1">limiter.borrowed_tokens == </span><span class="s3">0</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_to_thread_run_sync_token():</span>
+    <span class="s4"># Test that to_thread_run_sync automatically injects the current trio token</span>
+    <span class="s4"># into a spawned thread</span>
+    <span class="s0">def </span><span class="s1">thread_fn():</span>
+        <span class="s1">callee_token = from_thread_run_sync(_core.current_trio_token)</span>
+        <span class="s0">return </span><span class="s1">callee_token</span>
+
+    <span class="s1">caller_token = _core.current_trio_token()</span>
+    <span class="s1">callee_token = </span><span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn)</span>
+    <span class="s0">assert </span><span class="s1">callee_token == caller_token</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_to_thread_run_sync_expected_error():</span>
+    <span class="s4"># Test correct error when passed async function</span>
+    <span class="s0">async def </span><span class="s1">async_fn():  </span><span class="s4"># pragma: no cover</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError</span><span class="s0">, </span><span class="s1">match=</span><span class="s2">&quot;expected a sync function&quot;</span><span class="s1">):</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(async_fn)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_from_thread_run_sync():</span>
+    <span class="s4"># Test that to_thread_run_sync correctly &quot;hands off&quot; the trio token to</span>
+    <span class="s4"># trio.from_thread.run_sync()</span>
+    <span class="s0">def </span><span class="s1">thread_fn():</span>
+        <span class="s1">trio_time = from_thread_run_sync(_core.current_time)</span>
+        <span class="s0">return </span><span class="s1">trio_time</span>
+
+    <span class="s1">trio_time = </span><span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn)</span>
+    <span class="s0">assert </span><span class="s1">isinstance(trio_time</span><span class="s0">, </span><span class="s1">float)</span>
+
+    <span class="s4"># Test correct error when passed async function</span>
+    <span class="s0">async def </span><span class="s1">async_fn():  </span><span class="s4"># pragma: no cover</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">thread_fn():</span>
+        <span class="s1">from_thread_run_sync(async_fn)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError</span><span class="s0">, </span><span class="s1">match=</span><span class="s2">&quot;expected a sync function&quot;</span><span class="s1">):</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_from_thread_run():</span>
+    <span class="s4"># Test that to_thread_run_sync correctly &quot;hands off&quot; the trio token to</span>
+    <span class="s4"># trio.from_thread.run()</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">back_in_trio_fn():</span>
+        <span class="s1">_core.current_time()  </span><span class="s4"># implicitly checks that we're in trio</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;back in trio&quot;</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">thread_fn():</span>
+        <span class="s1">record.append(</span><span class="s2">&quot;in thread&quot;</span><span class="s1">)</span>
+        <span class="s1">from_thread_run(back_in_trio_fn)</span>
+
+    <span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn)</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;in thread&quot;</span><span class="s0">, </span><span class="s2">&quot;back in trio&quot;</span><span class="s1">]</span>
+
+    <span class="s4"># Test correct error when passed sync function</span>
+    <span class="s0">def </span><span class="s1">sync_fn():  </span><span class="s4"># pragma: no cover</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError</span><span class="s0">, </span><span class="s1">match=</span><span class="s2">&quot;appears to be synchronous&quot;</span><span class="s1">):</span>
+        <span class="s0">await </span><span class="s1">to_thread_run_sync(from_thread_run</span><span class="s0">, </span><span class="s1">sync_fn)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_from_thread_token():</span>
+    <span class="s4"># Test that to_thread_run_sync and spawned trio.from_thread.run_sync()</span>
+    <span class="s4"># share the same Trio token</span>
+    <span class="s0">def </span><span class="s1">thread_fn():</span>
+        <span class="s1">callee_token = from_thread_run_sync(_core.current_trio_token)</span>
+        <span class="s0">return </span><span class="s1">callee_token</span>
+
+    <span class="s1">caller_token = _core.current_trio_token()</span>
+    <span class="s1">callee_token = </span><span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn)</span>
+    <span class="s0">assert </span><span class="s1">callee_token == caller_token</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_from_thread_token_kwarg():</span>
+    <span class="s4"># Test that to_thread_run_sync and spawned trio.from_thread.run_sync() can</span>
+    <span class="s4"># use an explicitly defined token</span>
+    <span class="s0">def </span><span class="s1">thread_fn(token):</span>
+        <span class="s1">callee_token = from_thread_run_sync(_core.current_trio_token</span><span class="s0">, </span><span class="s1">trio_token=token)</span>
+        <span class="s0">return </span><span class="s1">callee_token</span>
+
+    <span class="s1">caller_token = _core.current_trio_token()</span>
+    <span class="s1">callee_token = </span><span class="s0">await </span><span class="s1">to_thread_run_sync(thread_fn</span><span class="s0">, </span><span class="s1">caller_token)</span>
+    <span class="s0">assert </span><span class="s1">callee_token == caller_token</span>
+
+
+<span class="s0">async def </span><span class="s1">test_from_thread_no_token():</span>
+    <span class="s4"># Test that a &quot;raw call&quot; to trio.from_thread.run() fails because no token</span>
+    <span class="s4"># has been provided</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s1">from_thread_run_sync(_core.current_time)</span>
+
+
+<span class="s0">def </span><span class="s1">test_run_fn_as_system_task_catched_badly_typed_token():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s1">from_thread_run_sync(_core.current_time</span><span class="s0">, </span><span class="s1">trio_token=</span><span class="s2">&quot;Not TrioTokentype&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_from_thread_inside_trio_thread():</span>
+    <span class="s0">def </span><span class="s1">not_called():  </span><span class="s4"># pragma: no cover</span>
+        <span class="s0">assert False</span>
+
+    <span class="s1">trio_token = _core.current_trio_token()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(RuntimeError):</span>
+        <span class="s1">from_thread_run_sync(not_called</span><span class="s0">, </span><span class="s1">trio_token=trio_token)</span>
+
+
+<span class="s1">@pytest.mark.skipif(buggy_pypy_asyncgens</span><span class="s0">, </span><span class="s1">reason=</span><span class="s2">&quot;pypy 7.2.0 is buggy&quot;</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">test_from_thread_run_during_shutdown():</span>
+    <span class="s1">save = []</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">agen():</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">yield</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">with </span><span class="s1">pytest.raises(_core.RunFinishedError)</span><span class="s0">, </span><span class="s1">_core.CancelScope(shield=</span><span class="s0">True</span><span class="s1">):</span>
+                <span class="s0">await </span><span class="s1">to_thread_run_sync(from_thread_run</span><span class="s0">, </span><span class="s1">sleep</span><span class="s0">, </span><span class="s3">0</span><span class="s1">)</span>
+            <span class="s1">record.append(</span><span class="s2">&quot;ok&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">main():</span>
+        <span class="s1">save.append(agen())</span>
+        <span class="s0">await </span><span class="s1">save[-</span><span class="s3">1</span><span class="s1">].asend(</span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s1">_core.run(main)</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s2">&quot;ok&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_trio_token_weak_referenceable():</span>
+    <span class="s1">token = current_trio_token()</span>
+    <span class="s0">assert </span><span class="s1">isinstance(token</span><span class="s0">, </span><span class="s1">TrioToken)</span>
+    <span class="s1">weak_reference = weakref.ref(token)</span>
+    <span class="s0">assert </span><span class="s1">token </span><span class="s0">is </span><span class="s1">weak_reference()</span>
+</pre>
+</body>
+</html>

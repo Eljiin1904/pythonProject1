@@ -1,0 +1,301 @@
+<html>
+<head>
+<title>edit.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+edit.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.forms </span><span class="s0">import </span><span class="s1">Form</span><span class="s0">, </span><span class="s1">models </span><span class="s0">as </span><span class="s1">model_forms</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">HttpResponseRedirect</span>
+<span class="s0">from </span><span class="s1">django.views.generic.base </span><span class="s0">import </span><span class="s1">ContextMixin</span><span class="s0">, </span><span class="s1">TemplateResponseMixin</span><span class="s0">, </span><span class="s1">View</span>
+<span class="s0">from </span><span class="s1">django.views.generic.detail </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">BaseDetailView</span><span class="s0">, </span><span class="s1">SingleObjectMixin</span><span class="s0">, </span><span class="s1">SingleObjectTemplateResponseMixin</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">FormMixin(ContextMixin):</span>
+    <span class="s2">&quot;&quot;&quot;Provide a way to show and handle a form in a request.&quot;&quot;&quot;</span>
+    <span class="s1">initial = {}</span>
+    <span class="s1">form_class = </span><span class="s0">None</span>
+    <span class="s1">success_url = </span><span class="s0">None</span>
+    <span class="s1">prefix = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_initial(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the initial data to use for forms on this view.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.initial.copy()</span>
+
+    <span class="s0">def </span><span class="s1">get_prefix(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the prefix to use for forms.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.prefix</span>
+
+    <span class="s0">def </span><span class="s1">get_form_class(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the form class to use.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.form_class</span>
+
+    <span class="s0">def </span><span class="s1">get_form(self</span><span class="s0">, </span><span class="s1">form_class=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Return an instance of the form to be used in this view.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">form_class </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">form_class = self.get_form_class()</span>
+        <span class="s0">return </span><span class="s1">form_class(**self.get_form_kwargs())</span>
+
+    <span class="s0">def </span><span class="s1">get_form_kwargs(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the keyword arguments for instantiating the form.&quot;&quot;&quot;</span>
+        <span class="s1">kwargs = {</span>
+            <span class="s3">'initial'</span><span class="s1">: self.get_initial()</span><span class="s0">,</span>
+            <span class="s3">'prefix'</span><span class="s1">: self.get_prefix()</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+        <span class="s0">if </span><span class="s1">self.request.method </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'POST'</span><span class="s0">, </span><span class="s3">'PUT'</span><span class="s1">):</span>
+            <span class="s1">kwargs.update({</span>
+                <span class="s3">'data'</span><span class="s1">: self.request.POST</span><span class="s0">,</span>
+                <span class="s3">'files'</span><span class="s1">: self.request.FILES</span><span class="s0">,</span>
+            <span class="s1">})</span>
+        <span class="s0">return </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_success_url(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the URL to redirect to after processing a valid form.&quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self.success_url:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s3">&quot;No URL to redirect to. Provide a success_url.&quot;</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">str(self.success_url)  </span><span class="s4"># success_url may be lazy</span>
+
+    <span class="s0">def </span><span class="s1">form_valid(self</span><span class="s0">, </span><span class="s1">form):</span>
+        <span class="s2">&quot;&quot;&quot;If the form is valid, redirect to the supplied URL.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">HttpResponseRedirect(self.get_success_url())</span>
+
+    <span class="s0">def </span><span class="s1">form_invalid(self</span><span class="s0">, </span><span class="s1">form):</span>
+        <span class="s2">&quot;&quot;&quot;If the form is invalid, render the invalid form.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.render_to_response(self.get_context_data(form=form))</span>
+
+    <span class="s0">def </span><span class="s1">get_context_data(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot;Insert the form into the context dict.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s3">'form' </span><span class="s0">not in </span><span class="s1">kwargs:</span>
+            <span class="s1">kwargs[</span><span class="s3">'form'</span><span class="s1">] = self.get_form()</span>
+        <span class="s0">return </span><span class="s1">super().get_context_data(**kwargs)</span>
+
+
+<span class="s0">class </span><span class="s1">ModelFormMixin(FormMixin</span><span class="s0">, </span><span class="s1">SingleObjectMixin):</span>
+    <span class="s2">&quot;&quot;&quot;Provide a way to show and handle a ModelForm in a request.&quot;&quot;&quot;</span>
+    <span class="s1">fields = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_form_class(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the form class to use in this view.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.fields </span><span class="s0">is not None and </span><span class="s1">self.form_class:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s3">&quot;Specifying both 'fields' and 'form_class' is not permitted.&quot;</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">self.form_class:</span>
+            <span class="s0">return </span><span class="s1">self.form_class</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">self.model </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s4"># If a model has been explicitly provided, use it</span>
+                <span class="s1">model = self.model</span>
+            <span class="s0">elif </span><span class="s1">getattr(self</span><span class="s0">, </span><span class="s3">'object'</span><span class="s0">, None</span><span class="s1">) </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s4"># If this view is operating on a single object, use</span>
+                <span class="s4"># the class of that object</span>
+                <span class="s1">model = self.object.__class__</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s4"># Try to get a queryset and extract the model class</span>
+                <span class="s4"># from that</span>
+                <span class="s1">model = self.get_queryset().model</span>
+
+            <span class="s0">if </span><span class="s1">self.fields </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s3">&quot;Using ModelFormMixin (base class of %s) without &quot;</span>
+                    <span class="s3">&quot;the 'fields' attribute is prohibited.&quot; </span><span class="s1">% self.__class__.__name__</span>
+                <span class="s1">)</span>
+
+            <span class="s0">return </span><span class="s1">model_forms.modelform_factory(model</span><span class="s0">, </span><span class="s1">fields=self.fields)</span>
+
+    <span class="s0">def </span><span class="s1">get_form_kwargs(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the keyword arguments for instantiating the form.&quot;&quot;&quot;</span>
+        <span class="s1">kwargs = super().get_form_kwargs()</span>
+        <span class="s0">if </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s3">'object'</span><span class="s1">):</span>
+            <span class="s1">kwargs.update({</span><span class="s3">'instance'</span><span class="s1">: self.object})</span>
+        <span class="s0">return </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_success_url(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the URL to redirect to after processing a valid form.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.success_url:</span>
+            <span class="s1">url = self.success_url.format(**self.object.__dict__)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">url = self.object.get_absolute_url()</span>
+            <span class="s0">except </span><span class="s1">AttributeError:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s3">&quot;No URL to redirect to.  Either provide a url or define&quot;</span>
+                    <span class="s3">&quot; a get_absolute_url method on the Model.&quot;</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">url</span>
+
+    <span class="s0">def </span><span class="s1">form_valid(self</span><span class="s0">, </span><span class="s1">form):</span>
+        <span class="s2">&quot;&quot;&quot;If the form is valid, save the associated model.&quot;&quot;&quot;</span>
+        <span class="s1">self.object = form.save()</span>
+        <span class="s0">return </span><span class="s1">super().form_valid(form)</span>
+
+
+<span class="s0">class </span><span class="s1">ProcessFormView(View):</span>
+    <span class="s2">&quot;&quot;&quot;Render a form on GET and processes it on POST.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot;Handle GET requests: instantiate a blank version of the form.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.render_to_response(self.get_context_data())</span>
+
+    <span class="s0">def </span><span class="s1">post(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Handle POST requests: instantiate a form instance with the passed 
+        POST variables and then check if it's valid. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">form = self.get_form()</span>
+        <span class="s0">if </span><span class="s1">form.is_valid():</span>
+            <span class="s0">return </span><span class="s1">self.form_valid(form)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.form_invalid(form)</span>
+
+    <span class="s4"># PUT is a valid HTTP verb for creating (with a known URL) or editing an</span>
+    <span class="s4"># object, note that browsers only support POST for now.</span>
+    <span class="s0">def </span><span class="s1">put(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">self.post(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s0">class </span><span class="s1">BaseFormView(FormMixin</span><span class="s0">, </span><span class="s1">ProcessFormView):</span>
+    <span class="s2">&quot;&quot;&quot;A base view for displaying a form.&quot;&quot;&quot;</span>
+
+
+<span class="s0">class </span><span class="s1">FormView(TemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseFormView):</span>
+    <span class="s2">&quot;&quot;&quot;A view for displaying a form and rendering a template response.&quot;&quot;&quot;</span>
+
+
+<span class="s0">class </span><span class="s1">BaseCreateView(ModelFormMixin</span><span class="s0">, </span><span class="s1">ProcessFormView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Base view for creating a new object instance. 
+ 
+    Using this base class requires subclassing to provide a response mixin. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.object = </span><span class="s0">None</span>
+        <span class="s0">return </span><span class="s1">super().get(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">post(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.object = </span><span class="s0">None</span>
+        <span class="s0">return </span><span class="s1">super().post(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s0">class </span><span class="s1">CreateView(SingleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseCreateView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    View for creating a new object, with a response rendered by a template. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_form'</span>
+
+
+<span class="s0">class </span><span class="s1">BaseUpdateView(ModelFormMixin</span><span class="s0">, </span><span class="s1">ProcessFormView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Base view for updating an existing object. 
+ 
+    Using this base class requires subclassing to provide a response mixin. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.object = self.get_object()</span>
+        <span class="s0">return </span><span class="s1">super().get(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">post(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.object = self.get_object()</span>
+        <span class="s0">return </span><span class="s1">super().post(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s0">class </span><span class="s1">UpdateView(SingleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseUpdateView):</span>
+    <span class="s2">&quot;&quot;&quot;View for updating an object, with a response rendered by a template.&quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_form'</span>
+
+
+<span class="s0">class </span><span class="s1">DeletionMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Provide the ability to delete objects.&quot;&quot;&quot;</span>
+    <span class="s1">success_url = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">delete(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Call the delete() method on the fetched object and then redirect to the 
+        success URL. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.object = self.get_object()</span>
+        <span class="s1">success_url = self.get_success_url()</span>
+        <span class="s1">self.object.delete()</span>
+        <span class="s0">return </span><span class="s1">HttpResponseRedirect(success_url)</span>
+
+    <span class="s4"># Add support for browsers which only accept GET and POST for now.</span>
+    <span class="s0">def </span><span class="s1">post(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">return </span><span class="s1">self.delete(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">get_success_url(self):</span>
+        <span class="s0">if </span><span class="s1">self.success_url:</span>
+            <span class="s0">return </span><span class="s1">self.success_url.format(**self.object.__dict__)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s3">&quot;No URL to redirect to. Provide a success_url.&quot;</span><span class="s1">)</span>
+
+
+<span class="s4"># RemovedInDjango50Warning.</span>
+<span class="s0">class </span><span class="s1">DeleteViewCustomDeleteWarning(Warning):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">BaseDeleteView(DeletionMixin</span><span class="s0">, </span><span class="s1">FormMixin</span><span class="s0">, </span><span class="s1">BaseDetailView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Base view for deleting an object. 
+ 
+    Using this base class requires subclassing to provide a response mixin. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">form_class = Form</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s4"># RemovedInDjango50Warning.</span>
+        <span class="s0">if </span><span class="s1">self.__class__.delete </span><span class="s0">is not </span><span class="s1">DeletionMixin.delete:</span>
+            <span class="s1">warnings.warn(</span>
+                <span class="s3">f'DeleteView uses FormMixin to handle POST requests. As a '</span>
+                <span class="s3">f'consequence, any custom deletion logic in '</span>
+                <span class="s3">f'</span><span class="s0">{</span><span class="s1">self.__class__.__name__</span><span class="s0">}</span><span class="s3">.delete() handler should be moved '</span>
+                <span class="s3">f'to form_valid().'</span><span class="s0">,</span>
+                <span class="s1">DeleteViewCustomDeleteWarning</span><span class="s0">,</span>
+                <span class="s1">stacklevel=</span><span class="s5">2</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">post(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s4"># Set self.object before the usual form processing flow.</span>
+        <span class="s4"># Inlined because having DeletionMixin as the first base, for</span>
+        <span class="s4"># get_success_url(), makes leveraging super() with ProcessFormView</span>
+        <span class="s4"># overly complex.</span>
+        <span class="s1">self.object = self.get_object()</span>
+        <span class="s1">form = self.get_form()</span>
+        <span class="s0">if </span><span class="s1">form.is_valid():</span>
+            <span class="s0">return </span><span class="s1">self.form_valid(form)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.form_invalid(form)</span>
+
+    <span class="s0">def </span><span class="s1">form_valid(self</span><span class="s0">, </span><span class="s1">form):</span>
+        <span class="s1">success_url = self.get_success_url()</span>
+        <span class="s1">self.object.delete()</span>
+        <span class="s0">return </span><span class="s1">HttpResponseRedirect(success_url)</span>
+
+
+<span class="s0">class </span><span class="s1">DeleteView(SingleObjectTemplateResponseMixin</span><span class="s0">, </span><span class="s1">BaseDeleteView):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    View for deleting an object retrieved with self.get_object(), with a 
+    response rendered by a template. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">template_name_suffix = </span><span class="s3">'_confirm_delete'</span>
+</pre>
+</body>
+</html>

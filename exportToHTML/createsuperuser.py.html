@@ -1,0 +1,272 @@
+<html>
+<head>
+<title>createsuperuser.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+createsuperuser.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Management utility to create superusers. 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">getpass</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">sys</span>
+
+<span class="s2">from </span><span class="s1">django.contrib.auth </span><span class="s2">import </span><span class="s1">get_user_model</span>
+<span class="s2">from </span><span class="s1">django.contrib.auth.management </span><span class="s2">import </span><span class="s1">get_default_username</span>
+<span class="s2">from </span><span class="s1">django.contrib.auth.password_validation </span><span class="s2">import </span><span class="s1">validate_password</span>
+<span class="s2">from </span><span class="s1">django.core </span><span class="s2">import </span><span class="s1">exceptions</span>
+<span class="s2">from </span><span class="s1">django.core.management.base </span><span class="s2">import </span><span class="s1">BaseCommand</span><span class="s2">, </span><span class="s1">CommandError</span>
+<span class="s2">from </span><span class="s1">django.db </span><span class="s2">import </span><span class="s1">DEFAULT_DB_ALIAS</span>
+<span class="s2">from </span><span class="s1">django.utils.text </span><span class="s2">import </span><span class="s1">capfirst</span>
+
+
+<span class="s2">class </span><span class="s1">NotRunningInTTYException(Exception):</span>
+    <span class="s2">pass</span>
+
+
+<span class="s1">PASSWORD_FIELD = </span><span class="s3">'password'</span>
+
+
+<span class="s2">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s3">'Used to create a superuser.'</span>
+    <span class="s1">requires_migrations_checks = </span><span class="s2">True</span>
+    <span class="s1">stealth_options = (</span><span class="s3">'stdin'</span><span class="s2">,</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">self.UserModel = get_user_model()</span>
+        <span class="s1">self.username_field = self.UserModel._meta.get_field(self.UserModel.USERNAME_FIELD)</span>
+
+    <span class="s2">def </span><span class="s1">add_arguments(self</span><span class="s2">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s3">'--%s' </span><span class="s1">% self.UserModel.USERNAME_FIELD</span><span class="s2">,</span>
+            <span class="s1">help=</span><span class="s3">'Specifies the login for the superuser.'</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s3">'--noinput'</span><span class="s2">, </span><span class="s3">'--no-input'</span><span class="s2">, </span><span class="s1">action=</span><span class="s3">'store_false'</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">'interactive'</span><span class="s2">,</span>
+            <span class="s1">help=(</span>
+                <span class="s3">'Tells Django to NOT prompt the user for input of any kind. '</span>
+                <span class="s3">'You must use --%s with --noinput, along with an option for '</span>
+                <span class="s3">'any other required field. Superusers created with --noinput will '</span>
+                <span class="s3">'not be able to log in until they</span><span class="s2">\'</span><span class="s3">re given a valid password.' </span><span class="s1">%</span>
+                <span class="s1">self.UserModel.USERNAME_FIELD</span>
+            <span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s3">'--database'</span><span class="s2">,</span>
+            <span class="s1">default=DEFAULT_DB_ALIAS</span><span class="s2">,</span>
+            <span class="s1">help=</span><span class="s3">'Specifies the database to use. Default is &quot;default&quot;.'</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">for </span><span class="s1">field_name </span><span class="s2">in </span><span class="s1">self.UserModel.REQUIRED_FIELDS:</span>
+            <span class="s1">field = self.UserModel._meta.get_field(field_name)</span>
+            <span class="s2">if </span><span class="s1">field.many_to_many:</span>
+                <span class="s2">if </span><span class="s1">field.remote_field.through </span><span class="s2">and not </span><span class="s1">field.remote_field.through._meta.auto_created:</span>
+                    <span class="s2">raise </span><span class="s1">CommandError(</span>
+                        <span class="s3">&quot;Required field '%s' specifies a many-to-many &quot;</span>
+                        <span class="s3">&quot;relation through model, which is not supported.&quot;</span>
+                        <span class="s1">% field_name</span>
+                    <span class="s1">)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">parser.add_argument(</span>
+                        <span class="s3">'--%s' </span><span class="s1">% field_name</span><span class="s2">, </span><span class="s1">action=</span><span class="s3">'append'</span><span class="s2">,</span>
+                        <span class="s1">help=(</span>
+                            <span class="s3">'Specifies the %s for the superuser. Can be used '</span>
+                            <span class="s3">'multiple times.' </span><span class="s1">% field_name</span><span class="s2">,</span>
+                        <span class="s1">)</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">parser.add_argument(</span>
+                    <span class="s3">'--%s' </span><span class="s1">% field_name</span><span class="s2">,</span>
+                    <span class="s1">help=</span><span class="s3">'Specifies the %s for the superuser.' </span><span class="s1">% field_name</span><span class="s2">,</span>
+                <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">execute(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**options):</span>
+        <span class="s1">self.stdin = options.get(</span><span class="s3">'stdin'</span><span class="s2">, </span><span class="s1">sys.stdin)  </span><span class="s4"># Used for testing</span>
+        <span class="s2">return </span><span class="s1">super().execute(*args</span><span class="s2">, </span><span class="s1">**options)</span>
+
+    <span class="s2">def </span><span class="s1">handle(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**options):</span>
+        <span class="s1">username = options[self.UserModel.USERNAME_FIELD]</span>
+        <span class="s1">database = options[</span><span class="s3">'database'</span><span class="s1">]</span>
+        <span class="s1">user_data = {}</span>
+        <span class="s1">verbose_field_name = self.username_field.verbose_name</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.UserModel._meta.get_field(PASSWORD_FIELD)</span>
+        <span class="s2">except </span><span class="s1">exceptions.FieldDoesNotExist:</span>
+            <span class="s2">pass</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s4"># If not provided, create the user with an unusable password.</span>
+            <span class="s1">user_data[PASSWORD_FIELD] = </span><span class="s2">None</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">options[</span><span class="s3">'interactive'</span><span class="s1">]:</span>
+                <span class="s4"># Same as user_data but without many to many fields and with</span>
+                <span class="s4"># foreign keys as fake model instances instead of raw IDs.</span>
+                <span class="s1">fake_user_data = {}</span>
+                <span class="s2">if </span><span class="s1">hasattr(self.stdin</span><span class="s2">, </span><span class="s3">'isatty'</span><span class="s1">) </span><span class="s2">and not </span><span class="s1">self.stdin.isatty():</span>
+                    <span class="s2">raise </span><span class="s1">NotRunningInTTYException</span>
+                <span class="s1">default_username = get_default_username(database=database)</span>
+                <span class="s2">if </span><span class="s1">username:</span>
+                    <span class="s1">error_msg = self._validate_username(username</span><span class="s2">, </span><span class="s1">verbose_field_name</span><span class="s2">, </span><span class="s1">database)</span>
+                    <span class="s2">if </span><span class="s1">error_msg:</span>
+                        <span class="s1">self.stderr.write(error_msg)</span>
+                        <span class="s1">username = </span><span class="s2">None</span>
+                <span class="s2">elif </span><span class="s1">username == </span><span class="s3">''</span><span class="s1">:</span>
+                    <span class="s2">raise </span><span class="s1">CommandError(</span><span class="s3">'%s cannot be blank.' </span><span class="s1">% capfirst(verbose_field_name))</span>
+                <span class="s4"># Prompt for username.</span>
+                <span class="s2">while </span><span class="s1">username </span><span class="s2">is None</span><span class="s1">:</span>
+                    <span class="s1">message = self._get_input_message(self.username_field</span><span class="s2">, </span><span class="s1">default_username)</span>
+                    <span class="s1">username = self.get_input_data(self.username_field</span><span class="s2">, </span><span class="s1">message</span><span class="s2">, </span><span class="s1">default_username)</span>
+                    <span class="s2">if </span><span class="s1">username:</span>
+                        <span class="s1">error_msg = self._validate_username(username</span><span class="s2">, </span><span class="s1">verbose_field_name</span><span class="s2">, </span><span class="s1">database)</span>
+                        <span class="s2">if </span><span class="s1">error_msg:</span>
+                            <span class="s1">self.stderr.write(error_msg)</span>
+                            <span class="s1">username = </span><span class="s2">None</span>
+                            <span class="s2">continue</span>
+                <span class="s1">user_data[self.UserModel.USERNAME_FIELD] = username</span>
+                <span class="s1">fake_user_data[self.UserModel.USERNAME_FIELD] = (</span>
+                    <span class="s1">self.username_field.remote_field.model(username)</span>
+                    <span class="s2">if </span><span class="s1">self.username_field.remote_field </span><span class="s2">else </span><span class="s1">username</span>
+                <span class="s1">)</span>
+                <span class="s4"># Prompt for required fields.</span>
+                <span class="s2">for </span><span class="s1">field_name </span><span class="s2">in </span><span class="s1">self.UserModel.REQUIRED_FIELDS:</span>
+                    <span class="s1">field = self.UserModel._meta.get_field(field_name)</span>
+                    <span class="s1">user_data[field_name] = options[field_name]</span>
+                    <span class="s2">if </span><span class="s1">user_data[field_name] </span><span class="s2">is not None</span><span class="s1">:</span>
+                        <span class="s1">user_data[field_name] = field.clean(user_data[field_name]</span><span class="s2">, None</span><span class="s1">)</span>
+                    <span class="s2">while </span><span class="s1">user_data[field_name] </span><span class="s2">is None</span><span class="s1">:</span>
+                        <span class="s1">message = self._get_input_message(field)</span>
+                        <span class="s1">input_value = self.get_input_data(field</span><span class="s2">, </span><span class="s1">message)</span>
+                        <span class="s1">user_data[field_name] = input_value</span>
+                        <span class="s2">if </span><span class="s1">field.many_to_many </span><span class="s2">and </span><span class="s1">input_value:</span>
+                            <span class="s2">if not </span><span class="s1">input_value.strip():</span>
+                                <span class="s1">user_data[field_name] = </span><span class="s2">None</span>
+                                <span class="s1">self.stderr.write(</span><span class="s3">'Error: This field cannot be blank.'</span><span class="s1">)</span>
+                                <span class="s2">continue</span>
+                            <span class="s1">user_data[field_name] = [pk.strip() </span><span class="s2">for </span><span class="s1">pk </span><span class="s2">in </span><span class="s1">input_value.split(</span><span class="s3">','</span><span class="s1">)]</span>
+
+                    <span class="s2">if not </span><span class="s1">field.many_to_many:</span>
+                        <span class="s1">fake_user_data[field_name] = user_data[field_name]</span>
+                    <span class="s4"># Wrap any foreign keys in fake model instances.</span>
+                    <span class="s2">if </span><span class="s1">field.many_to_one:</span>
+                        <span class="s1">fake_user_data[field_name] = field.remote_field.model(user_data[field_name])</span>
+
+                <span class="s4"># Prompt for a password if the model has one.</span>
+                <span class="s2">while </span><span class="s1">PASSWORD_FIELD </span><span class="s2">in </span><span class="s1">user_data </span><span class="s2">and </span><span class="s1">user_data[PASSWORD_FIELD] </span><span class="s2">is None</span><span class="s1">:</span>
+                    <span class="s1">password = getpass.getpass()</span>
+                    <span class="s1">password2 = getpass.getpass(</span><span class="s3">'Password (again): '</span><span class="s1">)</span>
+                    <span class="s2">if </span><span class="s1">password != password2:</span>
+                        <span class="s1">self.stderr.write(</span><span class="s3">&quot;Error: Your passwords didn't match.&quot;</span><span class="s1">)</span>
+                        <span class="s4"># Don't validate passwords that don't match.</span>
+                        <span class="s2">continue</span>
+                    <span class="s2">if </span><span class="s1">password.strip() == </span><span class="s3">''</span><span class="s1">:</span>
+                        <span class="s1">self.stderr.write(</span><span class="s3">&quot;Error: Blank passwords aren't allowed.&quot;</span><span class="s1">)</span>
+                        <span class="s4"># Don't validate blank passwords.</span>
+                        <span class="s2">continue</span>
+                    <span class="s2">try</span><span class="s1">:</span>
+                        <span class="s1">validate_password(password2</span><span class="s2">, </span><span class="s1">self.UserModel(**fake_user_data))</span>
+                    <span class="s2">except </span><span class="s1">exceptions.ValidationError </span><span class="s2">as </span><span class="s1">err:</span>
+                        <span class="s1">self.stderr.write(</span><span class="s3">'</span><span class="s2">\n</span><span class="s3">'</span><span class="s1">.join(err.messages))</span>
+                        <span class="s1">response = input(</span><span class="s3">'Bypass password validation and create user anyway? [y/N]: '</span><span class="s1">)</span>
+                        <span class="s2">if </span><span class="s1">response.lower() != </span><span class="s3">'y'</span><span class="s1">:</span>
+                            <span class="s2">continue</span>
+                    <span class="s1">user_data[PASSWORD_FIELD] = password</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s4"># Non-interactive mode.</span>
+                <span class="s4"># Use password from environment variable, if provided.</span>
+                <span class="s2">if </span><span class="s1">PASSWORD_FIELD </span><span class="s2">in </span><span class="s1">user_data </span><span class="s2">and </span><span class="s3">'DJANGO_SUPERUSER_PASSWORD' </span><span class="s2">in </span><span class="s1">os.environ:</span>
+                    <span class="s1">user_data[PASSWORD_FIELD] = os.environ[</span><span class="s3">'DJANGO_SUPERUSER_PASSWORD'</span><span class="s1">]</span>
+                <span class="s4"># Use username from environment variable, if not provided in</span>
+                <span class="s4"># options.</span>
+                <span class="s2">if </span><span class="s1">username </span><span class="s2">is None</span><span class="s1">:</span>
+                    <span class="s1">username = os.environ.get(</span><span class="s3">'DJANGO_SUPERUSER_' </span><span class="s1">+ self.UserModel.USERNAME_FIELD.upper())</span>
+                <span class="s2">if </span><span class="s1">username </span><span class="s2">is None</span><span class="s1">:</span>
+                    <span class="s2">raise </span><span class="s1">CommandError(</span><span class="s3">'You must use --%s with --noinput.' </span><span class="s1">% self.UserModel.USERNAME_FIELD)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">error_msg = self._validate_username(username</span><span class="s2">, </span><span class="s1">verbose_field_name</span><span class="s2">, </span><span class="s1">database)</span>
+                    <span class="s2">if </span><span class="s1">error_msg:</span>
+                        <span class="s2">raise </span><span class="s1">CommandError(error_msg)</span>
+
+                <span class="s1">user_data[self.UserModel.USERNAME_FIELD] = username</span>
+                <span class="s2">for </span><span class="s1">field_name </span><span class="s2">in </span><span class="s1">self.UserModel.REQUIRED_FIELDS:</span>
+                    <span class="s1">env_var = </span><span class="s3">'DJANGO_SUPERUSER_' </span><span class="s1">+ field_name.upper()</span>
+                    <span class="s1">value = options[field_name] </span><span class="s2">or </span><span class="s1">os.environ.get(env_var)</span>
+                    <span class="s2">if not </span><span class="s1">value:</span>
+                        <span class="s2">raise </span><span class="s1">CommandError(</span><span class="s3">'You must use --%s with --noinput.' </span><span class="s1">% field_name)</span>
+                    <span class="s1">field = self.UserModel._meta.get_field(field_name)</span>
+                    <span class="s1">user_data[field_name] = field.clean(value</span><span class="s2">, None</span><span class="s1">)</span>
+                    <span class="s2">if </span><span class="s1">field.many_to_many </span><span class="s2">and </span><span class="s1">isinstance(user_data[field_name]</span><span class="s2">, </span><span class="s1">str):</span>
+                        <span class="s1">user_data[field_name] = [</span>
+                            <span class="s1">pk.strip() </span><span class="s2">for </span><span class="s1">pk </span><span class="s2">in </span><span class="s1">user_data[field_name].split(</span><span class="s3">','</span><span class="s1">)</span>
+                        <span class="s1">]</span>
+
+            <span class="s1">self.UserModel._default_manager.db_manager(database).create_superuser(**user_data)</span>
+            <span class="s2">if </span><span class="s1">options[</span><span class="s3">'verbosity'</span><span class="s1">] &gt;= </span><span class="s5">1</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span><span class="s3">&quot;Superuser created successfully.&quot;</span><span class="s1">)</span>
+        <span class="s2">except </span><span class="s1">KeyboardInterrupt:</span>
+            <span class="s1">self.stderr.write(</span><span class="s3">'</span><span class="s2">\n</span><span class="s3">Operation cancelled.'</span><span class="s1">)</span>
+            <span class="s1">sys.exit(</span><span class="s5">1</span><span class="s1">)</span>
+        <span class="s2">except </span><span class="s1">exceptions.ValidationError </span><span class="s2">as </span><span class="s1">e:</span>
+            <span class="s2">raise </span><span class="s1">CommandError(</span><span class="s3">'; '</span><span class="s1">.join(e.messages))</span>
+        <span class="s2">except </span><span class="s1">NotRunningInTTYException:</span>
+            <span class="s1">self.stdout.write(</span>
+                <span class="s3">'Superuser creation skipped due to not running in a TTY. '</span>
+                <span class="s3">'You can run `manage.py createsuperuser` in your project '</span>
+                <span class="s3">'to create one manually.'</span>
+            <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">get_input_data(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">message</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Override this method if you want to customize data inputs or 
+        validation exceptions. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">raw_value = input(message)</span>
+        <span class="s2">if </span><span class="s1">default </span><span class="s2">and </span><span class="s1">raw_value == </span><span class="s3">''</span><span class="s1">:</span>
+            <span class="s1">raw_value = default</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">val = field.clean(raw_value</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">except </span><span class="s1">exceptions.ValidationError </span><span class="s2">as </span><span class="s1">e:</span>
+            <span class="s1">self.stderr.write(</span><span class="s3">&quot;Error: %s&quot; </span><span class="s1">% </span><span class="s3">'; '</span><span class="s1">.join(e.messages))</span>
+            <span class="s1">val = </span><span class="s2">None</span>
+
+        <span class="s2">return </span><span class="s1">val</span>
+
+    <span class="s2">def </span><span class="s1">_get_input_message(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s3">'%s%s%s: ' </span><span class="s1">% (</span>
+            <span class="s1">capfirst(field.verbose_name)</span><span class="s2">,</span>
+            <span class="s3">&quot; (leave blank to use '%s')&quot; </span><span class="s1">% default </span><span class="s2">if </span><span class="s1">default </span><span class="s2">else </span><span class="s3">''</span><span class="s2">,</span>
+            <span class="s3">' (%s.%s)' </span><span class="s1">% (</span>
+                <span class="s1">field.remote_field.model._meta.object_name</span><span class="s2">,</span>
+                <span class="s1">field.m2m_target_field_name() </span><span class="s2">if </span><span class="s1">field.many_to_many </span><span class="s2">else </span><span class="s1">field.remote_field.field_name</span><span class="s2">,</span>
+            <span class="s1">) </span><span class="s2">if </span><span class="s1">field.remote_field </span><span class="s2">else </span><span class="s3">''</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_validate_username(self</span><span class="s2">, </span><span class="s1">username</span><span class="s2">, </span><span class="s1">verbose_field_name</span><span class="s2">, </span><span class="s1">database):</span>
+        <span class="s0">&quot;&quot;&quot;Validate username. If invalid, return a string error message.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.username_field.unique:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">self.UserModel._default_manager.db_manager(database).get_by_natural_key(username)</span>
+            <span class="s2">except </span><span class="s1">self.UserModel.DoesNotExist:</span>
+                <span class="s2">pass</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s3">'Error: That %s is already taken.' </span><span class="s1">% verbose_field_name</span>
+        <span class="s2">if not </span><span class="s1">username:</span>
+            <span class="s2">return </span><span class="s3">'%s cannot be blank.' </span><span class="s1">% capfirst(verbose_field_name)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.username_field.clean(username</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">except </span><span class="s1">exceptions.ValidationError </span><span class="s2">as </span><span class="s1">e:</span>
+            <span class="s2">return </span><span class="s3">'; '</span><span class="s1">.join(e.messages)</span>
+</pre>
+</body>
+</html>

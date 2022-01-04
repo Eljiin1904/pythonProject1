@@ -1,0 +1,1226 @@
+<html>
+<head>
+<title>related_descriptors.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+related_descriptors.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Accessors for related objects. 
+ 
+When a field defines a relation between two models, each model class provides 
+an attribute to access related instances of the other model class (unless the 
+reverse accessor has been disabled with related_name='+'). 
+ 
+Accessors are implemented as descriptors in order to customize access and 
+assignment. This module defines the descriptor classes. 
+ 
+Forward accessors follow foreign keys. Reverse accessors trace them back. For 
+example, with the following models:: 
+ 
+    class Parent(Model): 
+        pass 
+ 
+    class Child(Model): 
+        parent = ForeignKey(Parent, related_name='children') 
+ 
+ ``child.parent`` is a forward many-to-one relation. ``parent.children`` is a 
+reverse many-to-one relation. 
+ 
+There are three types of relations (many-to-one, one-to-one, and many-to-many) 
+and two directions (forward and reverse) for a total of six combinations. 
+ 
+1. Related instance on the forward side of a many-to-one relation: 
+   ``ForwardManyToOneDescriptor``. 
+ 
+   Uniqueness of foreign key values is irrelevant to accessing the related 
+   instance, making the many-to-one and one-to-one cases identical as far as 
+   the descriptor is concerned. The constraint is checked upstream (unicity 
+   validation in forms) or downstream (unique indexes in the database). 
+ 
+2. Related instance on the forward side of a one-to-one 
+   relation: ``ForwardOneToOneDescriptor``. 
+ 
+   It avoids querying the database when accessing the parent link field in 
+   a multi-table inheritance scenario. 
+ 
+3. Related instance on the reverse side of a one-to-one relation: 
+   ``ReverseOneToOneDescriptor``. 
+ 
+   One-to-one relations are asymmetrical, despite the apparent symmetry of the 
+   name, because they're implemented in the database with a foreign key from 
+   one table to another. As a consequence ``ReverseOneToOneDescriptor`` is 
+   slightly different from ``ForwardManyToOneDescriptor``. 
+ 
+4. Related objects manager for related instances on the reverse side of a 
+   many-to-one relation: ``ReverseManyToOneDescriptor``. 
+ 
+   Unlike the previous two classes, this one provides access to a collection 
+   of objects. It returns a manager rather than an instance. 
+ 
+5. Related objects manager for related instances on the forward or reverse 
+   sides of a many-to-many relation: ``ManyToManyDescriptor``. 
+ 
+   Many-to-many relations are symmetrical. The syntax of Django models 
+   requires declaring them on one side but that's an implementation detail. 
+   They could be declared on the other side without any change in behavior. 
+   Therefore the forward and reverse descriptors can be the same. 
+ 
+   If you're looking for ``ForwardManyToManyDescriptor`` or 
+   ``ReverseManyToManyDescriptor``, use ``ManyToManyDescriptor`` instead. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">FieldError</span>
+<span class="s2">from </span><span class="s1">django.db </span><span class="s2">import </span><span class="s1">connections</span><span class="s2">, </span><span class="s1">router</span><span class="s2">, </span><span class="s1">transaction</span>
+<span class="s2">from </span><span class="s1">django.db.models </span><span class="s2">import </span><span class="s1">Q</span><span class="s2">, </span><span class="s1">signals</span>
+<span class="s2">from </span><span class="s1">django.db.models.query </span><span class="s2">import </span><span class="s1">QuerySet</span>
+<span class="s2">from </span><span class="s1">django.db.models.query_utils </span><span class="s2">import </span><span class="s1">DeferredAttribute</span>
+<span class="s2">from </span><span class="s1">django.db.models.utils </span><span class="s2">import </span><span class="s1">resolve_callables</span>
+<span class="s2">from </span><span class="s1">django.utils.functional </span><span class="s2">import </span><span class="s1">cached_property</span>
+
+
+<span class="s2">class </span><span class="s1">ForeignKeyDeferredAttribute(DeferredAttribute):</span>
+    <span class="s2">def </span><span class="s1">__set__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s2">if </span><span class="s1">instance.__dict__.get(self.field.attname) != value </span><span class="s2">and </span><span class="s1">self.field.is_cached(instance):</span>
+            <span class="s1">self.field.delete_cached_value(instance)</span>
+        <span class="s1">instance.__dict__[self.field.attname] = value</span>
+
+
+<span class="s2">class </span><span class="s1">ForwardManyToOneDescriptor:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Accessor to the related object on the forward side of a many-to-one or 
+    one-to-one (via ForwardOneToOneDescriptor subclass) relation. 
+ 
+    In the example:: 
+ 
+        class Child(Model): 
+            parent = ForeignKey(Parent, related_name='children') 
+ 
+    ``Child.parent`` is a ``ForwardManyToOneDescriptor`` instance. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field_with_rel):</span>
+        <span class="s1">self.field = field_with_rel</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">RelatedObjectDoesNotExist(self):</span>
+        <span class="s3"># The exception can't be created at initialization time since the</span>
+        <span class="s3"># related model might not be resolved yet; `self.field.model` might</span>
+        <span class="s3"># still be a string model reference.</span>
+        <span class="s2">return </span><span class="s1">type(</span>
+            <span class="s4">'RelatedObjectDoesNotExist'</span><span class="s2">,</span>
+            <span class="s1">(self.field.remote_field.model.DoesNotExist</span><span class="s2">, </span><span class="s1">AttributeError)</span><span class="s2">, </span><span class="s1">{</span>
+                <span class="s4">'__module__'</span><span class="s1">: self.field.model.__module__</span><span class="s2">,</span>
+                <span class="s4">'__qualname__'</span><span class="s1">: </span><span class="s4">'%s.%s.RelatedObjectDoesNotExist' </span><span class="s1">% (</span>
+                    <span class="s1">self.field.model.__qualname__</span><span class="s2">,</span>
+                    <span class="s1">self.field.name</span><span class="s2">,</span>
+                <span class="s1">)</span><span class="s2">,</span>
+            <span class="s1">}</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">is_cached(self</span><span class="s2">, </span><span class="s1">instance):</span>
+        <span class="s2">return </span><span class="s1">self.field.is_cached(instance)</span>
+
+    <span class="s2">def </span><span class="s1">get_queryset(self</span><span class="s2">, </span><span class="s1">**hints):</span>
+        <span class="s2">return </span><span class="s1">self.field.remote_field.model._base_manager.db_manager(hints=hints).all()</span>
+
+    <span class="s2">def </span><span class="s1">get_prefetch_queryset(self</span><span class="s2">, </span><span class="s1">instances</span><span class="s2">, </span><span class="s1">queryset=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">queryset </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">queryset = self.get_queryset()</span>
+        <span class="s1">queryset._add_hints(instance=instances[</span><span class="s5">0</span><span class="s1">])</span>
+
+        <span class="s1">rel_obj_attr = self.field.get_foreign_related_value</span>
+        <span class="s1">instance_attr = self.field.get_local_related_value</span>
+        <span class="s1">instances_dict = {instance_attr(inst): inst </span><span class="s2">for </span><span class="s1">inst </span><span class="s2">in </span><span class="s1">instances}</span>
+        <span class="s1">related_field = self.field.foreign_related_fields[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">remote_field = self.field.remote_field</span>
+
+        <span class="s3"># FIXME: This will need to be revisited when we introduce support for</span>
+        <span class="s3"># composite fields. In the meantime we take this practical approach to</span>
+        <span class="s3"># solve a regression on 1.6 when the reverse manager in hidden</span>
+        <span class="s3"># (related_name ends with a '+'). Refs #21410.</span>
+        <span class="s3"># The check for len(...) == 1 is a special case that allows the query</span>
+        <span class="s3"># to be join-less and smaller. Refs #21760.</span>
+        <span class="s2">if </span><span class="s1">remote_field.is_hidden() </span><span class="s2">or </span><span class="s1">len(self.field.foreign_related_fields) == </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s1">query = {</span><span class="s4">'%s__in' </span><span class="s1">% related_field.name: {instance_attr(inst)[</span><span class="s5">0</span><span class="s1">] </span><span class="s2">for </span><span class="s1">inst </span><span class="s2">in </span><span class="s1">instances}}</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">query = {</span><span class="s4">'%s__in' </span><span class="s1">% self.field.related_query_name(): instances}</span>
+        <span class="s1">queryset = queryset.filter(**query)</span>
+
+        <span class="s3"># Since we're going to assign directly in the cache,</span>
+        <span class="s3"># we must manage the reverse relation cache manually.</span>
+        <span class="s2">if not </span><span class="s1">remote_field.multiple:</span>
+            <span class="s2">for </span><span class="s1">rel_obj </span><span class="s2">in </span><span class="s1">queryset:</span>
+                <span class="s1">instance = instances_dict[rel_obj_attr(rel_obj)]</span>
+                <span class="s1">remote_field.set_cached_value(rel_obj</span><span class="s2">, </span><span class="s1">instance)</span>
+        <span class="s2">return </span><span class="s1">queryset</span><span class="s2">, </span><span class="s1">rel_obj_attr</span><span class="s2">, </span><span class="s1">instance_attr</span><span class="s2">, True, </span><span class="s1">self.field.get_cache_name()</span><span class="s2">, False</span>
+
+    <span class="s2">def </span><span class="s1">get_object(self</span><span class="s2">, </span><span class="s1">instance):</span>
+        <span class="s1">qs = self.get_queryset(instance=instance)</span>
+        <span class="s3"># Assuming the database enforces foreign keys, this won't fail.</span>
+        <span class="s2">return </span><span class="s1">qs.get(self.field.get_reverse_related_filter(instance))</span>
+
+    <span class="s2">def </span><span class="s1">__get__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">cls=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Get the related instance through the forward relation. 
+ 
+        With the example above, when getting ``child.parent``: 
+ 
+        - ``self`` is the descriptor managing the ``parent`` attribute 
+        - ``instance`` is the ``child`` instance 
+        - ``cls`` is the ``Child`` class (we don't need it) 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self</span>
+
+        <span class="s3"># The related instance is loaded from the database and then cached</span>
+        <span class="s3"># by the field on the model instance state. It can also be pre-cached</span>
+        <span class="s3"># by the reverse accessor (ReverseOneToOneDescriptor).</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">rel_obj = self.field.get_cached_value(instance)</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s1">has_value = </span><span class="s2">None not in </span><span class="s1">self.field.get_local_related_value(instance)</span>
+            <span class="s1">ancestor_link = instance._meta.get_ancestor_link(self.field.model) </span><span class="s2">if </span><span class="s1">has_value </span><span class="s2">else None</span>
+            <span class="s2">if </span><span class="s1">ancestor_link </span><span class="s2">and </span><span class="s1">ancestor_link.is_cached(instance):</span>
+                <span class="s3"># An ancestor link will exist if this field is defined on a</span>
+                <span class="s3"># multi-table inheritance parent of the instance's class.</span>
+                <span class="s1">ancestor = ancestor_link.get_cached_value(instance)</span>
+                <span class="s3"># The value might be cached on an ancestor if the instance</span>
+                <span class="s3"># originated from walking down the inheritance chain.</span>
+                <span class="s1">rel_obj = self.field.get_cached_value(ancestor</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None</span><span class="s1">)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">rel_obj = </span><span class="s2">None</span>
+            <span class="s2">if </span><span class="s1">rel_obj </span><span class="s2">is None and </span><span class="s1">has_value:</span>
+                <span class="s1">rel_obj = self.get_object(instance)</span>
+                <span class="s1">remote_field = self.field.remote_field</span>
+                <span class="s3"># If this is a one-to-one relation, set the reverse accessor</span>
+                <span class="s3"># cache on the related object to the current instance to avoid</span>
+                <span class="s3"># an extra SQL query if it's accessed later on.</span>
+                <span class="s2">if not </span><span class="s1">remote_field.multiple:</span>
+                    <span class="s1">remote_field.set_cached_value(rel_obj</span><span class="s2">, </span><span class="s1">instance)</span>
+            <span class="s1">self.field.set_cached_value(instance</span><span class="s2">, </span><span class="s1">rel_obj)</span>
+
+        <span class="s2">if </span><span class="s1">rel_obj </span><span class="s2">is None and not </span><span class="s1">self.field.null:</span>
+            <span class="s2">raise </span><span class="s1">self.RelatedObjectDoesNotExist(</span>
+                <span class="s4">&quot;%s has no %s.&quot; </span><span class="s1">% (self.field.model.__name__</span><span class="s2">, </span><span class="s1">self.field.name)</span>
+            <span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">rel_obj</span>
+
+    <span class="s2">def </span><span class="s1">__set__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Set the related instance through the forward relation. 
+ 
+        With the example above, when setting ``child.parent = parent``: 
+ 
+        - ``self`` is the descriptor managing the ``parent`` attribute 
+        - ``instance`` is the ``child`` instance 
+        - ``value`` is the ``parent`` instance on the right of the equal sign 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># An object must be an instance of the related class.</span>
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is not None and not </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">self.field.remote_field.model._meta.concrete_model):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">'Cannot assign &quot;%r&quot;: &quot;%s.%s&quot; must be a &quot;%s&quot; instance.' </span><span class="s1">% (</span>
+                    <span class="s1">value</span><span class="s2">,</span>
+                    <span class="s1">instance._meta.object_name</span><span class="s2">,</span>
+                    <span class="s1">self.field.name</span><span class="s2">,</span>
+                    <span class="s1">self.field.remote_field.model._meta.object_name</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">value </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">instance._state.db </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">instance._state.db = router.db_for_write(instance.__class__</span><span class="s2">, </span><span class="s1">instance=value)</span>
+            <span class="s2">if </span><span class="s1">value._state.db </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">value._state.db = router.db_for_write(value.__class__</span><span class="s2">, </span><span class="s1">instance=instance)</span>
+            <span class="s2">if not </span><span class="s1">router.allow_relation(value</span><span class="s2">, </span><span class="s1">instance):</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'Cannot assign &quot;%r&quot;: the current database router prevents this relation.' </span><span class="s1">% value)</span>
+
+        <span class="s1">remote_field = self.field.remote_field</span>
+        <span class="s3"># If we're setting the value of a OneToOneField to None, we need to clear</span>
+        <span class="s3"># out the cache on any old related object. Otherwise, deleting the</span>
+        <span class="s3"># previously-related object will also cause this object to be deleted,</span>
+        <span class="s3"># which is wrong.</span>
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s3"># Look up the previously-related object, which may still be available</span>
+            <span class="s3"># since we've not yet cleared out the related field.</span>
+            <span class="s3"># Use the cache directly, instead of the accessor; if we haven't</span>
+            <span class="s3"># populated the cache, then we don't care - we're only accessing</span>
+            <span class="s3"># the object to invalidate the accessor cache, so there's no</span>
+            <span class="s3"># need to populate the cache just to expire it again.</span>
+            <span class="s1">related = self.field.get_cached_value(instance</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None</span><span class="s1">)</span>
+
+            <span class="s3"># If we've got an old related object, we need to clear out its</span>
+            <span class="s3"># cache. This cache also might not exist if the related object</span>
+            <span class="s3"># hasn't been accessed yet.</span>
+            <span class="s2">if </span><span class="s1">related </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">remote_field.set_cached_value(related</span><span class="s2">, None</span><span class="s1">)</span>
+
+            <span class="s2">for </span><span class="s1">lh_field</span><span class="s2">, </span><span class="s1">rh_field </span><span class="s2">in </span><span class="s1">self.field.related_fields:</span>
+                <span class="s1">setattr(instance</span><span class="s2">, </span><span class="s1">lh_field.attname</span><span class="s2">, None</span><span class="s1">)</span>
+
+        <span class="s3"># Set the values of the related field.</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">lh_field</span><span class="s2">, </span><span class="s1">rh_field </span><span class="s2">in </span><span class="s1">self.field.related_fields:</span>
+                <span class="s1">setattr(instance</span><span class="s2">, </span><span class="s1">lh_field.attname</span><span class="s2">, </span><span class="s1">getattr(value</span><span class="s2">, </span><span class="s1">rh_field.attname))</span>
+
+        <span class="s3"># Set the related instance cache used by __get__ to avoid an SQL query</span>
+        <span class="s3"># when accessing the attribute we just set.</span>
+        <span class="s1">self.field.set_cached_value(instance</span><span class="s2">, </span><span class="s1">value)</span>
+
+        <span class="s3"># If this is a one-to-one relation, set the reverse accessor cache on</span>
+        <span class="s3"># the related object to the current instance to avoid an extra SQL</span>
+        <span class="s3"># query if it's accessed later on.</span>
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is not None and not </span><span class="s1">remote_field.multiple:</span>
+            <span class="s1">remote_field.set_cached_value(value</span><span class="s2">, </span><span class="s1">instance)</span>
+
+    <span class="s2">def </span><span class="s1">__reduce__(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Pickling should return the instance attached by self.field on the 
+        model, not a new copy of that descriptor. Use getattr() to retrieve 
+        the instance directly from the model. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">getattr</span><span class="s2">, </span><span class="s1">(self.field.model</span><span class="s2">, </span><span class="s1">self.field.name)</span>
+
+
+<span class="s2">class </span><span class="s1">ForwardOneToOneDescriptor(ForwardManyToOneDescriptor):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Accessor to the related object on the forward side of a one-to-one relation. 
+ 
+    In the example:: 
+ 
+        class Restaurant(Model): 
+            place = OneToOneField(Place, related_name='restaurant') 
+ 
+    ``Restaurant.place`` is a ``ForwardOneToOneDescriptor`` instance. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">get_object(self</span><span class="s2">, </span><span class="s1">instance):</span>
+        <span class="s2">if </span><span class="s1">self.field.remote_field.parent_link:</span>
+            <span class="s1">deferred = instance.get_deferred_fields()</span>
+            <span class="s3"># Because it's a parent link, all the data is available in the</span>
+            <span class="s3"># instance, so populate the parent model with this data.</span>
+            <span class="s1">rel_model = self.field.remote_field.model</span>
+            <span class="s1">fields = [field.attname </span><span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">rel_model._meta.concrete_fields]</span>
+
+            <span class="s3"># If any of the related model's fields are deferred, fallback to</span>
+            <span class="s3"># fetching all fields from the related model. This avoids a query</span>
+            <span class="s3"># on the related model for every deferred field.</span>
+            <span class="s2">if not </span><span class="s1">any(field </span><span class="s2">in </span><span class="s1">fields </span><span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">deferred):</span>
+                <span class="s1">kwargs = {field: getattr(instance</span><span class="s2">, </span><span class="s1">field) </span><span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">fields}</span>
+                <span class="s1">obj = rel_model(**kwargs)</span>
+                <span class="s1">obj._state.adding = instance._state.adding</span>
+                <span class="s1">obj._state.db = instance._state.db</span>
+                <span class="s2">return </span><span class="s1">obj</span>
+        <span class="s2">return </span><span class="s1">super().get_object(instance)</span>
+
+    <span class="s2">def </span><span class="s1">__set__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">super().__set__(instance</span><span class="s2">, </span><span class="s1">value)</span>
+        <span class="s3"># If the primary key is a link to a parent model and a parent instance</span>
+        <span class="s3"># is being set, update the value of the inherited pk(s).</span>
+        <span class="s2">if </span><span class="s1">self.field.primary_key </span><span class="s2">and </span><span class="s1">self.field.remote_field.parent_link:</span>
+            <span class="s1">opts = instance._meta</span>
+            <span class="s3"># Inherited primary key fields from this object's base classes.</span>
+            <span class="s1">inherited_pk_fields = [</span>
+                <span class="s1">field </span><span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">opts.concrete_fields</span>
+                <span class="s2">if </span><span class="s1">field.primary_key </span><span class="s2">and </span><span class="s1">field.remote_field</span>
+            <span class="s1">]</span>
+            <span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">inherited_pk_fields:</span>
+                <span class="s1">rel_model_pk_name = field.remote_field.model._meta.pk.attname</span>
+                <span class="s1">raw_value = getattr(value</span><span class="s2">, </span><span class="s1">rel_model_pk_name) </span><span class="s2">if </span><span class="s1">value </span><span class="s2">is not None else None</span>
+                <span class="s1">setattr(instance</span><span class="s2">, </span><span class="s1">rel_model_pk_name</span><span class="s2">, </span><span class="s1">raw_value)</span>
+
+
+<span class="s2">class </span><span class="s1">ReverseOneToOneDescriptor:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Accessor to the related object on the reverse side of a one-to-one 
+    relation. 
+ 
+    In the example:: 
+ 
+        class Restaurant(Model): 
+            place = OneToOneField(Place, related_name='restaurant') 
+ 
+    ``Place.restaurant`` is a ``ReverseOneToOneDescriptor`` instance. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">related):</span>
+        <span class="s3"># Following the example above, `related` is an instance of OneToOneRel</span>
+        <span class="s3"># which represents the reverse restaurant field (place.restaurant).</span>
+        <span class="s1">self.related = related</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">RelatedObjectDoesNotExist(self):</span>
+        <span class="s3"># The exception isn't created at initialization time for the sake of</span>
+        <span class="s3"># consistency with `ForwardManyToOneDescriptor`.</span>
+        <span class="s2">return </span><span class="s1">type(</span>
+            <span class="s4">'RelatedObjectDoesNotExist'</span><span class="s2">,</span>
+            <span class="s1">(self.related.related_model.DoesNotExist</span><span class="s2">, </span><span class="s1">AttributeError)</span><span class="s2">, </span><span class="s1">{</span>
+                <span class="s4">'__module__'</span><span class="s1">: self.related.model.__module__</span><span class="s2">,</span>
+                <span class="s4">'__qualname__'</span><span class="s1">: </span><span class="s4">'%s.%s.RelatedObjectDoesNotExist' </span><span class="s1">% (</span>
+                    <span class="s1">self.related.model.__qualname__</span><span class="s2">,</span>
+                    <span class="s1">self.related.name</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s1">}</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">is_cached(self</span><span class="s2">, </span><span class="s1">instance):</span>
+        <span class="s2">return </span><span class="s1">self.related.is_cached(instance)</span>
+
+    <span class="s2">def </span><span class="s1">get_queryset(self</span><span class="s2">, </span><span class="s1">**hints):</span>
+        <span class="s2">return </span><span class="s1">self.related.related_model._base_manager.db_manager(hints=hints).all()</span>
+
+    <span class="s2">def </span><span class="s1">get_prefetch_queryset(self</span><span class="s2">, </span><span class="s1">instances</span><span class="s2">, </span><span class="s1">queryset=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">queryset </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">queryset = self.get_queryset()</span>
+        <span class="s1">queryset._add_hints(instance=instances[</span><span class="s5">0</span><span class="s1">])</span>
+
+        <span class="s1">rel_obj_attr = self.related.field.get_local_related_value</span>
+        <span class="s1">instance_attr = self.related.field.get_foreign_related_value</span>
+        <span class="s1">instances_dict = {instance_attr(inst): inst </span><span class="s2">for </span><span class="s1">inst </span><span class="s2">in </span><span class="s1">instances}</span>
+        <span class="s1">query = {</span><span class="s4">'%s__in' </span><span class="s1">% self.related.field.name: instances}</span>
+        <span class="s1">queryset = queryset.filter(**query)</span>
+
+        <span class="s3"># Since we're going to assign directly in the cache,</span>
+        <span class="s3"># we must manage the reverse relation cache manually.</span>
+        <span class="s2">for </span><span class="s1">rel_obj </span><span class="s2">in </span><span class="s1">queryset:</span>
+            <span class="s1">instance = instances_dict[rel_obj_attr(rel_obj)]</span>
+            <span class="s1">self.related.field.set_cached_value(rel_obj</span><span class="s2">, </span><span class="s1">instance)</span>
+        <span class="s2">return </span><span class="s1">queryset</span><span class="s2">, </span><span class="s1">rel_obj_attr</span><span class="s2">, </span><span class="s1">instance_attr</span><span class="s2">, True, </span><span class="s1">self.related.get_cache_name()</span><span class="s2">, False</span>
+
+    <span class="s2">def </span><span class="s1">__get__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">cls=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Get the related instance through the reverse relation. 
+ 
+        With the example above, when getting ``place.restaurant``: 
+ 
+        - ``self`` is the descriptor managing the ``restaurant`` attribute 
+        - ``instance`` is the ``place`` instance 
+        - ``cls`` is the ``Place`` class (unused) 
+ 
+        Keep in mind that ``Restaurant`` holds the foreign key to ``Place``. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self</span>
+
+        <span class="s3"># The related instance is loaded from the database and then cached</span>
+        <span class="s3"># by the field on the model instance state. It can also be pre-cached</span>
+        <span class="s3"># by the forward accessor (ForwardManyToOneDescriptor).</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">rel_obj = self.related.get_cached_value(instance)</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s1">related_pk = instance.pk</span>
+            <span class="s2">if </span><span class="s1">related_pk </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">rel_obj = </span><span class="s2">None</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">filter_args = self.related.field.get_forward_related_filter(instance)</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">rel_obj = self.get_queryset(instance=instance).get(**filter_args)</span>
+                <span class="s2">except </span><span class="s1">self.related.related_model.DoesNotExist:</span>
+                    <span class="s1">rel_obj = </span><span class="s2">None</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s3"># Set the forward accessor cache on the related object to</span>
+                    <span class="s3"># the current instance to avoid an extra SQL query if it's</span>
+                    <span class="s3"># accessed later on.</span>
+                    <span class="s1">self.related.field.set_cached_value(rel_obj</span><span class="s2">, </span><span class="s1">instance)</span>
+            <span class="s1">self.related.set_cached_value(instance</span><span class="s2">, </span><span class="s1">rel_obj)</span>
+
+        <span class="s2">if </span><span class="s1">rel_obj </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">self.RelatedObjectDoesNotExist(</span>
+                <span class="s4">&quot;%s has no %s.&quot; </span><span class="s1">% (</span>
+                    <span class="s1">instance.__class__.__name__</span><span class="s2">,</span>
+                    <span class="s1">self.related.get_accessor_name()</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">rel_obj</span>
+
+    <span class="s2">def </span><span class="s1">__set__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Set the related instance through the reverse relation. 
+ 
+        With the example above, when setting ``place.restaurant = restaurant``: 
+ 
+        - ``self`` is the descriptor managing the ``restaurant`` attribute 
+        - ``instance`` is the ``place`` instance 
+        - ``value`` is the ``restaurant`` instance on the right of the equal sign 
+ 
+        Keep in mind that ``Restaurant`` holds the foreign key to ``Place``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># The similarity of the code below to the code in</span>
+        <span class="s3"># ForwardManyToOneDescriptor is annoying, but there's a bunch</span>
+        <span class="s3"># of small differences that would make a common base class convoluted.</span>
+
+        <span class="s2">if </span><span class="s1">value </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s3"># Update the cached related instance (if any) &amp; clear the cache.</span>
+            <span class="s3"># Following the example above, this would be the cached</span>
+            <span class="s3"># ``restaurant`` instance (if any).</span>
+            <span class="s1">rel_obj = self.related.get_cached_value(instance</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">rel_obj </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s3"># Remove the ``restaurant`` instance from the ``place``</span>
+                <span class="s3"># instance cache.</span>
+                <span class="s1">self.related.delete_cached_value(instance)</span>
+                <span class="s3"># Set the ``place`` field on the ``restaurant``</span>
+                <span class="s3"># instance to None.</span>
+                <span class="s1">setattr(rel_obj</span><span class="s2">, </span><span class="s1">self.related.field.name</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">elif not </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">self.related.related_model):</span>
+            <span class="s3"># An object must be an instance of the related class.</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">'Cannot assign &quot;%r&quot;: &quot;%s.%s&quot; must be a &quot;%s&quot; instance.' </span><span class="s1">% (</span>
+                    <span class="s1">value</span><span class="s2">,</span>
+                    <span class="s1">instance._meta.object_name</span><span class="s2">,</span>
+                    <span class="s1">self.related.get_accessor_name()</span><span class="s2">,</span>
+                    <span class="s1">self.related.related_model._meta.object_name</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">instance._state.db </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">instance._state.db = router.db_for_write(instance.__class__</span><span class="s2">, </span><span class="s1">instance=value)</span>
+            <span class="s2">if </span><span class="s1">value._state.db </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">value._state.db = router.db_for_write(value.__class__</span><span class="s2">, </span><span class="s1">instance=instance)</span>
+            <span class="s2">if not </span><span class="s1">router.allow_relation(value</span><span class="s2">, </span><span class="s1">instance):</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'Cannot assign &quot;%r&quot;: the current database router prevents this relation.' </span><span class="s1">% value)</span>
+
+            <span class="s1">related_pk = tuple(getattr(instance</span><span class="s2">, </span><span class="s1">field.attname) </span><span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">self.related.field.foreign_related_fields)</span>
+            <span class="s3"># Set the value of the related field to the value of the related object's related field</span>
+            <span class="s2">for </span><span class="s1">index</span><span class="s2">, </span><span class="s1">field </span><span class="s2">in </span><span class="s1">enumerate(self.related.field.local_related_fields):</span>
+                <span class="s1">setattr(value</span><span class="s2">, </span><span class="s1">field.attname</span><span class="s2">, </span><span class="s1">related_pk[index])</span>
+
+            <span class="s3"># Set the related instance cache used by __get__ to avoid an SQL query</span>
+            <span class="s3"># when accessing the attribute we just set.</span>
+            <span class="s1">self.related.set_cached_value(instance</span><span class="s2">, </span><span class="s1">value)</span>
+
+            <span class="s3"># Set the forward accessor cache on the related object to the current</span>
+            <span class="s3"># instance to avoid an extra SQL query if it's accessed later on.</span>
+            <span class="s1">self.related.field.set_cached_value(value</span><span class="s2">, </span><span class="s1">instance)</span>
+
+    <span class="s2">def </span><span class="s1">__reduce__(self):</span>
+        <span class="s3"># Same purpose as ForwardManyToOneDescriptor.__reduce__().</span>
+        <span class="s2">return </span><span class="s1">getattr</span><span class="s2">, </span><span class="s1">(self.related.model</span><span class="s2">, </span><span class="s1">self.related.name)</span>
+
+
+<span class="s2">class </span><span class="s1">ReverseManyToOneDescriptor:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Accessor to the related objects manager on the reverse side of a 
+    many-to-one relation. 
+ 
+    In the example:: 
+ 
+        class Child(Model): 
+            parent = ForeignKey(Parent, related_name='children') 
+ 
+    ``Parent.children`` is a ``ReverseManyToOneDescriptor`` instance. 
+ 
+    Most of the implementation is delegated to a dynamically defined manager 
+    class built by ``create_forward_many_to_many_manager()`` defined below. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">rel):</span>
+        <span class="s1">self.rel = rel</span>
+        <span class="s1">self.field = rel.field</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">related_manager_cls(self):</span>
+        <span class="s1">related_model = self.rel.related_model</span>
+
+        <span class="s2">return </span><span class="s1">create_reverse_many_to_one_manager(</span>
+            <span class="s1">related_model._default_manager.__class__</span><span class="s2">,</span>
+            <span class="s1">self.rel</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__get__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">cls=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Get the related objects through the reverse relation. 
+ 
+        With the example above, when getting ``parent.children``: 
+ 
+        - ``self`` is the descriptor managing the ``children`` attribute 
+        - ``instance`` is the ``parent`` instance 
+        - ``cls`` is the ``Parent`` class (unused) 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self</span>
+
+        <span class="s2">return </span><span class="s1">self.related_manager_cls(instance)</span>
+
+    <span class="s2">def </span><span class="s1">_get_set_deprecation_msg_params(self):</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s4">'reverse side of a related set'</span><span class="s2">,</span>
+            <span class="s1">self.rel.get_accessor_name()</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__set__(self</span><span class="s2">, </span><span class="s1">instance</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s2">raise </span><span class="s1">TypeError(</span>
+            <span class="s4">'Direct assignment to the %s is prohibited. Use %s.set() instead.'</span>
+            <span class="s1">% self._get_set_deprecation_msg_params()</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">create_reverse_many_to_one_manager(superclass</span><span class="s2">, </span><span class="s1">rel):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Create a manager for the reverse side of a many-to-one relation. 
+ 
+    This manager subclasses another manager, generally the default manager of 
+    the related model, and adds behaviors specific to many-to-one relations. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">class </span><span class="s1">RelatedManager(superclass):</span>
+        <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">instance):</span>
+            <span class="s1">super().__init__()</span>
+
+            <span class="s1">self.instance = instance</span>
+            <span class="s1">self.model = rel.related_model</span>
+            <span class="s1">self.field = rel.field</span>
+
+            <span class="s1">self.core_filters = {self.field.name: instance}</span>
+
+        <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">manager):</span>
+            <span class="s1">manager = getattr(self.model</span><span class="s2">, </span><span class="s1">manager)</span>
+            <span class="s1">manager_class = create_reverse_many_to_one_manager(manager.__class__</span><span class="s2">, </span><span class="s1">rel)</span>
+            <span class="s2">return </span><span class="s1">manager_class(self.instance)</span>
+        <span class="s1">do_not_call_in_templates = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">_apply_rel_filters(self</span><span class="s2">, </span><span class="s1">queryset):</span>
+            <span class="s0">&quot;&quot;&quot; 
+            Filter the queryset for the instance this manager is bound to. 
+            &quot;&quot;&quot;</span>
+            <span class="s1">db = self._db </span><span class="s2">or </span><span class="s1">router.db_for_read(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s1">empty_strings_as_null = connections[db].features.interprets_empty_strings_as_nulls</span>
+            <span class="s1">queryset._add_hints(instance=self.instance)</span>
+            <span class="s2">if </span><span class="s1">self._db:</span>
+                <span class="s1">queryset = queryset.using(self._db)</span>
+            <span class="s1">queryset._defer_next_filter = </span><span class="s2">True</span>
+            <span class="s1">queryset = queryset.filter(**self.core_filters)</span>
+            <span class="s2">for </span><span class="s1">field </span><span class="s2">in </span><span class="s1">self.field.foreign_related_fields:</span>
+                <span class="s1">val = getattr(self.instance</span><span class="s2">, </span><span class="s1">field.attname)</span>
+                <span class="s2">if </span><span class="s1">val </span><span class="s2">is None or </span><span class="s1">(val == </span><span class="s4">'' </span><span class="s2">and </span><span class="s1">empty_strings_as_null):</span>
+                    <span class="s2">return </span><span class="s1">queryset.none()</span>
+            <span class="s2">if </span><span class="s1">self.field.many_to_one:</span>
+                <span class="s3"># Guard against field-like objects such as GenericRelation</span>
+                <span class="s3"># that abuse create_reverse_many_to_one_manager() with reverse</span>
+                <span class="s3"># one-to-many relationships instead and break known related</span>
+                <span class="s3"># objects assignment.</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">target_field = self.field.target_field</span>
+                <span class="s2">except </span><span class="s1">FieldError:</span>
+                    <span class="s3"># The relationship has multiple target fields. Use a tuple</span>
+                    <span class="s3"># for related object id.</span>
+                    <span class="s1">rel_obj_id = tuple([</span>
+                        <span class="s1">getattr(self.instance</span><span class="s2">, </span><span class="s1">target_field.attname)</span>
+                        <span class="s2">for </span><span class="s1">target_field </span><span class="s2">in </span><span class="s1">self.field.get_path_info()[-</span><span class="s5">1</span><span class="s1">].target_fields</span>
+                    <span class="s1">])</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">rel_obj_id = getattr(self.instance</span><span class="s2">, </span><span class="s1">target_field.attname)</span>
+                <span class="s1">queryset._known_related_objects = {self.field: {rel_obj_id: self.instance}}</span>
+            <span class="s2">return </span><span class="s1">queryset</span>
+
+        <span class="s2">def </span><span class="s1">_remove_prefetched_objects(self):</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">self.instance._prefetched_objects_cache.pop(self.field.remote_field.get_cache_name())</span>
+            <span class="s2">except </span><span class="s1">(AttributeError</span><span class="s2">, </span><span class="s1">KeyError):</span>
+                <span class="s2">pass  </span><span class="s3"># nothing to clear from cache</span>
+
+        <span class="s2">def </span><span class="s1">get_queryset(self):</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">self.instance._prefetched_objects_cache[self.field.remote_field.get_cache_name()]</span>
+            <span class="s2">except </span><span class="s1">(AttributeError</span><span class="s2">, </span><span class="s1">KeyError):</span>
+                <span class="s1">queryset = super().get_queryset()</span>
+                <span class="s2">return </span><span class="s1">self._apply_rel_filters(queryset)</span>
+
+        <span class="s2">def </span><span class="s1">get_prefetch_queryset(self</span><span class="s2">, </span><span class="s1">instances</span><span class="s2">, </span><span class="s1">queryset=</span><span class="s2">None</span><span class="s1">):</span>
+            <span class="s2">if </span><span class="s1">queryset </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">queryset = super().get_queryset()</span>
+
+            <span class="s1">queryset._add_hints(instance=instances[</span><span class="s5">0</span><span class="s1">])</span>
+            <span class="s1">queryset = queryset.using(queryset._db </span><span class="s2">or </span><span class="s1">self._db)</span>
+
+            <span class="s1">rel_obj_attr = self.field.get_local_related_value</span>
+            <span class="s1">instance_attr = self.field.get_foreign_related_value</span>
+            <span class="s1">instances_dict = {instance_attr(inst): inst </span><span class="s2">for </span><span class="s1">inst </span><span class="s2">in </span><span class="s1">instances}</span>
+            <span class="s1">query = {</span><span class="s4">'%s__in' </span><span class="s1">% self.field.name: instances}</span>
+            <span class="s1">queryset = queryset.filter(**query)</span>
+
+            <span class="s3"># Since we just bypassed this class' get_queryset(), we must manage</span>
+            <span class="s3"># the reverse relation manually.</span>
+            <span class="s2">for </span><span class="s1">rel_obj </span><span class="s2">in </span><span class="s1">queryset:</span>
+                <span class="s1">instance = instances_dict[rel_obj_attr(rel_obj)]</span>
+                <span class="s1">setattr(rel_obj</span><span class="s2">, </span><span class="s1">self.field.name</span><span class="s2">, </span><span class="s1">instance)</span>
+            <span class="s1">cache_name = self.field.remote_field.get_cache_name()</span>
+            <span class="s2">return </span><span class="s1">queryset</span><span class="s2">, </span><span class="s1">rel_obj_attr</span><span class="s2">, </span><span class="s1">instance_attr</span><span class="s2">, False, </span><span class="s1">cache_name</span><span class="s2">, False</span>
+
+        <span class="s2">def </span><span class="s1">add(self</span><span class="s2">, </span><span class="s1">*objs</span><span class="s2">, </span><span class="s1">bulk=</span><span class="s2">True</span><span class="s1">):</span>
+            <span class="s1">self._remove_prefetched_objects()</span>
+            <span class="s1">db = router.db_for_write(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+
+            <span class="s2">def </span><span class="s1">check_and_update_obj(obj):</span>
+                <span class="s2">if not </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">self.model):</span>
+                    <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;'%s' instance expected, got %r&quot; </span><span class="s1">% (</span>
+                        <span class="s1">self.model._meta.object_name</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">,</span>
+                    <span class="s1">))</span>
+                <span class="s1">setattr(obj</span><span class="s2">, </span><span class="s1">self.field.name</span><span class="s2">, </span><span class="s1">self.instance)</span>
+
+            <span class="s2">if </span><span class="s1">bulk:</span>
+                <span class="s1">pks = []</span>
+                <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                    <span class="s1">check_and_update_obj(obj)</span>
+                    <span class="s2">if </span><span class="s1">obj._state.adding </span><span class="s2">or </span><span class="s1">obj._state.db != db:</span>
+                        <span class="s2">raise </span><span class="s1">ValueError(</span>
+                            <span class="s4">&quot;%r instance isn't saved. Use bulk=False or save &quot;</span>
+                            <span class="s4">&quot;the object first.&quot; </span><span class="s1">% obj</span>
+                        <span class="s1">)</span>
+                    <span class="s1">pks.append(obj.pk)</span>
+                <span class="s1">self.model._base_manager.using(db).filter(pk__in=pks).update(**{</span>
+                    <span class="s1">self.field.name: self.instance</span><span class="s2">,</span>
+                <span class="s1">})</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                    <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                        <span class="s1">check_and_update_obj(obj)</span>
+                        <span class="s1">obj.save()</span>
+        <span class="s1">add.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">create(self</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+            <span class="s1">kwargs[self.field.name] = self.instance</span>
+            <span class="s1">db = router.db_for_write(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">return </span><span class="s1">super(RelatedManager</span><span class="s2">, </span><span class="s1">self.db_manager(db)).create(**kwargs)</span>
+        <span class="s1">create.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">get_or_create(self</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+            <span class="s1">kwargs[self.field.name] = self.instance</span>
+            <span class="s1">db = router.db_for_write(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">return </span><span class="s1">super(RelatedManager</span><span class="s2">, </span><span class="s1">self.db_manager(db)).get_or_create(**kwargs)</span>
+        <span class="s1">get_or_create.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">update_or_create(self</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+            <span class="s1">kwargs[self.field.name] = self.instance</span>
+            <span class="s1">db = router.db_for_write(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">return </span><span class="s1">super(RelatedManager</span><span class="s2">, </span><span class="s1">self.db_manager(db)).update_or_create(**kwargs)</span>
+        <span class="s1">update_or_create.alters_data = </span><span class="s2">True</span>
+
+        <span class="s3"># remove() and clear() are only provided if the ForeignKey can have a value of null.</span>
+        <span class="s2">if </span><span class="s1">rel.field.null:</span>
+            <span class="s2">def </span><span class="s1">remove(self</span><span class="s2">, </span><span class="s1">*objs</span><span class="s2">, </span><span class="s1">bulk=</span><span class="s2">True</span><span class="s1">):</span>
+                <span class="s2">if not </span><span class="s1">objs:</span>
+                    <span class="s2">return</span>
+                <span class="s1">val = self.field.get_foreign_related_value(self.instance)</span>
+                <span class="s1">old_ids = set()</span>
+                <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                    <span class="s2">if not </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">self.model):</span>
+                        <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;'%s' instance expected, got %r&quot; </span><span class="s1">% (</span>
+                            <span class="s1">self.model._meta.object_name</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">,</span>
+                        <span class="s1">))</span>
+                    <span class="s3"># Is obj actually part of this descriptor set?</span>
+                    <span class="s2">if </span><span class="s1">self.field.get_local_related_value(obj) == val:</span>
+                        <span class="s1">old_ids.add(obj.pk)</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s2">raise </span><span class="s1">self.field.remote_field.model.DoesNotExist(</span>
+                            <span class="s4">&quot;%r is not related to %r.&quot; </span><span class="s1">% (obj</span><span class="s2">, </span><span class="s1">self.instance)</span>
+                        <span class="s1">)</span>
+                <span class="s1">self._clear(self.filter(pk__in=old_ids)</span><span class="s2">, </span><span class="s1">bulk)</span>
+            <span class="s1">remove.alters_data = </span><span class="s2">True</span>
+
+            <span class="s2">def </span><span class="s1">clear(self</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">bulk=</span><span class="s2">True</span><span class="s1">):</span>
+                <span class="s1">self._clear(self</span><span class="s2">, </span><span class="s1">bulk)</span>
+            <span class="s1">clear.alters_data = </span><span class="s2">True</span>
+
+            <span class="s2">def </span><span class="s1">_clear(self</span><span class="s2">, </span><span class="s1">queryset</span><span class="s2">, </span><span class="s1">bulk):</span>
+                <span class="s1">self._remove_prefetched_objects()</span>
+                <span class="s1">db = router.db_for_write(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+                <span class="s1">queryset = queryset.using(db)</span>
+                <span class="s2">if </span><span class="s1">bulk:</span>
+                    <span class="s3"># `QuerySet.update()` is intrinsically atomic.</span>
+                    <span class="s1">queryset.update(**{self.field.name: </span><span class="s2">None</span><span class="s1">})</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                        <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">queryset:</span>
+                            <span class="s1">setattr(obj</span><span class="s2">, </span><span class="s1">self.field.name</span><span class="s2">, None</span><span class="s1">)</span>
+                            <span class="s1">obj.save(update_fields=[self.field.name])</span>
+            <span class="s1">_clear.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">set(self</span><span class="s2">, </span><span class="s1">objs</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">bulk=</span><span class="s2">True, </span><span class="s1">clear=</span><span class="s2">False</span><span class="s1">):</span>
+            <span class="s3"># Force evaluation of `objs` in case it's a queryset whose value</span>
+            <span class="s3"># could be affected by `manager.clear()`. Refs #19816.</span>
+            <span class="s1">objs = tuple(objs)</span>
+
+            <span class="s2">if </span><span class="s1">self.field.null:</span>
+                <span class="s1">db = router.db_for_write(self.model</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+                <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                    <span class="s2">if </span><span class="s1">clear:</span>
+                        <span class="s1">self.clear(bulk=bulk)</span>
+                        <span class="s1">self.add(*objs</span><span class="s2">, </span><span class="s1">bulk=bulk)</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s1">old_objs = set(self.using(db).all())</span>
+                        <span class="s1">new_objs = []</span>
+                        <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                            <span class="s2">if </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">old_objs:</span>
+                                <span class="s1">old_objs.remove(obj)</span>
+                            <span class="s2">else</span><span class="s1">:</span>
+                                <span class="s1">new_objs.append(obj)</span>
+
+                        <span class="s1">self.remove(*old_objs</span><span class="s2">, </span><span class="s1">bulk=bulk)</span>
+                        <span class="s1">self.add(*new_objs</span><span class="s2">, </span><span class="s1">bulk=bulk)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">self.add(*objs</span><span class="s2">, </span><span class="s1">bulk=bulk)</span>
+        <span class="s1">set.alters_data = </span><span class="s2">True</span>
+
+    <span class="s2">return </span><span class="s1">RelatedManager</span>
+
+
+<span class="s2">class </span><span class="s1">ManyToManyDescriptor(ReverseManyToOneDescriptor):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Accessor to the related objects manager on the forward and reverse sides of 
+    a many-to-many relation. 
+ 
+    In the example:: 
+ 
+        class Pizza(Model): 
+            toppings = ManyToManyField(Topping, related_name='pizzas') 
+ 
+    ``Pizza.toppings`` and ``Topping.pizzas`` are ``ManyToManyDescriptor`` 
+    instances. 
+ 
+    Most of the implementation is delegated to a dynamically defined manager 
+    class built by ``create_forward_many_to_many_manager()`` defined below. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">rel</span><span class="s2">, </span><span class="s1">reverse=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s1">super().__init__(rel)</span>
+
+        <span class="s1">self.reverse = reverse</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">through(self):</span>
+        <span class="s3"># through is provided so that you have easy access to the through</span>
+        <span class="s3"># model (Book.authors.through) for inlines, etc. This is done as</span>
+        <span class="s3"># a property to ensure that the fully resolved value is returned.</span>
+        <span class="s2">return </span><span class="s1">self.rel.through</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">related_manager_cls(self):</span>
+        <span class="s1">related_model = self.rel.related_model </span><span class="s2">if </span><span class="s1">self.reverse </span><span class="s2">else </span><span class="s1">self.rel.model</span>
+
+        <span class="s2">return </span><span class="s1">create_forward_many_to_many_manager(</span>
+            <span class="s1">related_model._default_manager.__class__</span><span class="s2">,</span>
+            <span class="s1">self.rel</span><span class="s2">,</span>
+            <span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_get_set_deprecation_msg_params(self):</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s4">'%s side of a many-to-many set' </span><span class="s1">% (</span><span class="s4">'reverse' </span><span class="s2">if </span><span class="s1">self.reverse </span><span class="s2">else </span><span class="s4">'forward'</span><span class="s1">)</span><span class="s2">,</span>
+            <span class="s1">self.rel.get_accessor_name() </span><span class="s2">if </span><span class="s1">self.reverse </span><span class="s2">else </span><span class="s1">self.field.name</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">create_forward_many_to_many_manager(superclass</span><span class="s2">, </span><span class="s1">rel</span><span class="s2">, </span><span class="s1">reverse):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Create a manager for the either side of a many-to-many relation. 
+ 
+    This manager subclasses another manager, generally the default manager of 
+    the related model, and adds behaviors specific to many-to-many relations. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">class </span><span class="s1">ManyRelatedManager(superclass):</span>
+        <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">instance=</span><span class="s2">None</span><span class="s1">):</span>
+            <span class="s1">super().__init__()</span>
+
+            <span class="s1">self.instance = instance</span>
+
+            <span class="s2">if not </span><span class="s1">reverse:</span>
+                <span class="s1">self.model = rel.model</span>
+                <span class="s1">self.query_field_name = rel.field.related_query_name()</span>
+                <span class="s1">self.prefetch_cache_name = rel.field.name</span>
+                <span class="s1">self.source_field_name = rel.field.m2m_field_name()</span>
+                <span class="s1">self.target_field_name = rel.field.m2m_reverse_field_name()</span>
+                <span class="s1">self.symmetrical = rel.symmetrical</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">self.model = rel.related_model</span>
+                <span class="s1">self.query_field_name = rel.field.name</span>
+                <span class="s1">self.prefetch_cache_name = rel.field.related_query_name()</span>
+                <span class="s1">self.source_field_name = rel.field.m2m_reverse_field_name()</span>
+                <span class="s1">self.target_field_name = rel.field.m2m_field_name()</span>
+                <span class="s1">self.symmetrical = </span><span class="s2">False</span>
+
+            <span class="s1">self.through = rel.through</span>
+            <span class="s1">self.reverse = reverse</span>
+
+            <span class="s1">self.source_field = self.through._meta.get_field(self.source_field_name)</span>
+            <span class="s1">self.target_field = self.through._meta.get_field(self.target_field_name)</span>
+
+            <span class="s1">self.core_filters = {}</span>
+            <span class="s1">self.pk_field_names = {}</span>
+            <span class="s2">for </span><span class="s1">lh_field</span><span class="s2">, </span><span class="s1">rh_field </span><span class="s2">in </span><span class="s1">self.source_field.related_fields:</span>
+                <span class="s1">core_filter_key = </span><span class="s4">'%s__%s' </span><span class="s1">% (self.query_field_name</span><span class="s2">, </span><span class="s1">rh_field.name)</span>
+                <span class="s1">self.core_filters[core_filter_key] = getattr(instance</span><span class="s2">, </span><span class="s1">rh_field.attname)</span>
+                <span class="s1">self.pk_field_names[lh_field.name] = rh_field.name</span>
+
+            <span class="s1">self.related_val = self.source_field.get_foreign_related_value(instance)</span>
+            <span class="s2">if None in </span><span class="s1">self.related_val:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">'&quot;%r&quot; needs to have a value for field &quot;%s&quot; before '</span>
+                                 <span class="s4">'this many-to-many relationship can be used.' </span><span class="s1">%</span>
+                                 <span class="s1">(instance</span><span class="s2">, </span><span class="s1">self.pk_field_names[self.source_field_name]))</span>
+            <span class="s3"># Even if this relation is not to pk, we require still pk value.</span>
+            <span class="s3"># The wish is that the instance has been already saved to DB,</span>
+            <span class="s3"># although having a pk value isn't a guarantee of that.</span>
+            <span class="s2">if </span><span class="s1">instance.pk </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;%r instance needs to have a primary key value before &quot;</span>
+                                 <span class="s4">&quot;a many-to-many relationship can be used.&quot; </span><span class="s1">%</span>
+                                 <span class="s1">instance.__class__.__name__)</span>
+
+        <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">manager):</span>
+            <span class="s1">manager = getattr(self.model</span><span class="s2">, </span><span class="s1">manager)</span>
+            <span class="s1">manager_class = create_forward_many_to_many_manager(manager.__class__</span><span class="s2">, </span><span class="s1">rel</span><span class="s2">, </span><span class="s1">reverse)</span>
+            <span class="s2">return </span><span class="s1">manager_class(instance=self.instance)</span>
+        <span class="s1">do_not_call_in_templates = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">_build_remove_filters(self</span><span class="s2">, </span><span class="s1">removed_vals):</span>
+            <span class="s1">filters = Q((self.source_field_name</span><span class="s2">, </span><span class="s1">self.related_val))</span>
+            <span class="s3"># No need to add a subquery condition if removed_vals is a QuerySet without</span>
+            <span class="s3"># filters.</span>
+            <span class="s1">removed_vals_filters = (</span><span class="s2">not </span><span class="s1">isinstance(removed_vals</span><span class="s2">, </span><span class="s1">QuerySet) </span><span class="s2">or</span>
+                                    <span class="s1">removed_vals._has_filters())</span>
+            <span class="s2">if </span><span class="s1">removed_vals_filters:</span>
+                <span class="s1">filters &amp;= Q((</span><span class="s4">f'</span><span class="s2">{</span><span class="s1">self.target_field_name</span><span class="s2">}</span><span class="s4">__in'</span><span class="s2">, </span><span class="s1">removed_vals))</span>
+            <span class="s2">if </span><span class="s1">self.symmetrical:</span>
+                <span class="s1">symmetrical_filters = Q((self.target_field_name</span><span class="s2">, </span><span class="s1">self.related_val))</span>
+                <span class="s2">if </span><span class="s1">removed_vals_filters:</span>
+                    <span class="s1">symmetrical_filters &amp;= Q((</span><span class="s4">f'</span><span class="s2">{</span><span class="s1">self.source_field_name</span><span class="s2">}</span><span class="s4">__in'</span><span class="s2">, </span><span class="s1">removed_vals))</span>
+                <span class="s1">filters |= symmetrical_filters</span>
+            <span class="s2">return </span><span class="s1">filters</span>
+
+        <span class="s2">def </span><span class="s1">_apply_rel_filters(self</span><span class="s2">, </span><span class="s1">queryset):</span>
+            <span class="s0">&quot;&quot;&quot; 
+            Filter the queryset for the instance this manager is bound to. 
+            &quot;&quot;&quot;</span>
+            <span class="s1">queryset._add_hints(instance=self.instance)</span>
+            <span class="s2">if </span><span class="s1">self._db:</span>
+                <span class="s1">queryset = queryset.using(self._db)</span>
+            <span class="s1">queryset._defer_next_filter = </span><span class="s2">True</span>
+            <span class="s2">return </span><span class="s1">queryset._next_is_sticky().filter(**self.core_filters)</span>
+
+        <span class="s2">def </span><span class="s1">_remove_prefetched_objects(self):</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">self.instance._prefetched_objects_cache.pop(self.prefetch_cache_name)</span>
+            <span class="s2">except </span><span class="s1">(AttributeError</span><span class="s2">, </span><span class="s1">KeyError):</span>
+                <span class="s2">pass  </span><span class="s3"># nothing to clear from cache</span>
+
+        <span class="s2">def </span><span class="s1">get_queryset(self):</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">self.instance._prefetched_objects_cache[self.prefetch_cache_name]</span>
+            <span class="s2">except </span><span class="s1">(AttributeError</span><span class="s2">, </span><span class="s1">KeyError):</span>
+                <span class="s1">queryset = super().get_queryset()</span>
+                <span class="s2">return </span><span class="s1">self._apply_rel_filters(queryset)</span>
+
+        <span class="s2">def </span><span class="s1">get_prefetch_queryset(self</span><span class="s2">, </span><span class="s1">instances</span><span class="s2">, </span><span class="s1">queryset=</span><span class="s2">None</span><span class="s1">):</span>
+            <span class="s2">if </span><span class="s1">queryset </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">queryset = super().get_queryset()</span>
+
+            <span class="s1">queryset._add_hints(instance=instances[</span><span class="s5">0</span><span class="s1">])</span>
+            <span class="s1">queryset = queryset.using(queryset._db </span><span class="s2">or </span><span class="s1">self._db)</span>
+
+            <span class="s1">query = {</span><span class="s4">'%s__in' </span><span class="s1">% self.query_field_name: instances}</span>
+            <span class="s1">queryset = queryset._next_is_sticky().filter(**query)</span>
+
+            <span class="s3"># M2M: need to annotate the query in order to get the primary model</span>
+            <span class="s3"># that the secondary model was actually related to. We know that</span>
+            <span class="s3"># there will already be a join on the join table, so we can just add</span>
+            <span class="s3"># the select.</span>
+
+            <span class="s3"># For non-autocreated 'through' models, can't assume we are</span>
+            <span class="s3"># dealing with PK values.</span>
+            <span class="s1">fk = self.through._meta.get_field(self.source_field_name)</span>
+            <span class="s1">join_table = fk.model._meta.db_table</span>
+            <span class="s1">connection = connections[queryset.db]</span>
+            <span class="s1">qn = connection.ops.quote_name</span>
+            <span class="s1">queryset = queryset.extra(select={</span>
+                <span class="s4">'_prefetch_related_val_%s' </span><span class="s1">% f.attname:</span>
+                <span class="s4">'%s.%s' </span><span class="s1">% (qn(join_table)</span><span class="s2">, </span><span class="s1">qn(f.column)) </span><span class="s2">for </span><span class="s1">f </span><span class="s2">in </span><span class="s1">fk.local_related_fields})</span>
+            <span class="s2">return </span><span class="s1">(</span>
+                <span class="s1">queryset</span><span class="s2">,</span>
+                <span class="s2">lambda </span><span class="s1">result: tuple(</span>
+                    <span class="s1">getattr(result</span><span class="s2">, </span><span class="s4">'_prefetch_related_val_%s' </span><span class="s1">% f.attname)</span>
+                    <span class="s2">for </span><span class="s1">f </span><span class="s2">in </span><span class="s1">fk.local_related_fields</span>
+                <span class="s1">)</span><span class="s2">,</span>
+                <span class="s2">lambda </span><span class="s1">inst: tuple(</span>
+                    <span class="s1">f.get_db_prep_value(getattr(inst</span><span class="s2">, </span><span class="s1">f.attname)</span><span class="s2">, </span><span class="s1">connection)</span>
+                    <span class="s2">for </span><span class="s1">f </span><span class="s2">in </span><span class="s1">fk.foreign_related_fields</span>
+                <span class="s1">)</span><span class="s2">,</span>
+                <span class="s2">False,</span>
+                <span class="s1">self.prefetch_cache_name</span><span class="s2">,</span>
+                <span class="s2">False,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">def </span><span class="s1">add(self</span><span class="s2">, </span><span class="s1">*objs</span><span class="s2">, </span><span class="s1">through_defaults=</span><span class="s2">None</span><span class="s1">):</span>
+            <span class="s1">self._remove_prefetched_objects()</span>
+            <span class="s1">db = router.db_for_write(self.through</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                <span class="s1">self._add_items(</span>
+                    <span class="s1">self.source_field_name</span><span class="s2">, </span><span class="s1">self.target_field_name</span><span class="s2">, </span><span class="s1">*objs</span><span class="s2">,</span>
+                    <span class="s1">through_defaults=through_defaults</span><span class="s2">,</span>
+                <span class="s1">)</span>
+                <span class="s3"># If this is a symmetrical m2m relation to self, add the mirror</span>
+                <span class="s3"># entry in the m2m table.</span>
+                <span class="s2">if </span><span class="s1">self.symmetrical:</span>
+                    <span class="s1">self._add_items(</span>
+                        <span class="s1">self.target_field_name</span><span class="s2">,</span>
+                        <span class="s1">self.source_field_name</span><span class="s2">,</span>
+                        <span class="s1">*objs</span><span class="s2">,</span>
+                        <span class="s1">through_defaults=through_defaults</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+        <span class="s1">add.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">remove(self</span><span class="s2">, </span><span class="s1">*objs):</span>
+            <span class="s1">self._remove_prefetched_objects()</span>
+            <span class="s1">self._remove_items(self.source_field_name</span><span class="s2">, </span><span class="s1">self.target_field_name</span><span class="s2">, </span><span class="s1">*objs)</span>
+        <span class="s1">remove.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">clear(self):</span>
+            <span class="s1">db = router.db_for_write(self.through</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                <span class="s1">signals.m2m_changed.send(</span>
+                    <span class="s1">sender=self.through</span><span class="s2">, </span><span class="s1">action=</span><span class="s4">&quot;pre_clear&quot;</span><span class="s2">,</span>
+                    <span class="s1">instance=self.instance</span><span class="s2">, </span><span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+                    <span class="s1">model=self.model</span><span class="s2">, </span><span class="s1">pk_set=</span><span class="s2">None, </span><span class="s1">using=db</span><span class="s2">,</span>
+                <span class="s1">)</span>
+                <span class="s1">self._remove_prefetched_objects()</span>
+                <span class="s1">filters = self._build_remove_filters(super().get_queryset().using(db))</span>
+                <span class="s1">self.through._default_manager.using(db).filter(filters).delete()</span>
+
+                <span class="s1">signals.m2m_changed.send(</span>
+                    <span class="s1">sender=self.through</span><span class="s2">, </span><span class="s1">action=</span><span class="s4">&quot;post_clear&quot;</span><span class="s2">,</span>
+                    <span class="s1">instance=self.instance</span><span class="s2">, </span><span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+                    <span class="s1">model=self.model</span><span class="s2">, </span><span class="s1">pk_set=</span><span class="s2">None, </span><span class="s1">using=db</span><span class="s2">,</span>
+                <span class="s1">)</span>
+        <span class="s1">clear.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">set(self</span><span class="s2">, </span><span class="s1">objs</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">clear=</span><span class="s2">False, </span><span class="s1">through_defaults=</span><span class="s2">None</span><span class="s1">):</span>
+            <span class="s3"># Force evaluation of `objs` in case it's a queryset whose value</span>
+            <span class="s3"># could be affected by `manager.clear()`. Refs #19816.</span>
+            <span class="s1">objs = tuple(objs)</span>
+
+            <span class="s1">db = router.db_for_write(self.through</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                <span class="s2">if </span><span class="s1">clear:</span>
+                    <span class="s1">self.clear()</span>
+                    <span class="s1">self.add(*objs</span><span class="s2">, </span><span class="s1">through_defaults=through_defaults)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">old_ids = set(self.using(db).values_list(self.target_field.target_field.attname</span><span class="s2">, </span><span class="s1">flat=</span><span class="s2">True</span><span class="s1">))</span>
+
+                    <span class="s1">new_objs = []</span>
+                    <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                        <span class="s1">fk_val = (</span>
+                            <span class="s1">self.target_field.get_foreign_related_value(obj)[</span><span class="s5">0</span><span class="s1">]</span>
+                            <span class="s2">if </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">self.model)</span>
+                            <span class="s2">else </span><span class="s1">self.target_field.get_prep_value(obj)</span>
+                        <span class="s1">)</span>
+                        <span class="s2">if </span><span class="s1">fk_val </span><span class="s2">in </span><span class="s1">old_ids:</span>
+                            <span class="s1">old_ids.remove(fk_val)</span>
+                        <span class="s2">else</span><span class="s1">:</span>
+                            <span class="s1">new_objs.append(obj)</span>
+
+                    <span class="s1">self.remove(*old_ids)</span>
+                    <span class="s1">self.add(*new_objs</span><span class="s2">, </span><span class="s1">through_defaults=through_defaults)</span>
+        <span class="s1">set.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">create(self</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">through_defaults=</span><span class="s2">None, </span><span class="s1">**kwargs):</span>
+            <span class="s1">db = router.db_for_write(self.instance.__class__</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s1">new_obj = super(ManyRelatedManager</span><span class="s2">, </span><span class="s1">self.db_manager(db)).create(**kwargs)</span>
+            <span class="s1">self.add(new_obj</span><span class="s2">, </span><span class="s1">through_defaults=through_defaults)</span>
+            <span class="s2">return </span><span class="s1">new_obj</span>
+        <span class="s1">create.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">get_or_create(self</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">through_defaults=</span><span class="s2">None, </span><span class="s1">**kwargs):</span>
+            <span class="s1">db = router.db_for_write(self.instance.__class__</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s1">obj</span><span class="s2">, </span><span class="s1">created = super(ManyRelatedManager</span><span class="s2">, </span><span class="s1">self.db_manager(db)).get_or_create(**kwargs)</span>
+            <span class="s3"># We only need to add() if created because if we got an object back</span>
+            <span class="s3"># from get() then the relationship already exists.</span>
+            <span class="s2">if </span><span class="s1">created:</span>
+                <span class="s1">self.add(obj</span><span class="s2">, </span><span class="s1">through_defaults=through_defaults)</span>
+            <span class="s2">return </span><span class="s1">obj</span><span class="s2">, </span><span class="s1">created</span>
+        <span class="s1">get_or_create.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">update_or_create(self</span><span class="s2">, </span><span class="s1">*</span><span class="s2">, </span><span class="s1">through_defaults=</span><span class="s2">None, </span><span class="s1">**kwargs):</span>
+            <span class="s1">db = router.db_for_write(self.instance.__class__</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s1">obj</span><span class="s2">, </span><span class="s1">created = super(ManyRelatedManager</span><span class="s2">, </span><span class="s1">self.db_manager(db)).update_or_create(**kwargs)</span>
+            <span class="s3"># We only need to add() if created because if we got an object back</span>
+            <span class="s3"># from get() then the relationship already exists.</span>
+            <span class="s2">if </span><span class="s1">created:</span>
+                <span class="s1">self.add(obj</span><span class="s2">, </span><span class="s1">through_defaults=through_defaults)</span>
+            <span class="s2">return </span><span class="s1">obj</span><span class="s2">, </span><span class="s1">created</span>
+        <span class="s1">update_or_create.alters_data = </span><span class="s2">True</span>
+
+        <span class="s2">def </span><span class="s1">_get_target_ids(self</span><span class="s2">, </span><span class="s1">target_field_name</span><span class="s2">, </span><span class="s1">objs):</span>
+            <span class="s0">&quot;&quot;&quot; 
+            Return the set of ids of `objs` that the target field references. 
+            &quot;&quot;&quot;</span>
+            <span class="s2">from </span><span class="s1">django.db.models </span><span class="s2">import </span><span class="s1">Model</span>
+            <span class="s1">target_ids = set()</span>
+            <span class="s1">target_field = self.through._meta.get_field(target_field_name)</span>
+            <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                <span class="s2">if </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">self.model):</span>
+                    <span class="s2">if not </span><span class="s1">router.allow_relation(obj</span><span class="s2">, </span><span class="s1">self.instance):</span>
+                        <span class="s2">raise </span><span class="s1">ValueError(</span>
+                            <span class="s4">'Cannot add &quot;%r&quot;: instance is on database &quot;%s&quot;, '</span>
+                            <span class="s4">'value is on database &quot;%s&quot;' </span><span class="s1">%</span>
+                            <span class="s1">(obj</span><span class="s2">, </span><span class="s1">self.instance._state.db</span><span class="s2">, </span><span class="s1">obj._state.db)</span>
+                        <span class="s1">)</span>
+                    <span class="s1">target_id = target_field.get_foreign_related_value(obj)[</span><span class="s5">0</span><span class="s1">]</span>
+                    <span class="s2">if </span><span class="s1">target_id </span><span class="s2">is None</span><span class="s1">:</span>
+                        <span class="s2">raise </span><span class="s1">ValueError(</span>
+                            <span class="s4">'Cannot add &quot;%r&quot;: the value for field &quot;%s&quot; is None' </span><span class="s1">%</span>
+                            <span class="s1">(obj</span><span class="s2">, </span><span class="s1">target_field_name)</span>
+                        <span class="s1">)</span>
+                    <span class="s1">target_ids.add(target_id)</span>
+                <span class="s2">elif </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">Model):</span>
+                    <span class="s2">raise </span><span class="s1">TypeError(</span>
+                        <span class="s4">&quot;'%s' instance expected, got %r&quot; </span><span class="s1">%</span>
+                        <span class="s1">(self.model._meta.object_name</span><span class="s2">, </span><span class="s1">obj)</span>
+                    <span class="s1">)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">target_ids.add(target_field.get_prep_value(obj))</span>
+            <span class="s2">return </span><span class="s1">target_ids</span>
+
+        <span class="s2">def </span><span class="s1">_get_missing_target_ids(self</span><span class="s2">, </span><span class="s1">source_field_name</span><span class="s2">, </span><span class="s1">target_field_name</span><span class="s2">, </span><span class="s1">db</span><span class="s2">, </span><span class="s1">target_ids):</span>
+            <span class="s0">&quot;&quot;&quot; 
+            Return the subset of ids of `objs` that aren't already assigned to 
+            this relationship. 
+            &quot;&quot;&quot;</span>
+            <span class="s1">vals = self.through._default_manager.using(db).values_list(</span>
+                <span class="s1">target_field_name</span><span class="s2">, </span><span class="s1">flat=</span><span class="s2">True</span>
+            <span class="s1">).filter(**{</span>
+                <span class="s1">source_field_name: self.related_val[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">,</span>
+                <span class="s4">'%s__in' </span><span class="s1">% target_field_name: target_ids</span><span class="s2">,</span>
+            <span class="s1">})</span>
+            <span class="s2">return </span><span class="s1">target_ids.difference(vals)</span>
+
+        <span class="s2">def </span><span class="s1">_get_add_plan(self</span><span class="s2">, </span><span class="s1">db</span><span class="s2">, </span><span class="s1">source_field_name):</span>
+            <span class="s0">&quot;&quot;&quot; 
+            Return a boolean triple of the way the add should be performed. 
+ 
+            The first element is whether or not bulk_create(ignore_conflicts) 
+            can be used, the second whether or not signals must be sent, and 
+            the third element is whether or not the immediate bulk insertion 
+            with conflicts ignored can be performed. 
+            &quot;&quot;&quot;</span>
+            <span class="s3"># Conflicts can be ignored when the intermediary model is</span>
+            <span class="s3"># auto-created as the only possible collision is on the</span>
+            <span class="s3"># (source_id, target_id) tuple. The same assertion doesn't hold for</span>
+            <span class="s3"># user-defined intermediary models as they could have other fields</span>
+            <span class="s3"># causing conflicts which must be surfaced.</span>
+            <span class="s1">can_ignore_conflicts = (</span>
+                <span class="s1">connections[db].features.supports_ignore_conflicts </span><span class="s2">and</span>
+                <span class="s1">self.through._meta.auto_created </span><span class="s2">is not False</span>
+            <span class="s1">)</span>
+            <span class="s3"># Don't send the signal when inserting duplicate data row</span>
+            <span class="s3"># for symmetrical reverse entries.</span>
+            <span class="s1">must_send_signals = (self.reverse </span><span class="s2">or </span><span class="s1">source_field_name == self.source_field_name) </span><span class="s2">and </span><span class="s1">(</span>
+                <span class="s1">signals.m2m_changed.has_listeners(self.through)</span>
+            <span class="s1">)</span>
+            <span class="s3"># Fast addition through bulk insertion can only be performed</span>
+            <span class="s3"># if no m2m_changed listeners are connected for self.through</span>
+            <span class="s3"># as they require the added set of ids to be provided via</span>
+            <span class="s3"># pk_set.</span>
+            <span class="s2">return </span><span class="s1">can_ignore_conflicts</span><span class="s2">, </span><span class="s1">must_send_signals</span><span class="s2">, </span><span class="s1">(can_ignore_conflicts </span><span class="s2">and not </span><span class="s1">must_send_signals)</span>
+
+        <span class="s2">def </span><span class="s1">_add_items(self</span><span class="s2">, </span><span class="s1">source_field_name</span><span class="s2">, </span><span class="s1">target_field_name</span><span class="s2">, </span><span class="s1">*objs</span><span class="s2">, </span><span class="s1">through_defaults=</span><span class="s2">None</span><span class="s1">):</span>
+            <span class="s3"># source_field_name: the PK fieldname in join table for the source object</span>
+            <span class="s3"># target_field_name: the PK fieldname in join table for the target object</span>
+            <span class="s3"># *objs - objects to add. Either object instances, or primary keys of object instances.</span>
+            <span class="s2">if not </span><span class="s1">objs:</span>
+                <span class="s2">return</span>
+
+            <span class="s1">through_defaults = dict(resolve_callables(through_defaults </span><span class="s2">or </span><span class="s1">{}))</span>
+            <span class="s1">target_ids = self._get_target_ids(target_field_name</span><span class="s2">, </span><span class="s1">objs)</span>
+            <span class="s1">db = router.db_for_write(self.through</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s1">can_ignore_conflicts</span><span class="s2">, </span><span class="s1">must_send_signals</span><span class="s2">, </span><span class="s1">can_fast_add = self._get_add_plan(db</span><span class="s2">, </span><span class="s1">source_field_name)</span>
+            <span class="s2">if </span><span class="s1">can_fast_add:</span>
+                <span class="s1">self.through._default_manager.using(db).bulk_create([</span>
+                    <span class="s1">self.through(**{</span>
+                        <span class="s4">'%s_id' </span><span class="s1">% source_field_name: self.related_val[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">,</span>
+                        <span class="s4">'%s_id' </span><span class="s1">% target_field_name: target_id</span><span class="s2">,</span>
+                    <span class="s1">})</span>
+                    <span class="s2">for </span><span class="s1">target_id </span><span class="s2">in </span><span class="s1">target_ids</span>
+                <span class="s1">]</span><span class="s2">, </span><span class="s1">ignore_conflicts=</span><span class="s2">True</span><span class="s1">)</span>
+                <span class="s2">return</span>
+
+            <span class="s1">missing_target_ids = self._get_missing_target_ids(</span>
+                <span class="s1">source_field_name</span><span class="s2">, </span><span class="s1">target_field_name</span><span class="s2">, </span><span class="s1">db</span><span class="s2">, </span><span class="s1">target_ids</span>
+            <span class="s1">)</span>
+            <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                <span class="s2">if </span><span class="s1">must_send_signals:</span>
+                    <span class="s1">signals.m2m_changed.send(</span>
+                        <span class="s1">sender=self.through</span><span class="s2">, </span><span class="s1">action=</span><span class="s4">'pre_add'</span><span class="s2">,</span>
+                        <span class="s1">instance=self.instance</span><span class="s2">, </span><span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+                        <span class="s1">model=self.model</span><span class="s2">, </span><span class="s1">pk_set=missing_target_ids</span><span class="s2">, </span><span class="s1">using=db</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s3"># Add the ones that aren't there already.</span>
+                <span class="s1">self.through._default_manager.using(db).bulk_create([</span>
+                    <span class="s1">self.through(**through_defaults</span><span class="s2">, </span><span class="s1">**{</span>
+                        <span class="s4">'%s_id' </span><span class="s1">% source_field_name: self.related_val[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">,</span>
+                        <span class="s4">'%s_id' </span><span class="s1">% target_field_name: target_id</span><span class="s2">,</span>
+                    <span class="s1">})</span>
+                    <span class="s2">for </span><span class="s1">target_id </span><span class="s2">in </span><span class="s1">missing_target_ids</span>
+                <span class="s1">]</span><span class="s2">, </span><span class="s1">ignore_conflicts=can_ignore_conflicts)</span>
+
+                <span class="s2">if </span><span class="s1">must_send_signals:</span>
+                    <span class="s1">signals.m2m_changed.send(</span>
+                        <span class="s1">sender=self.through</span><span class="s2">, </span><span class="s1">action=</span><span class="s4">'post_add'</span><span class="s2">,</span>
+                        <span class="s1">instance=self.instance</span><span class="s2">, </span><span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+                        <span class="s1">model=self.model</span><span class="s2">, </span><span class="s1">pk_set=missing_target_ids</span><span class="s2">, </span><span class="s1">using=db</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+
+        <span class="s2">def </span><span class="s1">_remove_items(self</span><span class="s2">, </span><span class="s1">source_field_name</span><span class="s2">, </span><span class="s1">target_field_name</span><span class="s2">, </span><span class="s1">*objs):</span>
+            <span class="s3"># source_field_name: the PK colname in join table for the source object</span>
+            <span class="s3"># target_field_name: the PK colname in join table for the target object</span>
+            <span class="s3"># *objs - objects to remove. Either object instances, or primary</span>
+            <span class="s3"># keys of object instances.</span>
+            <span class="s2">if not </span><span class="s1">objs:</span>
+                <span class="s2">return</span>
+
+            <span class="s3"># Check that all the objects are of the right type</span>
+            <span class="s1">old_ids = set()</span>
+            <span class="s2">for </span><span class="s1">obj </span><span class="s2">in </span><span class="s1">objs:</span>
+                <span class="s2">if </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">self.model):</span>
+                    <span class="s1">fk_val = self.target_field.get_foreign_related_value(obj)[</span><span class="s5">0</span><span class="s1">]</span>
+                    <span class="s1">old_ids.add(fk_val)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">old_ids.add(obj)</span>
+
+            <span class="s1">db = router.db_for_write(self.through</span><span class="s2">, </span><span class="s1">instance=self.instance)</span>
+            <span class="s2">with </span><span class="s1">transaction.atomic(using=db</span><span class="s2">, </span><span class="s1">savepoint=</span><span class="s2">False</span><span class="s1">):</span>
+                <span class="s3"># Send a signal to the other end if need be.</span>
+                <span class="s1">signals.m2m_changed.send(</span>
+                    <span class="s1">sender=self.through</span><span class="s2">, </span><span class="s1">action=</span><span class="s4">&quot;pre_remove&quot;</span><span class="s2">,</span>
+                    <span class="s1">instance=self.instance</span><span class="s2">, </span><span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+                    <span class="s1">model=self.model</span><span class="s2">, </span><span class="s1">pk_set=old_ids</span><span class="s2">, </span><span class="s1">using=db</span><span class="s2">,</span>
+                <span class="s1">)</span>
+                <span class="s1">target_model_qs = super().get_queryset()</span>
+                <span class="s2">if </span><span class="s1">target_model_qs._has_filters():</span>
+                    <span class="s1">old_vals = target_model_qs.using(db).filter(**{</span>
+                        <span class="s4">'%s__in' </span><span class="s1">% self.target_field.target_field.attname: old_ids})</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">old_vals = old_ids</span>
+                <span class="s1">filters = self._build_remove_filters(old_vals)</span>
+                <span class="s1">self.through._default_manager.using(db).filter(filters).delete()</span>
+
+                <span class="s1">signals.m2m_changed.send(</span>
+                    <span class="s1">sender=self.through</span><span class="s2">, </span><span class="s1">action=</span><span class="s4">&quot;post_remove&quot;</span><span class="s2">,</span>
+                    <span class="s1">instance=self.instance</span><span class="s2">, </span><span class="s1">reverse=self.reverse</span><span class="s2">,</span>
+                    <span class="s1">model=self.model</span><span class="s2">, </span><span class="s1">pk_set=old_ids</span><span class="s2">, </span><span class="s1">using=db</span><span class="s2">,</span>
+                <span class="s1">)</span>
+
+    <span class="s2">return </span><span class="s1">ManyRelatedManager</span>
+</pre>
+</body>
+</html>

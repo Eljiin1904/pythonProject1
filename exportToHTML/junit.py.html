@@ -1,0 +1,494 @@
+<html>
+<head>
+<title>junit.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+junit.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s0"># pylint: disable=line-too-long</span>
+<span class="s2">&quot;&quot;&quot; 
+This module provides a reporter with JUnit XML output. 
+ 
+Mapping of behave model elements to XML elements:: 
+ 
+    feature     -&gt; xml_element:testsuite 
+    scenario    -&gt; xml_element:testcase 
+ 
+XML document structure:: 
+ 
+    # -- XML elements: 
+    # CARDINALITY SUFFIX: 
+    #   ?   optional (zero or one) 
+    #   *   many0 (zero or more) 
+    #   +   many (one or more) 
+    testsuites := sequence&lt;testsuite&gt; 
+    testsuite: 
+        properties? : sequence&lt;property&gt; 
+        testcase* : 
+            error?      : text 
+            failure?    : text 
+            system-out  : text 
+            system-err  : text 
+ 
+    testsuite: 
+        @name       : TokenString 
+        @tests      : int 
+        @failures   : int 
+        @errors     : int 
+        @skipped    : int 
+        @time       : Decimal       # Duration in seconds 
+        # -- SINCE: behave-1.2.6 
+        @timestamp  : IsoDateTime 
+        @hostname   : string 
+ 
+    testcase: 
+        @name       : TokenString 
+        @classname  : TokenString 
+        @status     : string        # Status enum 
+        @time       : Decimal       # Elapsed seconds 
+ 
+    error: 
+        @message    : string 
+        @type       : string 
+ 
+    failure: 
+        @message    : string 
+        @type       : string 
+ 
+    # -- HINT: Not used 
+    property: 
+        @name  : TokenString 
+        @value : string 
+ 
+    type Status : Enum(&quot;passed&quot;, &quot;failed&quot;, &quot;skipped&quot;, &quot;untested&quot;) 
+ 
+Note that a spec for JUnit XML output was not clearly defined. 
+Best sources are: 
+ 
+* `JUnit XML`_ (for PDF) 
+* JUnit XML (`ant spec 1`_, `ant spec 2`_) 
+ 
+ 
+.. _`JUnit XML`:  http://junitpdfreport.sourceforge.net/managedcontent/PdfTranslation 
+.. _`ant spec 1`: https://github.com/windyroad/JUnit-Schema 
+.. _`ant spec 2`: http://svn.apache.org/repos/asf/ant/core/trunk/src/main/org/apache/tools/ant/taskdefs/optional/junit/XMLJUnitResultFormatter.java 
+&quot;&quot;&quot;</span>
+<span class="s0"># pylint: enable=line-too-long</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">import </span><span class="s1">os.path</span>
+<span class="s3">import </span><span class="s1">codecs</span>
+<span class="s3">from </span><span class="s1">xml.etree </span><span class="s3">import </span><span class="s1">ElementTree</span>
+<span class="s3">from </span><span class="s1">datetime </span><span class="s3">import </span><span class="s1">datetime</span>
+<span class="s3">from </span><span class="s1">behave.reporter.base </span><span class="s3">import </span><span class="s1">Reporter</span>
+<span class="s3">from </span><span class="s1">behave.model </span><span class="s3">import </span><span class="s1">Scenario</span><span class="s3">, </span><span class="s1">ScenarioOutline</span><span class="s3">, </span><span class="s1">Step</span>
+<span class="s3">from </span><span class="s1">behave.model_core </span><span class="s3">import </span><span class="s1">Status</span>
+<span class="s3">from </span><span class="s1">behave.formatter </span><span class="s3">import </span><span class="s1">ansi_escapes</span>
+<span class="s3">from </span><span class="s1">behave.model_describe </span><span class="s3">import </span><span class="s1">ModelDescriptor</span>
+<span class="s3">from </span><span class="s1">behave.textutil </span><span class="s3">import </span><span class="s1">indent</span><span class="s3">, </span><span class="s1">make_indentation</span><span class="s3">, </span><span class="s1">text </span><span class="s3">as </span><span class="s1">_text</span>
+<span class="s3">from </span><span class="s1">behave.userdata </span><span class="s3">import </span><span class="s1">UserDataNamespace</span>
+<span class="s3">import </span><span class="s1">six</span>
+<span class="s3">if </span><span class="s1">six.PY2:</span>
+    <span class="s0"># -- USE: Python3 backport for better unicode compatibility.</span>
+    <span class="s3">import </span><span class="s1">traceback2 </span><span class="s3">as </span><span class="s1">traceback</span>
+<span class="s3">else</span><span class="s1">:</span>
+    <span class="s3">import </span><span class="s1">traceback</span>
+
+
+<span class="s3">def </span><span class="s1">CDATA(text=</span><span class="s3">None</span><span class="s1">):   </span><span class="s0"># pylint: disable=invalid-name</span>
+    <span class="s0"># -- issue #70: remove_ansi_escapes(text)</span>
+    <span class="s1">element = ElementTree.Element(</span><span class="s4">'![CDATA['</span><span class="s1">)</span>
+    <span class="s1">element.text = ansi_escapes.strip_escapes(text)</span>
+    <span class="s3">return </span><span class="s1">element</span>
+
+
+<span class="s3">class </span><span class="s1">ElementTreeWithCDATA(ElementTree.ElementTree):</span>
+    <span class="s0"># pylint: disable=redefined-builtin, no-member</span>
+    <span class="s3">def </span><span class="s1">_write(self</span><span class="s3">, </span><span class="s1">file</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">, </span><span class="s1">namespaces):</span>
+        <span class="s2">&quot;&quot;&quot;This method is for ElementTree &lt;= 1.2.6&quot;&quot;&quot;</span>
+
+        <span class="s3">if </span><span class="s1">node.tag == </span><span class="s4">'![CDATA['</span><span class="s1">:</span>
+            <span class="s1">text = node.text.encode(encoding)</span>
+            <span class="s1">file.write(</span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&lt;![CDATA[%s]]&gt;</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">% text)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">ElementTree.ElementTree._write(self</span><span class="s3">, </span><span class="s1">file</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">,</span>
+                                           <span class="s1">namespaces)</span>
+
+<span class="s3">if </span><span class="s1">hasattr(ElementTree</span><span class="s3">, </span><span class="s4">'_serialize'</span><span class="s1">):</span>
+    <span class="s0"># pylint: disable=protected-access</span>
+    <span class="s3">def </span><span class="s1">_serialize_xml2(write</span><span class="s3">, </span><span class="s1">elem</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">, </span><span class="s1">qnames</span><span class="s3">, </span><span class="s1">namespaces</span><span class="s3">,</span>
+                        <span class="s1">orig=ElementTree._serialize_xml):</span>
+        <span class="s3">if </span><span class="s1">elem.tag == </span><span class="s4">'![CDATA['</span><span class="s1">:</span>
+            <span class="s1">write(</span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&lt;%s%s]]&gt;</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">% \</span>
+                  <span class="s1">(elem.tag</span><span class="s3">, </span><span class="s1">elem.text.encode(encoding</span><span class="s3">, </span><span class="s4">&quot;xmlcharrefreplace&quot;</span><span class="s1">)))</span>
+            <span class="s3">return</span>
+        <span class="s3">return </span><span class="s1">orig(write</span><span class="s3">, </span><span class="s1">elem</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">, </span><span class="s1">qnames</span><span class="s3">, </span><span class="s1">namespaces)</span>
+
+    <span class="s3">def </span><span class="s1">_serialize_xml3(write</span><span class="s3">, </span><span class="s1">elem</span><span class="s3">, </span><span class="s1">qnames</span><span class="s3">, </span><span class="s1">namespaces</span><span class="s3">,</span>
+                        <span class="s1">short_empty_elements=</span><span class="s3">None,</span>
+                        <span class="s1">orig=ElementTree._serialize_xml):</span>
+        <span class="s3">if </span><span class="s1">elem.tag == </span><span class="s4">'![CDATA['</span><span class="s1">:</span>
+            <span class="s1">write(</span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&lt;{tag}{text}]]&gt;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">.format(</span>
+                <span class="s1">tag=elem.tag</span><span class="s3">, </span><span class="s1">text=elem.text))</span>
+            <span class="s3">return</span>
+        <span class="s3">if </span><span class="s1">short_empty_elements:</span>
+            <span class="s0"># python &gt;=3.3</span>
+            <span class="s3">return </span><span class="s1">orig(write</span><span class="s3">, </span><span class="s1">elem</span><span class="s3">, </span><span class="s1">qnames</span><span class="s3">, </span><span class="s1">namespaces</span><span class="s3">, </span><span class="s1">short_empty_elements)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s0"># python &lt;3.3</span>
+            <span class="s3">return </span><span class="s1">orig(write</span><span class="s3">, </span><span class="s1">elem</span><span class="s3">, </span><span class="s1">qnames</span><span class="s3">, </span><span class="s1">namespaces)</span>
+
+    <span class="s3">if </span><span class="s1">six.PY3:</span>
+        <span class="s1">ElementTree._serialize_xml = \</span>
+            <span class="s1">ElementTree._serialize[</span><span class="s4">'xml'</span><span class="s1">] = _serialize_xml3</span>
+    <span class="s3">elif </span><span class="s1">six.PY2:</span>
+        <span class="s1">ElementTree._serialize_xml = \</span>
+            <span class="s1">ElementTree._serialize[</span><span class="s4">'xml'</span><span class="s1">] = _serialize_xml2</span>
+
+
+<span class="s3">class </span><span class="s1">FeatureReportData(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Provides value object to collect JUnit report data from a Feature. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">feature</span><span class="s3">, </span><span class="s1">filename</span><span class="s3">, </span><span class="s1">classname=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">if not </span><span class="s1">classname </span><span class="s3">and </span><span class="s1">filename:</span>
+            <span class="s1">classname = filename.replace(</span><span class="s4">'/'</span><span class="s3">, </span><span class="s4">'.'</span><span class="s1">)</span>
+        <span class="s1">self.feature = feature</span>
+        <span class="s1">self.filename = filename</span>
+        <span class="s1">self.classname = classname</span>
+        <span class="s1">self.testcases = []</span>
+        <span class="s1">self.counts_tests = </span><span class="s5">0</span>
+        <span class="s1">self.counts_errors = </span><span class="s5">0</span>
+        <span class="s1">self.counts_failed = </span><span class="s5">0</span>
+        <span class="s1">self.counts_skipped = </span><span class="s5">0</span>
+
+    <span class="s3">def </span><span class="s1">reset(self):</span>
+        <span class="s1">self.testcases = []</span>
+        <span class="s1">self.counts_tests = </span><span class="s5">0</span>
+        <span class="s1">self.counts_errors = </span><span class="s5">0</span>
+        <span class="s1">self.counts_failed = </span><span class="s5">0</span>
+        <span class="s1">self.counts_skipped = </span><span class="s5">0</span>
+
+
+<span class="s3">class </span><span class="s1">JUnitReporter(Reporter):</span>
+    <span class="s2">&quot;&quot;&quot;Generates JUnit-like XML test report for behave. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># -- XML REPORT:</span>
+    <span class="s1">userdata_scope = </span><span class="s4">&quot;behave.reporter.junit&quot;</span>
+    <span class="s1">show_timings = </span><span class="s3">True     </span><span class="s0"># -- Show step timings.</span>
+    <span class="s1">show_skipped_always = </span><span class="s3">False</span>
+    <span class="s1">show_timestamp = </span><span class="s3">True</span>
+    <span class="s1">show_hostname = </span><span class="s3">True</span>
+    <span class="s0"># -- XML REPORT PART: Describe scenarios</span>
+    <span class="s1">show_scenarios = </span><span class="s3">True   </span><span class="s0"># Show scenario descriptions.</span>
+    <span class="s1">show_tags = </span><span class="s3">True</span>
+    <span class="s1">show_multiline = </span><span class="s3">True</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">config):</span>
+        <span class="s1">super(JUnitReporter</span><span class="s3">, </span><span class="s1">self).__init__(config)</span>
+        <span class="s1">self.setup_with_userdata(config.userdata)</span>
+
+    <span class="s3">def </span><span class="s1">setup_with_userdata(self</span><span class="s3">, </span><span class="s1">userdata):</span>
+        <span class="s2">&quot;&quot;&quot;Setup JUnit reporter with userdata information. 
+        A user can now tweak the output format of this reporter. 
+ 
+        EXAMPLE: 
+        .. code-block:: ini 
+ 
+            # -- FILE: behave.ini 
+            [behave.userdata] 
+            behave.reporter.junit.show_hostname = false 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># -- EXPERIMENTAL:</span>
+        <span class="s1">config = UserDataNamespace(self.userdata_scope</span><span class="s3">, </span><span class="s1">userdata)</span>
+        <span class="s1">self.show_hostname = config.getbool(</span><span class="s4">&quot;show_hostname&quot;</span><span class="s3">, </span><span class="s1">self.show_hostname)</span>
+        <span class="s1">self.show_multiline = config.getbool(</span><span class="s4">&quot;show_multiline&quot;</span><span class="s3">, </span><span class="s1">self.show_multiline)</span>
+        <span class="s1">self.show_scenarios = config.getbool(</span><span class="s4">&quot;show_scenarios&quot;</span><span class="s3">, </span><span class="s1">self.show_scenarios)</span>
+        <span class="s1">self.show_tags = config.getbool(</span><span class="s4">&quot;show_tags&quot;</span><span class="s3">, </span><span class="s1">self.show_tags)</span>
+        <span class="s1">self.show_timings = config.getbool(</span><span class="s4">&quot;show_timings&quot;</span><span class="s3">, </span><span class="s1">self.show_timings)</span>
+        <span class="s1">self.show_timestamp = config.getbool(</span><span class="s4">&quot;show_timestamp&quot;</span><span class="s3">, </span><span class="s1">self.show_timestamp)</span>
+        <span class="s1">self.show_skipped_always = config.getbool(</span><span class="s4">&quot;show_skipped_always&quot;</span><span class="s3">,</span>
+                                              <span class="s1">self.show_skipped_always)</span>
+
+    <span class="s3">def </span><span class="s1">make_feature_filename(self</span><span class="s3">, </span><span class="s1">feature):</span>
+        <span class="s1">filename = </span><span class="s3">None</span>
+        <span class="s3">for </span><span class="s1">path </span><span class="s3">in </span><span class="s1">self.config.paths:</span>
+            <span class="s3">if </span><span class="s1">feature.filename.startswith(path):</span>
+                <span class="s1">filename = feature.filename[len(path) + </span><span class="s5">1</span><span class="s1">:]</span>
+                <span class="s3">break</span>
+        <span class="s3">if not </span><span class="s1">filename:</span>
+            <span class="s0"># -- NOTE: Directory path (subdirs) are taken into account.</span>
+            <span class="s1">filename = feature.location.relpath(self.config.base_dir)</span>
+        <span class="s1">filename = filename.rsplit(</span><span class="s4">'.'</span><span class="s3">, </span><span class="s5">1</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">filename = filename.replace(</span><span class="s4">'</span><span class="s3">\\</span><span class="s4">'</span><span class="s3">, </span><span class="s4">'/'</span><span class="s1">).replace(</span><span class="s4">'/'</span><span class="s3">, </span><span class="s4">'.'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">_text(filename)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">show_skipped(self):</span>
+        <span class="s3">return </span><span class="s1">self.config.show_skipped </span><span class="s3">or </span><span class="s1">self.show_skipped_always</span>
+
+    <span class="s0"># -- REPORTER-API:</span>
+    <span class="s3">def </span><span class="s1">feature(self</span><span class="s3">, </span><span class="s1">feature):</span>
+        <span class="s3">if </span><span class="s1">feature.status == Status.skipped </span><span class="s3">and not </span><span class="s1">self.show_skipped:</span>
+            <span class="s0"># -- SKIP-OUTPUT: If skipped features should not be shown.</span>
+            <span class="s3">return</span>
+
+        <span class="s1">feature_filename = self.make_feature_filename(feature)</span>
+        <span class="s1">classname = feature_filename</span>
+        <span class="s1">report = FeatureReportData(feature</span><span class="s3">, </span><span class="s1">feature_filename)</span>
+        <span class="s1">now = datetime.now()</span>
+
+        <span class="s1">suite = ElementTree.Element(</span><span class="s4">u'testsuite'</span><span class="s1">)</span>
+        <span class="s1">feature_name = feature.name </span><span class="s3">or </span><span class="s1">feature_filename</span>
+        <span class="s1">suite.set(</span><span class="s4">u'name'</span><span class="s3">, </span><span class="s4">u'%s.%s' </span><span class="s1">% (classname</span><span class="s3">, </span><span class="s1">feature_name))</span>
+
+        <span class="s0"># -- BUILD-TESTCASES: From scenarios</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">feature:</span>
+            <span class="s3">if </span><span class="s1">isinstance(scenario</span><span class="s3">, </span><span class="s1">ScenarioOutline):</span>
+                <span class="s1">scenario_outline = scenario</span>
+                <span class="s1">self._process_scenario_outline(scenario_outline</span><span class="s3">, </span><span class="s1">report)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">self._process_scenario(scenario</span><span class="s3">, </span><span class="s1">report)</span>
+
+        <span class="s0"># -- ADD TESTCASES to testsuite:</span>
+        <span class="s3">for </span><span class="s1">testcase </span><span class="s3">in </span><span class="s1">report.testcases:</span>
+            <span class="s1">suite.append(testcase)</span>
+
+        <span class="s1">suite.set(</span><span class="s4">u'tests'</span><span class="s3">, </span><span class="s1">_text(report.counts_tests))</span>
+        <span class="s1">suite.set(</span><span class="s4">u'errors'</span><span class="s3">, </span><span class="s1">_text(report.counts_errors))</span>
+        <span class="s1">suite.set(</span><span class="s4">u'failures'</span><span class="s3">, </span><span class="s1">_text(report.counts_failed))</span>
+        <span class="s1">suite.set(</span><span class="s4">u'skipped'</span><span class="s3">, </span><span class="s1">_text(report.counts_skipped))  </span><span class="s0"># WAS: skips</span>
+        <span class="s1">suite.set(</span><span class="s4">u'time'</span><span class="s3">, </span><span class="s1">_text(round(feature.duration</span><span class="s3">, </span><span class="s5">6</span><span class="s1">)))</span>
+        <span class="s0"># -- SINCE: behave-1.2.6.dev0</span>
+        <span class="s3">if </span><span class="s1">self.show_timestamp:</span>
+            <span class="s1">suite.set(</span><span class="s4">u'timestamp'</span><span class="s3">, </span><span class="s1">_text(now.isoformat()))</span>
+        <span class="s3">if </span><span class="s1">self.show_hostname:</span>
+            <span class="s1">suite.set(</span><span class="s4">u'hostname'</span><span class="s3">, </span><span class="s1">_text(gethostname()))</span>
+
+        <span class="s3">if not </span><span class="s1">os.path.exists(self.config.junit_directory):</span>
+            <span class="s0"># -- ENSURE: Create multiple directory levels at once.</span>
+            <span class="s1">os.makedirs(self.config.junit_directory)</span>
+
+        <span class="s1">tree = ElementTreeWithCDATA(suite)</span>
+        <span class="s1">report_dirname = self.config.junit_directory</span>
+        <span class="s1">report_basename = </span><span class="s4">u'TESTS-%s.xml' </span><span class="s1">% feature_filename</span>
+        <span class="s1">report_filename = os.path.join(report_dirname</span><span class="s3">, </span><span class="s1">report_basename)</span>
+        <span class="s1">tree.write(codecs.open(report_filename</span><span class="s3">, </span><span class="s4">&quot;wb&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s4">&quot;UTF-8&quot;</span><span class="s1">)</span>
+
+    <span class="s0"># -- MORE:</span>
+    <span class="s0"># pylint: disable=line-too-long</span>
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">select_step_with_status(status</span><span class="s3">, </span><span class="s1">steps):</span>
+        <span class="s2">&quot;&quot;&quot;Helper function to find the first step that has the given 
+        step.status. 
+ 
+        EXAMPLE: Search for a failing step in a scenario (all steps). 
+            &gt;&gt;&gt; scenario = ... 
+            &gt;&gt;&gt; failed_step = select_step_with_status(Status.failed, scenario) 
+            &gt;&gt;&gt; failed_step = select_step_with_status(Status.failed, scenario.all_steps) 
+            &gt;&gt;&gt; assert failed_step.status == Status.failed 
+ 
+        EXAMPLE: Search only scenario steps, skip background steps. 
+            &gt;&gt;&gt; failed_step = select_step_with_status(Status.failed, scenario.steps) 
+ 
+        :param status:  Step status to search for (as enum value). 
+        :param steps:   List of steps to search in (or scenario). 
+        :returns: Step object, if found. 
+        :returns: None, otherwise. 
+ 
+        .. versionchanged:: 1.2.6 
+            status: Use enum value instead of string (or string). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">steps:</span>
+            <span class="s3">assert </span><span class="s1">isinstance(step</span><span class="s3">, </span><span class="s1">Step)</span><span class="s3">, </span><span class="s1">\</span>
+                <span class="s4">&quot;TYPE-MISMATCH: step.class=%s&quot;  </span><span class="s1">% step.__class__.__name__</span>
+            <span class="s3">if </span><span class="s1">step.status == status:</span>
+                <span class="s3">return </span><span class="s1">step</span>
+        <span class="s0"># -- OTHERWISE: No step with the given status found.</span>
+        <span class="s0"># KeyError(&quot;Step with status={0} not found&quot;.format(status))</span>
+        <span class="s3">return None</span>
+    <span class="s0"># pylint: enable=line-too-long</span>
+
+    <span class="s3">def </span><span class="s1">describe_step(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s1">status_text = _text(step.status.name)</span>
+        <span class="s3">if </span><span class="s1">self.show_timings:</span>
+            <span class="s1">status_text += </span><span class="s4">u&quot; in %0.3fs&quot; </span><span class="s1">% step.duration</span>
+        <span class="s1">text = </span><span class="s4">u'%s %s ... ' </span><span class="s1">% (step.keyword</span><span class="s3">, </span><span class="s1">step.name)</span>
+        <span class="s1">text += </span><span class="s4">u'%s</span><span class="s3">\n</span><span class="s4">' </span><span class="s1">% status_text</span>
+        <span class="s3">if </span><span class="s1">self.show_multiline:</span>
+            <span class="s1">prefix = make_indentation(</span><span class="s5">2</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">step.text:</span>
+                <span class="s1">text += ModelDescriptor.describe_docstring(step.text</span><span class="s3">, </span><span class="s1">prefix)</span>
+            <span class="s3">elif </span><span class="s1">step.table:</span>
+                <span class="s1">text += ModelDescriptor.describe_table(step.table</span><span class="s3">, </span><span class="s1">prefix)</span>
+        <span class="s3">return </span><span class="s1">text</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">describe_tags(cls</span><span class="s3">, </span><span class="s1">tags):</span>
+        <span class="s1">text = </span><span class="s4">u''</span>
+        <span class="s3">if </span><span class="s1">tags:</span>
+            <span class="s1">text = </span><span class="s4">u'@'</span><span class="s1">+ </span><span class="s4">u' @'</span><span class="s1">.join(tags)</span>
+        <span class="s3">return </span><span class="s1">text</span>
+
+    <span class="s3">def </span><span class="s1">describe_scenario(self</span><span class="s3">, </span><span class="s1">scenario):</span>
+        <span class="s2">&quot;&quot;&quot;Describe the scenario and the test status. 
+        NOTE: table, multiline text is missing in description. 
+ 
+        :param scenario:  Scenario that was tested. 
+        :return: Textual description of the scenario. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">header_line = </span><span class="s4">u'</span><span class="s3">\n</span><span class="s4">@scenario.begin</span><span class="s3">\n</span><span class="s4">'</span>
+        <span class="s3">if </span><span class="s1">self.show_tags </span><span class="s3">and </span><span class="s1">scenario.tags:</span>
+            <span class="s1">header_line += </span><span class="s4">u'</span><span class="s3">\n  </span><span class="s4">%s</span><span class="s3">\n</span><span class="s4">' </span><span class="s1">% self.describe_tags(scenario.tags)</span>
+        <span class="s1">header_line += </span><span class="s4">u'  %s: %s</span><span class="s3">\n</span><span class="s4">' </span><span class="s1">% (scenario.keyword</span><span class="s3">, </span><span class="s1">scenario.name)</span>
+        <span class="s1">footer_line = </span><span class="s4">u'</span><span class="s3">\n</span><span class="s4">@scenario.end</span><span class="s3">\n</span><span class="s4">' </span><span class="s1">+ </span><span class="s4">u'-' </span><span class="s1">* </span><span class="s5">80 </span><span class="s1">+ </span><span class="s4">'</span><span class="s3">\n</span><span class="s4">'</span>
+        <span class="s1">text = </span><span class="s4">u''</span>
+        <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">scenario:</span>
+            <span class="s1">text += self.describe_step(step)</span>
+        <span class="s1">step_indentation = make_indentation(</span><span class="s5">4</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">header_line + indent(text</span><span class="s3">, </span><span class="s1">step_indentation) + footer_line</span>
+
+    <span class="s3">def </span><span class="s1">_process_scenario(self</span><span class="s3">, </span><span class="s1">scenario</span><span class="s3">, </span><span class="s1">report):</span>
+        <span class="s2">&quot;&quot;&quot;Process a scenario and append information to JUnit report object. 
+        This corresponds to a JUnit testcase: 
+ 
+          * testcase.@classname = f(filename) +'.'+ feature.name 
+          * testcase.@name   = scenario.name 
+          * testcase.@status = scenario.status 
+          * testcase.@time   = scenario.duration 
+ 
+        Distinguishes now between failures and errors. 
+        Failures are AssertationErrors: expectation is violated/not met. 
+        Errors are unexpected RuntimeErrors (all other exceptions). 
+ 
+        If a failure/error occurs, the step, that caused the failure, 
+        and its location are provided now. 
+ 
+        :param scenario:  Scenario to process. 
+        :param report:    Context object to store/add info to (outgoing param). 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># pylint: disable=too-many-locals, too-many-branches, too-many-statements</span>
+        <span class="s3">assert </span><span class="s1">isinstance(scenario</span><span class="s3">, </span><span class="s1">Scenario)</span>
+        <span class="s3">assert not </span><span class="s1">isinstance(scenario</span><span class="s3">, </span><span class="s1">ScenarioOutline)</span>
+        <span class="s3">if </span><span class="s1">scenario.status != Status.skipped </span><span class="s3">or </span><span class="s1">self.show_skipped:</span>
+            <span class="s0"># -- NOTE: Count only if not-skipped or skipped should be shown.</span>
+            <span class="s1">report.counts_tests += </span><span class="s5">1</span>
+        <span class="s1">classname = report.classname</span>
+        <span class="s1">feature = report.feature</span>
+        <span class="s1">feature_name = feature.name</span>
+        <span class="s3">if not </span><span class="s1">feature_name:</span>
+            <span class="s1">feature_name = self.make_feature_filename(feature)</span>
+
+        <span class="s1">case = ElementTree.Element(</span><span class="s4">'testcase'</span><span class="s1">)</span>
+        <span class="s1">case.set(</span><span class="s4">u&quot;classname&quot;</span><span class="s3">, </span><span class="s4">u&quot;%s.%s&quot; </span><span class="s1">% (classname</span><span class="s3">, </span><span class="s1">feature_name))</span>
+        <span class="s1">case.set(</span><span class="s4">u&quot;name&quot;</span><span class="s3">, </span><span class="s1">scenario.name </span><span class="s3">or </span><span class="s4">&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">case.set(</span><span class="s4">u&quot;status&quot;</span><span class="s3">, </span><span class="s1">scenario.status.name)</span>
+        <span class="s1">case.set(</span><span class="s4">u&quot;time&quot;</span><span class="s3">, </span><span class="s1">_text(round(scenario.duration</span><span class="s3">, </span><span class="s5">6</span><span class="s1">)))</span>
+
+        <span class="s1">step = </span><span class="s3">None</span>
+        <span class="s1">failing_step = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">scenario.status == Status.failed:</span>
+            <span class="s3">for </span><span class="s1">status </span><span class="s3">in </span><span class="s1">(Status.failed</span><span class="s3">, </span><span class="s1">Status.undefined):</span>
+                <span class="s1">step = self.select_step_with_status(status</span><span class="s3">, </span><span class="s1">scenario)</span>
+                <span class="s3">if </span><span class="s1">step:</span>
+                    <span class="s3">break</span>
+            <span class="s0"># -- NOTE: Scenario may fail now due to hook-errors.</span>
+            <span class="s1">element_name = </span><span class="s4">&quot;failure&quot;</span>
+            <span class="s3">if </span><span class="s1">step </span><span class="s3">and </span><span class="s1">isinstance(step.exception</span><span class="s3">, </span><span class="s1">(AssertionError</span><span class="s3">, </span><span class="s1">type(</span><span class="s3">None</span><span class="s1">))):</span>
+                <span class="s0"># -- FAILURE: AssertionError</span>
+                <span class="s3">assert </span><span class="s1">step.status </span><span class="s3">in </span><span class="s1">(Status.failed</span><span class="s3">, </span><span class="s1">Status.undefined)</span>
+                <span class="s1">report.counts_failed += </span><span class="s5">1</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># -- UNEXPECTED RUNTIME-ERROR:</span>
+                <span class="s1">report.counts_errors += </span><span class="s5">1</span>
+                <span class="s1">element_name = </span><span class="s4">&quot;error&quot;</span>
+            <span class="s0"># -- COMMON-PART:</span>
+            <span class="s1">failure = ElementTree.Element(element_name)</span>
+            <span class="s3">if </span><span class="s1">step:</span>
+                <span class="s1">step_text = self.describe_step(step).rstrip()</span>
+                <span class="s1">text = </span><span class="s4">u&quot;</span><span class="s3">\n</span><span class="s4">Failing step: %s</span><span class="s3">\n</span><span class="s4">Location: %s</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">% \</span>
+                       <span class="s1">(step_text</span><span class="s3">, </span><span class="s1">step.location)</span>
+                <span class="s1">message = _text(step.exception)</span>
+                <span class="s1">failure.set(</span><span class="s4">u'type'</span><span class="s3">, </span><span class="s1">step.exception.__class__.__name__)</span>
+                <span class="s1">failure.set(</span><span class="s4">u'message'</span><span class="s3">, </span><span class="s1">message)</span>
+                <span class="s1">text += _text(step.error_message)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># -- MAYBE: Hook failure before any step is executed.</span>
+                <span class="s1">failure_type = </span><span class="s4">&quot;UnknownError&quot;</span>
+                <span class="s3">if </span><span class="s1">scenario.exception:</span>
+                    <span class="s1">failure_type = scenario.exception.__class__.__name__</span>
+                <span class="s1">failure.set(</span><span class="s4">u'type'</span><span class="s3">, </span><span class="s1">failure_type)</span>
+                <span class="s1">failure.set(</span><span class="s4">u'message'</span><span class="s3">, </span><span class="s1">scenario.error_message </span><span class="s3">or </span><span class="s4">&quot;&quot;</span><span class="s1">)</span>
+                <span class="s1">traceback_lines = traceback.format_tb(scenario.exc_traceback)</span>
+                <span class="s1">traceback_lines.insert(</span><span class="s5">0</span><span class="s3">, </span><span class="s4">u&quot;Traceback:</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">)</span>
+                <span class="s1">text = _text(</span><span class="s4">u&quot;&quot;</span><span class="s1">.join(traceback_lines))</span>
+            <span class="s1">failure.append(CDATA(text))</span>
+            <span class="s1">case.append(failure)</span>
+        <span class="s3">elif </span><span class="s1">(scenario.status </span><span class="s3">in </span><span class="s1">(Status.skipped</span><span class="s3">, </span><span class="s1">Status.untested)</span>
+              <span class="s3">and </span><span class="s1">self.show_skipped):</span>
+            <span class="s1">report.counts_skipped += </span><span class="s5">1</span>
+            <span class="s1">step = self.select_step_with_status(Status.undefined</span><span class="s3">, </span><span class="s1">scenario)</span>
+            <span class="s3">if </span><span class="s1">step:</span>
+                <span class="s0"># -- UNDEFINED-STEP:</span>
+                <span class="s1">report.counts_failed += </span><span class="s5">1</span>
+                <span class="s1">failure = ElementTree.Element(</span><span class="s4">u&quot;failure&quot;</span><span class="s1">)</span>
+                <span class="s1">failure.set(</span><span class="s4">u&quot;type&quot;</span><span class="s3">, </span><span class="s4">u&quot;undefined&quot;</span><span class="s1">)</span>
+                <span class="s1">failure.set(</span><span class="s4">u&quot;message&quot;</span><span class="s3">, </span><span class="s1">(</span><span class="s4">u&quot;Undefined Step: %s&quot; </span><span class="s1">% step.name))</span>
+                <span class="s1">case.append(failure)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">skip = ElementTree.Element(</span><span class="s4">u'skipped'</span><span class="s1">)</span>
+                <span class="s1">case.append(skip)</span>
+
+        <span class="s0"># Create stdout section for each test case</span>
+        <span class="s1">stdout = ElementTree.Element(</span><span class="s4">u&quot;system-out&quot;</span><span class="s1">)</span>
+        <span class="s1">text = </span><span class="s4">u&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self.show_scenarios:</span>
+            <span class="s1">text = self.describe_scenario(scenario)</span>
+
+        <span class="s0"># Append the captured standard output</span>
+        <span class="s3">if </span><span class="s1">scenario.captured.stdout:</span>
+            <span class="s1">output = _text(scenario.captured.stdout)</span>
+            <span class="s1">text += </span><span class="s4">u&quot;</span><span class="s3">\n</span><span class="s4">Captured stdout:</span><span class="s3">\n</span><span class="s4">%s</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">% output</span>
+        <span class="s1">stdout.append(CDATA(text))</span>
+        <span class="s1">case.append(stdout)</span>
+
+        <span class="s0"># Create stderr section for each test case</span>
+        <span class="s3">if </span><span class="s1">scenario.captured.stderr:</span>
+            <span class="s1">stderr = ElementTree.Element(</span><span class="s4">u&quot;system-err&quot;</span><span class="s1">)</span>
+            <span class="s1">output = _text(scenario.captured.stderr)</span>
+            <span class="s1">text = </span><span class="s4">u&quot;</span><span class="s3">\n</span><span class="s4">Captured stderr:</span><span class="s3">\n</span><span class="s4">%s</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">% output</span>
+            <span class="s1">stderr.append(CDATA(text))</span>
+            <span class="s1">case.append(stderr)</span>
+
+        <span class="s3">if </span><span class="s1">scenario.status != Status.skipped </span><span class="s3">or </span><span class="s1">self.show_skipped:</span>
+            <span class="s1">report.testcases.append(case)</span>
+
+    <span class="s3">def </span><span class="s1">_process_scenario_outline(self</span><span class="s3">, </span><span class="s1">scenario_outline</span><span class="s3">, </span><span class="s1">report):</span>
+        <span class="s3">assert </span><span class="s1">isinstance(scenario_outline</span><span class="s3">, </span><span class="s1">ScenarioOutline)</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">scenario_outline:</span>
+            <span class="s3">assert </span><span class="s1">isinstance(scenario</span><span class="s3">, </span><span class="s1">Scenario)</span>
+            <span class="s1">self._process_scenario(scenario</span><span class="s3">, </span><span class="s1">report)</span>
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># SUPPORT:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">gethostname():</span>
+    <span class="s2">&quot;&quot;&quot;Return hostname of local host (as string)&quot;&quot;&quot;</span>
+    <span class="s3">import </span><span class="s1">socket</span>
+    <span class="s3">return </span><span class="s1">socket.gethostname()</span>
+</pre>
+</body>
+</html>

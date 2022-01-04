@@ -1,0 +1,181 @@
+<html>
+<head>
+<title>kbkdf.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #a5c261;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+kbkdf.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">typing</span>
+<span class="s2">from </span><span class="s1">enum </span><span class="s2">import </span><span class="s1">Enum</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AlreadyFinalized</span><span class="s2">,</span>
+    <span class="s1">InvalidKey</span><span class="s2">,</span>
+    <span class="s1">UnsupportedAlgorithm</span><span class="s2">,</span>
+    <span class="s1">_Reasons</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HMACBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">constant_time</span><span class="s2">, </span><span class="s1">hashes</span><span class="s2">, </span><span class="s1">hmac</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.kdf </span><span class="s2">import </span><span class="s1">KeyDerivationFunction</span>
+
+
+<span class="s2">class </span><span class="s1">Mode(Enum):</span>
+    <span class="s1">CounterMode = </span><span class="s3">&quot;ctr&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">CounterLocation(Enum):</span>
+    <span class="s1">BeforeFixed = </span><span class="s3">&quot;before_fixed&quot;</span>
+    <span class="s1">AfterFixed = </span><span class="s3">&quot;after_fixed&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">KBKDFHMAC(KeyDerivationFunction):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+        <span class="s1">mode: Mode</span><span class="s2">,</span>
+        <span class="s1">length: int</span><span class="s2">,</span>
+        <span class="s1">rlen: int</span><span class="s2">,</span>
+        <span class="s1">llen: typing.Optional[int]</span><span class="s2">,</span>
+        <span class="s1">location: CounterLocation</span><span class="s2">,</span>
+        <span class="s1">label: typing.Optional[bytes]</span><span class="s2">,</span>
+        <span class="s1">context: typing.Optional[bytes]</span><span class="s2">,</span>
+        <span class="s1">fixed: typing.Optional[bytes]</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HMACBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement HMACBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(algorithm</span><span class="s2">, </span><span class="s1">hashes.HashAlgorithm):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Algorithm supplied is not a supported hash algorithm.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.UNSUPPORTED_HASH</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">backend.hmac_supported(algorithm):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Algorithm supplied is not a supported hmac algorithm.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.UNSUPPORTED_HASH</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(mode</span><span class="s2">, </span><span class="s1">Mode):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;mode must be of type Mode&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(location</span><span class="s2">, </span><span class="s1">CounterLocation):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;location must be of type CounterLocation&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">(label </span><span class="s2">or </span><span class="s1">context) </span><span class="s2">and </span><span class="s1">fixed:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;When supplying fixed data, &quot; &quot;label and context are ignored.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">rlen </span><span class="s2">is None or not </span><span class="s1">self._valid_byte_length(rlen):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;rlen must be between 1 and 4&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">llen </span><span class="s2">is None and </span><span class="s1">fixed </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Please specify an llen&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">llen </span><span class="s2">is not None and not </span><span class="s1">isinstance(llen</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;llen must be an integer&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">label </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">label = </span><span class="s4">b&quot;&quot;</span>
+
+        <span class="s2">if </span><span class="s1">context </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">context = </span><span class="s4">b&quot;&quot;</span>
+
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;label&quot;</span><span class="s2">, </span><span class="s1">label)</span>
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;context&quot;</span><span class="s2">, </span><span class="s1">context)</span>
+        <span class="s1">self._algorithm = algorithm</span>
+        <span class="s1">self._mode = mode</span>
+        <span class="s1">self._length = length</span>
+        <span class="s1">self._rlen = rlen</span>
+        <span class="s1">self._llen = llen</span>
+        <span class="s1">self._location = location</span>
+        <span class="s1">self._label = label</span>
+        <span class="s1">self._context = context</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._used = </span><span class="s2">False</span>
+        <span class="s1">self._fixed_data = fixed</span>
+
+    <span class="s2">def </span><span class="s1">_valid_byte_length(self</span><span class="s2">, </span><span class="s1">value: int) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;value must be of type int&quot;</span><span class="s1">)</span>
+
+        <span class="s1">value_bin = utils.int_to_bytes(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">value)</span>
+        <span class="s2">if not </span><span class="s5">1 </span><span class="s1">&lt;= len(value_bin) &lt;= </span><span class="s5">4</span><span class="s1">:</span>
+            <span class="s2">return False</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">derive(self</span><span class="s2">, </span><span class="s1">key_material: bytes) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._used:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized</span>
+
+        <span class="s1">utils._check_byteslike(</span><span class="s3">&quot;key_material&quot;</span><span class="s2">, </span><span class="s1">key_material)</span>
+        <span class="s1">self._used = </span><span class="s2">True</span>
+
+        <span class="s0"># inverse floor division (equivalent to ceiling)</span>
+        <span class="s1">rounds = -(-self._length // self._algorithm.digest_size)</span>
+
+        <span class="s1">output = [</span><span class="s4">b&quot;&quot;</span><span class="s1">]</span>
+
+        <span class="s0"># For counter mode, the number of iterations shall not be</span>
+        <span class="s0"># larger than 2^r-1, where r &lt;= 32 is the binary length of the counter</span>
+        <span class="s0"># This ensures that the counter values used as an input to the</span>
+        <span class="s0"># PRF will not repeat during a particular call to the KDF function.</span>
+        <span class="s1">r_bin = utils.int_to_bytes(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self._rlen)</span>
+        <span class="s2">if </span><span class="s1">rounds &gt; pow(</span><span class="s5">2</span><span class="s2">, </span><span class="s1">len(r_bin) * </span><span class="s5">8</span><span class="s1">) - </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;There are too many iterations.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">rounds + </span><span class="s5">1</span><span class="s1">):</span>
+            <span class="s1">h = hmac.HMAC(key_material</span><span class="s2">, </span><span class="s1">self._algorithm</span><span class="s2">, </span><span class="s1">backend=self._backend)</span>
+
+            <span class="s1">counter = utils.int_to_bytes(i</span><span class="s2">, </span><span class="s1">self._rlen)</span>
+            <span class="s2">if </span><span class="s1">self._location == CounterLocation.BeforeFixed:</span>
+                <span class="s1">h.update(counter)</span>
+
+            <span class="s1">h.update(self._generate_fixed_input())</span>
+
+            <span class="s2">if </span><span class="s1">self._location == CounterLocation.AfterFixed:</span>
+                <span class="s1">h.update(counter)</span>
+
+            <span class="s1">output.append(h.finalize())</span>
+
+        <span class="s2">return </span><span class="s4">b&quot;&quot;</span><span class="s1">.join(output)[: self._length]</span>
+
+    <span class="s2">def </span><span class="s1">_generate_fixed_input(self) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._fixed_data </span><span class="s2">and </span><span class="s1">isinstance(self._fixed_data</span><span class="s2">, </span><span class="s1">bytes):</span>
+            <span class="s2">return </span><span class="s1">self._fixed_data</span>
+
+        <span class="s1">l_val = utils.int_to_bytes(self._length * </span><span class="s5">8</span><span class="s2">, </span><span class="s1">self._llen)</span>
+
+        <span class="s2">return </span><span class="s4">b&quot;&quot;</span><span class="s1">.join([self._label</span><span class="s2">, </span><span class="s4">b&quot;</span><span class="s2">\x00</span><span class="s4">&quot;</span><span class="s2">, </span><span class="s1">self._context</span><span class="s2">, </span><span class="s1">l_val])</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">key_material: bytes</span><span class="s2">, </span><span class="s1">expected_key: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(self.derive(key_material)</span><span class="s2">, </span><span class="s1">expected_key):</span>
+            <span class="s2">raise </span><span class="s1">InvalidKey</span>
+</pre>
+</body>
+</html>

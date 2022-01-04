@@ -1,0 +1,87 @@
+<html>
+<head>
+<title>linguaplugin.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+linguaplugin.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># ext/linguaplugin.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">import </span><span class="s1">io</span>
+
+<span class="s2">from </span><span class="s1">lingua.extractors </span><span class="s2">import </span><span class="s1">Extractor</span>
+<span class="s2">from </span><span class="s1">lingua.extractors </span><span class="s2">import </span><span class="s1">get_extractor</span>
+<span class="s2">from </span><span class="s1">lingua.extractors </span><span class="s2">import </span><span class="s1">Message</span>
+
+<span class="s2">from </span><span class="s1">mako </span><span class="s2">import </span><span class="s1">compat</span>
+<span class="s2">from </span><span class="s1">mako.ext.extract </span><span class="s2">import </span><span class="s1">MessageExtractor</span>
+
+
+<span class="s2">class </span><span class="s1">LinguaMakoExtractor(Extractor</span><span class="s2">, </span><span class="s1">MessageExtractor):</span>
+
+    <span class="s3">&quot;&quot;&quot;Mako templates&quot;&quot;&quot;</span>
+
+    <span class="s1">extensions = [</span><span class="s4">&quot;.mako&quot;</span><span class="s1">]</span>
+    <span class="s1">default_config = {</span><span class="s4">&quot;encoding&quot;</span><span class="s1">: </span><span class="s4">&quot;utf-8&quot;</span><span class="s2">, </span><span class="s4">&quot;comment-tags&quot;</span><span class="s1">: </span><span class="s4">&quot;&quot;</span><span class="s1">}</span>
+
+    <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">filename</span><span class="s2">, </span><span class="s1">options</span><span class="s2">, </span><span class="s1">fileobj=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">self.options = options</span>
+        <span class="s1">self.filename = filename</span>
+        <span class="s1">self.python_extractor = get_extractor(</span><span class="s4">&quot;x.py&quot;</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">fileobj </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">fileobj = open(filename</span><span class="s2">, </span><span class="s4">&quot;rb&quot;</span><span class="s1">)</span>
+            <span class="s1">must_close = </span><span class="s2">True</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">must_close = </span><span class="s2">False</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">message </span><span class="s2">in </span><span class="s1">self.process_file(fileobj):</span>
+                <span class="s2">yield </span><span class="s1">message</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">must_close:</span>
+                <span class="s1">fileobj.close()</span>
+
+    <span class="s2">def </span><span class="s1">process_python(self</span><span class="s2">, </span><span class="s1">code</span><span class="s2">, </span><span class="s1">code_lineno</span><span class="s2">, </span><span class="s1">translator_strings):</span>
+        <span class="s1">source = code.getvalue().strip()</span>
+        <span class="s2">if </span><span class="s1">source.endswith(compat.b(</span><span class="s4">&quot;:&quot;</span><span class="s1">)):</span>
+            <span class="s2">if </span><span class="s1">source </span><span class="s2">in </span><span class="s1">(</span>
+                <span class="s1">compat.b(</span><span class="s4">&quot;try:&quot;</span><span class="s1">)</span><span class="s2">,</span>
+                <span class="s1">compat.b(</span><span class="s4">&quot;else:&quot;</span><span class="s1">)</span><span class="s2">,</span>
+            <span class="s1">) </span><span class="s2">or </span><span class="s1">source.startswith(compat.b(</span><span class="s4">&quot;except&quot;</span><span class="s1">)):</span>
+                <span class="s1">source = compat.b(</span><span class="s4">&quot;&quot;</span><span class="s1">)  </span><span class="s0"># Ignore try/except and else</span>
+            <span class="s2">elif </span><span class="s1">source.startswith(compat.b(</span><span class="s4">&quot;elif&quot;</span><span class="s1">)):</span>
+                <span class="s1">source = source[</span><span class="s5">2</span><span class="s1">:]  </span><span class="s0"># Replace &quot;elif&quot; with &quot;if&quot;</span>
+            <span class="s1">source += compat.b(</span><span class="s4">&quot;pass&quot;</span><span class="s1">)</span>
+        <span class="s1">code = io.BytesIO(source)</span>
+        <span class="s2">for </span><span class="s1">msg </span><span class="s2">in </span><span class="s1">self.python_extractor(</span>
+            <span class="s1">self.filename</span><span class="s2">, </span><span class="s1">self.options</span><span class="s2">, </span><span class="s1">code</span><span class="s2">, </span><span class="s1">code_lineno - </span><span class="s5">1</span>
+        <span class="s1">):</span>
+            <span class="s2">if </span><span class="s1">translator_strings:</span>
+                <span class="s1">msg = Message(</span>
+                    <span class="s1">msg.msgctxt</span><span class="s2">,</span>
+                    <span class="s1">msg.msgid</span><span class="s2">,</span>
+                    <span class="s1">msg.msgid_plural</span><span class="s2">,</span>
+                    <span class="s1">msg.flags</span><span class="s2">,</span>
+                    <span class="s1">compat.u(</span><span class="s4">&quot; &quot;</span><span class="s1">).join(translator_strings + [msg.comment])</span><span class="s2">,</span>
+                    <span class="s1">msg.tcomment</span><span class="s2">,</span>
+                    <span class="s1">msg.location</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s2">yield </span><span class="s1">msg</span>
+</pre>
+</body>
+</html>

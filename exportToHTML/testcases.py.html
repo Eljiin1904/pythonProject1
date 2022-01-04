@@ -1,0 +1,1660 @@
+<html>
+<head>
+<title>testcases.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+.s6 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+testcases.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">asyncio</span>
+<span class="s0">import </span><span class="s1">difflib</span>
+<span class="s0">import </span><span class="s1">json</span>
+<span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">import </span><span class="s1">posixpath</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">import </span><span class="s1">unittest</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">Counter</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">contextmanager</span>
+<span class="s0">from </span><span class="s1">copy </span><span class="s0">import </span><span class="s1">copy</span><span class="s0">, </span><span class="s1">deepcopy</span>
+<span class="s0">from </span><span class="s1">difflib </span><span class="s0">import </span><span class="s1">get_close_matches</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">wraps</span>
+<span class="s0">from </span><span class="s1">unittest.suite </span><span class="s0">import </span><span class="s1">_DebugResult</span>
+<span class="s0">from </span><span class="s1">unittest.util </span><span class="s0">import </span><span class="s1">safe_repr</span>
+<span class="s0">from </span><span class="s1">urllib.parse </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">parse_qsl</span><span class="s0">, </span><span class="s1">unquote</span><span class="s0">, </span><span class="s1">urlencode</span><span class="s0">, </span><span class="s1">urljoin</span><span class="s0">, </span><span class="s1">urlparse</span><span class="s0">, </span><span class="s1">urlsplit</span><span class="s0">, </span><span class="s1">urlunparse</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">urllib.request </span><span class="s0">import </span><span class="s1">url2pathname</span>
+
+<span class="s0">from </span><span class="s1">asgiref.sync </span><span class="s0">import </span><span class="s1">async_to_sync</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core </span><span class="s0">import </span><span class="s1">mail</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span><span class="s0">, </span><span class="s1">ValidationError</span>
+<span class="s0">from </span><span class="s1">django.core.files </span><span class="s0">import </span><span class="s1">locks</span>
+<span class="s0">from </span><span class="s1">django.core.handlers.wsgi </span><span class="s0">import </span><span class="s1">WSGIHandler</span><span class="s0">, </span><span class="s1">get_path_info</span>
+<span class="s0">from </span><span class="s1">django.core.management </span><span class="s0">import </span><span class="s1">call_command</span>
+<span class="s0">from </span><span class="s1">django.core.management.color </span><span class="s0">import </span><span class="s1">no_style</span>
+<span class="s0">from </span><span class="s1">django.core.management.sql </span><span class="s0">import </span><span class="s1">emit_post_migrate_signal</span>
+<span class="s0">from </span><span class="s1">django.core.servers.basehttp </span><span class="s0">import </span><span class="s1">ThreadedWSGIServer</span><span class="s0">, </span><span class="s1">WSGIRequestHandler</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">connections</span><span class="s0">, </span><span class="s1">transaction</span>
+<span class="s0">from </span><span class="s1">django.forms.fields </span><span class="s0">import </span><span class="s1">CharField</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">QueryDict</span>
+<span class="s0">from </span><span class="s1">django.http.request </span><span class="s0">import </span><span class="s1">split_domain_port</span><span class="s0">, </span><span class="s1">validate_host</span>
+<span class="s0">from </span><span class="s1">django.test.client </span><span class="s0">import </span><span class="s1">AsyncClient</span><span class="s0">, </span><span class="s1">Client</span>
+<span class="s0">from </span><span class="s1">django.test.html </span><span class="s0">import </span><span class="s1">HTMLParseError</span><span class="s0">, </span><span class="s1">parse_html</span>
+<span class="s0">from </span><span class="s1">django.test.signals </span><span class="s0">import </span><span class="s1">setting_changed</span><span class="s0">, </span><span class="s1">template_rendered</span>
+<span class="s0">from </span><span class="s1">django.test.utils </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">CaptureQueriesContext</span><span class="s0">, </span><span class="s1">ContextList</span><span class="s0">, </span><span class="s1">compare_xml</span><span class="s0">, </span><span class="s1">modify_settings</span><span class="s0">,</span>
+    <span class="s1">override_settings</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.utils.deprecation </span><span class="s0">import </span><span class="s1">RemovedInDjango41Warning</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">classproperty</span>
+<span class="s0">from </span><span class="s1">django.utils.version </span><span class="s0">import </span><span class="s1">PY310</span>
+<span class="s0">from </span><span class="s1">django.views.static </span><span class="s0">import </span><span class="s1">serve</span>
+
+<span class="s1">__all__ = (</span><span class="s2">'TestCase'</span><span class="s0">, </span><span class="s2">'TransactionTestCase'</span><span class="s0">,</span>
+           <span class="s2">'SimpleTestCase'</span><span class="s0">, </span><span class="s2">'skipIfDBFeature'</span><span class="s0">, </span><span class="s2">'skipUnlessDBFeature'</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">to_list(value):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Put value into a list if it's not already one. Return an empty list if 
+    value is None. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">value </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">value = []</span>
+    <span class="s0">elif not </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">list):</span>
+        <span class="s1">value = [value]</span>
+    <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s0">def </span><span class="s1">assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">html</span><span class="s0">, </span><span class="s1">user_msg</span><span class="s0">, </span><span class="s1">msg):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">dom = parse_html(html)</span>
+    <span class="s0">except </span><span class="s1">HTMLParseError </span><span class="s0">as </span><span class="s1">e:</span>
+        <span class="s1">standardMsg = </span><span class="s2">'%s</span><span class="s0">\n</span><span class="s2">%s' </span><span class="s1">% (msg</span><span class="s0">, </span><span class="s1">e)</span>
+        <span class="s1">self.fail(self._formatMessage(user_msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+    <span class="s0">return </span><span class="s1">dom</span>
+
+
+<span class="s0">class </span><span class="s1">_AssertNumQueriesContext(CaptureQueriesContext):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">test_case</span><span class="s0">, </span><span class="s1">num</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">self.test_case = test_case</span>
+        <span class="s1">self.num = num</span>
+        <span class="s1">super().__init__(connection)</span>
+
+    <span class="s0">def </span><span class="s1">__exit__(self</span><span class="s0">, </span><span class="s1">exc_type</span><span class="s0">, </span><span class="s1">exc_value</span><span class="s0">, </span><span class="s1">traceback):</span>
+        <span class="s1">super().__exit__(exc_type</span><span class="s0">, </span><span class="s1">exc_value</span><span class="s0">, </span><span class="s1">traceback)</span>
+        <span class="s0">if </span><span class="s1">exc_type </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">return</span>
+        <span class="s1">executed = len(self)</span>
+        <span class="s1">self.test_case.assertEqual(</span>
+            <span class="s1">executed</span><span class="s0">, </span><span class="s1">self.num</span><span class="s0">,</span>
+            <span class="s2">&quot;%d queries executed, %d expected</span><span class="s0">\n</span><span class="s2">Captured queries were:</span><span class="s0">\n</span><span class="s2">%s&quot; </span><span class="s1">% (</span>
+                <span class="s1">executed</span><span class="s0">, </span><span class="s1">self.num</span><span class="s0">,</span>
+                <span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">.join(</span>
+                    <span class="s2">'%d. %s' </span><span class="s1">% (i</span><span class="s0">, </span><span class="s1">query[</span><span class="s2">'sql'</span><span class="s1">]) </span><span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">query </span><span class="s0">in </span><span class="s1">enumerate(self.captured_queries</span><span class="s0">, </span><span class="s1">start=</span><span class="s4">1</span><span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">_AssertTemplateUsedContext:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">test_case</span><span class="s0">, </span><span class="s1">template_name):</span>
+        <span class="s1">self.test_case = test_case</span>
+        <span class="s1">self.template_name = template_name</span>
+        <span class="s1">self.rendered_templates = []</span>
+        <span class="s1">self.rendered_template_names = []</span>
+        <span class="s1">self.context = ContextList()</span>
+
+    <span class="s0">def </span><span class="s1">on_template_render(self</span><span class="s0">, </span><span class="s1">sender</span><span class="s0">, </span><span class="s1">signal</span><span class="s0">, </span><span class="s1">template</span><span class="s0">, </span><span class="s1">context</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.rendered_templates.append(template)</span>
+        <span class="s1">self.rendered_template_names.append(template.name)</span>
+        <span class="s1">self.context.append(copy(context))</span>
+
+    <span class="s0">def </span><span class="s1">test(self):</span>
+        <span class="s0">return </span><span class="s1">self.template_name </span><span class="s0">in </span><span class="s1">self.rendered_template_names</span>
+
+    <span class="s0">def </span><span class="s1">message(self):</span>
+        <span class="s0">return </span><span class="s2">'%s was not rendered.' </span><span class="s1">% self.template_name</span>
+
+    <span class="s0">def </span><span class="s1">__enter__(self):</span>
+        <span class="s1">template_rendered.connect(self.on_template_render)</span>
+        <span class="s0">return </span><span class="s1">self</span>
+
+    <span class="s0">def </span><span class="s1">__exit__(self</span><span class="s0">, </span><span class="s1">exc_type</span><span class="s0">, </span><span class="s1">exc_value</span><span class="s0">, </span><span class="s1">traceback):</span>
+        <span class="s1">template_rendered.disconnect(self.on_template_render)</span>
+        <span class="s0">if </span><span class="s1">exc_type </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if not </span><span class="s1">self.test():</span>
+            <span class="s1">message = self.message()</span>
+            <span class="s0">if </span><span class="s1">self.rendered_templates:</span>
+                <span class="s1">message += </span><span class="s2">' Following templates were rendered: %s' </span><span class="s1">% (</span>
+                    <span class="s2">', '</span><span class="s1">.join(self.rendered_template_names)</span>
+                <span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">message += </span><span class="s2">' No template was rendered.'</span>
+            <span class="s1">self.test_case.fail(message)</span>
+
+
+<span class="s0">class </span><span class="s1">_AssertTemplateNotUsedContext(_AssertTemplateUsedContext):</span>
+    <span class="s0">def </span><span class="s1">test(self):</span>
+        <span class="s0">return </span><span class="s1">self.template_name </span><span class="s0">not in </span><span class="s1">self.rendered_template_names</span>
+
+    <span class="s0">def </span><span class="s1">message(self):</span>
+        <span class="s0">return </span><span class="s2">'%s was rendered.' </span><span class="s1">% self.template_name</span>
+
+
+<span class="s0">class </span><span class="s1">_DatabaseFailure:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">wrapped</span><span class="s0">, </span><span class="s1">message):</span>
+        <span class="s1">self.wrapped = wrapped</span>
+        <span class="s1">self.message = message</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self):</span>
+        <span class="s0">raise </span><span class="s1">AssertionError(self.message)</span>
+
+
+<span class="s0">class </span><span class="s1">SimpleTestCase(unittest.TestCase):</span>
+
+    <span class="s5"># The class we'll use for the test client self.client.</span>
+    <span class="s5"># Can be overridden in derived classes.</span>
+    <span class="s1">client_class = Client</span>
+    <span class="s1">async_client_class = AsyncClient</span>
+    <span class="s1">_overridden_settings = </span><span class="s0">None</span>
+    <span class="s1">_modified_settings = </span><span class="s0">None</span>
+
+    <span class="s1">databases = set()</span>
+    <span class="s1">_disallowed_database_msg = (</span>
+        <span class="s2">'Database %(operation)s to %(alias)r are not allowed in SimpleTestCase '</span>
+        <span class="s2">'subclasses. Either subclass TestCase or TransactionTestCase to ensure '</span>
+        <span class="s2">'proper test isolation or add %(alias)r to %(test)s.databases to silence '</span>
+        <span class="s2">'this failure.'</span>
+    <span class="s1">)</span>
+    <span class="s1">_disallowed_connection_methods = [</span>
+        <span class="s1">(</span><span class="s2">'connect'</span><span class="s0">, </span><span class="s2">'connections'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">'temporary_connection'</span><span class="s0">, </span><span class="s2">'connections'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">'cursor'</span><span class="s0">, </span><span class="s2">'queries'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">'chunked_cursor'</span><span class="s0">, </span><span class="s2">'queries'</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">]</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">setUpClass(cls):</span>
+        <span class="s1">super().setUpClass()</span>
+        <span class="s0">if </span><span class="s1">cls._overridden_settings:</span>
+            <span class="s1">cls._cls_overridden_context = override_settings(**cls._overridden_settings)</span>
+            <span class="s1">cls._cls_overridden_context.enable()</span>
+            <span class="s1">cls.addClassCleanup(cls._cls_overridden_context.disable)</span>
+        <span class="s0">if </span><span class="s1">cls._modified_settings:</span>
+            <span class="s1">cls._cls_modified_context = modify_settings(cls._modified_settings)</span>
+            <span class="s1">cls._cls_modified_context.enable()</span>
+            <span class="s1">cls.addClassCleanup(cls._cls_modified_context.disable)</span>
+        <span class="s1">cls._add_databases_failures()</span>
+        <span class="s1">cls.addClassCleanup(cls._remove_databases_failures)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_validate_databases(cls):</span>
+        <span class="s0">if </span><span class="s1">cls.databases == </span><span class="s2">'__all__'</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">frozenset(connections)</span>
+        <span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">cls.databases:</span>
+            <span class="s0">if </span><span class="s1">alias </span><span class="s0">not in </span><span class="s1">connections:</span>
+                <span class="s1">message = </span><span class="s2">'%s.%s.databases refers to %r which is not defined in settings.DATABASES.' </span><span class="s1">% (</span>
+                    <span class="s1">cls.__module__</span><span class="s0">,</span>
+                    <span class="s1">cls.__qualname__</span><span class="s0">,</span>
+                    <span class="s1">alias</span><span class="s0">,</span>
+                <span class="s1">)</span>
+                <span class="s1">close_matches = get_close_matches(alias</span><span class="s0">, </span><span class="s1">list(connections))</span>
+                <span class="s0">if </span><span class="s1">close_matches:</span>
+                    <span class="s1">message += </span><span class="s2">' Did you mean %r?' </span><span class="s1">% close_matches[</span><span class="s4">0</span><span class="s1">]</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(message)</span>
+        <span class="s0">return </span><span class="s1">frozenset(cls.databases)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_add_databases_failures(cls):</span>
+        <span class="s1">cls.databases = cls._validate_databases()</span>
+        <span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">connections:</span>
+            <span class="s0">if </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">cls.databases:</span>
+                <span class="s0">continue</span>
+            <span class="s1">connection = connections[alias]</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">operation </span><span class="s0">in </span><span class="s1">cls._disallowed_connection_methods:</span>
+                <span class="s1">message = cls._disallowed_database_msg % {</span>
+                    <span class="s2">'test'</span><span class="s1">: </span><span class="s2">'%s.%s' </span><span class="s1">% (cls.__module__</span><span class="s0">, </span><span class="s1">cls.__qualname__)</span><span class="s0">,</span>
+                    <span class="s2">'alias'</span><span class="s1">: alias</span><span class="s0">,</span>
+                    <span class="s2">'operation'</span><span class="s1">: operation</span><span class="s0">,</span>
+                <span class="s1">}</span>
+                <span class="s1">method = getattr(connection</span><span class="s0">, </span><span class="s1">name)</span>
+                <span class="s1">setattr(connection</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">_DatabaseFailure(method</span><span class="s0">, </span><span class="s1">message))</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_remove_databases_failures(cls):</span>
+        <span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">connections:</span>
+            <span class="s0">if </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">cls.databases:</span>
+                <span class="s0">continue</span>
+            <span class="s1">connection = connections[alias]</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">cls._disallowed_connection_methods:</span>
+                <span class="s1">method = getattr(connection</span><span class="s0">, </span><span class="s1">name)</span>
+                <span class="s1">setattr(connection</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">method.wrapped)</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">result=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Wrapper around default __call__ method to perform common Django test 
+        set up. This means that user-defined Test Cases aren't required to 
+        include a call to super().setUp(). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._setup_and_call(result)</span>
+
+    <span class="s0">def </span><span class="s1">debug(self):</span>
+        <span class="s3">&quot;&quot;&quot;Perform the same as __call__(), without catching the exception.&quot;&quot;&quot;</span>
+        <span class="s1">debug_result = _DebugResult()</span>
+        <span class="s1">self._setup_and_call(debug_result</span><span class="s0">, </span><span class="s1">debug=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_setup_and_call(self</span><span class="s0">, </span><span class="s1">result</span><span class="s0">, </span><span class="s1">debug=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Perform the following in order: pre-setup, run test, post-teardown, 
+        skipping pre/post hooks if test is set to be skipped. 
+ 
+        If debug=True, reraise any errors in setup and use super().debug() 
+        instead of __call__() to run the test. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">testMethod = getattr(self</span><span class="s0">, </span><span class="s1">self._testMethodName)</span>
+        <span class="s1">skipped = (</span>
+            <span class="s1">getattr(self.__class__</span><span class="s0">, </span><span class="s2">&quot;__unittest_skip__&quot;</span><span class="s0">, False</span><span class="s1">) </span><span class="s0">or</span>
+            <span class="s1">getattr(testMethod</span><span class="s0">, </span><span class="s2">&quot;__unittest_skip__&quot;</span><span class="s0">, False</span><span class="s1">)</span>
+        <span class="s1">)</span>
+
+        <span class="s5"># Convert async test methods.</span>
+        <span class="s0">if </span><span class="s1">asyncio.iscoroutinefunction(testMethod):</span>
+            <span class="s1">setattr(self</span><span class="s0">, </span><span class="s1">self._testMethodName</span><span class="s0">, </span><span class="s1">async_to_sync(testMethod))</span>
+
+        <span class="s0">if not </span><span class="s1">skipped:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self._pre_setup()</span>
+            <span class="s0">except </span><span class="s1">Exception:</span>
+                <span class="s0">if </span><span class="s1">debug:</span>
+                    <span class="s0">raise</span>
+                <span class="s1">result.addError(self</span><span class="s0">, </span><span class="s1">sys.exc_info())</span>
+                <span class="s0">return</span>
+        <span class="s0">if </span><span class="s1">debug:</span>
+            <span class="s1">super().debug()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">super().__call__(result)</span>
+        <span class="s0">if not </span><span class="s1">skipped:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self._post_teardown()</span>
+            <span class="s0">except </span><span class="s1">Exception:</span>
+                <span class="s0">if </span><span class="s1">debug:</span>
+                    <span class="s0">raise</span>
+                <span class="s1">result.addError(self</span><span class="s0">, </span><span class="s1">sys.exc_info())</span>
+                <span class="s0">return</span>
+
+    <span class="s0">def </span><span class="s1">_pre_setup(self):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Perform pre-test setup: 
+        * Create a test client. 
+        * Clear the mail test outbox. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.client = self.client_class()</span>
+        <span class="s1">self.async_client = self.async_client_class()</span>
+        <span class="s1">mail.outbox = []</span>
+
+    <span class="s0">def </span><span class="s1">_post_teardown(self):</span>
+        <span class="s3">&quot;&quot;&quot;Perform post-test things.&quot;&quot;&quot;</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">settings(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        A context manager that temporarily sets a setting and reverts to the 
+        original value when exiting the context. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">override_settings(**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">modify_settings(self</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        A context manager that temporarily applies changes a list setting and 
+        reverts back to the original value when exiting the context. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">modify_settings(**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">assertRedirects(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">expected_url</span><span class="s0">, </span><span class="s1">status_code=</span><span class="s4">302</span><span class="s0">,</span>
+                        <span class="s1">target_status_code=</span><span class="s4">200</span><span class="s0">, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s0">,</span>
+                        <span class="s1">fetch_redirect_response=</span><span class="s0">True</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that a response redirected to a specific URL and that the 
+        redirect URL can be loaded. 
+ 
+        Won't work for external links since it uses the test client to do a 
+        request (use fetch_redirect_response=False to check such links without 
+        fetching them). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">msg_prefix:</span>
+            <span class="s1">msg_prefix += </span><span class="s2">&quot;: &quot;</span>
+
+        <span class="s0">if </span><span class="s1">hasattr(response</span><span class="s0">, </span><span class="s2">'redirect_chain'</span><span class="s1">):</span>
+            <span class="s5"># The request was a followed redirect</span>
+            <span class="s1">self.assertTrue(</span>
+                <span class="s1">response.redirect_chain</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Response didn't redirect as expected: Response code was %d (expected %d)&quot;</span>
+                <span class="s1">% (response.status_code</span><span class="s0">, </span><span class="s1">status_code)</span>
+            <span class="s1">)</span>
+
+            <span class="s1">self.assertEqual(</span>
+                <span class="s1">response.redirect_chain[</span><span class="s4">0</span><span class="s1">][</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">status_code</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Initial response didn't redirect as expected: Response code was %d (expected %d)&quot;</span>
+                <span class="s1">% (response.redirect_chain[</span><span class="s4">0</span><span class="s1">][</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">status_code)</span>
+            <span class="s1">)</span>
+
+            <span class="s1">url</span><span class="s0">, </span><span class="s1">status_code = response.redirect_chain[-</span><span class="s4">1</span><span class="s1">]</span>
+
+            <span class="s1">self.assertEqual(</span>
+                <span class="s1">response.status_code</span><span class="s0">, </span><span class="s1">target_status_code</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Response didn't redirect as expected: Final Response code was %d (expected %d)&quot;</span>
+                <span class="s1">% (response.status_code</span><span class="s0">, </span><span class="s1">target_status_code)</span>
+            <span class="s1">)</span>
+
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s5"># Not a followed redirect</span>
+            <span class="s1">self.assertEqual(</span>
+                <span class="s1">response.status_code</span><span class="s0">, </span><span class="s1">status_code</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Response didn't redirect as expected: Response code was %d (expected %d)&quot;</span>
+                <span class="s1">% (response.status_code</span><span class="s0">, </span><span class="s1">status_code)</span>
+            <span class="s1">)</span>
+
+            <span class="s1">url = response.url</span>
+            <span class="s1">scheme</span><span class="s0">, </span><span class="s1">netloc</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">query</span><span class="s0">, </span><span class="s1">fragment = urlsplit(url)</span>
+
+            <span class="s5"># Prepend the request path to handle relative path redirects.</span>
+            <span class="s0">if not </span><span class="s1">path.startswith(</span><span class="s2">'/'</span><span class="s1">):</span>
+                <span class="s1">url = urljoin(response.request[</span><span class="s2">'PATH_INFO'</span><span class="s1">]</span><span class="s0">, </span><span class="s1">url)</span>
+                <span class="s1">path = urljoin(response.request[</span><span class="s2">'PATH_INFO'</span><span class="s1">]</span><span class="s0">, </span><span class="s1">path)</span>
+
+            <span class="s0">if </span><span class="s1">fetch_redirect_response:</span>
+                <span class="s5"># netloc might be empty, or in cases where Django tests the</span>
+                <span class="s5"># HTTP scheme, the convention is for netloc to be 'testserver'.</span>
+                <span class="s5"># Trust both as &quot;internal&quot; URLs here.</span>
+                <span class="s1">domain</span><span class="s0">, </span><span class="s1">port = split_domain_port(netloc)</span>
+                <span class="s0">if </span><span class="s1">domain </span><span class="s0">and not </span><span class="s1">validate_host(domain</span><span class="s0">, </span><span class="s1">settings.ALLOWED_HOSTS):</span>
+                    <span class="s0">raise </span><span class="s1">ValueError(</span>
+                        <span class="s2">&quot;The test client is unable to fetch remote URLs (got %s). &quot;</span>
+                        <span class="s2">&quot;If the host is served by Django, add '%s' to ALLOWED_HOSTS. &quot;</span>
+                        <span class="s2">&quot;Otherwise, use assertRedirects(..., fetch_redirect_response=False).&quot;</span>
+                        <span class="s1">% (url</span><span class="s0">, </span><span class="s1">domain)</span>
+                    <span class="s1">)</span>
+                <span class="s5"># Get the redirection page, using the same client that was used</span>
+                <span class="s5"># to obtain the original response.</span>
+                <span class="s1">extra = response.client.extra </span><span class="s0">or </span><span class="s1">{}</span>
+                <span class="s1">redirect_response = response.client.get(</span>
+                    <span class="s1">path</span><span class="s0">,</span>
+                    <span class="s1">QueryDict(query)</span><span class="s0">,</span>
+                    <span class="s1">secure=(scheme == </span><span class="s2">'https'</span><span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">**extra</span><span class="s0">,</span>
+                <span class="s1">)</span>
+                <span class="s1">self.assertEqual(</span>
+                    <span class="s1">redirect_response.status_code</span><span class="s0">, </span><span class="s1">target_status_code</span><span class="s0">,</span>
+                    <span class="s1">msg_prefix + </span><span class="s2">&quot;Couldn't retrieve redirection page '%s': response code was %d (expected %d)&quot;</span>
+                    <span class="s1">% (path</span><span class="s0">, </span><span class="s1">redirect_response.status_code</span><span class="s0">, </span><span class="s1">target_status_code)</span>
+                <span class="s1">)</span>
+
+        <span class="s1">self.assertURLEqual(</span>
+            <span class="s1">url</span><span class="s0">, </span><span class="s1">expected_url</span><span class="s0">,</span>
+            <span class="s1">msg_prefix + </span><span class="s2">&quot;Response redirected to '%s', expected '%s'&quot; </span><span class="s1">% (url</span><span class="s0">, </span><span class="s1">expected_url)</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">assertURLEqual(self</span><span class="s0">, </span><span class="s1">url1</span><span class="s0">, </span><span class="s1">url2</span><span class="s0">, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that two URLs are the same, ignoring the order of query string 
+        parameters except for parameters with the same name. 
+ 
+        For example, /path/?x=1&amp;y=2 is equal to /path/?y=2&amp;x=1, but 
+        /path/?a=1&amp;a=2 isn't equal to /path/?a=2&amp;a=1. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">def </span><span class="s1">normalize(url):</span>
+            <span class="s3">&quot;&quot;&quot;Sort the URL's query string parameters.&quot;&quot;&quot;</span>
+            <span class="s1">url = str(url)  </span><span class="s5"># Coerce reverse_lazy() URLs.</span>
+            <span class="s1">scheme</span><span class="s0">, </span><span class="s1">netloc</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">params</span><span class="s0">, </span><span class="s1">query</span><span class="s0">, </span><span class="s1">fragment = urlparse(url)</span>
+            <span class="s1">query_parts = sorted(parse_qsl(query))</span>
+            <span class="s0">return </span><span class="s1">urlunparse((scheme</span><span class="s0">, </span><span class="s1">netloc</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">params</span><span class="s0">, </span><span class="s1">urlencode(query_parts)</span><span class="s0">, </span><span class="s1">fragment))</span>
+
+        <span class="s1">self.assertEqual(</span>
+            <span class="s1">normalize(url1)</span><span class="s0">, </span><span class="s1">normalize(url2)</span><span class="s0">,</span>
+            <span class="s1">msg_prefix + </span><span class="s2">&quot;Expected '%s' to equal '%s'.&quot; </span><span class="s1">% (url1</span><span class="s0">, </span><span class="s1">url2)</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_assert_contains(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">status_code</span><span class="s0">, </span><span class="s1">msg_prefix</span><span class="s0">, </span><span class="s1">html):</span>
+        <span class="s5"># If the response supports deferred rendering and hasn't been rendered</span>
+        <span class="s5"># yet, then ensure that it does get rendered before proceeding further.</span>
+        <span class="s0">if </span><span class="s1">hasattr(response</span><span class="s0">, </span><span class="s2">'render'</span><span class="s1">) </span><span class="s0">and </span><span class="s1">callable(response.render) </span><span class="s0">and not </span><span class="s1">response.is_rendered:</span>
+            <span class="s1">response.render()</span>
+
+        <span class="s0">if </span><span class="s1">msg_prefix:</span>
+            <span class="s1">msg_prefix += </span><span class="s2">&quot;: &quot;</span>
+
+        <span class="s1">self.assertEqual(</span>
+            <span class="s1">response.status_code</span><span class="s0">, </span><span class="s1">status_code</span><span class="s0">,</span>
+            <span class="s1">msg_prefix + </span><span class="s2">&quot;Couldn't retrieve content: Response code was %d&quot;</span>
+            <span class="s2">&quot; (expected %d)&quot; </span><span class="s1">% (response.status_code</span><span class="s0">, </span><span class="s1">status_code)</span>
+        <span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">response.streaming:</span>
+            <span class="s1">content = </span><span class="s6">b''</span><span class="s1">.join(response.streaming_content)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">content = response.content</span>
+        <span class="s0">if not </span><span class="s1">isinstance(text</span><span class="s0">, </span><span class="s1">bytes) </span><span class="s0">or </span><span class="s1">html:</span>
+            <span class="s1">text = str(text)</span>
+            <span class="s1">content = content.decode(response.charset)</span>
+            <span class="s1">text_repr = </span><span class="s2">&quot;'%s'&quot; </span><span class="s1">% text</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">text_repr = repr(text)</span>
+        <span class="s0">if </span><span class="s1">html:</span>
+            <span class="s1">content = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">content</span><span class="s0">, None, </span><span class="s2">&quot;Response's content is not valid HTML:&quot;</span><span class="s1">)</span>
+            <span class="s1">text = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, None, </span><span class="s2">&quot;Second argument is not valid HTML:&quot;</span><span class="s1">)</span>
+        <span class="s1">real_count = content.count(text)</span>
+        <span class="s0">return </span><span class="s1">(text_repr</span><span class="s0">, </span><span class="s1">real_count</span><span class="s0">, </span><span class="s1">msg_prefix)</span>
+
+    <span class="s0">def </span><span class="s1">assertContains(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">count=</span><span class="s0">None, </span><span class="s1">status_code=</span><span class="s4">200</span><span class="s0">, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s0">, </span><span class="s1">html=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that a response indicates that some content was retrieved 
+        successfully, (i.e., the HTTP status code was as expected) and that 
+        ``text`` occurs ``count`` times in the content of the response. 
+        If ``count`` is None, the count doesn't matter - the assertion is true 
+        if the text occurs at least once in the response. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">text_repr</span><span class="s0">, </span><span class="s1">real_count</span><span class="s0">, </span><span class="s1">msg_prefix = self._assert_contains(</span>
+            <span class="s1">response</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">status_code</span><span class="s0">, </span><span class="s1">msg_prefix</span><span class="s0">, </span><span class="s1">html)</span>
+
+        <span class="s0">if </span><span class="s1">count </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.assertEqual(</span>
+                <span class="s1">real_count</span><span class="s0">, </span><span class="s1">count</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Found %d instances of %s in response (expected %d)&quot; </span><span class="s1">% (real_count</span><span class="s0">, </span><span class="s1">text_repr</span><span class="s0">, </span><span class="s1">count)</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.assertTrue(real_count != </span><span class="s4">0</span><span class="s0">, </span><span class="s1">msg_prefix + </span><span class="s2">&quot;Couldn't find %s in response&quot; </span><span class="s1">% text_repr)</span>
+
+    <span class="s0">def </span><span class="s1">assertNotContains(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">status_code=</span><span class="s4">200</span><span class="s0">, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s0">, </span><span class="s1">html=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that a response indicates that some content was retrieved 
+        successfully, (i.e., the HTTP status code was as expected) and that 
+        ``text`` doesn't occur in the content of the response. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">text_repr</span><span class="s0">, </span><span class="s1">real_count</span><span class="s0">, </span><span class="s1">msg_prefix = self._assert_contains(</span>
+            <span class="s1">response</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">status_code</span><span class="s0">, </span><span class="s1">msg_prefix</span><span class="s0">, </span><span class="s1">html)</span>
+
+        <span class="s1">self.assertEqual(real_count</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">msg_prefix + </span><span class="s2">&quot;Response should not contain %s&quot; </span><span class="s1">% text_repr)</span>
+
+    <span class="s0">def </span><span class="s1">assertFormError(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">form</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">errors</span><span class="s0">, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that a form used to render the response has a specific field 
+        error. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">msg_prefix:</span>
+            <span class="s1">msg_prefix += </span><span class="s2">&quot;: &quot;</span>
+
+        <span class="s5"># Put context(s) into a list to simplify processing.</span>
+        <span class="s1">contexts = to_list(response.context)</span>
+        <span class="s0">if not </span><span class="s1">contexts:</span>
+            <span class="s1">self.fail(msg_prefix + </span><span class="s2">&quot;Response did not use any contexts to render the response&quot;</span><span class="s1">)</span>
+
+        <span class="s5"># Put error(s) into a list to simplify processing.</span>
+        <span class="s1">errors = to_list(errors)</span>
+
+        <span class="s5"># Search all contexts for the error.</span>
+        <span class="s1">found_form = </span><span class="s0">False</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">context </span><span class="s0">in </span><span class="s1">enumerate(contexts):</span>
+            <span class="s0">if </span><span class="s1">form </span><span class="s0">not in </span><span class="s1">context:</span>
+                <span class="s0">continue</span>
+            <span class="s1">found_form = </span><span class="s0">True</span>
+            <span class="s0">for </span><span class="s1">err </span><span class="s0">in </span><span class="s1">errors:</span>
+                <span class="s0">if </span><span class="s1">field:</span>
+                    <span class="s0">if </span><span class="s1">field </span><span class="s0">in </span><span class="s1">context[form].errors:</span>
+                        <span class="s1">field_errors = context[form].errors[field]</span>
+                        <span class="s1">self.assertTrue(</span>
+                            <span class="s1">err </span><span class="s0">in </span><span class="s1">field_errors</span><span class="s0">,</span>
+                            <span class="s1">msg_prefix + </span><span class="s2">&quot;The field '%s' on form '%s' in&quot;</span>
+                            <span class="s2">&quot; context %d does not contain the error '%s'&quot;</span>
+                            <span class="s2">&quot; (actual errors: %s)&quot; </span><span class="s1">%</span>
+                            <span class="s1">(field</span><span class="s0">, </span><span class="s1">form</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">err</span><span class="s0">, </span><span class="s1">repr(field_errors))</span>
+                        <span class="s1">)</span>
+                    <span class="s0">elif </span><span class="s1">field </span><span class="s0">in </span><span class="s1">context[form].fields:</span>
+                        <span class="s1">self.fail(</span>
+                            <span class="s1">msg_prefix + </span><span class="s2">&quot;The field '%s' on form '%s' in context %d contains no errors&quot; </span><span class="s1">%</span>
+                            <span class="s1">(field</span><span class="s0">, </span><span class="s1">form</span><span class="s0">, </span><span class="s1">i)</span>
+                        <span class="s1">)</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">self.fail(</span>
+                            <span class="s1">msg_prefix + </span><span class="s2">&quot;The form '%s' in context %d does not contain the field '%s'&quot; </span><span class="s1">%</span>
+                            <span class="s1">(form</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">field)</span>
+                        <span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">non_field_errors = context[form].non_field_errors()</span>
+                    <span class="s1">self.assertTrue(</span>
+                        <span class="s1">err </span><span class="s0">in </span><span class="s1">non_field_errors</span><span class="s0">,</span>
+                        <span class="s1">msg_prefix + </span><span class="s2">&quot;The form '%s' in context %d does not&quot;</span>
+                        <span class="s2">&quot; contain the non-field error '%s'&quot;</span>
+                        <span class="s2">&quot; (actual errors: %s)&quot; </span><span class="s1">%</span>
+                        <span class="s1">(form</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">err</span><span class="s0">, </span><span class="s1">non_field_errors </span><span class="s0">or </span><span class="s2">'none'</span><span class="s1">)</span>
+                    <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">found_form:</span>
+            <span class="s1">self.fail(msg_prefix + </span><span class="s2">&quot;The form '%s' was not used to render the response&quot; </span><span class="s1">% form)</span>
+
+    <span class="s0">def </span><span class="s1">assertFormsetError(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">formset</span><span class="s0">, </span><span class="s1">form_index</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">errors</span><span class="s0">,</span>
+                           <span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that a formset used to render the response has a specific error. 
+ 
+        For field errors, specify the ``form_index`` and the ``field``. 
+        For non-field errors, specify the ``form_index`` and the ``field`` as 
+        None. 
+        For non-form errors, specify ``form_index`` as None and the ``field`` 
+        as None. 
+        &quot;&quot;&quot;</span>
+        <span class="s5"># Add punctuation to msg_prefix</span>
+        <span class="s0">if </span><span class="s1">msg_prefix:</span>
+            <span class="s1">msg_prefix += </span><span class="s2">&quot;: &quot;</span>
+
+        <span class="s5"># Put context(s) into a list to simplify processing.</span>
+        <span class="s1">contexts = to_list(response.context)</span>
+        <span class="s0">if not </span><span class="s1">contexts:</span>
+            <span class="s1">self.fail(msg_prefix + </span><span class="s2">'Response did not use any contexts to '</span>
+                      <span class="s2">'render the response'</span><span class="s1">)</span>
+
+        <span class="s5"># Put error(s) into a list to simplify processing.</span>
+        <span class="s1">errors = to_list(errors)</span>
+
+        <span class="s5"># Search all contexts for the error.</span>
+        <span class="s1">found_formset = </span><span class="s0">False</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">context </span><span class="s0">in </span><span class="s1">enumerate(contexts):</span>
+            <span class="s0">if </span><span class="s1">formset </span><span class="s0">not in </span><span class="s1">context:</span>
+                <span class="s0">continue</span>
+            <span class="s1">found_formset = </span><span class="s0">True</span>
+            <span class="s0">for </span><span class="s1">err </span><span class="s0">in </span><span class="s1">errors:</span>
+                <span class="s0">if </span><span class="s1">field </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">field </span><span class="s0">in </span><span class="s1">context[formset].forms[form_index].errors:</span>
+                        <span class="s1">field_errors = context[formset].forms[form_index].errors[field]</span>
+                        <span class="s1">self.assertTrue(</span>
+                            <span class="s1">err </span><span class="s0">in </span><span class="s1">field_errors</span><span class="s0">,</span>
+                            <span class="s1">msg_prefix + </span><span class="s2">&quot;The field '%s' on formset '%s', &quot;</span>
+                            <span class="s2">&quot;form %d in context %d does not contain the &quot;</span>
+                            <span class="s2">&quot;error '%s' (actual errors: %s)&quot; </span><span class="s1">%</span>
+                            <span class="s1">(field</span><span class="s0">, </span><span class="s1">formset</span><span class="s0">, </span><span class="s1">form_index</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">err</span><span class="s0">, </span><span class="s1">repr(field_errors))</span>
+                        <span class="s1">)</span>
+                    <span class="s0">elif </span><span class="s1">field </span><span class="s0">in </span><span class="s1">context[formset].forms[form_index].fields:</span>
+                        <span class="s1">self.fail(</span>
+                            <span class="s1">msg_prefix + </span><span class="s2">&quot;The field '%s' on formset '%s', form %d in context %d contains no errors&quot;</span>
+                            <span class="s1">% (field</span><span class="s0">, </span><span class="s1">formset</span><span class="s0">, </span><span class="s1">form_index</span><span class="s0">, </span><span class="s1">i)</span>
+                        <span class="s1">)</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">self.fail(</span>
+                            <span class="s1">msg_prefix + </span><span class="s2">&quot;The formset '%s', form %d in context %d does not contain the field '%s'&quot;</span>
+                            <span class="s1">% (formset</span><span class="s0">, </span><span class="s1">form_index</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">field)</span>
+                        <span class="s1">)</span>
+                <span class="s0">elif </span><span class="s1">form_index </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s1">non_field_errors = context[formset].forms[form_index].non_field_errors()</span>
+                    <span class="s1">self.assertFalse(</span>
+                        <span class="s0">not </span><span class="s1">non_field_errors</span><span class="s0">,</span>
+                        <span class="s1">msg_prefix + </span><span class="s2">&quot;The formset '%s', form %d in context %d &quot;</span>
+                        <span class="s2">&quot;does not contain any non-field errors.&quot; </span><span class="s1">% (formset</span><span class="s0">, </span><span class="s1">form_index</span><span class="s0">, </span><span class="s1">i)</span>
+                    <span class="s1">)</span>
+                    <span class="s1">self.assertTrue(</span>
+                        <span class="s1">err </span><span class="s0">in </span><span class="s1">non_field_errors</span><span class="s0">,</span>
+                        <span class="s1">msg_prefix + </span><span class="s2">&quot;The formset '%s', form %d in context %d &quot;</span>
+                        <span class="s2">&quot;does not contain the non-field error '%s' (actual errors: %s)&quot;</span>
+                        <span class="s1">% (formset</span><span class="s0">, </span><span class="s1">form_index</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">err</span><span class="s0">, </span><span class="s1">repr(non_field_errors))</span>
+                    <span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">non_form_errors = context[formset].non_form_errors()</span>
+                    <span class="s1">self.assertFalse(</span>
+                        <span class="s0">not </span><span class="s1">non_form_errors</span><span class="s0">,</span>
+                        <span class="s1">msg_prefix + </span><span class="s2">&quot;The formset '%s' in context %d does not &quot;</span>
+                        <span class="s2">&quot;contain any non-form errors.&quot; </span><span class="s1">% (formset</span><span class="s0">, </span><span class="s1">i)</span>
+                    <span class="s1">)</span>
+                    <span class="s1">self.assertTrue(</span>
+                        <span class="s1">err </span><span class="s0">in </span><span class="s1">non_form_errors</span><span class="s0">,</span>
+                        <span class="s1">msg_prefix + </span><span class="s2">&quot;The formset '%s' in context %d does not &quot;</span>
+                        <span class="s2">&quot;contain the non-form error '%s' (actual errors: %s)&quot;</span>
+                        <span class="s1">% (formset</span><span class="s0">, </span><span class="s1">i</span><span class="s0">, </span><span class="s1">err</span><span class="s0">, </span><span class="s1">repr(non_form_errors))</span>
+                    <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">found_formset:</span>
+            <span class="s1">self.fail(msg_prefix + </span><span class="s2">&quot;The formset '%s' was not used to render the response&quot; </span><span class="s1">% formset)</span>
+
+    <span class="s0">def </span><span class="s1">_assert_template_used(self</span><span class="s0">, </span><span class="s1">response</span><span class="s0">, </span><span class="s1">template_name</span><span class="s0">, </span><span class="s1">msg_prefix):</span>
+
+        <span class="s0">if </span><span class="s1">response </span><span class="s0">is None and </span><span class="s1">template_name </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">'response and/or template_name argument must be provided'</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">msg_prefix:</span>
+            <span class="s1">msg_prefix += </span><span class="s2">&quot;: &quot;</span>
+
+        <span class="s0">if </span><span class="s1">template_name </span><span class="s0">is not None and </span><span class="s1">response </span><span class="s0">is not None and not </span><span class="s1">hasattr(response</span><span class="s0">, </span><span class="s2">'templates'</span><span class="s1">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">&quot;assertTemplateUsed() and assertTemplateNotUsed() are only &quot;</span>
+                <span class="s2">&quot;usable on responses fetched using the Django test Client.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s0">if not </span><span class="s1">hasattr(response</span><span class="s0">, </span><span class="s2">'templates'</span><span class="s1">) </span><span class="s0">or </span><span class="s1">(response </span><span class="s0">is None and </span><span class="s1">template_name):</span>
+            <span class="s0">if </span><span class="s1">response:</span>
+                <span class="s1">template_name = response</span>
+                <span class="s1">response = </span><span class="s0">None</span>
+            <span class="s5"># use this template with context manager</span>
+            <span class="s0">return </span><span class="s1">template_name</span><span class="s0">, None, </span><span class="s1">msg_prefix</span>
+
+        <span class="s1">template_names = [t.name </span><span class="s0">for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">response.templates </span><span class="s0">if </span><span class="s1">t.name </span><span class="s0">is not None</span><span class="s1">]</span>
+        <span class="s0">return None, </span><span class="s1">template_names</span><span class="s0">, </span><span class="s1">msg_prefix</span>
+
+    <span class="s0">def </span><span class="s1">assertTemplateUsed(self</span><span class="s0">, </span><span class="s1">response=</span><span class="s0">None, </span><span class="s1">template_name=</span><span class="s0">None, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s0">, </span><span class="s1">count=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that the template with the provided name was used in rendering 
+        the response. Also usable as context manager. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">context_mgr_template</span><span class="s0">, </span><span class="s1">template_names</span><span class="s0">, </span><span class="s1">msg_prefix = self._assert_template_used(</span>
+            <span class="s1">response</span><span class="s0">, </span><span class="s1">template_name</span><span class="s0">, </span><span class="s1">msg_prefix)</span>
+
+        <span class="s0">if </span><span class="s1">context_mgr_template:</span>
+            <span class="s5"># Use assertTemplateUsed as context manager.</span>
+            <span class="s0">return </span><span class="s1">_AssertTemplateUsedContext(self</span><span class="s0">, </span><span class="s1">context_mgr_template)</span>
+
+        <span class="s0">if not </span><span class="s1">template_names:</span>
+            <span class="s1">self.fail(msg_prefix + </span><span class="s2">&quot;No templates used to render the response&quot;</span><span class="s1">)</span>
+        <span class="s1">self.assertTrue(</span>
+            <span class="s1">template_name </span><span class="s0">in </span><span class="s1">template_names</span><span class="s0">,</span>
+            <span class="s1">msg_prefix + </span><span class="s2">&quot;Template '%s' was not a template used to render&quot;</span>
+            <span class="s2">&quot; the response. Actual template(s) used: %s&quot;</span>
+            <span class="s1">% (template_name</span><span class="s0">, </span><span class="s2">', '</span><span class="s1">.join(template_names))</span>
+        <span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">count </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.assertEqual(</span>
+                <span class="s1">template_names.count(template_name)</span><span class="s0">, </span><span class="s1">count</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Template '%s' was expected to be rendered %d &quot;</span>
+                <span class="s2">&quot;time(s) but was actually rendered %d time(s).&quot;</span>
+                <span class="s1">% (template_name</span><span class="s0">, </span><span class="s1">count</span><span class="s0">, </span><span class="s1">template_names.count(template_name))</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">assertTemplateNotUsed(self</span><span class="s0">, </span><span class="s1">response=</span><span class="s0">None, </span><span class="s1">template_name=</span><span class="s0">None, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that the template with the provided name was NOT used in 
+        rendering the response. Also usable as context manager. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">context_mgr_template</span><span class="s0">, </span><span class="s1">template_names</span><span class="s0">, </span><span class="s1">msg_prefix = self._assert_template_used(</span>
+            <span class="s1">response</span><span class="s0">, </span><span class="s1">template_name</span><span class="s0">, </span><span class="s1">msg_prefix</span>
+        <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">context_mgr_template:</span>
+            <span class="s5"># Use assertTemplateNotUsed as context manager.</span>
+            <span class="s0">return </span><span class="s1">_AssertTemplateNotUsedContext(self</span><span class="s0">, </span><span class="s1">context_mgr_template)</span>
+
+        <span class="s1">self.assertFalse(</span>
+            <span class="s1">template_name </span><span class="s0">in </span><span class="s1">template_names</span><span class="s0">,</span>
+            <span class="s1">msg_prefix + </span><span class="s2">&quot;Template '%s' was used unexpectedly in rendering the response&quot; </span><span class="s1">% template_name</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@contextmanager</span>
+    <span class="s0">def </span><span class="s1">_assert_raises_or_warns_cm(self</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">cm_attr</span><span class="s0">, </span><span class="s1">expected_exception</span><span class="s0">, </span><span class="s1">expected_message):</span>
+        <span class="s0">with </span><span class="s1">func(expected_exception) </span><span class="s0">as </span><span class="s1">cm:</span>
+            <span class="s0">yield </span><span class="s1">cm</span>
+        <span class="s1">self.assertIn(expected_message</span><span class="s0">, </span><span class="s1">str(getattr(cm</span><span class="s0">, </span><span class="s1">cm_attr)))</span>
+
+    <span class="s0">def </span><span class="s1">_assertFooMessage(self</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">cm_attr</span><span class="s0">, </span><span class="s1">expected_exception</span><span class="s0">, </span><span class="s1">expected_message</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">callable_obj = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">args:</span>
+            <span class="s1">callable_obj</span><span class="s0">, </span><span class="s1">*args = args</span>
+        <span class="s1">cm = self._assert_raises_or_warns_cm(func</span><span class="s0">, </span><span class="s1">cm_attr</span><span class="s0">, </span><span class="s1">expected_exception</span><span class="s0">, </span><span class="s1">expected_message)</span>
+        <span class="s5"># Assertion used in context manager fashion.</span>
+        <span class="s0">if </span><span class="s1">callable_obj </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">cm</span>
+        <span class="s5"># Assertion was passed a callable.</span>
+        <span class="s0">with </span><span class="s1">cm:</span>
+            <span class="s1">callable_obj(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">assertRaisesMessage(self</span><span class="s0">, </span><span class="s1">expected_exception</span><span class="s0">, </span><span class="s1">expected_message</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that expected_message is found in the message of a raised 
+        exception. 
+ 
+        Args: 
+            expected_exception: Exception class expected to be raised. 
+            expected_message: expected error message string value. 
+            args: Function to be called and extra positional args. 
+            kwargs: Extra kwargs. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self._assertFooMessage(</span>
+            <span class="s1">self.assertRaises</span><span class="s0">, </span><span class="s2">'exception'</span><span class="s0">, </span><span class="s1">expected_exception</span><span class="s0">, </span><span class="s1">expected_message</span><span class="s0">,</span>
+            <span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">assertWarnsMessage(self</span><span class="s0">, </span><span class="s1">expected_warning</span><span class="s0">, </span><span class="s1">expected_message</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Same as assertRaisesMessage but for assertWarns() instead of 
+        assertRaises(). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self._assertFooMessage(</span>
+            <span class="s1">self.assertWarns</span><span class="s0">, </span><span class="s2">'warning'</span><span class="s0">, </span><span class="s1">expected_warning</span><span class="s0">, </span><span class="s1">expected_message</span><span class="s0">,</span>
+            <span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s5"># A similar method is available in Python 3.10+.</span>
+    <span class="s0">if not </span><span class="s1">PY310:</span>
+        <span class="s1">@contextmanager</span>
+        <span class="s0">def </span><span class="s1">assertNoLogs(self</span><span class="s0">, </span><span class="s1">logger</span><span class="s0">, </span><span class="s1">level=</span><span class="s0">None</span><span class="s1">):</span>
+            <span class="s3">&quot;&quot;&quot; 
+            Assert no messages are logged on the logger, with at least the 
+            given level. 
+            &quot;&quot;&quot;</span>
+            <span class="s0">if </span><span class="s1">isinstance(level</span><span class="s0">, </span><span class="s1">int):</span>
+                <span class="s1">level = logging.getLevelName(level)</span>
+            <span class="s0">elif </span><span class="s1">level </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s1">level = </span><span class="s2">'INFO'</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">with </span><span class="s1">self.assertLogs(logger</span><span class="s0">, </span><span class="s1">level) </span><span class="s0">as </span><span class="s1">cm:</span>
+                    <span class="s0">yield</span>
+            <span class="s0">except </span><span class="s1">AssertionError </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s1">msg = e.args[</span><span class="s4">0</span><span class="s1">]</span>
+                <span class="s1">expected_msg = </span><span class="s2">f'no logs of level </span><span class="s0">{</span><span class="s1">level</span><span class="s0">} </span><span class="s2">or higher triggered on </span><span class="s0">{</span><span class="s1">logger</span><span class="s0">}</span><span class="s2">'</span>
+                <span class="s0">if </span><span class="s1">msg != expected_msg:</span>
+                    <span class="s0">raise </span><span class="s1">e</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">self.fail(</span><span class="s2">f'Unexpected logs found: </span><span class="s0">{</span><span class="s1">cm.output</span><span class="s0">!r}</span><span class="s2">'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">assertFieldOutput(self</span><span class="s0">, </span><span class="s1">fieldclass</span><span class="s0">, </span><span class="s1">valid</span><span class="s0">, </span><span class="s1">invalid</span><span class="s0">, </span><span class="s1">field_args=</span><span class="s0">None,</span>
+                          <span class="s1">field_kwargs=</span><span class="s0">None, </span><span class="s1">empty_value=</span><span class="s2">''</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that a form field behaves correctly with various inputs. 
+ 
+        Args: 
+            fieldclass: the class of the field to be tested. 
+            valid: a dictionary mapping valid inputs to their expected 
+                    cleaned values. 
+            invalid: a dictionary mapping invalid inputs to one or more 
+                    raised error messages. 
+            field_args: the args passed to instantiate the field 
+            field_kwargs: the kwargs passed to instantiate the field 
+            empty_value: the expected clean output for inputs in empty_values 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">field_args </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">field_args = []</span>
+        <span class="s0">if </span><span class="s1">field_kwargs </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">field_kwargs = {}</span>
+        <span class="s1">required = fieldclass(*field_args</span><span class="s0">, </span><span class="s1">**field_kwargs)</span>
+        <span class="s1">optional = fieldclass(*field_args</span><span class="s0">, </span><span class="s1">**{**field_kwargs</span><span class="s0">, </span><span class="s2">'required'</span><span class="s1">: </span><span class="s0">False</span><span class="s1">})</span>
+        <span class="s5"># test valid inputs</span>
+        <span class="s0">for </span><span class="s1">input</span><span class="s0">, </span><span class="s1">output </span><span class="s0">in </span><span class="s1">valid.items():</span>
+            <span class="s1">self.assertEqual(required.clean(input)</span><span class="s0">, </span><span class="s1">output)</span>
+            <span class="s1">self.assertEqual(optional.clean(input)</span><span class="s0">, </span><span class="s1">output)</span>
+        <span class="s5"># test invalid inputs</span>
+        <span class="s0">for </span><span class="s1">input</span><span class="s0">, </span><span class="s1">errors </span><span class="s0">in </span><span class="s1">invalid.items():</span>
+            <span class="s0">with </span><span class="s1">self.assertRaises(ValidationError) </span><span class="s0">as </span><span class="s1">context_manager:</span>
+                <span class="s1">required.clean(input)</span>
+            <span class="s1">self.assertEqual(context_manager.exception.messages</span><span class="s0">, </span><span class="s1">errors)</span>
+
+            <span class="s0">with </span><span class="s1">self.assertRaises(ValidationError) </span><span class="s0">as </span><span class="s1">context_manager:</span>
+                <span class="s1">optional.clean(input)</span>
+            <span class="s1">self.assertEqual(context_manager.exception.messages</span><span class="s0">, </span><span class="s1">errors)</span>
+        <span class="s5"># test required inputs</span>
+        <span class="s1">error_required = [required.error_messages[</span><span class="s2">'required'</span><span class="s1">]]</span>
+        <span class="s0">for </span><span class="s1">e </span><span class="s0">in </span><span class="s1">required.empty_values:</span>
+            <span class="s0">with </span><span class="s1">self.assertRaises(ValidationError) </span><span class="s0">as </span><span class="s1">context_manager:</span>
+                <span class="s1">required.clean(e)</span>
+            <span class="s1">self.assertEqual(context_manager.exception.messages</span><span class="s0">, </span><span class="s1">error_required)</span>
+            <span class="s1">self.assertEqual(optional.clean(e)</span><span class="s0">, </span><span class="s1">empty_value)</span>
+        <span class="s5"># test that max_length and min_length are always accepted</span>
+        <span class="s0">if </span><span class="s1">issubclass(fieldclass</span><span class="s0">, </span><span class="s1">CharField):</span>
+            <span class="s1">field_kwargs.update({</span><span class="s2">'min_length'</span><span class="s1">: </span><span class="s4">2</span><span class="s0">, </span><span class="s2">'max_length'</span><span class="s1">: </span><span class="s4">20</span><span class="s1">})</span>
+            <span class="s1">self.assertIsInstance(fieldclass(*field_args</span><span class="s0">, </span><span class="s1">**field_kwargs)</span><span class="s0">, </span><span class="s1">fieldclass)</span>
+
+    <span class="s0">def </span><span class="s1">assertHTMLEqual(self</span><span class="s0">, </span><span class="s1">html1</span><span class="s0">, </span><span class="s1">html2</span><span class="s0">, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that two HTML snippets are semantically the same. 
+        Whitespace in most cases is ignored, and attribute ordering is not 
+        significant. The arguments must be valid HTML. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">dom1 = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">html1</span><span class="s0">, </span><span class="s1">msg</span><span class="s0">, </span><span class="s2">'First argument is not valid HTML:'</span><span class="s1">)</span>
+        <span class="s1">dom2 = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">html2</span><span class="s0">, </span><span class="s1">msg</span><span class="s0">, </span><span class="s2">'Second argument is not valid HTML:'</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">dom1 != dom2:</span>
+            <span class="s1">standardMsg = </span><span class="s2">'%s != %s' </span><span class="s1">% (</span>
+                <span class="s1">safe_repr(dom1</span><span class="s0">, True</span><span class="s1">)</span><span class="s0">, </span><span class="s1">safe_repr(dom2</span><span class="s0">, True</span><span class="s1">))</span>
+            <span class="s1">diff = (</span><span class="s2">'</span><span class="s0">\n</span><span class="s2">' </span><span class="s1">+ </span><span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">.join(difflib.ndiff(</span>
+                <span class="s1">str(dom1).splitlines()</span><span class="s0">, </span><span class="s1">str(dom2).splitlines()</span><span class="s0">,</span>
+            <span class="s1">)))</span>
+            <span class="s1">standardMsg = self._truncateMessage(standardMsg</span><span class="s0">, </span><span class="s1">diff)</span>
+            <span class="s1">self.fail(self._formatMessage(msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+
+    <span class="s0">def </span><span class="s1">assertHTMLNotEqual(self</span><span class="s0">, </span><span class="s1">html1</span><span class="s0">, </span><span class="s1">html2</span><span class="s0">, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Assert that two HTML snippets are not semantically equivalent.&quot;&quot;&quot;</span>
+        <span class="s1">dom1 = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">html1</span><span class="s0">, </span><span class="s1">msg</span><span class="s0">, </span><span class="s2">'First argument is not valid HTML:'</span><span class="s1">)</span>
+        <span class="s1">dom2 = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">html2</span><span class="s0">, </span><span class="s1">msg</span><span class="s0">, </span><span class="s2">'Second argument is not valid HTML:'</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">dom1 == dom2:</span>
+            <span class="s1">standardMsg = </span><span class="s2">'%s == %s' </span><span class="s1">% (</span>
+                <span class="s1">safe_repr(dom1</span><span class="s0">, True</span><span class="s1">)</span><span class="s0">, </span><span class="s1">safe_repr(dom2</span><span class="s0">, True</span><span class="s1">))</span>
+            <span class="s1">self.fail(self._formatMessage(msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+
+    <span class="s0">def </span><span class="s1">assertInHTML(self</span><span class="s0">, </span><span class="s1">needle</span><span class="s0">, </span><span class="s1">haystack</span><span class="s0">, </span><span class="s1">count=</span><span class="s0">None, </span><span class="s1">msg_prefix=</span><span class="s2">''</span><span class="s1">):</span>
+        <span class="s1">needle = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">needle</span><span class="s0">, None, </span><span class="s2">'First argument is not valid HTML:'</span><span class="s1">)</span>
+        <span class="s1">haystack = assert_and_parse_html(self</span><span class="s0">, </span><span class="s1">haystack</span><span class="s0">, None, </span><span class="s2">'Second argument is not valid HTML:'</span><span class="s1">)</span>
+        <span class="s1">real_count = haystack.count(needle)</span>
+        <span class="s0">if </span><span class="s1">count </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.assertEqual(</span>
+                <span class="s1">real_count</span><span class="s0">, </span><span class="s1">count</span><span class="s0">,</span>
+                <span class="s1">msg_prefix + </span><span class="s2">&quot;Found %d instances of '%s' in response (expected %d)&quot; </span><span class="s1">% (real_count</span><span class="s0">, </span><span class="s1">needle</span><span class="s0">, </span><span class="s1">count)</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.assertTrue(real_count != </span><span class="s4">0</span><span class="s0">, </span><span class="s1">msg_prefix + </span><span class="s2">&quot;Couldn't find '%s' in response&quot; </span><span class="s1">% needle)</span>
+
+    <span class="s0">def </span><span class="s1">assertJSONEqual(self</span><span class="s0">, </span><span class="s1">raw</span><span class="s0">, </span><span class="s1">expected_data</span><span class="s0">, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that the JSON fragments raw and expected_data are equal. 
+        Usual JSON non-significant whitespace rules apply as the heavyweight 
+        is delegated to the json library. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">data = json.loads(raw)</span>
+        <span class="s0">except </span><span class="s1">json.JSONDecodeError:</span>
+            <span class="s1">self.fail(</span><span class="s2">&quot;First argument is not valid JSON: %r&quot; </span><span class="s1">% raw)</span>
+        <span class="s0">if </span><span class="s1">isinstance(expected_data</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">expected_data = json.loads(expected_data)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s1">self.fail(</span><span class="s2">&quot;Second argument is not valid JSON: %r&quot; </span><span class="s1">% expected_data)</span>
+        <span class="s1">self.assertEqual(data</span><span class="s0">, </span><span class="s1">expected_data</span><span class="s0">, </span><span class="s1">msg=msg)</span>
+
+    <span class="s0">def </span><span class="s1">assertJSONNotEqual(self</span><span class="s0">, </span><span class="s1">raw</span><span class="s0">, </span><span class="s1">expected_data</span><span class="s0">, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that the JSON fragments raw and expected_data are not equal. 
+        Usual JSON non-significant whitespace rules apply as the heavyweight 
+        is delegated to the json library. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">data = json.loads(raw)</span>
+        <span class="s0">except </span><span class="s1">json.JSONDecodeError:</span>
+            <span class="s1">self.fail(</span><span class="s2">&quot;First argument is not valid JSON: %r&quot; </span><span class="s1">% raw)</span>
+        <span class="s0">if </span><span class="s1">isinstance(expected_data</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">expected_data = json.loads(expected_data)</span>
+            <span class="s0">except </span><span class="s1">json.JSONDecodeError:</span>
+                <span class="s1">self.fail(</span><span class="s2">&quot;Second argument is not valid JSON: %r&quot; </span><span class="s1">% expected_data)</span>
+        <span class="s1">self.assertNotEqual(data</span><span class="s0">, </span><span class="s1">expected_data</span><span class="s0">, </span><span class="s1">msg=msg)</span>
+
+    <span class="s0">def </span><span class="s1">assertXMLEqual(self</span><span class="s0">, </span><span class="s1">xml1</span><span class="s0">, </span><span class="s1">xml2</span><span class="s0">, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that two XML snippets are semantically the same. 
+        Whitespace in most cases is ignored and attribute ordering is not 
+        significant. The arguments must be valid XML. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">result = compare_xml(xml1</span><span class="s0">, </span><span class="s1">xml2)</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s1">standardMsg = </span><span class="s2">'First or second argument is not valid XML</span><span class="s0">\n</span><span class="s2">%s' </span><span class="s1">% e</span>
+            <span class="s1">self.fail(self._formatMessage(msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if not </span><span class="s1">result:</span>
+                <span class="s1">standardMsg = </span><span class="s2">'%s != %s' </span><span class="s1">% (safe_repr(xml1</span><span class="s0">, True</span><span class="s1">)</span><span class="s0">, </span><span class="s1">safe_repr(xml2</span><span class="s0">, True</span><span class="s1">))</span>
+                <span class="s1">diff = (</span><span class="s2">'</span><span class="s0">\n</span><span class="s2">' </span><span class="s1">+ </span><span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">.join(</span>
+                    <span class="s1">difflib.ndiff(xml1.splitlines()</span><span class="s0">, </span><span class="s1">xml2.splitlines())</span>
+                <span class="s1">))</span>
+                <span class="s1">standardMsg = self._truncateMessage(standardMsg</span><span class="s0">, </span><span class="s1">diff)</span>
+                <span class="s1">self.fail(self._formatMessage(msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+
+    <span class="s0">def </span><span class="s1">assertXMLNotEqual(self</span><span class="s0">, </span><span class="s1">xml1</span><span class="s0">, </span><span class="s1">xml2</span><span class="s0">, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Assert that two XML snippets are not semantically equivalent. 
+        Whitespace in most cases is ignored and attribute ordering is not 
+        significant. The arguments must be valid XML. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">result = compare_xml(xml1</span><span class="s0">, </span><span class="s1">xml2)</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s1">standardMsg = </span><span class="s2">'First or second argument is not valid XML</span><span class="s0">\n</span><span class="s2">%s' </span><span class="s1">% e</span>
+            <span class="s1">self.fail(self._formatMessage(msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">result:</span>
+                <span class="s1">standardMsg = </span><span class="s2">'%s == %s' </span><span class="s1">% (safe_repr(xml1</span><span class="s0">, True</span><span class="s1">)</span><span class="s0">, </span><span class="s1">safe_repr(xml2</span><span class="s0">, True</span><span class="s1">))</span>
+                <span class="s1">self.fail(self._formatMessage(msg</span><span class="s0">, </span><span class="s1">standardMsg))</span>
+
+
+<span class="s0">class </span><span class="s1">TransactionTestCase(SimpleTestCase):</span>
+
+    <span class="s5"># Subclasses can ask for resetting of auto increment sequence before each</span>
+    <span class="s5"># test case</span>
+    <span class="s1">reset_sequences = </span><span class="s0">False</span>
+
+    <span class="s5"># Subclasses can enable only a subset of apps for faster tests</span>
+    <span class="s1">available_apps = </span><span class="s0">None</span>
+
+    <span class="s5"># Subclasses can define fixtures which will be automatically installed.</span>
+    <span class="s1">fixtures = </span><span class="s0">None</span>
+
+    <span class="s1">databases = {DEFAULT_DB_ALIAS}</span>
+    <span class="s1">_disallowed_database_msg = (</span>
+        <span class="s2">'Database %(operation)s to %(alias)r are not allowed in this test. '</span>
+        <span class="s2">'Add %(alias)r to %(test)s.databases to ensure proper test isolation '</span>
+        <span class="s2">'and silence this failure.'</span>
+    <span class="s1">)</span>
+
+    <span class="s5"># If transactions aren't available, Django will serialize the database</span>
+    <span class="s5"># contents into a fixture during setup and flush and reload them</span>
+    <span class="s5"># during teardown (as flush does not restore data from migrations).</span>
+    <span class="s5"># This can be slow; this flag allows enabling on a per-case basis.</span>
+    <span class="s1">serialized_rollback = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">_pre_setup(self):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Perform pre-test setup: 
+        * If the class has an 'available_apps' attribute, restrict the app 
+          registry to these applications, then fire the post_migrate signal -- 
+          it must run with the correct set of applications for the test case. 
+        * If the class has a 'fixtures' attribute, install those fixtures. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">super()._pre_setup()</span>
+        <span class="s0">if </span><span class="s1">self.available_apps </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">apps.set_available_apps(self.available_apps)</span>
+            <span class="s1">setting_changed.send(</span>
+                <span class="s1">sender=settings._wrapped.__class__</span><span class="s0">,</span>
+                <span class="s1">setting=</span><span class="s2">'INSTALLED_APPS'</span><span class="s0">,</span>
+                <span class="s1">value=self.available_apps</span><span class="s0">,</span>
+                <span class="s1">enter=</span><span class="s0">True,</span>
+            <span class="s1">)</span>
+            <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">self._databases_names(include_mirrors=</span><span class="s0">False</span><span class="s1">):</span>
+                <span class="s1">emit_post_migrate_signal(verbosity=</span><span class="s4">0</span><span class="s0">, </span><span class="s1">interactive=</span><span class="s0">False, </span><span class="s1">db=db_name)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self._fixture_setup()</span>
+        <span class="s0">except </span><span class="s1">Exception:</span>
+            <span class="s0">if </span><span class="s1">self.available_apps </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">apps.unset_available_apps()</span>
+                <span class="s1">setting_changed.send(</span>
+                    <span class="s1">sender=settings._wrapped.__class__</span><span class="s0">,</span>
+                    <span class="s1">setting=</span><span class="s2">'INSTALLED_APPS'</span><span class="s0">,</span>
+                    <span class="s1">value=settings.INSTALLED_APPS</span><span class="s0">,</span>
+                    <span class="s1">enter=</span><span class="s0">False,</span>
+                <span class="s1">)</span>
+            <span class="s0">raise</span>
+        <span class="s5"># Clear the queries_log so that it's less likely to overflow (a single</span>
+        <span class="s5"># test probably won't execute 9K queries). If queries_log overflows,</span>
+        <span class="s5"># then assertNumQueries() doesn't work.</span>
+        <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">self._databases_names(include_mirrors=</span><span class="s0">False</span><span class="s1">):</span>
+            <span class="s1">connections[db_name].queries_log.clear()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_databases_names(cls</span><span class="s0">, </span><span class="s1">include_mirrors=</span><span class="s0">True</span><span class="s1">):</span>
+        <span class="s5"># Only consider allowed database aliases, including mirrors or not.</span>
+        <span class="s0">return </span><span class="s1">[</span>
+            <span class="s1">alias </span><span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">connections</span>
+            <span class="s0">if </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">cls.databases </span><span class="s0">and </span><span class="s1">(</span>
+                <span class="s1">include_mirrors </span><span class="s0">or not </span><span class="s1">connections[alias].settings_dict[</span><span class="s2">'TEST'</span><span class="s1">][</span><span class="s2">'MIRROR'</span><span class="s1">]</span>
+            <span class="s1">)</span>
+        <span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">_reset_sequences(self</span><span class="s0">, </span><span class="s1">db_name):</span>
+        <span class="s1">conn = connections[db_name]</span>
+        <span class="s0">if </span><span class="s1">conn.features.supports_sequence_reset:</span>
+            <span class="s1">sql_list = conn.ops.sequence_reset_by_name_sql(</span>
+                <span class="s1">no_style()</span><span class="s0">, </span><span class="s1">conn.introspection.sequence_list())</span>
+            <span class="s0">if </span><span class="s1">sql_list:</span>
+                <span class="s0">with </span><span class="s1">transaction.atomic(using=db_name):</span>
+                    <span class="s0">with </span><span class="s1">conn.cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+                        <span class="s0">for </span><span class="s1">sql </span><span class="s0">in </span><span class="s1">sql_list:</span>
+                            <span class="s1">cursor.execute(sql)</span>
+
+    <span class="s0">def </span><span class="s1">_fixture_setup(self):</span>
+        <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">self._databases_names(include_mirrors=</span><span class="s0">False</span><span class="s1">):</span>
+            <span class="s5"># Reset sequences</span>
+            <span class="s0">if </span><span class="s1">self.reset_sequences:</span>
+                <span class="s1">self._reset_sequences(db_name)</span>
+
+            <span class="s5"># Provide replica initial data from migrated apps, if needed.</span>
+            <span class="s0">if </span><span class="s1">self.serialized_rollback </span><span class="s0">and </span><span class="s1">hasattr(connections[db_name]</span><span class="s0">, </span><span class="s2">&quot;_test_serialized_contents&quot;</span><span class="s1">):</span>
+                <span class="s0">if </span><span class="s1">self.available_apps </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s1">apps.unset_available_apps()</span>
+                <span class="s1">connections[db_name].creation.deserialize_db_from_string(</span>
+                    <span class="s1">connections[db_name]._test_serialized_contents</span>
+                <span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">self.available_apps </span><span class="s0">is not None</span><span class="s1">:</span>
+                    <span class="s1">apps.set_available_apps(self.available_apps)</span>
+
+            <span class="s0">if </span><span class="s1">self.fixtures:</span>
+                <span class="s5"># We have to use this slightly awkward syntax due to the fact</span>
+                <span class="s5"># that we're using *args and **kwargs together.</span>
+                <span class="s1">call_command(</span><span class="s2">'loaddata'</span><span class="s0">, </span><span class="s1">*self.fixtures</span><span class="s0">,</span>
+                             <span class="s1">**{</span><span class="s2">'verbosity'</span><span class="s1">: </span><span class="s4">0</span><span class="s0">, </span><span class="s2">'database'</span><span class="s1">: db_name})</span>
+
+    <span class="s0">def </span><span class="s1">_should_reload_connections(self):</span>
+        <span class="s0">return True</span>
+
+    <span class="s0">def </span><span class="s1">_post_teardown(self):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Perform post-test things: 
+        * Flush the contents of the database to leave a clean slate. If the 
+          class has an 'available_apps' attribute, don't fire post_migrate. 
+        * Force-close the connection so the next test gets a clean cursor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self._fixture_teardown()</span>
+            <span class="s1">super()._post_teardown()</span>
+            <span class="s0">if </span><span class="s1">self._should_reload_connections():</span>
+                <span class="s5"># Some DB cursors include SQL statements as part of cursor</span>
+                <span class="s5"># creation. If you have a test that does a rollback, the effect</span>
+                <span class="s5"># of these statements is lost, which can affect the operation of</span>
+                <span class="s5"># tests (e.g., losing a timezone setting causing objects to be</span>
+                <span class="s5"># created with the wrong time). To make sure this doesn't</span>
+                <span class="s5"># happen, get a clean connection at the start of every test.</span>
+                <span class="s0">for </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">connections.all():</span>
+                    <span class="s1">conn.close()</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">self.available_apps </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">apps.unset_available_apps()</span>
+                <span class="s1">setting_changed.send(sender=settings._wrapped.__class__</span><span class="s0">,</span>
+                                     <span class="s1">setting=</span><span class="s2">'INSTALLED_APPS'</span><span class="s0">,</span>
+                                     <span class="s1">value=settings.INSTALLED_APPS</span><span class="s0">,</span>
+                                     <span class="s1">enter=</span><span class="s0">False</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_fixture_teardown(self):</span>
+        <span class="s5"># Allow TRUNCATE ... CASCADE and don't emit the post_migrate signal</span>
+        <span class="s5"># when flushing only a subset of the apps</span>
+        <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">self._databases_names(include_mirrors=</span><span class="s0">False</span><span class="s1">):</span>
+            <span class="s5"># Flush the database</span>
+            <span class="s1">inhibit_post_migrate = (</span>
+                <span class="s1">self.available_apps </span><span class="s0">is not None or</span>
+                <span class="s1">(   </span><span class="s5"># Inhibit the post_migrate signal when using serialized</span>
+                    <span class="s5"># rollback to avoid trying to recreate the serialized data.</span>
+                    <span class="s1">self.serialized_rollback </span><span class="s0">and</span>
+                    <span class="s1">hasattr(connections[db_name]</span><span class="s0">, </span><span class="s2">'_test_serialized_contents'</span><span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+            <span class="s1">call_command(</span><span class="s2">'flush'</span><span class="s0">, </span><span class="s1">verbosity=</span><span class="s4">0</span><span class="s0">, </span><span class="s1">interactive=</span><span class="s0">False,</span>
+                         <span class="s1">database=db_name</span><span class="s0">, </span><span class="s1">reset_sequences=</span><span class="s0">False,</span>
+                         <span class="s1">allow_cascade=self.available_apps </span><span class="s0">is not None,</span>
+                         <span class="s1">inhibit_post_migrate=inhibit_post_migrate)</span>
+
+    <span class="s0">def </span><span class="s1">assertQuerysetEqual(self</span><span class="s0">, </span><span class="s1">qs</span><span class="s0">, </span><span class="s1">values</span><span class="s0">, </span><span class="s1">transform=</span><span class="s0">None, </span><span class="s1">ordered=</span><span class="s0">True, </span><span class="s1">msg=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">values = list(values)</span>
+        <span class="s5"># RemovedInDjango41Warning.</span>
+        <span class="s0">if </span><span class="s1">transform </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">(</span>
+                <span class="s1">values </span><span class="s0">and </span><span class="s1">isinstance(values[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">and</span>
+                <span class="s1">qs </span><span class="s0">and not </span><span class="s1">isinstance(qs[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">str)</span>
+            <span class="s1">):</span>
+                <span class="s5"># Transform qs using repr() if the first element of values is a</span>
+                <span class="s5"># string and the first element of qs is not (which would be the</span>
+                <span class="s5"># case if qs is a flattened values_list).</span>
+                <span class="s1">warnings.warn(</span>
+                    <span class="s2">&quot;In Django 4.1, repr() will not be called automatically &quot;</span>
+                    <span class="s2">&quot;on a queryset when compared to string values. Set an &quot;</span>
+                    <span class="s2">&quot;explicit 'transform' to silence this warning.&quot;</span><span class="s0">,</span>
+                    <span class="s1">category=RemovedInDjango41Warning</span><span class="s0">,</span>
+                    <span class="s1">stacklevel=</span><span class="s4">2</span><span class="s0">,</span>
+                <span class="s1">)</span>
+                <span class="s1">transform = repr</span>
+        <span class="s1">items = qs</span>
+        <span class="s0">if </span><span class="s1">transform </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">items = map(transform</span><span class="s0">, </span><span class="s1">items)</span>
+        <span class="s0">if not </span><span class="s1">ordered:</span>
+            <span class="s0">return </span><span class="s1">self.assertDictEqual(Counter(items)</span><span class="s0">, </span><span class="s1">Counter(values)</span><span class="s0">, </span><span class="s1">msg=msg)</span>
+        <span class="s5"># For example qs.iterator() could be passed as qs, but it does not</span>
+        <span class="s5"># have 'ordered' attribute.</span>
+        <span class="s0">if </span><span class="s1">len(values) &gt; </span><span class="s4">1 </span><span class="s0">and </span><span class="s1">hasattr(qs</span><span class="s0">, </span><span class="s2">'ordered'</span><span class="s1">) </span><span class="s0">and not </span><span class="s1">qs.ordered:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'Trying to compare non-ordered queryset against more than one '</span>
+                <span class="s2">'ordered value.'</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self.assertEqual(list(items)</span><span class="s0">, </span><span class="s1">values</span><span class="s0">, </span><span class="s1">msg=msg)</span>
+
+    <span class="s0">def </span><span class="s1">assertNumQueries(self</span><span class="s0">, </span><span class="s1">num</span><span class="s0">, </span><span class="s1">func=</span><span class="s0">None, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">using=DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">conn = connections[using]</span>
+
+        <span class="s1">context = _AssertNumQueriesContext(self</span><span class="s0">, </span><span class="s1">num</span><span class="s0">, </span><span class="s1">conn)</span>
+        <span class="s0">if </span><span class="s1">func </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">context</span>
+
+        <span class="s0">with </span><span class="s1">context:</span>
+            <span class="s1">func(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s0">def </span><span class="s1">connections_support_transactions(aliases=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Return whether or not all (or specified) connections support 
+    transactions. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">conns = connections.all() </span><span class="s0">if </span><span class="s1">aliases </span><span class="s0">is None else </span><span class="s1">(connections[alias] </span><span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">aliases)</span>
+    <span class="s0">return </span><span class="s1">all(conn.features.supports_transactions </span><span class="s0">for </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">conns)</span>
+
+
+<span class="s0">class </span><span class="s1">TestData:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Descriptor to provide TestCase instance isolation for attributes assigned 
+    during the setUpTestData() phase. 
+ 
+    Allow safe alteration of objects assigned in setUpTestData() by test 
+    methods by exposing deep copies instead of the original objects. 
+ 
+    Objects are deep copied using a memo kept on the test case instance in 
+    order to maintain their original relationships. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">memo_attr = </span><span class="s2">'_testdata_memo'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">data):</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.data = data</span>
+
+    <span class="s0">def </span><span class="s1">get_memo(self</span><span class="s0">, </span><span class="s1">testcase):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">memo = getattr(testcase</span><span class="s0">, </span><span class="s1">self.memo_attr)</span>
+        <span class="s0">except </span><span class="s1">AttributeError:</span>
+            <span class="s1">memo = {}</span>
+            <span class="s1">setattr(testcase</span><span class="s0">, </span><span class="s1">self.memo_attr</span><span class="s0">, </span><span class="s1">memo)</span>
+        <span class="s0">return </span><span class="s1">memo</span>
+
+    <span class="s0">def </span><span class="s1">__get__(self</span><span class="s0">, </span><span class="s1">instance</span><span class="s0">, </span><span class="s1">owner):</span>
+        <span class="s0">if </span><span class="s1">instance </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.data</span>
+        <span class="s1">memo = self.get_memo(instance)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">data = deepcopy(self.data</span><span class="s0">, </span><span class="s1">memo)</span>
+        <span class="s0">except </span><span class="s1">TypeError:</span>
+            <span class="s5"># RemovedInDjango41Warning.</span>
+            <span class="s1">msg = (</span>
+                <span class="s2">&quot;Assigning objects which don't support copy.deepcopy() during &quot;</span>
+                <span class="s2">&quot;setUpTestData() is deprecated. Either assign the %s &quot;</span>
+                <span class="s2">&quot;attribute during setUpClass() or setUp(), or add support for &quot;</span>
+                <span class="s2">&quot;deepcopy() to %s.%s.%s.&quot;</span>
+            <span class="s1">) % (</span>
+                <span class="s1">self.name</span><span class="s0">,</span>
+                <span class="s1">owner.__module__</span><span class="s0">,</span>
+                <span class="s1">owner.__qualname__</span><span class="s0">,</span>
+                <span class="s1">self.name</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s1">warnings.warn(msg</span><span class="s0">, </span><span class="s1">category=RemovedInDjango41Warning</span><span class="s0">, </span><span class="s1">stacklevel=</span><span class="s4">2</span><span class="s1">)</span>
+            <span class="s1">data = self.data</span>
+        <span class="s1">setattr(instance</span><span class="s0">, </span><span class="s1">self.name</span><span class="s0">, </span><span class="s1">data)</span>
+        <span class="s0">return </span><span class="s1">data</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s2">'&lt;TestData: name=%r, data=%r&gt;' </span><span class="s1">% (self.name</span><span class="s0">, </span><span class="s1">self.data)</span>
+
+
+<span class="s0">class </span><span class="s1">TestCase(TransactionTestCase):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Similar to TransactionTestCase, but use `transaction.atomic()` to achieve 
+    test isolation. 
+ 
+    In most situations, TestCase should be preferred to TransactionTestCase as 
+    it allows faster execution. However, there are some situations where using 
+    TransactionTestCase might be necessary (e.g. testing some transactional 
+    behavior). 
+ 
+    On database backends with no transaction support, TestCase behaves as 
+    TransactionTestCase. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_enter_atomics(cls):</span>
+        <span class="s3">&quot;&quot;&quot;Open atomic blocks for multiple databases.&quot;&quot;&quot;</span>
+        <span class="s1">atomics = {}</span>
+        <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">cls._databases_names():</span>
+            <span class="s1">atomics[db_name] = transaction.atomic(using=db_name)</span>
+            <span class="s1">atomics[db_name].__enter__()</span>
+        <span class="s0">return </span><span class="s1">atomics</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_rollback_atomics(cls</span><span class="s0">, </span><span class="s1">atomics):</span>
+        <span class="s3">&quot;&quot;&quot;Rollback atomic blocks opened by the previous method.&quot;&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">reversed(cls._databases_names()):</span>
+            <span class="s1">transaction.set_rollback(</span><span class="s0">True, </span><span class="s1">using=db_name)</span>
+            <span class="s1">atomics[db_name].__exit__(</span><span class="s0">None, None, None</span><span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_databases_support_transactions(cls):</span>
+        <span class="s0">return </span><span class="s1">connections_support_transactions(cls.databases)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">setUpClass(cls):</span>
+        <span class="s1">super().setUpClass()</span>
+        <span class="s0">if not </span><span class="s1">cls._databases_support_transactions():</span>
+            <span class="s0">return</span>
+        <span class="s5"># Disable the durability check to allow testing durable atomic blocks</span>
+        <span class="s5"># in a transaction for performance reasons.</span>
+        <span class="s1">transaction.Atomic._ensure_durability = </span><span class="s0">False</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">cls.cls_atomics = cls._enter_atomics()</span>
+
+            <span class="s0">if </span><span class="s1">cls.fixtures:</span>
+                <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">cls._databases_names(include_mirrors=</span><span class="s0">False</span><span class="s1">):</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">call_command(</span><span class="s2">'loaddata'</span><span class="s0">, </span><span class="s1">*cls.fixtures</span><span class="s0">, </span><span class="s1">**{</span><span class="s2">'verbosity'</span><span class="s1">: </span><span class="s4">0</span><span class="s0">, </span><span class="s2">'database'</span><span class="s1">: db_name})</span>
+                    <span class="s0">except </span><span class="s1">Exception:</span>
+                        <span class="s1">cls._rollback_atomics(cls.cls_atomics)</span>
+                        <span class="s0">raise</span>
+            <span class="s1">pre_attrs = cls.__dict__.copy()</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">cls.setUpTestData()</span>
+            <span class="s0">except </span><span class="s1">Exception:</span>
+                <span class="s1">cls._rollback_atomics(cls.cls_atomics)</span>
+                <span class="s0">raise</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">cls.__dict__.items():</span>
+                <span class="s0">if </span><span class="s1">value </span><span class="s0">is not </span><span class="s1">pre_attrs.get(name):</span>
+                    <span class="s1">setattr(cls</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">TestData(name</span><span class="s0">, </span><span class="s1">value))</span>
+        <span class="s0">except </span><span class="s1">Exception:</span>
+            <span class="s1">transaction.Atomic._ensure_durability = </span><span class="s0">True</span>
+            <span class="s0">raise</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">tearDownClass(cls):</span>
+        <span class="s1">transaction.Atomic._ensure_durability = </span><span class="s0">True</span>
+        <span class="s0">if </span><span class="s1">cls._databases_support_transactions():</span>
+            <span class="s1">cls._rollback_atomics(cls.cls_atomics)</span>
+            <span class="s0">for </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">connections.all():</span>
+                <span class="s1">conn.close()</span>
+        <span class="s1">super().tearDownClass()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">setUpTestData(cls):</span>
+        <span class="s3">&quot;&quot;&quot;Load initial data for the TestCase.&quot;&quot;&quot;</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">_should_reload_connections(self):</span>
+        <span class="s0">if </span><span class="s1">self._databases_support_transactions():</span>
+            <span class="s0">return False</span>
+        <span class="s0">return </span><span class="s1">super()._should_reload_connections()</span>
+
+    <span class="s0">def </span><span class="s1">_fixture_setup(self):</span>
+        <span class="s0">if not </span><span class="s1">self._databases_support_transactions():</span>
+            <span class="s5"># If the backend does not support transactions, we should reload</span>
+            <span class="s5"># class data before each test</span>
+            <span class="s1">self.setUpTestData()</span>
+            <span class="s0">return </span><span class="s1">super()._fixture_setup()</span>
+
+        <span class="s0">if </span><span class="s1">self.reset_sequences:</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">'reset_sequences cannot be used on TestCase instances'</span><span class="s1">)</span>
+        <span class="s1">self.atomics = self._enter_atomics()</span>
+
+    <span class="s0">def </span><span class="s1">_fixture_teardown(self):</span>
+        <span class="s0">if not </span><span class="s1">self._databases_support_transactions():</span>
+            <span class="s0">return </span><span class="s1">super()._fixture_teardown()</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">for </span><span class="s1">db_name </span><span class="s0">in </span><span class="s1">reversed(self._databases_names()):</span>
+                <span class="s0">if </span><span class="s1">self._should_check_constraints(connections[db_name]):</span>
+                    <span class="s1">connections[db_name].check_constraints()</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">self._rollback_atomics(self.atomics)</span>
+
+    <span class="s0">def </span><span class="s1">_should_check_constraints(self</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">return </span><span class="s1">(</span>
+            <span class="s1">connection.features.can_defer_constraint_checks </span><span class="s0">and</span>
+            <span class="s0">not </span><span class="s1">connection.needs_rollback </span><span class="s0">and </span><span class="s1">connection.is_usable()</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s1">@contextmanager</span>
+    <span class="s0">def </span><span class="s1">captureOnCommitCallbacks(cls</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">using=DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">execute=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot;Context manager to capture transaction.on_commit() callbacks.&quot;&quot;&quot;</span>
+        <span class="s1">callbacks = []</span>
+        <span class="s1">start_count = len(connections[using].run_on_commit)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">yield </span><span class="s1">callbacks</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">callback_count = len(connections[using].run_on_commit)</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s1">run_on_commit = connections[using].run_on_commit[start_count:]</span>
+                <span class="s1">callbacks[:] = [func </span><span class="s0">for </span><span class="s1">sids</span><span class="s0">, </span><span class="s1">func </span><span class="s0">in </span><span class="s1">run_on_commit]</span>
+                <span class="s0">if </span><span class="s1">execute:</span>
+                    <span class="s0">for </span><span class="s1">callback </span><span class="s0">in </span><span class="s1">callbacks:</span>
+                        <span class="s1">callback()</span>
+
+                <span class="s0">if </span><span class="s1">callback_count == len(connections[using].run_on_commit):</span>
+                    <span class="s0">break</span>
+                <span class="s1">start_count = callback_count - </span><span class="s4">1</span>
+                <span class="s1">callback_count = len(connections[using].run_on_commit)</span>
+
+
+<span class="s0">class </span><span class="s1">CheckCondition:</span>
+    <span class="s3">&quot;&quot;&quot;Descriptor class for deferred condition checking.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*conditions):</span>
+        <span class="s1">self.conditions = conditions</span>
+
+    <span class="s0">def </span><span class="s1">add_condition(self</span><span class="s0">, </span><span class="s1">condition</span><span class="s0">, </span><span class="s1">reason):</span>
+        <span class="s0">return </span><span class="s1">self.__class__(*self.conditions</span><span class="s0">, </span><span class="s1">(condition</span><span class="s0">, </span><span class="s1">reason))</span>
+
+    <span class="s0">def </span><span class="s1">__get__(self</span><span class="s0">, </span><span class="s1">instance</span><span class="s0">, </span><span class="s1">cls=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s5"># Trigger access for all bases.</span>
+        <span class="s0">if </span><span class="s1">any(getattr(base</span><span class="s0">, </span><span class="s2">'__unittest_skip__'</span><span class="s0">, False</span><span class="s1">) </span><span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">cls.__bases__):</span>
+            <span class="s0">return True</span>
+        <span class="s0">for </span><span class="s1">condition</span><span class="s0">, </span><span class="s1">reason </span><span class="s0">in </span><span class="s1">self.conditions:</span>
+            <span class="s0">if </span><span class="s1">condition():</span>
+                <span class="s5"># Override this descriptor's value and set the skip reason.</span>
+                <span class="s1">cls.__unittest_skip__ = </span><span class="s0">True</span>
+                <span class="s1">cls.__unittest_skip_why__ = reason</span>
+                <span class="s0">return True</span>
+        <span class="s0">return False</span>
+
+
+<span class="s0">def </span><span class="s1">_deferredSkip(condition</span><span class="s0">, </span><span class="s1">reason</span><span class="s0">, </span><span class="s1">name):</span>
+    <span class="s0">def </span><span class="s1">decorator(test_func):</span>
+        <span class="s0">nonlocal </span><span class="s1">condition</span>
+        <span class="s0">if not </span><span class="s1">(isinstance(test_func</span><span class="s0">, </span><span class="s1">type) </span><span class="s0">and</span>
+                <span class="s1">issubclass(test_func</span><span class="s0">, </span><span class="s1">unittest.TestCase)):</span>
+            <span class="s1">@wraps(test_func)</span>
+            <span class="s0">def </span><span class="s1">skip_wrapper(*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+                <span class="s0">if </span><span class="s1">(args </span><span class="s0">and </span><span class="s1">isinstance(args[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s1">unittest.TestCase) </span><span class="s0">and</span>
+                        <span class="s1">connection.alias </span><span class="s0">not in </span><span class="s1">getattr(args[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">, </span><span class="s2">'databases'</span><span class="s0">, </span><span class="s1">{})):</span>
+                    <span class="s0">raise </span><span class="s1">ValueError(</span>
+                        <span class="s2">&quot;%s cannot be used on %s as %s doesn't allow queries &quot;</span>
+                        <span class="s2">&quot;against the %r database.&quot; </span><span class="s1">% (</span>
+                            <span class="s1">name</span><span class="s0">,</span>
+                            <span class="s1">args[</span><span class="s4">0</span><span class="s1">]</span><span class="s0">,</span>
+                            <span class="s1">args[</span><span class="s4">0</span><span class="s1">].__class__.__qualname__</span><span class="s0">,</span>
+                            <span class="s1">connection.alias</span><span class="s0">,</span>
+                        <span class="s1">)</span>
+                    <span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">condition():</span>
+                    <span class="s0">raise </span><span class="s1">unittest.SkipTest(reason)</span>
+                <span class="s0">return </span><span class="s1">test_func(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">test_item = skip_wrapper</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s5"># Assume a class is decorated</span>
+            <span class="s1">test_item = test_func</span>
+            <span class="s1">databases = getattr(test_item</span><span class="s0">, </span><span class="s2">'databases'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">if not </span><span class="s1">databases </span><span class="s0">or </span><span class="s1">connection.alias </span><span class="s0">not in </span><span class="s1">databases:</span>
+                <span class="s5"># Defer raising to allow importing test class's module.</span>
+                <span class="s0">def </span><span class="s1">condition():</span>
+                    <span class="s0">raise </span><span class="s1">ValueError(</span>
+                        <span class="s2">&quot;%s cannot be used on %s as it doesn't allow queries &quot;</span>
+                        <span class="s2">&quot;against the '%s' database.&quot; </span><span class="s1">% (</span>
+                            <span class="s1">name</span><span class="s0">, </span><span class="s1">test_item</span><span class="s0">, </span><span class="s1">connection.alias</span><span class="s0">,</span>
+                        <span class="s1">)</span>
+                    <span class="s1">)</span>
+            <span class="s5"># Retrieve the possibly existing value from the class's dict to</span>
+            <span class="s5"># avoid triggering the descriptor.</span>
+            <span class="s1">skip = test_func.__dict__.get(</span><span class="s2">'__unittest_skip__'</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">isinstance(skip</span><span class="s0">, </span><span class="s1">CheckCondition):</span>
+                <span class="s1">test_item.__unittest_skip__ = skip.add_condition(condition</span><span class="s0">, </span><span class="s1">reason)</span>
+            <span class="s0">elif </span><span class="s1">skip </span><span class="s0">is not True</span><span class="s1">:</span>
+                <span class="s1">test_item.__unittest_skip__ = CheckCondition((condition</span><span class="s0">, </span><span class="s1">reason))</span>
+        <span class="s0">return </span><span class="s1">test_item</span>
+    <span class="s0">return </span><span class="s1">decorator</span>
+
+
+<span class="s0">def </span><span class="s1">skipIfDBFeature(*features):</span>
+    <span class="s3">&quot;&quot;&quot;Skip a test if a database has at least one of the named features.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">_deferredSkip(</span>
+        <span class="s0">lambda</span><span class="s1">: any(getattr(connection.features</span><span class="s0">, </span><span class="s1">feature</span><span class="s0">, False</span><span class="s1">) </span><span class="s0">for </span><span class="s1">feature </span><span class="s0">in </span><span class="s1">features)</span><span class="s0">,</span>
+        <span class="s2">&quot;Database has feature(s) %s&quot; </span><span class="s1">% </span><span class="s2">&quot;, &quot;</span><span class="s1">.join(features)</span><span class="s0">,</span>
+        <span class="s2">'skipIfDBFeature'</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">skipUnlessDBFeature(*features):</span>
+    <span class="s3">&quot;&quot;&quot;Skip a test unless a database has all the named features.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">_deferredSkip(</span>
+        <span class="s0">lambda</span><span class="s1">: </span><span class="s0">not </span><span class="s1">all(getattr(connection.features</span><span class="s0">, </span><span class="s1">feature</span><span class="s0">, False</span><span class="s1">) </span><span class="s0">for </span><span class="s1">feature </span><span class="s0">in </span><span class="s1">features)</span><span class="s0">,</span>
+        <span class="s2">&quot;Database doesn't support feature(s): %s&quot; </span><span class="s1">% </span><span class="s2">&quot;, &quot;</span><span class="s1">.join(features)</span><span class="s0">,</span>
+        <span class="s2">'skipUnlessDBFeature'</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">skipUnlessAnyDBFeature(*features):</span>
+    <span class="s3">&quot;&quot;&quot;Skip a test unless a database has any of the named features.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">_deferredSkip(</span>
+        <span class="s0">lambda</span><span class="s1">: </span><span class="s0">not </span><span class="s1">any(getattr(connection.features</span><span class="s0">, </span><span class="s1">feature</span><span class="s0">, False</span><span class="s1">) </span><span class="s0">for </span><span class="s1">feature </span><span class="s0">in </span><span class="s1">features)</span><span class="s0">,</span>
+        <span class="s2">&quot;Database doesn't support any of the feature(s): %s&quot; </span><span class="s1">% </span><span class="s2">&quot;, &quot;</span><span class="s1">.join(features)</span><span class="s0">,</span>
+        <span class="s2">'skipUnlessAnyDBFeature'</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">QuietWSGIRequestHandler(WSGIRequestHandler):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A WSGIRequestHandler that doesn't log to standard output any of the 
+    requests received, so as to not clutter the test result output. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">log_message(*args):</span>
+        <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">FSFilesHandler(WSGIHandler):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    WSGI middleware that intercepts calls to a directory, as defined by one of 
+    the *_ROOT settings, and serves those files, publishing them under *_URL. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">application):</span>
+        <span class="s1">self.application = application</span>
+        <span class="s1">self.base_url = urlparse(self.get_base_url())</span>
+        <span class="s1">super().__init__()</span>
+
+    <span class="s0">def </span><span class="s1">_should_handle(self</span><span class="s0">, </span><span class="s1">path):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Check if the path should be handled. Ignore the path if: 
+        * the host is provided as part of the base_url 
+        * the request's path isn't under the media path (or equal) 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">path.startswith(self.base_url[</span><span class="s4">2</span><span class="s1">]) </span><span class="s0">and not </span><span class="s1">self.base_url[</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">file_path(self</span><span class="s0">, </span><span class="s1">url):</span>
+        <span class="s3">&quot;&quot;&quot;Return the relative path to the file on disk for the given URL.&quot;&quot;&quot;</span>
+        <span class="s1">relative_url = url[len(self.base_url[</span><span class="s4">2</span><span class="s1">]):]</span>
+        <span class="s0">return </span><span class="s1">url2pathname(relative_url)</span>
+
+    <span class="s0">def </span><span class="s1">get_response(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">Http404</span>
+
+        <span class="s0">if </span><span class="s1">self._should_handle(request.path):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">self.serve(request)</span>
+            <span class="s0">except </span><span class="s1">Http404:</span>
+                <span class="s0">pass</span>
+        <span class="s0">return </span><span class="s1">super().get_response(request)</span>
+
+    <span class="s0">def </span><span class="s1">serve(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s1">os_rel_path = self.file_path(request.path)</span>
+        <span class="s1">os_rel_path = posixpath.normpath(unquote(os_rel_path))</span>
+        <span class="s5"># Emulate behavior of django.contrib.staticfiles.views.serve() when it</span>
+        <span class="s5"># invokes staticfiles' finders functionality.</span>
+        <span class="s5"># TODO: Modify if/when that internal API is refactored</span>
+        <span class="s1">final_rel_path = os_rel_path.replace(</span><span class="s2">'</span><span class="s0">\\</span><span class="s2">'</span><span class="s0">, </span><span class="s2">'/'</span><span class="s1">).lstrip(</span><span class="s2">'/'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">serve(request</span><span class="s0">, </span><span class="s1">final_rel_path</span><span class="s0">, </span><span class="s1">document_root=self.get_base_dir())</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">environ</span><span class="s0">, </span><span class="s1">start_response):</span>
+        <span class="s0">if not </span><span class="s1">self._should_handle(get_path_info(environ)):</span>
+            <span class="s0">return </span><span class="s1">self.application(environ</span><span class="s0">, </span><span class="s1">start_response)</span>
+        <span class="s0">return </span><span class="s1">super().__call__(environ</span><span class="s0">, </span><span class="s1">start_response)</span>
+
+
+<span class="s0">class </span><span class="s1">_StaticFilesHandler(FSFilesHandler):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Handler for serving static files. A private class that is meant to be used 
+    solely as a convenience by LiveServerThread. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get_base_dir(self):</span>
+        <span class="s0">return </span><span class="s1">settings.STATIC_ROOT</span>
+
+    <span class="s0">def </span><span class="s1">get_base_url(self):</span>
+        <span class="s0">return </span><span class="s1">settings.STATIC_URL</span>
+
+
+<span class="s0">class </span><span class="s1">_MediaFilesHandler(FSFilesHandler):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Handler for serving the media files. A private class that is meant to be 
+    used solely as a convenience by LiveServerThread. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">get_base_dir(self):</span>
+        <span class="s0">return </span><span class="s1">settings.MEDIA_ROOT</span>
+
+    <span class="s0">def </span><span class="s1">get_base_url(self):</span>
+        <span class="s0">return </span><span class="s1">settings.MEDIA_URL</span>
+
+
+<span class="s0">class </span><span class="s1">LiveServerThread(threading.Thread):</span>
+    <span class="s3">&quot;&quot;&quot;Thread for running a live HTTP server while the tests are running.&quot;&quot;&quot;</span>
+
+    <span class="s1">server_class = ThreadedWSGIServer</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">host</span><span class="s0">, </span><span class="s1">static_handler</span><span class="s0">, </span><span class="s1">connections_override=</span><span class="s0">None, </span><span class="s1">port=</span><span class="s4">0</span><span class="s1">):</span>
+        <span class="s1">self.host = host</span>
+        <span class="s1">self.port = port</span>
+        <span class="s1">self.is_ready = threading.Event()</span>
+        <span class="s1">self.error = </span><span class="s0">None</span>
+        <span class="s1">self.static_handler = static_handler</span>
+        <span class="s1">self.connections_override = connections_override</span>
+        <span class="s1">super().__init__()</span>
+
+    <span class="s0">def </span><span class="s1">run(self):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Set up the live server and databases, and then loop over handling 
+        HTTP requests. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self.connections_override:</span>
+            <span class="s5"># Override this thread's database connections with the ones</span>
+            <span class="s5"># provided by the main thread.</span>
+            <span class="s0">for </span><span class="s1">alias</span><span class="s0">, </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">self.connections_override.items():</span>
+                <span class="s1">connections[alias] = conn</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s5"># Create the handler for serving static and media files</span>
+            <span class="s1">handler = self.static_handler(_MediaFilesHandler(WSGIHandler()))</span>
+            <span class="s1">self.httpd = self._create_server()</span>
+            <span class="s5"># If binding to port zero, assign the port allocated by the OS.</span>
+            <span class="s0">if </span><span class="s1">self.port == </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s1">self.port = self.httpd.server_address[</span><span class="s4">1</span><span class="s1">]</span>
+            <span class="s1">self.httpd.set_app(handler)</span>
+            <span class="s1">self.is_ready.set()</span>
+            <span class="s1">self.httpd.serve_forever()</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s1">self.error = e</span>
+            <span class="s1">self.is_ready.set()</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">connections.close_all()</span>
+
+    <span class="s0">def </span><span class="s1">_create_server(self</span><span class="s0">, </span><span class="s1">connections_override=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">return </span><span class="s1">self.server_class(</span>
+            <span class="s1">(self.host</span><span class="s0">, </span><span class="s1">self.port)</span><span class="s0">,</span>
+            <span class="s1">QuietWSGIRequestHandler</span><span class="s0">,</span>
+            <span class="s1">allow_reuse_address=</span><span class="s0">False,</span>
+            <span class="s1">connections_override=connections_override</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">terminate(self):</span>
+        <span class="s0">if </span><span class="s1">hasattr(self</span><span class="s0">, </span><span class="s2">'httpd'</span><span class="s1">):</span>
+            <span class="s5"># Stop the WSGI server</span>
+            <span class="s1">self.httpd.shutdown()</span>
+            <span class="s1">self.httpd.server_close()</span>
+        <span class="s1">self.join()</span>
+
+
+<span class="s0">class </span><span class="s1">LiveServerTestCase(TransactionTestCase):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Do basically the same as TransactionTestCase but also launch a live HTTP 
+    server in a separate thread so that the tests may use another testing 
+    framework, such as Selenium for example, instead of the built-in dummy 
+    client. 
+    It inherits from TransactionTestCase instead of TestCase because the 
+    threads don't share the same transactions (unless if using in-memory sqlite) 
+    and each thread needs to commit all their transactions so that the other 
+    thread can see the changes. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">host = </span><span class="s2">'localhost'</span>
+    <span class="s1">port = </span><span class="s4">0</span>
+    <span class="s1">server_thread_class = LiveServerThread</span>
+    <span class="s1">static_handler = _StaticFilesHandler</span>
+
+    <span class="s1">@classproperty</span>
+    <span class="s0">def </span><span class="s1">live_server_url(cls):</span>
+        <span class="s0">return </span><span class="s2">'http://%s:%s' </span><span class="s1">% (cls.host</span><span class="s0">, </span><span class="s1">cls.server_thread.port)</span>
+
+    <span class="s1">@classproperty</span>
+    <span class="s0">def </span><span class="s1">allowed_host(cls):</span>
+        <span class="s0">return </span><span class="s1">cls.host</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_make_connections_override(cls):</span>
+        <span class="s1">connections_override = {}</span>
+        <span class="s0">for </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">connections.all():</span>
+            <span class="s5"># If using in-memory sqlite databases, pass the connections to</span>
+            <span class="s5"># the server thread.</span>
+            <span class="s0">if </span><span class="s1">conn.vendor == </span><span class="s2">'sqlite' </span><span class="s0">and </span><span class="s1">conn.is_in_memory_db():</span>
+                <span class="s1">connections_override[conn.alias] = conn</span>
+        <span class="s0">return </span><span class="s1">connections_override</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">setUpClass(cls):</span>
+        <span class="s1">super().setUpClass()</span>
+        <span class="s1">cls._live_server_modified_settings = modify_settings(</span>
+            <span class="s1">ALLOWED_HOSTS={</span><span class="s2">'append'</span><span class="s1">: cls.allowed_host}</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">cls._live_server_modified_settings.enable()</span>
+
+        <span class="s1">connections_override = cls._make_connections_override()</span>
+        <span class="s0">for </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">connections_override.values():</span>
+            <span class="s5"># Explicitly enable thread-shareability for this connection.</span>
+            <span class="s1">conn.inc_thread_sharing()</span>
+
+        <span class="s1">cls.server_thread = cls._create_server_thread(connections_override)</span>
+        <span class="s1">cls.server_thread.daemon = </span><span class="s0">True</span>
+        <span class="s1">cls.server_thread.start()</span>
+
+        <span class="s5"># Wait for the live server to be ready</span>
+        <span class="s1">cls.server_thread.is_ready.wait()</span>
+        <span class="s0">if </span><span class="s1">cls.server_thread.error:</span>
+            <span class="s5"># Clean up behind ourselves, since tearDownClass won't get called in</span>
+            <span class="s5"># case of errors.</span>
+            <span class="s1">cls._tearDownClassInternal()</span>
+            <span class="s0">raise </span><span class="s1">cls.server_thread.error</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_create_server_thread(cls</span><span class="s0">, </span><span class="s1">connections_override):</span>
+        <span class="s0">return </span><span class="s1">cls.server_thread_class(</span>
+            <span class="s1">cls.host</span><span class="s0">,</span>
+            <span class="s1">cls.static_handler</span><span class="s0">,</span>
+            <span class="s1">connections_override=connections_override</span><span class="s0">,</span>
+            <span class="s1">port=cls.port</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_tearDownClassInternal(cls):</span>
+        <span class="s5"># Terminate the live server's thread.</span>
+        <span class="s1">cls.server_thread.terminate()</span>
+        <span class="s5"># Restore shared connections' non-shareability.</span>
+        <span class="s0">for </span><span class="s1">conn </span><span class="s0">in </span><span class="s1">cls.server_thread.connections_override.values():</span>
+            <span class="s1">conn.dec_thread_sharing()</span>
+
+        <span class="s1">cls._live_server_modified_settings.disable()</span>
+        <span class="s1">super().tearDownClass()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">tearDownClass(cls):</span>
+        <span class="s1">cls._tearDownClassInternal()</span>
+
+
+<span class="s0">class </span><span class="s1">SerializeMixin:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Enforce serialization of TestCases that share a common resource. 
+ 
+    Define a common 'lockfile' for each set of TestCases to serialize. This 
+    file must exist on the filesystem. 
+ 
+    Place it early in the MRO in order to isolate setUpClass()/tearDownClass(). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">lockfile = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">__init_subclass__(cls</span><span class="s0">, </span><span class="s1">/</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init_subclass__(**kwargs)</span>
+        <span class="s0">if </span><span class="s1">cls.lockfile </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">&quot;{}.lockfile isn't set. Set it to a unique value &quot;</span>
+                <span class="s2">&quot;in the base class.&quot;</span><span class="s1">.format(cls.__name__))</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">setUpClass(cls):</span>
+        <span class="s1">cls._lockfile = open(cls.lockfile)</span>
+        <span class="s1">cls.addClassCleanup(cls._lockfile.close)</span>
+        <span class="s1">locks.lock(cls._lockfile</span><span class="s0">, </span><span class="s1">locks.LOCK_EX)</span>
+        <span class="s1">super().setUpClass()</span>
+</pre>
+</body>
+</html>

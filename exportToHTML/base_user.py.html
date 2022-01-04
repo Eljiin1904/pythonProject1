@@ -1,0 +1,165 @@
+<html>
+<head>
+<title>base_user.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+base_user.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+This module allows importing AbstractBaseUser even when django.contrib.auth is 
+not in INSTALLED_APPS. 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">unicodedata</span>
+
+<span class="s2">from </span><span class="s1">django.contrib.auth </span><span class="s2">import </span><span class="s1">password_validation</span>
+<span class="s2">from </span><span class="s1">django.contrib.auth.hashers </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">check_password</span><span class="s2">, </span><span class="s1">is_password_usable</span><span class="s2">, </span><span class="s1">make_password</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">django.db </span><span class="s2">import </span><span class="s1">models</span>
+<span class="s2">from </span><span class="s1">django.utils.crypto </span><span class="s2">import </span><span class="s1">get_random_string</span><span class="s2">, </span><span class="s1">salted_hmac</span>
+<span class="s2">from </span><span class="s1">django.utils.translation </span><span class="s2">import </span><span class="s1">gettext_lazy </span><span class="s2">as </span><span class="s1">_</span>
+
+
+<span class="s2">class </span><span class="s1">BaseUserManager(models.Manager):</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">normalize_email(cls</span><span class="s2">, </span><span class="s1">email):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Normalize the email address by lowercasing the domain part of it. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">email = email </span><span class="s2">or </span><span class="s3">''</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">email_name</span><span class="s2">, </span><span class="s1">domain_part = email.strip().rsplit(</span><span class="s3">'@'</span><span class="s2">, </span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s2">except </span><span class="s1">ValueError:</span>
+            <span class="s2">pass</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">email = email_name + </span><span class="s3">'@' </span><span class="s1">+ domain_part.lower()</span>
+        <span class="s2">return </span><span class="s1">email</span>
+
+    <span class="s2">def </span><span class="s1">make_random_password(self</span><span class="s2">, </span><span class="s1">length=</span><span class="s4">10</span><span class="s2">,</span>
+                             <span class="s1">allowed_chars=</span><span class="s3">'abcdefghjkmnpqrstuvwxyz'</span>
+                                           <span class="s3">'ABCDEFGHJKLMNPQRSTUVWXYZ'</span>
+                                           <span class="s3">'23456789'</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Generate a random password with the given length and given 
+        allowed_chars. The default value of allowed_chars does not have &quot;I&quot; or 
+        &quot;O&quot; or letters and digits that look similar -- just to avoid confusion. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">get_random_string(length</span><span class="s2">, </span><span class="s1">allowed_chars)</span>
+
+    <span class="s2">def </span><span class="s1">get_by_natural_key(self</span><span class="s2">, </span><span class="s1">username):</span>
+        <span class="s2">return </span><span class="s1">self.get(**{self.model.USERNAME_FIELD: username})</span>
+
+
+<span class="s2">class </span><span class="s1">AbstractBaseUser(models.Model):</span>
+    <span class="s1">password = models.CharField(_(</span><span class="s3">'password'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">max_length=</span><span class="s4">128</span><span class="s1">)</span>
+    <span class="s1">last_login = models.DateTimeField(_(</span><span class="s3">'last login'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">blank=</span><span class="s2">True, </span><span class="s1">null=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s1">is_active = </span><span class="s2">True</span>
+
+    <span class="s1">REQUIRED_FIELDS = []</span>
+
+    <span class="s5"># Stores the raw password if set_password() is called so that it can</span>
+    <span class="s5"># be passed to password_changed() after the model is saved.</span>
+    <span class="s1">_password = </span><span class="s2">None</span>
+
+    <span class="s2">class </span><span class="s1">Meta:</span>
+        <span class="s1">abstract = </span><span class="s2">True</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self):</span>
+        <span class="s2">return </span><span class="s1">self.get_username()</span>
+
+    <span class="s2">def </span><span class="s1">save(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().save(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s2">if </span><span class="s1">self._password </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">password_validation.password_changed(self._password</span><span class="s2">, </span><span class="s1">self)</span>
+            <span class="s1">self._password = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">get_username(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return the username for this User.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">getattr(self</span><span class="s2">, </span><span class="s1">self.USERNAME_FIELD)</span>
+
+    <span class="s2">def </span><span class="s1">clean(self):</span>
+        <span class="s1">setattr(self</span><span class="s2">, </span><span class="s1">self.USERNAME_FIELD</span><span class="s2">, </span><span class="s1">self.normalize_username(self.get_username()))</span>
+
+    <span class="s2">def </span><span class="s1">natural_key(self):</span>
+        <span class="s2">return </span><span class="s1">(self.get_username()</span><span class="s2">,</span><span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">is_anonymous(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Always return False. This is a way of comparing User objects to 
+        anonymous users. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return False</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">is_authenticated(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Always return True. This is a way to tell if the user has been 
+        authenticated in templates. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">set_password(self</span><span class="s2">, </span><span class="s1">raw_password):</span>
+        <span class="s1">self.password = make_password(raw_password)</span>
+        <span class="s1">self._password = raw_password</span>
+
+    <span class="s2">def </span><span class="s1">check_password(self</span><span class="s2">, </span><span class="s1">raw_password):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return a boolean of whether the raw_password was correct. Handles 
+        hashing formats behind the scenes. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">def </span><span class="s1">setter(raw_password):</span>
+            <span class="s1">self.set_password(raw_password)</span>
+            <span class="s5"># Password hash upgrades shouldn't be considered password changes.</span>
+            <span class="s1">self._password = </span><span class="s2">None</span>
+            <span class="s1">self.save(update_fields=[</span><span class="s3">&quot;password&quot;</span><span class="s1">])</span>
+        <span class="s2">return </span><span class="s1">check_password(raw_password</span><span class="s2">, </span><span class="s1">self.password</span><span class="s2">, </span><span class="s1">setter)</span>
+
+    <span class="s2">def </span><span class="s1">set_unusable_password(self):</span>
+        <span class="s5"># Set a value that will never be a valid hash</span>
+        <span class="s1">self.password = make_password(</span><span class="s2">None</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">has_usable_password(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return False if set_unusable_password() has been called for this user. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">is_password_usable(self.password)</span>
+
+    <span class="s2">def </span><span class="s1">get_session_auth_hash(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return an HMAC of the password field. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">key_salt = </span><span class="s3">&quot;django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash&quot;</span>
+        <span class="s2">return </span><span class="s1">salted_hmac(</span>
+            <span class="s1">key_salt</span><span class="s2">,</span>
+            <span class="s1">self.password</span><span class="s2">,</span>
+            <span class="s1">algorithm=</span><span class="s3">'sha256'</span><span class="s2">,</span>
+        <span class="s1">).hexdigest()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">get_email_field_name(cls):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">cls.EMAIL_FIELD</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s2">return </span><span class="s3">'email'</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">normalize_username(cls</span><span class="s2">, </span><span class="s1">username):</span>
+        <span class="s2">return </span><span class="s1">unicodedata.normalize(</span><span class="s3">'NFKC'</span><span class="s2">, </span><span class="s1">username) </span><span class="s2">if </span><span class="s1">isinstance(username</span><span class="s2">, </span><span class="s1">str) </span><span class="s2">else </span><span class="s1">username</span>
+</pre>
+</body>
+</html>

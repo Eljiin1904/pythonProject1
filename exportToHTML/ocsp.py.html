@@ -1,0 +1,414 @@
+<html>
+<head>
+<title>ocsp.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+ocsp.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">datetime</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span><span class="s2">, </span><span class="s1">x509</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">UnsupportedAlgorithm</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl.decode_asn1 </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">_CRL_ENTRY_REASON_CODE_TO_ENUM</span><span class="s2">,</span>
+    <span class="s1">_asn1_integer_to_int</span><span class="s2">,</span>
+    <span class="s1">_asn1_string_to_bytes</span><span class="s2">,</span>
+    <span class="s1">_decode_x509_name</span><span class="s2">,</span>
+    <span class="s1">_obj2txt</span><span class="s2">,</span>
+    <span class="s1">_parse_asn1_generalized_time</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl.x509 </span><span class="s2">import </span><span class="s1">_Certificate</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">hashes</span><span class="s2">, </span><span class="s1">serialization</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.ocsp </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">OCSPCertStatus</span><span class="s2">,</span>
+    <span class="s1">OCSPRequest</span><span class="s2">,</span>
+    <span class="s1">OCSPResponse</span><span class="s2">,</span>
+    <span class="s1">OCSPResponseStatus</span><span class="s2">,</span>
+    <span class="s1">_CERT_STATUS_TO_ENUM</span><span class="s2">,</span>
+    <span class="s1">_OIDS_TO_HASH</span><span class="s2">,</span>
+    <span class="s1">_RESPONSE_STATUS_TO_ENUM</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_issuer_key_hash(backend</span><span class="s2">, </span><span class="s1">cert_id):</span>
+    <span class="s1">key_hash = backend._ffi.new(</span><span class="s3">&quot;ASN1_OCTET_STRING **&quot;</span><span class="s1">)</span>
+    <span class="s1">res = backend._lib.OCSP_id_get0_info(</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">key_hash</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">cert_id</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(res == </span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(key_hash[</span><span class="s4">0</span><span class="s1">] != backend._ffi.NULL)</span>
+    <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">key_hash[</span><span class="s4">0</span><span class="s1">])</span>
+
+
+<span class="s2">def </span><span class="s1">_issuer_name_hash(backend</span><span class="s2">, </span><span class="s1">cert_id):</span>
+    <span class="s1">name_hash = backend._ffi.new(</span><span class="s3">&quot;ASN1_OCTET_STRING **&quot;</span><span class="s1">)</span>
+    <span class="s1">res = backend._lib.OCSP_id_get0_info(</span>
+        <span class="s1">name_hash</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">cert_id</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(res == </span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(name_hash[</span><span class="s4">0</span><span class="s1">] != backend._ffi.NULL)</span>
+    <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(backend</span><span class="s2">, </span><span class="s1">name_hash[</span><span class="s4">0</span><span class="s1">])</span>
+
+
+<span class="s2">def </span><span class="s1">_serial_number(backend</span><span class="s2">, </span><span class="s1">cert_id):</span>
+    <span class="s1">num = backend._ffi.new(</span><span class="s3">&quot;ASN1_INTEGER **&quot;</span><span class="s1">)</span>
+    <span class="s1">res = backend._lib.OCSP_id_get0_info(</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">, </span><span class="s1">backend._ffi.NULL</span><span class="s2">, </span><span class="s1">backend._ffi.NULL</span><span class="s2">, </span><span class="s1">num</span><span class="s2">, </span><span class="s1">cert_id</span>
+    <span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(res == </span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(num[</span><span class="s4">0</span><span class="s1">] != backend._ffi.NULL)</span>
+    <span class="s2">return </span><span class="s1">_asn1_integer_to_int(backend</span><span class="s2">, </span><span class="s1">num[</span><span class="s4">0</span><span class="s1">])</span>
+
+
+<span class="s2">def </span><span class="s1">_hash_algorithm(backend</span><span class="s2">, </span><span class="s1">cert_id):</span>
+    <span class="s1">asn1obj = backend._ffi.new(</span><span class="s3">&quot;ASN1_OBJECT **&quot;</span><span class="s1">)</span>
+    <span class="s1">res = backend._lib.OCSP_id_get0_info(</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">asn1obj</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">cert_id</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(res == </span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s1">backend.openssl_assert(asn1obj[</span><span class="s4">0</span><span class="s1">] != backend._ffi.NULL)</span>
+    <span class="s1">oid = _obj2txt(backend</span><span class="s2">, </span><span class="s1">asn1obj[</span><span class="s4">0</span><span class="s1">])</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">_OIDS_TO_HASH[oid]</span>
+    <span class="s2">except </span><span class="s1">KeyError:</span>
+        <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+            <span class="s3">&quot;Signature algorithm OID: {} not recognized&quot;</span><span class="s1">.format(oid)</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">_OCSPResponse(OCSPResponse):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">ocsp_response):</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._ocsp_response = ocsp_response</span>
+        <span class="s1">status = self._backend._lib.OCSP_response_status(self._ocsp_response)</span>
+        <span class="s1">self._backend.openssl_assert(status </span><span class="s2">in </span><span class="s1">_RESPONSE_STATUS_TO_ENUM)</span>
+        <span class="s1">self._status = _RESPONSE_STATUS_TO_ENUM[status]</span>
+        <span class="s2">if </span><span class="s1">self._status </span><span class="s2">is </span><span class="s1">OCSPResponseStatus.SUCCESSFUL:</span>
+            <span class="s1">basic = self._backend._lib.OCSP_response_get1_basic(</span>
+                <span class="s1">self._ocsp_response</span>
+            <span class="s1">)</span>
+            <span class="s1">self._backend.openssl_assert(basic != self._backend._ffi.NULL)</span>
+            <span class="s1">self._basic = self._backend._ffi.gc(</span>
+                <span class="s1">basic</span><span class="s2">, </span><span class="s1">self._backend._lib.OCSP_BASICRESP_free</span>
+            <span class="s1">)</span>
+            <span class="s1">num_resp = self._backend._lib.OCSP_resp_count(self._basic)</span>
+            <span class="s2">if </span><span class="s1">num_resp != </span><span class="s4">1</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s3">&quot;OCSP response contains more than one SINGLERESP structure&quot;</span>
+                    <span class="s3">&quot;, which this library does not support. &quot;</span>
+                    <span class="s3">&quot;{} found&quot;</span><span class="s1">.format(num_resp)</span>
+                <span class="s1">)</span>
+            <span class="s1">self._single = self._backend._lib.OCSP_resp_get0(self._basic</span><span class="s2">, </span><span class="s4">0</span><span class="s1">)</span>
+            <span class="s1">self._backend.openssl_assert(</span>
+                <span class="s1">self._single != self._backend._ffi.NULL</span>
+            <span class="s1">)</span>
+            <span class="s1">self._cert_id = self._backend._lib.OCSP_SINGLERESP_get0_id(</span>
+                <span class="s1">self._single</span>
+            <span class="s1">)</span>
+            <span class="s1">self._backend.openssl_assert(</span>
+                <span class="s1">self._cert_id != self._backend._ffi.NULL</span>
+            <span class="s1">)</span>
+
+    <span class="s1">response_status = utils.read_only_property(</span><span class="s3">&quot;_status&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_requires_successful_response(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">self.response_status != OCSPResponseStatus.SUCCESSFUL:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;OCSP response status is not successful so the property &quot;</span>
+                <span class="s3">&quot;has no value&quot;</span>
+            <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_algorithm_oid(self) -&gt; x509.ObjectIdentifier:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">alg = self._backend._lib.OCSP_resp_get0_tbs_sigalg(self._basic)</span>
+        <span class="s1">self._backend.openssl_assert(alg != self._backend._ffi.NULL)</span>
+        <span class="s1">oid = _obj2txt(self._backend</span><span class="s2">, </span><span class="s1">alg.algorithm)</span>
+        <span class="s2">return </span><span class="s1">x509.ObjectIdentifier(oid)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_hash_algorithm(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+    <span class="s1">) -&gt; typing.Optional[hashes.HashAlgorithm]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">oid = self.signature_algorithm_oid</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">x509._SIG_OIDS_TO_HASH[oid]</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Signature algorithm OID:{} not recognized&quot;</span><span class="s1">.format(oid)</span>
+            <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature(self) -&gt; bytes:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">sig = self._backend._lib.OCSP_resp_get0_signature(self._basic)</span>
+        <span class="s1">self._backend.openssl_assert(sig != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">sig)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">tbs_response_bytes(self) -&gt; bytes:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">respdata = self._backend._lib.OCSP_resp_get0_respdata(self._basic)</span>
+        <span class="s1">self._backend.openssl_assert(respdata != self._backend._ffi.NULL)</span>
+        <span class="s1">pp = self._backend._ffi.new(</span><span class="s3">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.i2d_OCSP_RESPDATA(respdata</span><span class="s2">, </span><span class="s1">pp)</span>
+        <span class="s1">self._backend.openssl_assert(pp[</span><span class="s4">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s1">pp = self._backend._ffi.gc(</span>
+            <span class="s1">pp</span><span class="s2">, lambda </span><span class="s1">pointer: self._backend._lib.OPENSSL_free(pointer[</span><span class="s4">0</span><span class="s1">])</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s4">0</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._ffi.buffer(pp[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">certificates(self) -&gt; typing.List[x509.Certificate]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">sk_x509 = self._backend._lib.OCSP_resp_get0_certs(self._basic)</span>
+        <span class="s1">num = self._backend._lib.sk_X509_num(sk_x509)</span>
+        <span class="s1">certs: typing.List[x509.Certificate] = []</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num):</span>
+            <span class="s1">x509_ptr = self._backend._lib.sk_X509_value(sk_x509</span><span class="s2">, </span><span class="s1">i)</span>
+            <span class="s1">self._backend.openssl_assert(x509_ptr != self._backend._ffi.NULL)</span>
+            <span class="s1">cert = _Certificate(self._backend</span><span class="s2">, </span><span class="s1">x509_ptr)</span>
+            <span class="s0"># We need to keep the OCSP response that the certificate came from</span>
+            <span class="s0"># alive until the Certificate object itself goes out of scope, so</span>
+            <span class="s0"># we give it a private reference.</span>
+            <span class="s1">cert._ocsp_resp_ref = self</span>
+            <span class="s1">certs.append(cert)</span>
+
+        <span class="s2">return </span><span class="s1">certs</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">responder_key_hash(self) -&gt; typing.Optional[bytes]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">_</span><span class="s2">, </span><span class="s1">asn1_string = self._responder_key_name()</span>
+        <span class="s2">if </span><span class="s1">asn1_string == self._backend._ffi.NULL:</span>
+            <span class="s2">return None</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">asn1_string)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">responder_name(self) -&gt; typing.Optional[x509.Name]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">x509_name</span><span class="s2">, </span><span class="s1">_ = self._responder_key_name()</span>
+        <span class="s2">if </span><span class="s1">x509_name == self._backend._ffi.NULL:</span>
+            <span class="s2">return None</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_decode_x509_name(self._backend</span><span class="s2">, </span><span class="s1">x509_name)</span>
+
+    <span class="s2">def </span><span class="s1">_responder_key_name(self):</span>
+        <span class="s1">asn1_string = self._backend._ffi.new(</span><span class="s3">&quot;ASN1_OCTET_STRING **&quot;</span><span class="s1">)</span>
+        <span class="s1">x509_name = self._backend._ffi.new(</span><span class="s3">&quot;X509_NAME **&quot;</span><span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.OCSP_resp_get0_id(</span>
+            <span class="s1">self._basic</span><span class="s2">, </span><span class="s1">asn1_string</span><span class="s2">, </span><span class="s1">x509_name</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(res == </span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">x509_name[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">asn1_string[</span><span class="s4">0</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">produced_at(self) -&gt; datetime.datetime:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">produced_at = self._backend._lib.OCSP_resp_get0_produced_at(</span>
+            <span class="s1">self._basic</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_generalized_time(self._backend</span><span class="s2">, </span><span class="s1">produced_at)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">certificate_status(self) -&gt; OCSPCertStatus:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">status = self._backend._lib.OCSP_single_get0_status(</span>
+            <span class="s1">self._single</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(status </span><span class="s2">in </span><span class="s1">_CERT_STATUS_TO_ENUM)</span>
+        <span class="s2">return </span><span class="s1">_CERT_STATUS_TO_ENUM[status]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">revocation_time(self) -&gt; typing.Optional[datetime.datetime]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">if </span><span class="s1">self.certificate_status </span><span class="s2">is not </span><span class="s1">OCSPCertStatus.REVOKED:</span>
+            <span class="s2">return None</span>
+
+        <span class="s1">asn1_time = self._backend._ffi.new(</span><span class="s3">&quot;ASN1_GENERALIZEDTIME **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.OCSP_single_get0_status(</span>
+            <span class="s1">self._single</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">asn1_time</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(asn1_time[</span><span class="s4">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_generalized_time(self._backend</span><span class="s2">, </span><span class="s1">asn1_time[</span><span class="s4">0</span><span class="s1">])</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">revocation_reason(self) -&gt; typing.Optional[x509.ReasonFlags]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">if </span><span class="s1">self.certificate_status </span><span class="s2">is not </span><span class="s1">OCSPCertStatus.REVOKED:</span>
+            <span class="s2">return None</span>
+
+        <span class="s1">reason_ptr = self._backend._ffi.new(</span><span class="s3">&quot;int *&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.OCSP_single_get0_status(</span>
+            <span class="s1">self._single</span><span class="s2">,</span>
+            <span class="s1">reason_ptr</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s0"># If no reason is encoded OpenSSL returns -1</span>
+        <span class="s2">if </span><span class="s1">reason_ptr[</span><span class="s4">0</span><span class="s1">] == -</span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._backend.openssl_assert(</span>
+                <span class="s1">reason_ptr[</span><span class="s4">0</span><span class="s1">] </span><span class="s2">in </span><span class="s1">_CRL_ENTRY_REASON_CODE_TO_ENUM</span>
+            <span class="s1">)</span>
+            <span class="s2">return </span><span class="s1">_CRL_ENTRY_REASON_CODE_TO_ENUM[reason_ptr[</span><span class="s4">0</span><span class="s1">]]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">this_update(self) -&gt; datetime.datetime:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">asn1_time = self._backend._ffi.new(</span><span class="s3">&quot;ASN1_GENERALIZEDTIME **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.OCSP_single_get0_status(</span>
+            <span class="s1">self._single</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">asn1_time</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(asn1_time[</span><span class="s4">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_generalized_time(self._backend</span><span class="s2">, </span><span class="s1">asn1_time[</span><span class="s4">0</span><span class="s1">])</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">next_update(self) -&gt; typing.Optional[datetime.datetime]:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s1">asn1_time = self._backend._ffi.new(</span><span class="s3">&quot;ASN1_GENERALIZEDTIME **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.OCSP_single_get0_status(</span>
+            <span class="s1">self._single</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">,</span>
+            <span class="s1">asn1_time</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">asn1_time[</span><span class="s4">0</span><span class="s1">] != self._backend._ffi.NULL:</span>
+            <span class="s2">return </span><span class="s1">_parse_asn1_generalized_time(self._backend</span><span class="s2">, </span><span class="s1">asn1_time[</span><span class="s4">0</span><span class="s1">])</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">issuer_key_hash(self) -&gt; bytes:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">return </span><span class="s1">_issuer_key_hash(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">issuer_name_hash(self) -&gt; bytes:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">return </span><span class="s1">_issuer_name_hash(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">hash_algorithm(self) -&gt; hashes.HashAlgorithm:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">return </span><span class="s1">_hash_algorithm(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">serial_number(self) -&gt; int:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">return </span><span class="s1">_serial_number(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">return </span><span class="s1">self._backend._ocsp_basicresp_ext_parser.parse(self._basic)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">single_extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s1">self._requires_successful_response()</span>
+        <span class="s2">return </span><span class="s1">self._backend._ocsp_singleresp_ext_parser.parse(self._single)</span>
+
+    <span class="s2">def </span><span class="s1">public_bytes(self</span><span class="s2">, </span><span class="s1">encoding: serialization.Encoding) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">encoding </span><span class="s2">is not </span><span class="s1">serialization.Encoding.DER:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;The only allowed encoding value is Encoding.DER&quot;</span><span class="s1">)</span>
+
+        <span class="s1">bio = self._backend._create_mem_bio_gc()</span>
+        <span class="s1">res = self._backend._lib.i2d_OCSP_RESPONSE_bio(</span>
+            <span class="s1">bio</span><span class="s2">, </span><span class="s1">self._ocsp_response</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s4">0</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._read_mem_bio(bio)</span>
+
+
+<span class="s2">class </span><span class="s1">_OCSPRequest(OCSPRequest):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">ocsp_request):</span>
+        <span class="s2">if </span><span class="s1">backend._lib.OCSP_request_onereq_count(ocsp_request) &gt; </span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">NotImplementedError(</span>
+                <span class="s3">&quot;OCSP request contains more than one request&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._ocsp_request = ocsp_request</span>
+        <span class="s1">self._request = self._backend._lib.OCSP_request_onereq_get0(</span>
+            <span class="s1">self._ocsp_request</span><span class="s2">, </span><span class="s4">0</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(self._request != self._backend._ffi.NULL)</span>
+        <span class="s1">self._cert_id = self._backend._lib.OCSP_onereq_get0_id(self._request)</span>
+        <span class="s1">self._backend.openssl_assert(self._cert_id != self._backend._ffi.NULL)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">issuer_key_hash(self) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">_issuer_key_hash(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">issuer_name_hash(self) -&gt; bytes:</span>
+        <span class="s2">return </span><span class="s1">_issuer_name_hash(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">serial_number(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">_serial_number(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">hash_algorithm(self) -&gt; hashes.HashAlgorithm:</span>
+        <span class="s2">return </span><span class="s1">_hash_algorithm(self._backend</span><span class="s2">, </span><span class="s1">self._cert_id)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s2">return </span><span class="s1">self._backend._ocsp_req_ext_parser.parse(self._ocsp_request)</span>
+
+    <span class="s2">def </span><span class="s1">public_bytes(self</span><span class="s2">, </span><span class="s1">encoding: serialization.Encoding) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">encoding </span><span class="s2">is not </span><span class="s1">serialization.Encoding.DER:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;The only allowed encoding value is Encoding.DER&quot;</span><span class="s1">)</span>
+
+        <span class="s1">bio = self._backend._create_mem_bio_gc()</span>
+        <span class="s1">res = self._backend._lib.i2d_OCSP_REQUEST_bio(bio</span><span class="s2">, </span><span class="s1">self._ocsp_request)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s4">0</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._read_mem_bio(bio)</span>
+</pre>
+</body>
+</html>

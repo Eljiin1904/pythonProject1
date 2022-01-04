@@ -1,0 +1,244 @@
+<html>
+<head>
+<title>_readers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #a5c261;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_readers.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Code to read HTTP data</span>
+<span class="s0">#</span>
+<span class="s0"># Strategy: each reader is a callable which takes a ReceiveBuffer object, and</span>
+<span class="s0"># either:</span>
+<span class="s0"># 1) consumes some of it and returns an Event</span>
+<span class="s0"># 2) raises a LocalProtocolError (for consistency -- e.g. we call validate()</span>
+<span class="s0">#    and it might raise a LocalProtocolError, so simpler just to always use</span>
+<span class="s0">#    this)</span>
+<span class="s0"># 3) returns None, meaning &quot;I need more data&quot;</span>
+<span class="s0">#</span>
+<span class="s0"># If they have a .read_eof attribute, then this will be called if an EOF is</span>
+<span class="s0"># received -- but this is optional. Either way, the actual ConnectionClosed</span>
+<span class="s0"># event will be generated afterwards.</span>
+<span class="s0">#</span>
+<span class="s0"># READERS is a dict describing how to pick a reader. It maps states to either:</span>
+<span class="s0"># - a reader</span>
+<span class="s0"># - or, for body readers, a dict of per-framing reader factories</span>
+
+<span class="s2">import </span><span class="s1">re</span>
+
+<span class="s2">from </span><span class="s1">._abnf </span><span class="s2">import </span><span class="s1">chunk_header</span><span class="s2">, </span><span class="s1">header_field</span><span class="s2">, </span><span class="s1">request_line</span><span class="s2">, </span><span class="s1">status_line</span>
+<span class="s2">from </span><span class="s1">._events </span><span class="s2">import </span><span class="s1">*</span>
+<span class="s2">from </span><span class="s1">._state </span><span class="s2">import </span><span class="s1">*</span>
+<span class="s2">from </span><span class="s1">._util </span><span class="s2">import </span><span class="s1">LocalProtocolError</span><span class="s2">, </span><span class="s1">RemoteProtocolError</span><span class="s2">, </span><span class="s1">validate</span>
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;READERS&quot;</span><span class="s1">]</span>
+
+<span class="s1">header_field_re = re.compile(header_field.encode(</span><span class="s3">&quot;ascii&quot;</span><span class="s1">))</span>
+
+<span class="s0"># Remember that this has to run in O(n) time -- so e.g. the bytearray cast is</span>
+<span class="s0"># critical.</span>
+<span class="s1">obs_fold_re = re.compile(</span><span class="s4">br&quot;[ \t]+&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_obsolete_line_fold(lines):</span>
+    <span class="s1">it = iter(lines)</span>
+    <span class="s1">last = </span><span class="s2">None</span>
+    <span class="s2">for </span><span class="s1">line </span><span class="s2">in </span><span class="s1">it:</span>
+        <span class="s1">match = obs_fold_re.match(line)</span>
+        <span class="s2">if </span><span class="s1">match:</span>
+            <span class="s2">if </span><span class="s1">last </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">LocalProtocolError(</span><span class="s3">&quot;continuation line at start of headers&quot;</span><span class="s1">)</span>
+            <span class="s2">if not </span><span class="s1">isinstance(last</span><span class="s2">, </span><span class="s1">bytearray):</span>
+                <span class="s1">last = bytearray(last)</span>
+            <span class="s1">last += </span><span class="s4">b&quot; &quot;</span>
+            <span class="s1">last += line[match.end() :]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">last </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s2">yield </span><span class="s1">last</span>
+            <span class="s1">last = line</span>
+    <span class="s2">if </span><span class="s1">last </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s2">yield </span><span class="s1">last</span>
+
+
+<span class="s2">def </span><span class="s1">_decode_header_lines(lines):</span>
+    <span class="s2">for </span><span class="s1">line </span><span class="s2">in </span><span class="s1">_obsolete_line_fold(lines):</span>
+        <span class="s1">matches = validate(header_field_re</span><span class="s2">, </span><span class="s1">line</span><span class="s2">, </span><span class="s3">&quot;illegal header line: {!r}&quot;</span><span class="s2">, </span><span class="s1">line)</span>
+        <span class="s2">yield </span><span class="s1">(matches[</span><span class="s3">&quot;field_name&quot;</span><span class="s1">]</span><span class="s2">, </span><span class="s1">matches[</span><span class="s3">&quot;field_value&quot;</span><span class="s1">])</span>
+
+
+<span class="s1">request_line_re = re.compile(request_line.encode(</span><span class="s3">&quot;ascii&quot;</span><span class="s1">))</span>
+
+
+<span class="s2">def </span><span class="s1">maybe_read_from_IDLE_client(buf):</span>
+    <span class="s1">lines = buf.maybe_extract_lines()</span>
+    <span class="s2">if </span><span class="s1">lines </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">buf.is_next_line_obviously_invalid_request_line():</span>
+            <span class="s2">raise </span><span class="s1">LocalProtocolError(</span><span class="s3">&quot;illegal request line&quot;</span><span class="s1">)</span>
+        <span class="s2">return None</span>
+    <span class="s2">if not </span><span class="s1">lines:</span>
+        <span class="s2">raise </span><span class="s1">LocalProtocolError(</span><span class="s3">&quot;no request line received&quot;</span><span class="s1">)</span>
+    <span class="s1">matches = validate(</span>
+        <span class="s1">request_line_re</span><span class="s2">, </span><span class="s1">lines[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s3">&quot;illegal request line: {!r}&quot;</span><span class="s2">, </span><span class="s1">lines[</span><span class="s5">0</span><span class="s1">]</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">Request(</span>
+        <span class="s1">headers=list(_decode_header_lines(lines[</span><span class="s5">1</span><span class="s1">:]))</span><span class="s2">, </span><span class="s1">_parsed=</span><span class="s2">True, </span><span class="s1">**matches</span>
+    <span class="s1">)</span>
+
+
+<span class="s1">status_line_re = re.compile(status_line.encode(</span><span class="s3">&quot;ascii&quot;</span><span class="s1">))</span>
+
+
+<span class="s2">def </span><span class="s1">maybe_read_from_SEND_RESPONSE_server(buf):</span>
+    <span class="s1">lines = buf.maybe_extract_lines()</span>
+    <span class="s2">if </span><span class="s1">lines </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">buf.is_next_line_obviously_invalid_request_line():</span>
+            <span class="s2">raise </span><span class="s1">LocalProtocolError(</span><span class="s3">&quot;illegal request line&quot;</span><span class="s1">)</span>
+        <span class="s2">return None</span>
+    <span class="s2">if not </span><span class="s1">lines:</span>
+        <span class="s2">raise </span><span class="s1">LocalProtocolError(</span><span class="s3">&quot;no response line received&quot;</span><span class="s1">)</span>
+    <span class="s1">matches = validate(status_line_re</span><span class="s2">, </span><span class="s1">lines[</span><span class="s5">0</span><span class="s1">]</span><span class="s2">, </span><span class="s3">&quot;illegal status line: {!r}&quot;</span><span class="s2">, </span><span class="s1">lines[</span><span class="s5">0</span><span class="s1">])</span>
+    <span class="s0"># Tolerate missing reason phrases</span>
+    <span class="s2">if </span><span class="s1">matches[</span><span class="s3">&quot;reason&quot;</span><span class="s1">] </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">matches[</span><span class="s3">&quot;reason&quot;</span><span class="s1">] = </span><span class="s4">b&quot;&quot;</span>
+    <span class="s1">status_code = matches[</span><span class="s3">&quot;status_code&quot;</span><span class="s1">] = int(matches[</span><span class="s3">&quot;status_code&quot;</span><span class="s1">])</span>
+    <span class="s1">class_ = InformationalResponse </span><span class="s2">if </span><span class="s1">status_code &lt; </span><span class="s5">200 </span><span class="s2">else </span><span class="s1">Response</span>
+    <span class="s2">return </span><span class="s1">class_(</span>
+        <span class="s1">headers=list(_decode_header_lines(lines[</span><span class="s5">1</span><span class="s1">:]))</span><span class="s2">, </span><span class="s1">_parsed=</span><span class="s2">True, </span><span class="s1">**matches</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">ContentLengthReader:</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">length):</span>
+        <span class="s1">self._length = length</span>
+        <span class="s1">self._remaining = length</span>
+
+    <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">buf):</span>
+        <span class="s2">if </span><span class="s1">self._remaining == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">EndOfMessage()</span>
+        <span class="s1">data = buf.maybe_extract_at_most(self._remaining)</span>
+        <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s1">self._remaining -= len(data)</span>
+        <span class="s2">return </span><span class="s1">Data(data=data)</span>
+
+    <span class="s2">def </span><span class="s1">read_eof(self):</span>
+        <span class="s2">raise </span><span class="s1">RemoteProtocolError(</span>
+            <span class="s3">&quot;peer closed connection without sending complete message body &quot;</span>
+            <span class="s3">&quot;(received {} bytes, expected {})&quot;</span><span class="s1">.format(</span>
+                <span class="s1">self._length - self._remaining</span><span class="s2">, </span><span class="s1">self._length</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+
+<span class="s1">chunk_header_re = re.compile(chunk_header.encode(</span><span class="s3">&quot;ascii&quot;</span><span class="s1">))</span>
+
+
+<span class="s2">class </span><span class="s1">ChunkedReader:</span>
+    <span class="s2">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self._bytes_in_chunk = </span><span class="s5">0</span>
+        <span class="s0"># After reading a chunk, we have to throw away the trailing \r\n; if</span>
+        <span class="s0"># this is &gt;0 then we discard that many bytes before resuming regular</span>
+        <span class="s0"># de-chunkification.</span>
+        <span class="s1">self._bytes_to_discard = </span><span class="s5">0</span>
+        <span class="s1">self._reading_trailer = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">buf):</span>
+        <span class="s2">if </span><span class="s1">self._reading_trailer:</span>
+            <span class="s1">lines = buf.maybe_extract_lines()</span>
+            <span class="s2">if </span><span class="s1">lines </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">return None</span>
+            <span class="s2">return </span><span class="s1">EndOfMessage(headers=list(_decode_header_lines(lines)))</span>
+        <span class="s2">if </span><span class="s1">self._bytes_to_discard &gt; </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">data = buf.maybe_extract_at_most(self._bytes_to_discard)</span>
+            <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">return None</span>
+            <span class="s1">self._bytes_to_discard -= len(data)</span>
+            <span class="s2">if </span><span class="s1">self._bytes_to_discard &gt; </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s2">return None</span>
+            <span class="s0"># else, fall through and read some more</span>
+        <span class="s2">assert </span><span class="s1">self._bytes_to_discard == </span><span class="s5">0</span>
+        <span class="s2">if </span><span class="s1">self._bytes_in_chunk == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s0"># We need to refill our chunk count</span>
+            <span class="s1">chunk_header = buf.maybe_extract_next_line()</span>
+            <span class="s2">if </span><span class="s1">chunk_header </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">return None</span>
+            <span class="s1">matches = validate(</span>
+                <span class="s1">chunk_header_re</span><span class="s2">,</span>
+                <span class="s1">chunk_header</span><span class="s2">,</span>
+                <span class="s3">&quot;illegal chunk header: {!r}&quot;</span><span class="s2">,</span>
+                <span class="s1">chunk_header</span><span class="s2">,</span>
+            <span class="s1">)</span>
+            <span class="s0"># XX FIXME: we discard chunk extensions. Does anyone care?</span>
+            <span class="s1">self._bytes_in_chunk = int(matches[</span><span class="s3">&quot;chunk_size&quot;</span><span class="s1">]</span><span class="s2">, </span><span class="s1">base=</span><span class="s5">16</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">self._bytes_in_chunk == </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">self._reading_trailer = </span><span class="s2">True</span>
+                <span class="s2">return </span><span class="s1">self(buf)</span>
+            <span class="s1">chunk_start = </span><span class="s2">True</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">chunk_start = </span><span class="s2">False</span>
+        <span class="s2">assert </span><span class="s1">self._bytes_in_chunk &gt; </span><span class="s5">0</span>
+        <span class="s1">data = buf.maybe_extract_at_most(self._bytes_in_chunk)</span>
+        <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s1">self._bytes_in_chunk -= len(data)</span>
+        <span class="s2">if </span><span class="s1">self._bytes_in_chunk == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">self._bytes_to_discard = </span><span class="s5">2</span>
+            <span class="s1">chunk_end = </span><span class="s2">True</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">chunk_end = </span><span class="s2">False</span>
+        <span class="s2">return </span><span class="s1">Data(data=data</span><span class="s2">, </span><span class="s1">chunk_start=chunk_start</span><span class="s2">, </span><span class="s1">chunk_end=chunk_end)</span>
+
+    <span class="s2">def </span><span class="s1">read_eof(self):</span>
+        <span class="s2">raise </span><span class="s1">RemoteProtocolError(</span>
+            <span class="s3">&quot;peer closed connection without sending complete message body &quot;</span>
+            <span class="s3">&quot;(incomplete chunked read)&quot;</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">Http10Reader:</span>
+    <span class="s2">def </span><span class="s1">__call__(self</span><span class="s2">, </span><span class="s1">buf):</span>
+        <span class="s1">data = buf.maybe_extract_at_most(</span><span class="s5">999999999</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">data </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s2">return </span><span class="s1">Data(data=data)</span>
+
+    <span class="s2">def </span><span class="s1">read_eof(self):</span>
+        <span class="s2">return </span><span class="s1">EndOfMessage()</span>
+
+
+<span class="s2">def </span><span class="s1">expect_nothing(buf):</span>
+    <span class="s2">if </span><span class="s1">buf:</span>
+        <span class="s2">raise </span><span class="s1">LocalProtocolError(</span><span class="s3">&quot;Got data when expecting EOF&quot;</span><span class="s1">)</span>
+    <span class="s2">return None</span>
+
+
+<span class="s1">READERS = {</span>
+    <span class="s1">(CLIENT</span><span class="s2">, </span><span class="s1">IDLE): maybe_read_from_IDLE_client</span><span class="s2">,</span>
+    <span class="s1">(SERVER</span><span class="s2">, </span><span class="s1">IDLE): maybe_read_from_SEND_RESPONSE_server</span><span class="s2">,</span>
+    <span class="s1">(SERVER</span><span class="s2">, </span><span class="s1">SEND_RESPONSE): maybe_read_from_SEND_RESPONSE_server</span><span class="s2">,</span>
+    <span class="s1">(CLIENT</span><span class="s2">, </span><span class="s1">DONE): expect_nothing</span><span class="s2">,</span>
+    <span class="s1">(CLIENT</span><span class="s2">, </span><span class="s1">MUST_CLOSE): expect_nothing</span><span class="s2">,</span>
+    <span class="s1">(CLIENT</span><span class="s2">, </span><span class="s1">CLOSED): expect_nothing</span><span class="s2">,</span>
+    <span class="s1">(SERVER</span><span class="s2">, </span><span class="s1">DONE): expect_nothing</span><span class="s2">,</span>
+    <span class="s1">(SERVER</span><span class="s2">, </span><span class="s1">MUST_CLOSE): expect_nothing</span><span class="s2">,</span>
+    <span class="s1">(SERVER</span><span class="s2">, </span><span class="s1">CLOSED): expect_nothing</span><span class="s2">,</span>
+    <span class="s1">SEND_BODY: {</span>
+        <span class="s3">&quot;chunked&quot;</span><span class="s1">: ChunkedReader</span><span class="s2">,</span>
+        <span class="s3">&quot;content-length&quot;</span><span class="s1">: ContentLengthReader</span><span class="s2">,</span>
+        <span class="s3">&quot;http/1.0&quot;</span><span class="s1">: Http10Reader</span><span class="s2">,</span>
+    <span class="s1">}</span><span class="s2">,</span>
+<span class="s1">}</span>
+</pre>
+</body>
+</html>

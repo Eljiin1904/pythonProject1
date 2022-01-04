@@ -1,0 +1,267 @@
+<html>
+<head>
+<title>dumpdata.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dumpdata.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">gzip</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.core </span><span class="s0">import </span><span class="s1">serializers</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span>
+<span class="s0">from </span><span class="s1">django.core.management.utils </span><span class="s0">import </span><span class="s1">parse_apps_and_model_labels</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">router</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">bz2</span>
+    <span class="s1">has_bz2 = </span><span class="s0">True</span>
+<span class="s0">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_bz2 = </span><span class="s0">False</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">lzma</span>
+    <span class="s1">has_lzma = </span><span class="s0">True</span>
+<span class="s0">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_lzma = </span><span class="s0">False</span>
+
+
+<span class="s0">class </span><span class="s1">ProxyModelWarning(Warning):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = (</span>
+        <span class="s2">&quot;Output the contents of the database as a fixture of the given format &quot;</span>
+        <span class="s2">&quot;(using each model's default manager unless --all is specified).&quot;</span>
+    <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'args'</span><span class="s0">, </span><span class="s1">metavar=</span><span class="s2">'app_label[.ModelName]'</span><span class="s0">, </span><span class="s1">nargs=</span><span class="s2">'*'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Restricts dumped data to the specified app_label or app_label.ModelName.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--format'</span><span class="s0">, </span><span class="s1">default=</span><span class="s2">'json'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Specifies the output serialization format for fixtures.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--indent'</span><span class="s0">, </span><span class="s1">type=int</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Specifies the indent level to use when pretty-printing output.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--database'</span><span class="s0">,</span>
+            <span class="s1">default=DEFAULT_DB_ALIAS</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Nominates a specific database to dump fixtures from. '</span>
+                 <span class="s2">'Defaults to the &quot;default&quot; database.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'-e'</span><span class="s0">, </span><span class="s2">'--exclude'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'append'</span><span class="s0">, </span><span class="s1">default=[]</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'An app_label or app_label.ModelName to exclude '</span>
+                 <span class="s2">'(use multiple --exclude to exclude multiple apps/models).'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--natural-foreign'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'use_natural_foreign_keys'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Use natural foreign keys if they are available.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--natural-primary'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'use_natural_primary_keys'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Use natural primary keys if they are available.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'-a'</span><span class="s0">, </span><span class="s2">'--all'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'use_base_manager'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">&quot;Use Django's base manager to dump all models stored in the database, &quot;</span>
+                 <span class="s2">&quot;including those that would otherwise be filtered or modified by a custom manager.&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--pks'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'primary_keys'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">&quot;Only dump objects with given primary keys. Accepts a comma-separated &quot;</span>
+                 <span class="s2">&quot;list of keys. This option only works when you specify one model.&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'-o'</span><span class="s0">, </span><span class="s2">'--output'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Specifies file to which the output is written.'</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">*app_labels</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">format = options[</span><span class="s2">'format'</span><span class="s1">]</span>
+        <span class="s1">indent = options[</span><span class="s2">'indent'</span><span class="s1">]</span>
+        <span class="s1">using = options[</span><span class="s2">'database'</span><span class="s1">]</span>
+        <span class="s1">excludes = options[</span><span class="s2">'exclude'</span><span class="s1">]</span>
+        <span class="s1">output = options[</span><span class="s2">'output'</span><span class="s1">]</span>
+        <span class="s1">show_traceback = options[</span><span class="s2">'traceback'</span><span class="s1">]</span>
+        <span class="s1">use_natural_foreign_keys = options[</span><span class="s2">'use_natural_foreign_keys'</span><span class="s1">]</span>
+        <span class="s1">use_natural_primary_keys = options[</span><span class="s2">'use_natural_primary_keys'</span><span class="s1">]</span>
+        <span class="s1">use_base_manager = options[</span><span class="s2">'use_base_manager'</span><span class="s1">]</span>
+        <span class="s1">pks = options[</span><span class="s2">'primary_keys'</span><span class="s1">]</span>
+
+        <span class="s0">if </span><span class="s1">pks:</span>
+            <span class="s1">primary_keys = [pk.strip() </span><span class="s0">for </span><span class="s1">pk </span><span class="s0">in </span><span class="s1">pks.split(</span><span class="s2">','</span><span class="s1">)]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">primary_keys = []</span>
+
+        <span class="s1">excluded_models</span><span class="s0">, </span><span class="s1">excluded_apps = parse_apps_and_model_labels(excludes)</span>
+
+        <span class="s0">if not </span><span class="s1">app_labels:</span>
+            <span class="s0">if </span><span class="s1">primary_keys:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;You can only use --pks option with one model&quot;</span><span class="s1">)</span>
+            <span class="s1">app_list = dict.fromkeys(</span>
+                <span class="s1">app_config </span><span class="s0">for </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">apps.get_app_configs()</span>
+                <span class="s0">if </span><span class="s1">app_config.models_module </span><span class="s0">is not None and </span><span class="s1">app_config </span><span class="s0">not in </span><span class="s1">excluded_apps</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">len(app_labels) &gt; </span><span class="s3">1 </span><span class="s0">and </span><span class="s1">primary_keys:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;You can only use --pks option with one model&quot;</span><span class="s1">)</span>
+            <span class="s1">app_list = {}</span>
+            <span class="s0">for </span><span class="s1">label </span><span class="s0">in </span><span class="s1">app_labels:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_label = label.split(</span><span class="s2">'.'</span><span class="s1">)</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">app_config = apps.get_app_config(app_label)</span>
+                    <span class="s0">except </span><span class="s1">LookupError </span><span class="s0">as </span><span class="s1">e:</span>
+                        <span class="s0">raise </span><span class="s1">CommandError(str(e))</span>
+                    <span class="s0">if </span><span class="s1">app_config.models_module </span><span class="s0">is None or </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">excluded_apps:</span>
+                        <span class="s0">continue</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">model = app_config.get_model(model_label)</span>
+                    <span class="s0">except </span><span class="s1">LookupError:</span>
+                        <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;Unknown model: %s.%s&quot; </span><span class="s1">% (app_label</span><span class="s0">, </span><span class="s1">model_label))</span>
+
+                    <span class="s1">app_list_value = app_list.setdefault(app_config</span><span class="s0">, </span><span class="s1">[])</span>
+
+                    <span class="s4"># We may have previously seen an &quot;all-models&quot; request for</span>
+                    <span class="s4"># this app (no model qualifier was given). In this case</span>
+                    <span class="s4"># there is no need adding specific models to the list.</span>
+                    <span class="s0">if </span><span class="s1">app_list_value </span><span class="s0">is not None and </span><span class="s1">model </span><span class="s0">not in </span><span class="s1">app_list_value:</span>
+                        <span class="s1">app_list_value.append(model)</span>
+                <span class="s0">except </span><span class="s1">ValueError:</span>
+                    <span class="s0">if </span><span class="s1">primary_keys:</span>
+                        <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;You can only use --pks option with one model&quot;</span><span class="s1">)</span>
+                    <span class="s4"># This is just an app - no model qualifier</span>
+                    <span class="s1">app_label = label</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">app_config = apps.get_app_config(app_label)</span>
+                    <span class="s0">except </span><span class="s1">LookupError </span><span class="s0">as </span><span class="s1">e:</span>
+                        <span class="s0">raise </span><span class="s1">CommandError(str(e))</span>
+                    <span class="s0">if </span><span class="s1">app_config.models_module </span><span class="s0">is None or </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">excluded_apps:</span>
+                        <span class="s0">continue</span>
+                    <span class="s1">app_list[app_config] = </span><span class="s0">None</span>
+
+        <span class="s4"># Check that the serialization format exists; this is a shortcut to</span>
+        <span class="s4"># avoid collating all the objects and _then_ failing.</span>
+        <span class="s0">if </span><span class="s1">format </span><span class="s0">not in </span><span class="s1">serializers.get_public_serializer_formats():</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">serializers.get_serializer(format)</span>
+            <span class="s0">except </span><span class="s1">serializers.SerializerDoesNotExist:</span>
+                <span class="s0">pass</span>
+
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;Unknown serialization format: %s&quot; </span><span class="s1">% format)</span>
+
+        <span class="s0">def </span><span class="s1">get_objects(count_only=</span><span class="s0">False</span><span class="s1">):</span>
+            <span class="s5">&quot;&quot;&quot; 
+            Collate the objects to be serialized. If count_only is True, just 
+            count the number of objects to be serialized. 
+            &quot;&quot;&quot;</span>
+            <span class="s0">if </span><span class="s1">use_natural_foreign_keys:</span>
+                <span class="s1">models = serializers.sort_dependencies(app_list.items()</span><span class="s0">, </span><span class="s1">allow_cycles=</span><span class="s0">True</span><span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s4"># There is no need to sort dependencies when natural foreign</span>
+                <span class="s4"># keys are not used.</span>
+                <span class="s1">models = []</span>
+                <span class="s0">for </span><span class="s1">(app_config</span><span class="s0">, </span><span class="s1">model_list) </span><span class="s0">in </span><span class="s1">app_list.items():</span>
+                    <span class="s0">if </span><span class="s1">model_list </span><span class="s0">is None</span><span class="s1">:</span>
+                        <span class="s1">models.extend(app_config.get_models())</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">models.extend(model_list)</span>
+            <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">models:</span>
+                <span class="s0">if </span><span class="s1">model </span><span class="s0">in </span><span class="s1">excluded_models:</span>
+                    <span class="s0">continue</span>
+                <span class="s0">if </span><span class="s1">model._meta.proxy </span><span class="s0">and </span><span class="s1">model._meta.proxy_for_model </span><span class="s0">not in </span><span class="s1">models:</span>
+                    <span class="s1">warnings.warn(</span>
+                        <span class="s2">&quot;%s is a proxy model and won't be serialized.&quot; </span><span class="s1">% model._meta.label</span><span class="s0">,</span>
+                        <span class="s1">category=ProxyModelWarning</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s0">if not </span><span class="s1">model._meta.proxy </span><span class="s0">and </span><span class="s1">router.allow_migrate_model(using</span><span class="s0">, </span><span class="s1">model):</span>
+                    <span class="s0">if </span><span class="s1">use_base_manager:</span>
+                        <span class="s1">objects = model._base_manager</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s1">objects = model._default_manager</span>
+
+                    <span class="s1">queryset = objects.using(using).order_by(model._meta.pk.name)</span>
+                    <span class="s0">if </span><span class="s1">primary_keys:</span>
+                        <span class="s1">queryset = queryset.filter(pk__in=primary_keys)</span>
+                    <span class="s0">if </span><span class="s1">count_only:</span>
+                        <span class="s0">yield </span><span class="s1">queryset.order_by().count()</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">yield from </span><span class="s1">queryset.iterator()</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self.stdout.ending = </span><span class="s0">None</span>
+            <span class="s1">progress_output = </span><span class="s0">None</span>
+            <span class="s1">object_count = </span><span class="s3">0</span>
+            <span class="s4"># If dumpdata is outputting to stdout, there is no way to display progress</span>
+            <span class="s0">if </span><span class="s1">output </span><span class="s0">and </span><span class="s1">self.stdout.isatty() </span><span class="s0">and </span><span class="s1">options[</span><span class="s2">'verbosity'</span><span class="s1">] &gt; </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s1">progress_output = self.stdout</span>
+                <span class="s1">object_count = sum(get_objects(count_only=</span><span class="s0">True</span><span class="s1">))</span>
+            <span class="s0">if </span><span class="s1">output:</span>
+                <span class="s1">file_root</span><span class="s0">, </span><span class="s1">file_ext = os.path.splitext(output)</span>
+                <span class="s1">compression_formats = {</span>
+                    <span class="s2">'.bz2'</span><span class="s1">: (open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">file_root)</span><span class="s0">,</span>
+                    <span class="s2">'.gz'</span><span class="s1">: (gzip.open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">output)</span><span class="s0">,</span>
+                    <span class="s2">'.lzma'</span><span class="s1">: (open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">file_root)</span><span class="s0">,</span>
+                    <span class="s2">'.xz'</span><span class="s1">: (open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">file_root)</span><span class="s0">,</span>
+                    <span class="s2">'.zip'</span><span class="s1">: (open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">file_root)</span><span class="s0">,</span>
+                <span class="s1">}</span>
+                <span class="s0">if </span><span class="s1">has_bz2:</span>
+                    <span class="s1">compression_formats[</span><span class="s2">'.bz2'</span><span class="s1">] = (bz2.open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">output)</span>
+                <span class="s0">if </span><span class="s1">has_lzma:</span>
+                    <span class="s1">compression_formats[</span><span class="s2">'.lzma'</span><span class="s1">] = (</span>
+                        <span class="s1">lzma.open</span><span class="s0">, </span><span class="s1">{</span><span class="s2">'format'</span><span class="s1">: lzma.FORMAT_ALONE}</span><span class="s0">, </span><span class="s1">output</span>
+                    <span class="s1">)</span>
+                    <span class="s1">compression_formats[</span><span class="s2">'.xz'</span><span class="s1">] = (lzma.open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">output)</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">open_method</span><span class="s0">, </span><span class="s1">kwargs</span><span class="s0">, </span><span class="s1">file_path = compression_formats[file_ext]</span>
+                <span class="s0">except </span><span class="s1">KeyError:</span>
+                    <span class="s1">open_method</span><span class="s0">, </span><span class="s1">kwargs</span><span class="s0">, </span><span class="s1">file_path = (open</span><span class="s0">, </span><span class="s1">{}</span><span class="s0">, </span><span class="s1">output)</span>
+                <span class="s0">if </span><span class="s1">file_path != output:</span>
+                    <span class="s1">file_name = os.path.basename(file_path)</span>
+                    <span class="s1">warnings.warn(</span>
+                        <span class="s2">f&quot;Unsupported file extension (</span><span class="s0">{</span><span class="s1">file_ext</span><span class="s0">}</span><span class="s2">). &quot;</span>
+                        <span class="s2">f&quot;Fixtures saved in '</span><span class="s0">{</span><span class="s1">file_name</span><span class="s0">}</span><span class="s2">'.&quot;</span><span class="s0">,</span>
+                        <span class="s1">RuntimeWarning</span><span class="s0">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">stream = open_method(file_path</span><span class="s0">, </span><span class="s2">'wt'</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">stream = </span><span class="s0">None</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">serializers.serialize(</span>
+                    <span class="s1">format</span><span class="s0">, </span><span class="s1">get_objects()</span><span class="s0">, </span><span class="s1">indent=indent</span><span class="s0">,</span>
+                    <span class="s1">use_natural_foreign_keys=use_natural_foreign_keys</span><span class="s0">,</span>
+                    <span class="s1">use_natural_primary_keys=use_natural_primary_keys</span><span class="s0">,</span>
+                    <span class="s1">stream=stream </span><span class="s0">or </span><span class="s1">self.stdout</span><span class="s0">, </span><span class="s1">progress_output=progress_output</span><span class="s0">,</span>
+                    <span class="s1">object_count=object_count</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">stream:</span>
+                    <span class="s1">stream.close()</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">if </span><span class="s1">show_traceback:</span>
+                <span class="s0">raise</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;Unable to serialize database: %s&quot; </span><span class="s1">% e)</span>
+</pre>
+</body>
+</html>

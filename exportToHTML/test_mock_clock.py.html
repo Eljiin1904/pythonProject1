@@ -1,0 +1,191 @@
+<html>
+<head>
+<title>test_mock_clock.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_mock_clock.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">math </span><span class="s0">import </span><span class="s1">inf</span>
+<span class="s0">import </span><span class="s1">time</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">trio </span><span class="s0">import </span><span class="s1">sleep</span>
+<span class="s0">from </span><span class="s1">... </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">wait_all_tasks_blocked</span>
+<span class="s0">from </span><span class="s1">.._mock_clock </span><span class="s0">import </span><span class="s1">MockClock</span>
+<span class="s0">from </span><span class="s1">.tutil </span><span class="s0">import </span><span class="s1">slow</span>
+
+
+<span class="s0">def </span><span class="s1">test_mock_clock():</span>
+    <span class="s1">REAL_NOW = </span><span class="s2">123.0</span>
+    <span class="s1">c = MockClock()</span>
+    <span class="s1">c._real_clock = </span><span class="s0">lambda</span><span class="s1">: REAL_NOW</span>
+    <span class="s1">repr(c)  </span><span class="s3"># smoke test</span>
+    <span class="s0">assert </span><span class="s1">c.rate == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">0</span>
+    <span class="s1">c.jump(</span><span class="s2">1.2</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">1.2</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s1">c.jump(-</span><span class="s2">1</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">1.2</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">1.1</span><span class="s1">) == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">1.2</span><span class="s1">) == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">1.3</span><span class="s1">) &gt; </span><span class="s2">999999</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s1">c.rate = -</span><span class="s2">1</span>
+    <span class="s0">assert </span><span class="s1">c.rate == </span><span class="s2">0</span>
+
+    <span class="s1">c.rate = </span><span class="s2">2</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">1.2</span>
+    <span class="s1">REAL_NOW += </span><span class="s2">1</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">3.2</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">3.1</span><span class="s1">) == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">3.2</span><span class="s1">) == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">4.2</span><span class="s1">) == </span><span class="s2">0.5</span>
+
+    <span class="s1">c.rate = </span><span class="s2">0.5</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">3.2</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">3.1</span><span class="s1">) == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">3.2</span><span class="s1">) == </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">c.deadline_to_sleep_time(</span><span class="s2">4.2</span><span class="s1">) == </span><span class="s2">2.0</span>
+
+    <span class="s1">c.jump(</span><span class="s2">0.8</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">4.0</span>
+    <span class="s1">REAL_NOW += </span><span class="s2">1</span>
+    <span class="s0">assert </span><span class="s1">c.current_time() == </span><span class="s2">4.5</span>
+
+    <span class="s1">c2 = MockClock(rate=</span><span class="s2">3</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">c2.rate == </span><span class="s2">3</span>
+    <span class="s0">assert </span><span class="s1">c2.current_time() &lt; </span><span class="s2">10</span>
+
+
+<span class="s0">async def </span><span class="s1">test_mock_clock_autojump(mock_clock):</span>
+    <span class="s0">assert </span><span class="s1">mock_clock.autojump_threshold == inf</span>
+
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0</span>
+    <span class="s0">assert </span><span class="s1">mock_clock.autojump_threshold == </span><span class="s2">0</span>
+
+    <span class="s1">real_start = time.perf_counter()</span>
+
+    <span class="s1">virtual_start = _core.current_time()</span>
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s2">10</span><span class="s1">):</span>
+        <span class="s1">print(</span><span class="s4">&quot;sleeping {} seconds&quot;</span><span class="s1">.format(</span><span class="s2">10 </span><span class="s1">* i))</span>
+        <span class="s0">await </span><span class="s1">sleep(</span><span class="s2">10 </span><span class="s1">* i)</span>
+        <span class="s1">print(</span><span class="s4">&quot;woke up!&quot;</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">virtual_start + </span><span class="s2">10 </span><span class="s1">* i == _core.current_time()</span>
+        <span class="s1">virtual_start = _core.current_time()</span>
+
+    <span class="s1">real_duration = time.perf_counter() - real_start</span>
+    <span class="s1">print(</span><span class="s4">&quot;Slept {} seconds in {} seconds&quot;</span><span class="s1">.format(</span><span class="s2">10 </span><span class="s1">* sum(range(</span><span class="s2">10</span><span class="s1">))</span><span class="s0">, </span><span class="s1">real_duration))</span>
+    <span class="s0">assert </span><span class="s1">real_duration &lt; </span><span class="s2">1</span>
+
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0.02</span>
+    <span class="s1">t = _core.current_time()</span>
+    <span class="s3"># this should wake up before the autojump threshold triggers, so time</span>
+    <span class="s3"># shouldn't change</span>
+    <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+    <span class="s0">assert </span><span class="s1">t == _core.current_time()</span>
+    <span class="s3"># this should too</span>
+    <span class="s0">await </span><span class="s1">wait_all_tasks_blocked(</span><span class="s2">0.01</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">t == _core.current_time()</span>
+
+    <span class="s3"># set up a situation where the autojump task is blocked for a long long</span>
+    <span class="s3"># time, to make sure that cancel-and-adjust-threshold logic is working</span>
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">10000</span>
+    <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0</span>
+    <span class="s3"># if the above line didn't take affect immediately, then this would be</span>
+    <span class="s3"># bad:</span>
+    <span class="s0">await </span><span class="s1">sleep(</span><span class="s2">100000</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_mock_clock_autojump_interference(mock_clock):</span>
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0.02</span>
+
+    <span class="s1">mock_clock2 = MockClock()</span>
+    <span class="s3"># messing with the autojump threshold of a clock that isn't actually</span>
+    <span class="s3"># installed in the run loop shouldn't do anything.</span>
+    <span class="s1">mock_clock2.autojump_threshold = </span><span class="s2">0.01</span>
+
+    <span class="s3"># if the autojump_threshold of 0.01 were in effect, then the next line</span>
+    <span class="s3"># would block forever, as the autojump task kept waking up to try to</span>
+    <span class="s3"># jump the clock.</span>
+    <span class="s0">await </span><span class="s1">wait_all_tasks_blocked(</span><span class="s2">0.015</span><span class="s1">)</span>
+
+    <span class="s3"># but the 0.02 limit does apply</span>
+    <span class="s0">await </span><span class="s1">sleep(</span><span class="s2">100000</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">test_mock_clock_autojump_preset():</span>
+    <span class="s3"># Check that we can set the autojump_threshold before the clock is</span>
+    <span class="s3"># actually in use, and it gets picked up</span>
+    <span class="s1">mock_clock = MockClock(autojump_threshold=</span><span class="s2">0.1</span><span class="s1">)</span>
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0.01</span>
+    <span class="s1">real_start = time.perf_counter()</span>
+    <span class="s1">_core.run(sleep</span><span class="s0">, </span><span class="s2">10000</span><span class="s0">, </span><span class="s1">clock=mock_clock)</span>
+    <span class="s0">assert </span><span class="s1">time.perf_counter() - real_start &lt; </span><span class="s2">1</span>
+
+
+<span class="s0">async def </span><span class="s1">test_mock_clock_autojump_0_and_wait_all_tasks_blocked_0(mock_clock):</span>
+    <span class="s3"># Checks that autojump_threshold=0 doesn't interfere with</span>
+    <span class="s3"># calling wait_all_tasks_blocked with the default cushion=0.</span>
+
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0</span>
+
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">sleeper():</span>
+        <span class="s0">await </span><span class="s1">sleep(</span><span class="s2">100</span><span class="s1">)</span>
+        <span class="s1">record.append(</span><span class="s4">&quot;yawn&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">waiter():</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">record.append(</span><span class="s4">&quot;waiter woke&quot;</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">sleep(</span><span class="s2">1000</span><span class="s1">)</span>
+        <span class="s1">record.append(</span><span class="s4">&quot;waiter done&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(sleeper)</span>
+        <span class="s1">nursery.start_soon(waiter)</span>
+
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s4">&quot;waiter woke&quot;</span><span class="s0">, </span><span class="s4">&quot;yawn&quot;</span><span class="s0">, </span><span class="s4">&quot;waiter done&quot;</span><span class="s1">]</span>
+
+
+<span class="s1">@slow</span>
+<span class="s0">async def </span><span class="s1">test_mock_clock_autojump_0_and_wait_all_tasks_blocked_nonzero(mock_clock):</span>
+    <span class="s3"># Checks that autojump_threshold=0 doesn't interfere with</span>
+    <span class="s3"># calling wait_all_tasks_blocked with a non-zero cushion.</span>
+
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s2">0</span>
+
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">sleeper():</span>
+        <span class="s0">await </span><span class="s1">sleep(</span><span class="s2">100</span><span class="s1">)</span>
+        <span class="s1">record.append(</span><span class="s4">&quot;yawn&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">waiter():</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked(</span><span class="s2">1</span><span class="s1">)</span>
+        <span class="s1">record.append(</span><span class="s4">&quot;waiter done&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(sleeper)</span>
+        <span class="s1">nursery.start_soon(waiter)</span>
+
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s4">&quot;waiter done&quot;</span><span class="s0">, </span><span class="s4">&quot;yawn&quot;</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

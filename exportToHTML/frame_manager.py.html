@@ -1,0 +1,1037 @@
+<html>
+<head>
+<title>frame_manager.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+frame_manager.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Frame Manager module.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">asyncio</span>
+<span class="s3">from </span><span class="s1">collections </span><span class="s3">import </span><span class="s1">OrderedDict</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">from </span><span class="s1">types </span><span class="s3">import </span><span class="s1">SimpleNamespace</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">Awaitable</span><span class="s3">, </span><span class="s1">Dict</span><span class="s3">, </span><span class="s1">Generator</span><span class="s3">, </span><span class="s1">List</span><span class="s3">, </span><span class="s1">Optional</span><span class="s3">, </span><span class="s1">Set</span><span class="s3">, </span><span class="s1">Union</span>
+
+<span class="s3">from </span><span class="s1">pyee </span><span class="s3">import </span><span class="s1">EventEmitter</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer </span><span class="s3">import </span><span class="s1">helper</span>
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">CDPSession</span>
+<span class="s3">from </span><span class="s1">pyppeteer.element_handle </span><span class="s3">import </span><span class="s1">ElementHandle</span>
+<span class="s3">from </span><span class="s1">pyppeteer.errors </span><span class="s3">import </span><span class="s1">NetworkError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.execution_context </span><span class="s3">import </span><span class="s1">ExecutionContext</span><span class="s3">, </span><span class="s1">JSHandle</span>
+<span class="s3">from </span><span class="s1">pyppeteer.errors </span><span class="s3">import </span><span class="s1">ElementHandleError</span><span class="s3">, </span><span class="s1">PageError</span><span class="s3">, </span><span class="s1">TimeoutError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.util </span><span class="s3">import </span><span class="s1">merge_dict</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+
+<span class="s3">class </span><span class="s1">FrameManager(EventEmitter):</span>
+    <span class="s2">&quot;&quot;&quot;FrameManager class.&quot;&quot;&quot;</span>
+
+    <span class="s1">Events = SimpleNamespace(</span>
+        <span class="s1">FrameAttached=</span><span class="s4">'frameattached'</span><span class="s3">,</span>
+        <span class="s1">FrameNavigated=</span><span class="s4">'framenavigated'</span><span class="s3">,</span>
+        <span class="s1">FrameDetached=</span><span class="s4">'framedetached'</span><span class="s3">,</span>
+        <span class="s1">LifecycleEvent=</span><span class="s4">'lifecycleevent'</span><span class="s3">,</span>
+        <span class="s1">FrameNavigatedWithinDocument=</span><span class="s4">'framenavigatedwithindocument'</span><span class="s3">,</span>
+    <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">, </span><span class="s1">frameTree: Dict</span><span class="s3">, </span><span class="s1">page: Any) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Make new frame manager.&quot;&quot;&quot;</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._page = page</span>
+        <span class="s1">self._frames: OrderedDict[str</span><span class="s3">, </span><span class="s1">Frame] = OrderedDict()</span>
+        <span class="s1">self._mainFrame: Optional[Frame] = </span><span class="s3">None</span>
+        <span class="s1">self._contextIdToContext: Dict[str</span><span class="s3">, </span><span class="s1">ExecutionContext] = dict()</span>
+
+        <span class="s1">client.on(</span><span class="s4">'Page.frameAttached'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onFrameAttached(</span>
+                      <span class="s1">event.get(</span><span class="s4">'frameId'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span><span class="s3">, </span><span class="s1">event.get(</span><span class="s4">'parentFrameId'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">))</span>
+                  <span class="s1">)</span>
+        <span class="s1">client.on(</span><span class="s4">'Page.frameNavigated'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onFrameNavigated(event.get(</span><span class="s4">'frame'</span><span class="s1">)))</span>
+        <span class="s1">client.on(</span><span class="s4">'Page.navigatedWithinDocument'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onFrameNavigatedWithinDocument(</span>
+                      <span class="s1">event.get(</span><span class="s4">'frameId'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">event.get(</span><span class="s4">'url'</span><span class="s1">)</span>
+                  <span class="s1">))</span>
+        <span class="s1">client.on(</span><span class="s4">'Page.frameDetached'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onFrameDetached(event.get(</span><span class="s4">'frameId'</span><span class="s1">)))</span>
+        <span class="s1">client.on(</span><span class="s4">'Page.frameStoppedLoading'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onFrameStoppedLoading(</span>
+                      <span class="s1">event.get(</span><span class="s4">'frameId'</span><span class="s1">)</span>
+                  <span class="s1">))</span>
+        <span class="s1">client.on(</span><span class="s4">'Runtime.executionContextCreated'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onExecutionContextCreated(</span>
+                      <span class="s1">event.get(</span><span class="s4">'context'</span><span class="s1">)))</span>
+        <span class="s1">client.on(</span><span class="s4">'Runtime.executionContextDestroyed'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onExecutionContextDestroyed(</span>
+                      <span class="s1">event.get(</span><span class="s4">'executionContextId'</span><span class="s1">)))</span>
+        <span class="s1">client.on(</span><span class="s4">'Runtime.executionContextsCleared'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onExecutionContextsCleared())</span>
+        <span class="s1">client.on(</span><span class="s4">'Page.lifecycleEvent'</span><span class="s3">,</span>
+                  <span class="s3">lambda </span><span class="s1">event: self._onLifecycleEvent(event))</span>
+
+        <span class="s1">self._handleFrameTree(frameTree)</span>
+
+    <span class="s3">def </span><span class="s1">_onLifecycleEvent(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">frame = self._frames.get(event[</span><span class="s4">'frameId'</span><span class="s1">])</span>
+        <span class="s3">if not </span><span class="s1">frame:</span>
+            <span class="s3">return</span>
+        <span class="s1">frame._onLifecycleEvent(event[</span><span class="s4">'loaderId'</span><span class="s1">]</span><span class="s3">, </span><span class="s1">event[</span><span class="s4">'name'</span><span class="s1">])</span>
+        <span class="s1">self.emit(FrameManager.Events.LifecycleEvent</span><span class="s3">, </span><span class="s1">frame)</span>
+
+    <span class="s3">def </span><span class="s1">_onFrameStoppedLoading(self</span><span class="s3">, </span><span class="s1">frameId: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">frame = self._frames.get(frameId)</span>
+        <span class="s3">if not </span><span class="s1">frame:</span>
+            <span class="s3">return</span>
+        <span class="s1">frame._onLoadingStopped()</span>
+        <span class="s1">self.emit(FrameManager.Events.LifecycleEvent</span><span class="s3">, </span><span class="s1">frame)</span>
+
+    <span class="s3">def </span><span class="s1">_handleFrameTree(self</span><span class="s3">, </span><span class="s1">frameTree: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">frame = frameTree[</span><span class="s4">'frame'</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s4">'parentId' </span><span class="s3">in </span><span class="s1">frame:</span>
+            <span class="s1">self._onFrameAttached(</span>
+                <span class="s1">frame[</span><span class="s4">'id'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">frame[</span><span class="s4">'parentId'</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s1">)</span>
+        <span class="s1">self._onFrameNavigated(frame)</span>
+        <span class="s3">if </span><span class="s4">'childFrames' </span><span class="s3">not in </span><span class="s1">frameTree:</span>
+            <span class="s3">return</span>
+        <span class="s3">for </span><span class="s1">child </span><span class="s3">in </span><span class="s1">frameTree[</span><span class="s4">'childFrames'</span><span class="s1">]:</span>
+            <span class="s1">self._handleFrameTree(child)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">mainFrame(self) -&gt; Optional[</span><span class="s4">'Frame'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return main frame.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._mainFrame</span>
+
+    <span class="s3">def </span><span class="s1">frames(self) -&gt; List[</span><span class="s4">'Frame'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return all frames.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">list(self._frames.values())</span>
+
+    <span class="s3">def </span><span class="s1">frame(self</span><span class="s3">, </span><span class="s1">frameId: str) -&gt; Optional[</span><span class="s4">'Frame'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return :class:`Frame` of ``frameId``.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._frames.get(frameId)</span>
+
+    <span class="s3">def </span><span class="s1">_onFrameAttached(self</span><span class="s3">, </span><span class="s1">frameId: str</span><span class="s3">, </span><span class="s1">parentFrameId: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">frameId </span><span class="s3">in </span><span class="s1">self._frames:</span>
+            <span class="s3">return</span>
+        <span class="s1">parentFrame = self._frames.get(parentFrameId)</span>
+        <span class="s1">frame = Frame(self._client</span><span class="s3">, </span><span class="s1">parentFrame</span><span class="s3">, </span><span class="s1">frameId)</span>
+        <span class="s1">self._frames[frameId] = frame</span>
+        <span class="s1">self.emit(FrameManager.Events.FrameAttached</span><span class="s3">, </span><span class="s1">frame)</span>
+
+    <span class="s3">def </span><span class="s1">_onFrameNavigated(self</span><span class="s3">, </span><span class="s1">framePayload: dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">isMainFrame = </span><span class="s3">not </span><span class="s1">framePayload.get(</span><span class="s4">'parentId'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">isMainFrame:</span>
+            <span class="s1">frame = self._mainFrame</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">frame = self._frames.get(framePayload.get(</span><span class="s4">'id'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">))</span>
+        <span class="s3">if not </span><span class="s1">(isMainFrame </span><span class="s3">or </span><span class="s1">frame):</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'We either navigate top level or have old version '</span>
+                            <span class="s4">'of the navigated frame'</span><span class="s1">)</span>
+
+        <span class="s0"># Detach all child frames first.</span>
+        <span class="s3">if </span><span class="s1">frame:</span>
+            <span class="s3">for </span><span class="s1">child </span><span class="s3">in </span><span class="s1">frame.childFrames:</span>
+                <span class="s1">self._removeFramesRecursively(child)</span>
+
+        <span class="s0"># Update or create main frame.</span>
+        <span class="s1">_id = framePayload.get(</span><span class="s4">'id'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">isMainFrame:</span>
+            <span class="s3">if </span><span class="s1">frame:</span>
+                <span class="s0"># Update frame id to retain frame identity on cross-process navigation.  # noqa: E501</span>
+                <span class="s1">self._frames.pop(frame._id</span><span class="s3">, None</span><span class="s1">)</span>
+                <span class="s1">frame._id = _id</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># Initial main frame navigation.</span>
+                <span class="s1">frame = Frame(self._client</span><span class="s3">, None, </span><span class="s1">_id)</span>
+            <span class="s1">self._frames[_id] = frame</span>
+            <span class="s1">self._mainFrame = frame</span>
+
+        <span class="s0"># Update frame payload.</span>
+        <span class="s1">frame._navigated(framePayload)  </span><span class="s0"># type: ignore</span>
+        <span class="s1">self.emit(FrameManager.Events.FrameNavigated</span><span class="s3">, </span><span class="s1">frame)</span>
+
+    <span class="s3">def </span><span class="s1">_onFrameNavigatedWithinDocument(self</span><span class="s3">, </span><span class="s1">frameId: str</span><span class="s3">, </span><span class="s1">url: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">frame = self._frames.get(frameId)</span>
+        <span class="s3">if not </span><span class="s1">frame:</span>
+            <span class="s3">return</span>
+        <span class="s1">frame._navigatedWithinDocument(url)</span>
+        <span class="s1">self.emit(FrameManager.Events.FrameNavigatedWithinDocument</span><span class="s3">, </span><span class="s1">frame)</span>
+        <span class="s1">self.emit(FrameManager.Events.FrameNavigated</span><span class="s3">, </span><span class="s1">frame)</span>
+
+    <span class="s3">def </span><span class="s1">_onFrameDetached(self</span><span class="s3">, </span><span class="s1">frameId: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">frame = self._frames.get(frameId)</span>
+        <span class="s3">if </span><span class="s1">frame:</span>
+            <span class="s1">self._removeFramesRecursively(frame)</span>
+
+    <span class="s3">def </span><span class="s1">_onExecutionContextCreated(self</span><span class="s3">, </span><span class="s1">contextPayload: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">(contextPayload.get(</span><span class="s4">'auxData'</span><span class="s1">) </span><span class="s3">and</span>
+                <span class="s1">contextPayload[</span><span class="s4">'auxData'</span><span class="s1">].get(</span><span class="s4">'frameId'</span><span class="s1">)):</span>
+            <span class="s1">frameId = contextPayload[</span><span class="s4">'auxData'</span><span class="s1">][</span><span class="s4">'frameId'</span><span class="s1">]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">frameId = </span><span class="s3">None</span>
+
+        <span class="s1">frame = self._frames.get(frameId)</span>
+
+        <span class="s3">def </span><span class="s1">_createJSHandle(obj: Dict) -&gt; JSHandle:</span>
+            <span class="s1">context = self.executionContextById(contextPayload[</span><span class="s4">'id'</span><span class="s1">])</span>
+            <span class="s3">return </span><span class="s1">self.createJSHandle(context</span><span class="s3">, </span><span class="s1">obj)</span>
+
+        <span class="s1">context = ExecutionContext(</span>
+            <span class="s1">self._client</span><span class="s3">,</span>
+            <span class="s1">contextPayload</span><span class="s3">,</span>
+            <span class="s1">_createJSHandle</span><span class="s3">,</span>
+            <span class="s1">frame</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._contextIdToContext[contextPayload[</span><span class="s4">'id'</span><span class="s1">]] = context</span>
+
+        <span class="s3">if </span><span class="s1">frame:</span>
+            <span class="s1">frame._addExecutionContext(context)</span>
+
+    <span class="s3">def </span><span class="s1">_onExecutionContextDestroyed(self</span><span class="s3">, </span><span class="s1">executionContextId: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">context = self._contextIdToContext.get(executionContextId)</span>
+        <span class="s3">if not </span><span class="s1">context:</span>
+            <span class="s3">return</span>
+        <span class="s3">del </span><span class="s1">self._contextIdToContext[executionContextId]</span>
+
+        <span class="s1">frame = context.frame</span>
+        <span class="s3">if </span><span class="s1">frame:</span>
+            <span class="s1">frame._removeExecutionContext(context)</span>
+
+    <span class="s3">def </span><span class="s1">_onExecutionContextsCleared(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">for </span><span class="s1">context </span><span class="s3">in </span><span class="s1">self._contextIdToContext.values():</span>
+            <span class="s1">frame = context.frame</span>
+            <span class="s3">if </span><span class="s1">frame:</span>
+                <span class="s1">frame._removeExecutionContext(context)</span>
+        <span class="s1">self._contextIdToContext.clear()</span>
+
+    <span class="s3">def </span><span class="s1">executionContextById(self</span><span class="s3">, </span><span class="s1">contextId: str) -&gt; ExecutionContext:</span>
+        <span class="s2">&quot;&quot;&quot;Get stored ``ExecutionContext`` by ``id``.&quot;&quot;&quot;</span>
+        <span class="s1">context = self._contextIdToContext.get(contextId)</span>
+        <span class="s3">if not </span><span class="s1">context:</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span>
+                <span class="s4">f'INTERNAL ERROR: missing context with id = </span><span class="s3">{</span><span class="s1">contextId</span><span class="s3">}</span><span class="s4">'</span>
+            <span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">context</span>
+
+    <span class="s3">def </span><span class="s1">createJSHandle(self</span><span class="s3">, </span><span class="s1">context: ExecutionContext</span><span class="s3">,</span>
+                       <span class="s1">remoteObject: Dict = </span><span class="s3">None</span><span class="s1">) -&gt; JSHandle:</span>
+        <span class="s2">&quot;&quot;&quot;Create JS handle associated to the context id and remote object.&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">remoteObject </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">remoteObject = dict()</span>
+        <span class="s3">if </span><span class="s1">remoteObject.get(</span><span class="s4">'subtype'</span><span class="s1">) == </span><span class="s4">'node'</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">ElementHandle(context</span><span class="s3">, </span><span class="s1">self._client</span><span class="s3">, </span><span class="s1">remoteObject</span><span class="s3">,</span>
+                                 <span class="s1">self._page</span><span class="s3">, </span><span class="s1">self)</span>
+        <span class="s3">return </span><span class="s1">JSHandle(context</span><span class="s3">, </span><span class="s1">self._client</span><span class="s3">, </span><span class="s1">remoteObject)</span>
+
+    <span class="s3">def </span><span class="s1">_removeFramesRecursively(self</span><span class="s3">, </span><span class="s1">frame: </span><span class="s4">'Frame'</span><span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">for </span><span class="s1">child </span><span class="s3">in </span><span class="s1">frame.childFrames:</span>
+            <span class="s1">self._removeFramesRecursively(child)</span>
+        <span class="s1">frame._detach()</span>
+        <span class="s1">self._frames.pop(frame._id</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">self.emit(FrameManager.Events.FrameDetached</span><span class="s3">, </span><span class="s1">frame)</span>
+
+
+<span class="s3">class </span><span class="s1">Frame(object):</span>
+    <span class="s2">&quot;&quot;&quot;Frame class. 
+ 
+    Frame objects can be obtained via :attr:`pyppeteer.page.Page.mainFrame`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">, </span><span class="s1">parentFrame: Optional[</span><span class="s4">'Frame'</span><span class="s1">]</span><span class="s3">,</span>
+                 <span class="s1">frameId: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._parentFrame = parentFrame</span>
+        <span class="s1">self._url = </span><span class="s4">''</span>
+        <span class="s1">self._detached = </span><span class="s3">False</span>
+        <span class="s1">self._id = frameId</span>
+
+        <span class="s1">self._documentPromise: Optional[ElementHandle] = </span><span class="s3">None</span>
+        <span class="s1">self._contextResolveCallback = </span><span class="s3">lambda </span><span class="s1">_: </span><span class="s3">None</span>
+        <span class="s1">self._setDefaultContext(</span><span class="s3">None</span><span class="s1">)</span>
+
+        <span class="s1">self._waitTasks: Set[WaitTask] = set()  </span><span class="s0"># maybe list</span>
+        <span class="s1">self._loaderId = </span><span class="s4">''</span>
+        <span class="s1">self._lifecycleEvents: Set[str] = set()</span>
+        <span class="s1">self._childFrames: Set[Frame] = set()  </span><span class="s0"># maybe list</span>
+        <span class="s3">if </span><span class="s1">self._parentFrame:</span>
+            <span class="s1">self._parentFrame._childFrames.add(self)</span>
+
+    <span class="s3">def </span><span class="s1">_addExecutionContext(self</span><span class="s3">, </span><span class="s1">context: ExecutionContext) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">context._isDefault:</span>
+            <span class="s1">self._setDefaultContext(context)</span>
+
+    <span class="s3">def </span><span class="s1">_removeExecutionContext(self</span><span class="s3">, </span><span class="s1">context: ExecutionContext) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">context._isDefault:</span>
+            <span class="s1">self._setDefaultContext(</span><span class="s3">None</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_setDefaultContext(self</span><span class="s3">, </span><span class="s1">context: Optional[ExecutionContext]) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">context </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s1">self._contextResolveCallback(context)  </span><span class="s0"># type: ignore</span>
+            <span class="s1">self._contextResolveCallback = </span><span class="s3">lambda </span><span class="s1">_: </span><span class="s3">None</span>
+            <span class="s3">for </span><span class="s1">waitTask </span><span class="s3">in </span><span class="s1">self._waitTasks:</span>
+                <span class="s1">self._client._loop.create_task(waitTask.rerun())</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._documentPromise = </span><span class="s3">None</span>
+            <span class="s1">self._contextPromise = self._client._loop.create_future()</span>
+            <span class="s1">self._contextResolveCallback = (</span>
+                <span class="s3">lambda </span><span class="s1">_context: self._contextPromise.set_result(_context)</span>
+            <span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">executionContext(self) -&gt; Optional[ExecutionContext]:</span>
+        <span class="s2">&quot;&quot;&quot;Return execution context of this frame. 
+ 
+        Return :class:`~pyppeteer.execution_context.ExecutionContext` 
+        associated to this frame. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self._contextPromise</span>
+
+    <span class="s3">async def </span><span class="s1">evaluateHandle(self</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">, </span><span class="s1">*args: Any) -&gt; JSHandle:</span>
+        <span class="s2">&quot;&quot;&quot;Execute function on this frame. 
+ 
+        Details see :meth:`pyppeteer.page.Page.evaluateHandle`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">context = </span><span class="s3">await </span><span class="s1">self.executionContext()</span>
+        <span class="s3">if </span><span class="s1">context </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'this frame has no context.'</span><span class="s1">)</span>
+        <span class="s3">return await </span><span class="s1">context.evaluateHandle(pageFunction</span><span class="s3">, </span><span class="s1">*args)</span>
+
+    <span class="s3">async def </span><span class="s1">evaluate(self</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">, </span><span class="s1">*args: Any</span><span class="s3">,</span>
+                       <span class="s1">force_expr: bool = </span><span class="s3">False</span><span class="s1">) -&gt; Any:</span>
+        <span class="s2">&quot;&quot;&quot;Evaluate pageFunction on this frame. 
+ 
+        Details see :meth:`pyppeteer.page.Page.evaluate`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">context = </span><span class="s3">await </span><span class="s1">self.executionContext()</span>
+        <span class="s3">if </span><span class="s1">context </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'ExecutionContext is None.'</span><span class="s1">)</span>
+        <span class="s3">return await </span><span class="s1">context.evaluate(</span>
+            <span class="s1">pageFunction</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">force_expr=force_expr)</span>
+
+    <span class="s3">async def </span><span class="s1">querySelector(self</span><span class="s3">, </span><span class="s1">selector: str) -&gt; Optional[ElementHandle]:</span>
+        <span class="s2">&quot;&quot;&quot;Get element which matches `selector` string. 
+ 
+        Details see :meth:`pyppeteer.page.Page.querySelector`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">document = </span><span class="s3">await </span><span class="s1">self._document()</span>
+        <span class="s1">value = </span><span class="s3">await </span><span class="s1">document.querySelector(selector)</span>
+        <span class="s3">return </span><span class="s1">value</span>
+
+    <span class="s3">async def </span><span class="s1">_document(self) -&gt; ElementHandle:</span>
+        <span class="s3">if </span><span class="s1">self._documentPromise:</span>
+            <span class="s3">return </span><span class="s1">self._documentPromise</span>
+        <span class="s1">context = </span><span class="s3">await </span><span class="s1">self.executionContext()</span>
+        <span class="s3">if </span><span class="s1">context </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'No context exists.'</span><span class="s1">)</span>
+        <span class="s1">document = (</span><span class="s3">await </span><span class="s1">context.evaluateHandle(</span><span class="s4">'document'</span><span class="s1">)).asElement()</span>
+        <span class="s1">self._documentPromise = document</span>
+        <span class="s3">if </span><span class="s1">document </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'Could not find `document`.'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">document</span>
+
+    <span class="s3">async def </span><span class="s1">xpath(self</span><span class="s3">, </span><span class="s1">expression: str) -&gt; List[ElementHandle]:</span>
+        <span class="s2">&quot;&quot;&quot;Evaluate the XPath expression. 
+ 
+        If there are no such elements in this frame, return an empty list. 
+ 
+        :arg str expression: XPath string to be evaluated. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">document = </span><span class="s3">await </span><span class="s1">self._document()</span>
+        <span class="s1">value = </span><span class="s3">await </span><span class="s1">document.xpath(expression)</span>
+        <span class="s3">return </span><span class="s1">value</span>
+
+    <span class="s3">async def </span><span class="s1">querySelectorEval(self</span><span class="s3">, </span><span class="s1">selector: str</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">,</span>
+                                <span class="s1">*args: Any) -&gt; Any:</span>
+        <span class="s2">&quot;&quot;&quot;Execute function on element which matches selector. 
+ 
+        Details see :meth:`pyppeteer.page.Page.querySelectorEval`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">document = </span><span class="s3">await </span><span class="s1">self._document()</span>
+        <span class="s3">return await </span><span class="s1">document.querySelectorEval(selector</span><span class="s3">, </span><span class="s1">pageFunction</span><span class="s3">, </span><span class="s1">*args)</span>
+
+    <span class="s3">async def </span><span class="s1">querySelectorAllEval(self</span><span class="s3">, </span><span class="s1">selector: str</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">,</span>
+                                   <span class="s1">*args: Any) -&gt; Optional[Dict]:</span>
+        <span class="s2">&quot;&quot;&quot;Execute function on all elements which matches selector. 
+ 
+        Details see :meth:`pyppeteer.page.Page.querySelectorAllEval`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">document = </span><span class="s3">await </span><span class="s1">self._document()</span>
+        <span class="s1">value = </span><span class="s3">await </span><span class="s1">document.JJeval(selector</span><span class="s3">, </span><span class="s1">pageFunction</span><span class="s3">, </span><span class="s1">*args)</span>
+        <span class="s3">return </span><span class="s1">value</span>
+
+    <span class="s3">async def </span><span class="s1">querySelectorAll(self</span><span class="s3">, </span><span class="s1">selector: str) -&gt; List[ElementHandle]:</span>
+        <span class="s2">&quot;&quot;&quot;Get all elements which matches `selector`. 
+ 
+        Details see :meth:`pyppeteer.page.Page.querySelectorAll`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">document = </span><span class="s3">await </span><span class="s1">self._document()</span>
+        <span class="s1">value = </span><span class="s3">await </span><span class="s1">document.querySelectorAll(selector)</span>
+        <span class="s3">return </span><span class="s1">value</span>
+
+    <span class="s0">#: Alias to :meth:`querySelector`</span>
+    <span class="s1">J = querySelector</span>
+    <span class="s0">#: Alias to :meth:`xpath`</span>
+    <span class="s1">Jx = xpath</span>
+    <span class="s0">#: Alias to :meth:`querySelectorEval`</span>
+    <span class="s1">Jeval = querySelectorEval</span>
+    <span class="s0">#: Alias to :meth:`querySelectorAll`</span>
+    <span class="s1">JJ = querySelectorAll</span>
+    <span class="s0">#: Alias to :meth:`querySelectorAllEval`</span>
+    <span class="s1">JJeval = querySelectorAllEval</span>
+
+    <span class="s3">async def </span><span class="s1">content(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get the whole HTML contents of the page.&quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self.evaluate(</span><span class="s4">''' 
+() =&gt; { 
+  let retVal = ''; 
+  if (document.doctype) 
+    retVal = new XMLSerializer().serializeToString(document.doctype); 
+  if (document.documentElement) 
+    retVal += document.documentElement.outerHTML; 
+  return retVal; 
+} 
+        '''</span><span class="s1">.strip())</span>
+
+    <span class="s3">async def </span><span class="s1">setContent(self</span><span class="s3">, </span><span class="s1">html: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Set content to this page.&quot;&quot;&quot;</span>
+        <span class="s1">func = </span><span class="s4">''' 
+function(html) { 
+  document.open(); 
+  document.write(html); 
+  document.close(); 
+} 
+'''</span>
+        <span class="s3">await </span><span class="s1">self.evaluate(func</span><span class="s3">, </span><span class="s1">html)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">name(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get frame name.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self.__dict__.get(</span><span class="s4">'_name'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">url(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get url of the frame.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._url</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">parentFrame(self) -&gt; Optional[</span><span class="s4">'Frame'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Get parent frame. 
+ 
+        If this frame is main frame or detached frame, return ``None``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._parentFrame</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">childFrames(self) -&gt; List[</span><span class="s4">'Frame'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Get child frames.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">list(self._childFrames)</span>
+
+    <span class="s3">def </span><span class="s1">isDetached(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Return ``True`` if this frame is detached. 
+ 
+        Otherwise return ``False``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._detached</span>
+
+    <span class="s3">async def </span><span class="s1">injectFile(self</span><span class="s3">, </span><span class="s1">filePath: str) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;[Deprecated] Inject file to the frame.&quot;&quot;&quot;</span>
+        <span class="s1">logger.warning(</span><span class="s4">'`injectFile` method is deprecated.'</span>
+                       <span class="s4">' Use `addScriptTag` method instead.'</span><span class="s1">)</span>
+        <span class="s3">with </span><span class="s1">open(filePath) </span><span class="s3">as </span><span class="s1">f:</span>
+            <span class="s1">contents = f.read()</span>
+        <span class="s1">contents += </span><span class="s4">'/* # sourceURL= {} */'</span><span class="s1">.format(filePath.replace(</span><span class="s4">'</span><span class="s3">\n</span><span class="s4">'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">))</span>
+        <span class="s3">return await </span><span class="s1">self.evaluate(contents)</span>
+
+    <span class="s3">async def </span><span class="s1">addScriptTag(self</span><span class="s3">, </span><span class="s1">options: Dict) -&gt; ElementHandle:  </span><span class="s0"># noqa: C901</span>
+        <span class="s2">&quot;&quot;&quot;Add script tag to this frame. 
+ 
+        Details see :meth:`pyppeteer.page.Page.addScriptTag`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">context = </span><span class="s3">await </span><span class="s1">self.executionContext()</span>
+        <span class="s3">if </span><span class="s1">context </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'ExecutionContext is None.'</span><span class="s1">)</span>
+
+        <span class="s1">addScriptUrl = </span><span class="s4">''' 
+        async function addScriptUrl(url, type) { 
+            const script = document.createElement('script'); 
+            script.src = url; 
+            if (type) 
+                script.type = type; 
+            const promise = new Promise((res, rej) =&gt; { 
+                script.onload = res; 
+                script.onerror = rej; 
+            }); 
+            document.head.appendChild(script); 
+            await promise; 
+            return script; 
+        }'''</span>
+
+        <span class="s1">addScriptContent = </span><span class="s4">''' 
+        function addScriptContent(content, type = 'text/javascript') { 
+            const script = document.createElement('script'); 
+            script.type = type; 
+            script.text = content; 
+            let error = null; 
+            script.onerror = e =&gt; error = e; 
+            document.head.appendChild(script); 
+            if (error) 
+                throw error; 
+            return script; 
+        }'''</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(options.get(</span><span class="s4">'url'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s1">url = options[</span><span class="s4">'url'</span><span class="s1">]</span>
+            <span class="s1">args = [addScriptUrl</span><span class="s3">, </span><span class="s1">url]</span>
+            <span class="s3">if </span><span class="s4">'type' </span><span class="s3">in </span><span class="s1">options:</span>
+                <span class="s1">args.append(options[</span><span class="s4">'type'</span><span class="s1">])</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s3">return </span><span class="s1">(</span><span class="s3">await </span><span class="s1">context.evaluateHandle(*args)  </span><span class="s0"># type: ignore</span>
+                        <span class="s1">).asElement()</span>
+            <span class="s3">except </span><span class="s1">ElementHandleError </span><span class="s3">as </span><span class="s1">e:</span>
+                <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">f'Loading script from </span><span class="s3">{</span><span class="s1">url</span><span class="s3">} </span><span class="s4">failed'</span><span class="s1">) </span><span class="s3">from </span><span class="s1">e</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(options.get(</span><span class="s4">'path'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s3">with </span><span class="s1">open(options[</span><span class="s4">'path'</span><span class="s1">]) </span><span class="s3">as </span><span class="s1">f:</span>
+                <span class="s1">contents = f.read()</span>
+            <span class="s1">contents = contents + </span><span class="s4">'//# sourceURL={}'</span><span class="s1">.format(</span>
+                <span class="s1">options[</span><span class="s4">'path'</span><span class="s1">].replace(</span><span class="s4">'</span><span class="s3">\n</span><span class="s4">'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">))</span>
+            <span class="s1">args = [addScriptContent</span><span class="s3">, </span><span class="s1">contents]</span>
+            <span class="s3">if </span><span class="s4">'type' </span><span class="s3">in </span><span class="s1">options:</span>
+                <span class="s1">args.append(options[</span><span class="s4">'type'</span><span class="s1">])</span>
+            <span class="s3">return </span><span class="s1">(</span><span class="s3">await </span><span class="s1">context.evaluateHandle(*args)  </span><span class="s0"># type: ignore</span>
+                    <span class="s1">).asElement()</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(options.get(</span><span class="s4">'content'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s1">args = [addScriptContent</span><span class="s3">, </span><span class="s1">options[</span><span class="s4">'content'</span><span class="s1">]]</span>
+            <span class="s3">if </span><span class="s4">'type' </span><span class="s3">in </span><span class="s1">options:</span>
+                <span class="s1">args.append(options[</span><span class="s4">'type'</span><span class="s1">])</span>
+            <span class="s3">return </span><span class="s1">(</span><span class="s3">await </span><span class="s1">context.evaluateHandle(*args)  </span><span class="s0"># type: ignore</span>
+                    <span class="s1">).asElement()</span>
+
+        <span class="s3">raise </span><span class="s1">ValueError(</span>
+            <span class="s4">'Provide an object with a `url`, `path` or `content` property'</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">addStyleTag(self</span><span class="s3">, </span><span class="s1">options: Dict) -&gt; ElementHandle:</span>
+        <span class="s2">&quot;&quot;&quot;Add style tag to this frame. 
+ 
+        Details see :meth:`pyppeteer.page.Page.addStyleTag`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">context = </span><span class="s3">await </span><span class="s1">self.executionContext()</span>
+        <span class="s3">if </span><span class="s1">context </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'ExecutionContext is None.'</span><span class="s1">)</span>
+
+        <span class="s1">addStyleUrl = </span><span class="s4">''' 
+        async function (url) { 
+            const link = document.createElement('link'); 
+            link.rel = 'stylesheet'; 
+            link.href = url; 
+            const promise = new Promise((res, rej) =&gt; { 
+                link.onload = res; 
+                link.onerror = rej; 
+            }); 
+            document.head.appendChild(link); 
+            await promise; 
+            return link; 
+        }'''</span>
+
+        <span class="s1">addStyleContent = </span><span class="s4">''' 
+        async function (content) { 
+            const style = document.createElement('style'); 
+            style.type = 'text/css'; 
+            style.appendChild(document.createTextNode(content)); 
+            const promise = new Promise((res, rej) =&gt; { 
+                style.onload = res; 
+                style.onerror = rej; 
+            }); 
+            document.head.appendChild(style); 
+            await promise; 
+            return style; 
+        }'''</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(options.get(</span><span class="s4">'url'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s1">url = options[</span><span class="s4">'url'</span><span class="s1">]</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s3">return </span><span class="s1">(</span><span class="s3">await </span><span class="s1">context.evaluateHandle(  </span><span class="s0"># type: ignore</span>
+                    <span class="s1">addStyleUrl</span><span class="s3">, </span><span class="s1">url)).asElement()</span>
+            <span class="s3">except </span><span class="s1">ElementHandleError </span><span class="s3">as </span><span class="s1">e:</span>
+                <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">f'Loading style from </span><span class="s3">{</span><span class="s1">url</span><span class="s3">} </span><span class="s4">failed'</span><span class="s1">) </span><span class="s3">from </span><span class="s1">e</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(options.get(</span><span class="s4">'path'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s3">with </span><span class="s1">open(options[</span><span class="s4">'path'</span><span class="s1">]) </span><span class="s3">as </span><span class="s1">f:</span>
+                <span class="s1">contents = f.read()</span>
+            <span class="s1">contents = contents + </span><span class="s4">'/*# sourceURL={}*/'</span><span class="s1">.format(</span>
+                <span class="s1">options[</span><span class="s4">'path'</span><span class="s1">].replace(</span><span class="s4">'</span><span class="s3">\n</span><span class="s4">'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">))</span>
+            <span class="s3">return </span><span class="s1">(</span><span class="s3">await </span><span class="s1">context.evaluateHandle(  </span><span class="s0"># type: ignore</span>
+                <span class="s1">addStyleContent</span><span class="s3">, </span><span class="s1">contents)).asElement()</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(options.get(</span><span class="s4">'content'</span><span class="s1">)</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s3">return </span><span class="s1">(</span><span class="s3">await </span><span class="s1">context.evaluateHandle(  </span><span class="s0"># type: ignore</span>
+                <span class="s1">addStyleContent</span><span class="s3">, </span><span class="s1">options[</span><span class="s4">'content'</span><span class="s1">])).asElement()</span>
+
+        <span class="s3">raise </span><span class="s1">ValueError(</span>
+            <span class="s4">'Provide an object with a `url`, `path` or `content` property'</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">click(self</span><span class="s3">, </span><span class="s1">selector: str</span><span class="s3">, </span><span class="s1">options: dict = </span><span class="s3">None, </span><span class="s1">**kwargs: Any</span>
+                    <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Click element which matches ``selector``. 
+ 
+        Details see :meth:`pyppeteer.page.Page.click`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s1">handle = </span><span class="s3">await </span><span class="s1">self.J(selector)</span>
+        <span class="s3">if not </span><span class="s1">handle:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'No node found for selector: ' </span><span class="s1">+ selector)</span>
+        <span class="s3">await </span><span class="s1">handle.click(options)</span>
+        <span class="s3">await </span><span class="s1">handle.dispose()</span>
+
+    <span class="s3">async def </span><span class="s1">focus(self</span><span class="s3">, </span><span class="s1">selector: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Focus element which matches ``selector``. 
+ 
+        Details see :meth:`pyppeteer.page.Page.focus`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">handle = </span><span class="s3">await </span><span class="s1">self.J(selector)</span>
+        <span class="s3">if not </span><span class="s1">handle:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'No node found for selector: ' </span><span class="s1">+ selector)</span>
+        <span class="s3">await </span><span class="s1">self.evaluate(</span><span class="s4">'element =&gt; element.focus()'</span><span class="s3">, </span><span class="s1">handle)</span>
+        <span class="s3">await </span><span class="s1">handle.dispose()</span>
+
+    <span class="s3">async def </span><span class="s1">hover(self</span><span class="s3">, </span><span class="s1">selector: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Mouse hover the element which matches ``selector``. 
+ 
+        Details see :meth:`pyppeteer.page.Page.hover`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">handle = </span><span class="s3">await </span><span class="s1">self.J(selector)</span>
+        <span class="s3">if not </span><span class="s1">handle:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'No node found for selector: ' </span><span class="s1">+ selector)</span>
+        <span class="s3">await </span><span class="s1">handle.hover()</span>
+        <span class="s3">await </span><span class="s1">handle.dispose()</span>
+
+    <span class="s3">async def </span><span class="s1">select(self</span><span class="s3">, </span><span class="s1">selector: str</span><span class="s3">, </span><span class="s1">*values: str) -&gt; List[str]:</span>
+        <span class="s2">&quot;&quot;&quot;Select options and return selected values. 
+ 
+        Details see :meth:`pyppeteer.page.Page.select`. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">value </span><span class="s3">in </span><span class="s1">values:</span>
+            <span class="s3">if not </span><span class="s1">isinstance(value</span><span class="s3">, </span><span class="s1">str):</span>
+                <span class="s3">raise </span><span class="s1">TypeError(</span>
+                    <span class="s4">'Values must be string. '</span>
+                    <span class="s4">f'Found </span><span class="s3">{</span><span class="s1">value</span><span class="s3">} </span><span class="s4">of type </span><span class="s3">{</span><span class="s1">type(value)</span><span class="s3">}</span><span class="s4">'</span>
+                <span class="s1">)</span>
+        <span class="s3">return await </span><span class="s1">self.querySelectorEval(  </span><span class="s0"># type: ignore</span>
+            <span class="s1">selector</span><span class="s3">, </span><span class="s4">''' 
+(element, values) =&gt; { 
+    if (element.nodeName.toLowerCase() !== 'select') 
+        throw new Error('Element is not a &lt;select&gt; element.'); 
+ 
+    const options = Array.from(element.options); 
+    element.value = undefined; 
+    for (const option of options) { 
+        option.selected = values.includes(option.value); 
+        if (option.selected &amp;&amp; !element.multiple) 
+            break; 
+    } 
+ 
+    element.dispatchEvent(new Event('input', { 'bubbles': true })); 
+    element.dispatchEvent(new Event('change', { 'bubbles': true })); 
+    return options.filter(option =&gt; option.selected).map(options =&gt; options.value) 
+} 
+        '''</span><span class="s3">, </span><span class="s1">values)  </span><span class="s0"># noqa: E501</span>
+
+    <span class="s3">async def </span><span class="s1">tap(self</span><span class="s3">, </span><span class="s1">selector: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Tap the element which matches the ``selector``. 
+ 
+        Details see :meth:`pyppeteer.page.Page.tap`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">handle = </span><span class="s3">await </span><span class="s1">self.J(selector)</span>
+        <span class="s3">if not </span><span class="s1">handle:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'No node found for selector: ' </span><span class="s1">+ selector)</span>
+        <span class="s3">await </span><span class="s1">handle.tap()</span>
+        <span class="s3">await </span><span class="s1">handle.dispose()</span>
+
+    <span class="s3">async def </span><span class="s1">type(self</span><span class="s3">, </span><span class="s1">selector: str</span><span class="s3">, </span><span class="s1">text: str</span><span class="s3">, </span><span class="s1">options: dict = </span><span class="s3">None,</span>
+                   <span class="s1">**kwargs: Any) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Type ``text`` on the element which matches ``selector``. 
+ 
+        Details see :meth:`pyppeteer.page.Page.type`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s1">handle = </span><span class="s3">await </span><span class="s1">self.querySelector(selector)</span>
+        <span class="s3">if </span><span class="s1">handle </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'Cannot find {} on this page'</span><span class="s1">.format(selector))</span>
+        <span class="s3">await </span><span class="s1">handle.type(text</span><span class="s3">, </span><span class="s1">options)</span>
+        <span class="s3">await </span><span class="s1">handle.dispose()</span>
+
+    <span class="s3">def </span><span class="s1">waitFor(self</span><span class="s3">, </span><span class="s1">selectorOrFunctionOrTimeout: Union[str</span><span class="s3">, </span><span class="s1">int</span><span class="s3">, </span><span class="s1">float]</span><span class="s3">,</span>
+                <span class="s1">options: dict = </span><span class="s3">None, </span><span class="s1">*args: Any</span><span class="s3">, </span><span class="s1">**kwargs: Any</span>
+                <span class="s1">) -&gt; Union[Awaitable</span><span class="s3">, </span><span class="s4">'WaitTask'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Wait until `selectorOrFunctionOrTimeout`. 
+ 
+        Details see :meth:`pyppeteer.page.Page.waitFor`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">if </span><span class="s1">isinstance(selectorOrFunctionOrTimeout</span><span class="s3">, </span><span class="s1">(int</span><span class="s3">, </span><span class="s1">float)):</span>
+            <span class="s1">fut: Awaitable[</span><span class="s3">None</span><span class="s1">] = self._client._loop.create_task(</span>
+                <span class="s1">asyncio.sleep(selectorOrFunctionOrTimeout / </span><span class="s5">1000</span><span class="s1">))</span>
+            <span class="s3">return </span><span class="s1">fut</span>
+        <span class="s3">if not </span><span class="s1">isinstance(selectorOrFunctionOrTimeout</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s1">fut = self._client._loop.create_future()</span>
+            <span class="s1">fut.set_exception(TypeError(</span>
+                <span class="s4">'Unsupported target type: ' </span><span class="s1">+</span>
+                <span class="s1">str(type(selectorOrFunctionOrTimeout))</span>
+            <span class="s1">))</span>
+            <span class="s3">return </span><span class="s1">fut</span>
+
+        <span class="s3">if </span><span class="s1">args </span><span class="s3">or </span><span class="s1">helper.is_jsfunc(selectorOrFunctionOrTimeout):</span>
+            <span class="s3">return </span><span class="s1">self.waitForFunction(</span>
+                <span class="s1">selectorOrFunctionOrTimeout</span><span class="s3">, </span><span class="s1">options</span><span class="s3">, </span><span class="s1">*args)</span>
+        <span class="s3">if </span><span class="s1">selectorOrFunctionOrTimeout.startswith(</span><span class="s4">'//'</span><span class="s1">):</span>
+            <span class="s3">return </span><span class="s1">self.waitForXPath(selectorOrFunctionOrTimeout</span><span class="s3">, </span><span class="s1">options)</span>
+        <span class="s3">return </span><span class="s1">self.waitForSelector(selectorOrFunctionOrTimeout</span><span class="s3">, </span><span class="s1">options)</span>
+
+    <span class="s3">def </span><span class="s1">waitForSelector(self</span><span class="s3">, </span><span class="s1">selector: str</span><span class="s3">, </span><span class="s1">options: dict = </span><span class="s3">None,</span>
+                        <span class="s1">**kwargs: Any) -&gt; </span><span class="s4">'WaitTask'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Wait until element which matches ``selector`` appears on page. 
+ 
+        Details see :meth:`pyppeteer.page.Page.waitForSelector`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">return </span><span class="s1">self._waitForSelectorOrXPath(selector</span><span class="s3">, False, </span><span class="s1">options)</span>
+
+    <span class="s3">def </span><span class="s1">waitForXPath(self</span><span class="s3">, </span><span class="s1">xpath: str</span><span class="s3">, </span><span class="s1">options: dict = </span><span class="s3">None,</span>
+                     <span class="s1">**kwargs: Any) -&gt; </span><span class="s4">'WaitTask'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Wait until element which matches ``xpath`` appears on page. 
+ 
+        Details see :meth:`pyppeteer.page.Page.waitForXPath`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">return </span><span class="s1">self._waitForSelectorOrXPath(xpath</span><span class="s3">, True, </span><span class="s1">options)</span>
+
+    <span class="s3">def </span><span class="s1">waitForFunction(self</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">, </span><span class="s1">options: dict = </span><span class="s3">None,</span>
+                        <span class="s1">*args: Any</span><span class="s3">, </span><span class="s1">**kwargs: Any) -&gt; </span><span class="s4">'WaitTask'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Wait until the function completes. 
+ 
+        Details see :meth:`pyppeteer.page.Page.waitForFunction`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s1">timeout = options.get(</span><span class="s4">'timeout'</span><span class="s3">,  </span><span class="s5">30000</span><span class="s1">)  </span><span class="s0"># msec</span>
+        <span class="s1">polling = options.get(</span><span class="s4">'polling'</span><span class="s3">, </span><span class="s4">'raf'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">WaitTask(self</span><span class="s3">, </span><span class="s1">pageFunction</span><span class="s3">, </span><span class="s4">'function'</span><span class="s3">, </span><span class="s1">polling</span><span class="s3">, </span><span class="s1">timeout</span><span class="s3">,</span>
+                        <span class="s1">self._client._loop</span><span class="s3">, </span><span class="s1">*args)</span>
+
+    <span class="s3">def </span><span class="s1">_waitForSelectorOrXPath(self</span><span class="s3">, </span><span class="s1">selectorOrXPath: str</span><span class="s3">, </span><span class="s1">isXPath: bool</span><span class="s3">,</span>
+                                <span class="s1">options: dict = </span><span class="s3">None, </span><span class="s1">**kwargs: Any</span>
+                                <span class="s1">) -&gt; </span><span class="s4">'WaitTask'</span><span class="s1">:</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s1">timeout = options.get(</span><span class="s4">'timeout'</span><span class="s3">, </span><span class="s5">30000</span><span class="s1">)</span>
+        <span class="s1">waitForVisible = bool(options.get(</span><span class="s4">'visible'</span><span class="s1">))</span>
+        <span class="s1">waitForHidden = bool(options.get(</span><span class="s4">'hidden'</span><span class="s1">))</span>
+        <span class="s1">polling = </span><span class="s4">'raf' </span><span class="s3">if </span><span class="s1">waitForHidden </span><span class="s3">or </span><span class="s1">waitForVisible </span><span class="s3">else </span><span class="s4">'mutation'</span>
+        <span class="s1">title = </span><span class="s4">'{} &quot;{}&quot;{}'</span><span class="s1">.format(</span>
+            <span class="s4">'XPath' </span><span class="s3">if </span><span class="s1">isXPath </span><span class="s3">else </span><span class="s4">'selector'</span><span class="s3">,</span>
+            <span class="s1">selectorOrXPath</span><span class="s3">,</span>
+            <span class="s4">' to be hidden' </span><span class="s3">if </span><span class="s1">waitForHidden </span><span class="s3">else </span><span class="s4">''</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+        <span class="s1">predicate = </span><span class="s4">''' 
+(selectorOrXPath, isXPath, waitForVisible, waitForHidden) =&gt; { 
+    const node = isXPath 
+        ? document.evaluate(selectorOrXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue 
+        : document.querySelector(selectorOrXPath); 
+    if (!node) 
+        return waitForHidden; 
+    if (!waitForVisible &amp;&amp; !waitForHidden) 
+        return node; 
+    const element = /** @type {Element} */ (node.nodeType === Node.TEXT_NODE ? node.parentElement : node); 
+ 
+    const style = window.getComputedStyle(element); 
+    const isVisible = style &amp;&amp; style.visibility !== 'hidden' &amp;&amp; hasVisibleBoundingBox(); 
+    const success = (waitForVisible === isVisible || waitForHidden === !isVisible) 
+    return success ? node : null 
+ 
+    function hasVisibleBoundingBox() { 
+        const rect = element.getBoundingClientRect(); 
+        return !!(rect.top || rect.bottom || rect.width || rect.height); 
+    } 
+} 
+        '''  </span><span class="s0"># noqa: E501</span>
+
+        <span class="s3">return </span><span class="s1">WaitTask(</span>
+            <span class="s1">self</span><span class="s3">,</span>
+            <span class="s1">predicate</span><span class="s3">,</span>
+            <span class="s1">title</span><span class="s3">,</span>
+            <span class="s1">polling</span><span class="s3">,</span>
+            <span class="s1">timeout</span><span class="s3">,</span>
+            <span class="s1">self._client._loop</span><span class="s3">,</span>
+            <span class="s1">selectorOrXPath</span><span class="s3">,</span>
+            <span class="s1">isXPath</span><span class="s3">,</span>
+            <span class="s1">waitForVisible</span><span class="s3">,</span>
+            <span class="s1">waitForHidden</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">title(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get title of the frame.&quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self.evaluate(</span><span class="s4">'() =&gt; document.title'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_navigated(self</span><span class="s3">, </span><span class="s1">framePayload: dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._name = framePayload.get(</span><span class="s4">'name'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s1">self._navigationURL = framePayload.get(</span><span class="s4">'url'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s1">self._url = framePayload.get(</span><span class="s4">'url'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_navigatedWithinDocument(self</span><span class="s3">, </span><span class="s1">url: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._url = url</span>
+
+    <span class="s3">def </span><span class="s1">_onLifecycleEvent(self</span><span class="s3">, </span><span class="s1">loaderId: str</span><span class="s3">, </span><span class="s1">name: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">name == </span><span class="s4">'init'</span><span class="s1">:</span>
+            <span class="s1">self._loaderId = loaderId</span>
+            <span class="s1">self._lifecycleEvents.clear()</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._lifecycleEvents.add(name)</span>
+
+    <span class="s3">def </span><span class="s1">_onLoadingStopped(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._lifecycleEvents.add(</span><span class="s4">'DOMContentLoaded'</span><span class="s1">)</span>
+        <span class="s1">self._lifecycleEvents.add(</span><span class="s4">'load'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_detach(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">for </span><span class="s1">waitTask </span><span class="s3">in </span><span class="s1">self._waitTasks:</span>
+            <span class="s1">waitTask.terminate(</span>
+                <span class="s1">PageError(</span><span class="s4">'waitForFunction failed: frame got detached.'</span><span class="s1">))</span>
+        <span class="s1">self._detached = </span><span class="s3">True</span>
+        <span class="s3">if </span><span class="s1">self._parentFrame:</span>
+            <span class="s1">self._parentFrame._childFrames.remove(self)</span>
+        <span class="s1">self._parentFrame = </span><span class="s3">None</span>
+
+
+<span class="s3">class </span><span class="s1">WaitTask(object):</span>
+    <span class="s2">&quot;&quot;&quot;WaitTask class. 
+ 
+    Instance of this class is awaitable. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">frame: Frame</span><span class="s3">, </span><span class="s1">predicateBody: str</span><span class="s3">,  </span><span class="s0"># noqa: C901</span>
+                 <span class="s1">title: str</span><span class="s3">, </span><span class="s1">polling: Union[str</span><span class="s3">, </span><span class="s1">int]</span><span class="s3">, </span><span class="s1">timeout: float</span><span class="s3">,</span>
+                 <span class="s1">loop: asyncio.AbstractEventLoop</span><span class="s3">, </span><span class="s1">*args: Any) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">isinstance(polling</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s3">if </span><span class="s1">polling </span><span class="s3">not in </span><span class="s1">[</span><span class="s4">'raf'</span><span class="s3">, </span><span class="s4">'mutation'</span><span class="s1">]:</span>
+                <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s4">f'Unknown polling: </span><span class="s3">{</span><span class="s1">polling</span><span class="s3">}</span><span class="s4">'</span><span class="s1">)</span>
+        <span class="s3">elif </span><span class="s1">isinstance(polling</span><span class="s3">, </span><span class="s1">(int</span><span class="s3">, </span><span class="s1">float)):</span>
+            <span class="s3">if </span><span class="s1">polling &lt;= </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError(</span>
+                    <span class="s4">f'Cannot poll with non-positive interval: </span><span class="s3">{</span><span class="s1">polling</span><span class="s3">}</span><span class="s4">'</span>
+                <span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s4">f'Unknown polling option: </span><span class="s3">{</span><span class="s1">polling</span><span class="s3">}</span><span class="s4">'</span><span class="s1">)</span>
+
+        <span class="s1">self._frame = frame</span>
+        <span class="s1">self._polling = polling</span>
+        <span class="s1">self._timeout = timeout</span>
+        <span class="s1">self._loop = loop</span>
+        <span class="s3">if </span><span class="s1">args </span><span class="s3">or </span><span class="s1">helper.is_jsfunc(predicateBody):</span>
+            <span class="s1">self._predicateBody = </span><span class="s4">f'return (</span><span class="s3">{</span><span class="s1">predicateBody</span><span class="s3">}</span><span class="s4">)(...args)'</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._predicateBody = </span><span class="s4">f'return </span><span class="s3">{</span><span class="s1">predicateBody</span><span class="s3">}</span><span class="s4">'</span>
+        <span class="s1">self._args = args</span>
+        <span class="s1">self._runCount = </span><span class="s5">0</span>
+        <span class="s1">self._terminated = </span><span class="s3">False</span>
+        <span class="s1">self._timeoutError = </span><span class="s3">False</span>
+        <span class="s1">frame._waitTasks.add(self)</span>
+
+        <span class="s1">self.promise = self._loop.create_future()</span>
+
+        <span class="s3">async def </span><span class="s1">timer(timeout: Union[int</span><span class="s3">, </span><span class="s1">float]) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+            <span class="s3">await </span><span class="s1">asyncio.sleep(timeout / </span><span class="s5">1000</span><span class="s1">)</span>
+            <span class="s1">self._timeoutError = </span><span class="s3">True</span>
+            <span class="s1">self.terminate(TimeoutError(</span>
+                <span class="s4">f'Waiting for </span><span class="s3">{</span><span class="s1">title</span><span class="s3">} </span><span class="s4">failed: timeout </span><span class="s3">{</span><span class="s1">timeout</span><span class="s3">}</span><span class="s4">ms exceeds.'</span>
+            <span class="s1">))</span>
+
+        <span class="s3">if </span><span class="s1">timeout:</span>
+            <span class="s1">self._timeoutTimer = self._loop.create_task(timer(self._timeout))</span>
+        <span class="s1">self._runningTask = self._loop.create_task(self.rerun())</span>
+
+    <span class="s3">def </span><span class="s1">__await__(self) -&gt; Generator:</span>
+        <span class="s2">&quot;&quot;&quot;Make this class **awaitable**.&quot;&quot;&quot;</span>
+        <span class="s1">result = </span><span class="s3">yield from </span><span class="s1">self.promise</span>
+        <span class="s3">if </span><span class="s1">isinstance(result</span><span class="s3">, </span><span class="s1">Exception):</span>
+            <span class="s3">raise </span><span class="s1">result</span>
+        <span class="s3">return </span><span class="s1">result</span>
+
+    <span class="s3">def </span><span class="s1">terminate(self</span><span class="s3">, </span><span class="s1">error: Exception) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Terminate this task.&quot;&quot;&quot;</span>
+        <span class="s1">self._terminated = </span><span class="s3">True</span>
+        <span class="s3">if not </span><span class="s1">self.promise.done():</span>
+            <span class="s1">self.promise.set_result(error)</span>
+        <span class="s1">self._cleanup()</span>
+
+    <span class="s3">async def </span><span class="s1">rerun(self) -&gt; </span><span class="s3">None</span><span class="s1">:  </span><span class="s0"># noqa: C901</span>
+        <span class="s2">&quot;&quot;&quot;Start polling.&quot;&quot;&quot;</span>
+        <span class="s1">runCount = self._runCount = self._runCount + </span><span class="s5">1</span>
+        <span class="s1">success: Optional[JSHandle] = </span><span class="s3">None</span>
+        <span class="s1">error = </span><span class="s3">None</span>
+
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">context = </span><span class="s3">await </span><span class="s1">self._frame.executionContext()</span>
+            <span class="s3">if </span><span class="s1">context </span><span class="s3">is None</span><span class="s1">:</span>
+                <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'No execution context.'</span><span class="s1">)</span>
+            <span class="s1">success = </span><span class="s3">await </span><span class="s1">context.evaluateHandle(</span>
+                <span class="s1">waitForPredicatePageFunction</span><span class="s3">,</span>
+                <span class="s1">self._predicateBody</span><span class="s3">,</span>
+                <span class="s1">self._polling</span><span class="s3">,</span>
+                <span class="s1">self._timeout</span><span class="s3">,</span>
+                <span class="s1">*self._args</span><span class="s3">,</span>
+            <span class="s1">)</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">error = e</span>
+
+        <span class="s3">if </span><span class="s1">self.promise.done():</span>
+            <span class="s3">return</span>
+
+        <span class="s3">if </span><span class="s1">self._terminated </span><span class="s3">or </span><span class="s1">runCount != self._runCount:</span>
+            <span class="s3">if </span><span class="s1">success:</span>
+                <span class="s3">await </span><span class="s1">success.dispose()</span>
+            <span class="s3">return</span>
+
+        <span class="s0"># Add try/except referring to puppeteer.</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">if not </span><span class="s1">error </span><span class="s3">and </span><span class="s1">success </span><span class="s3">and </span><span class="s1">(</span>
+                    <span class="s3">await </span><span class="s1">self._frame.evaluate(</span><span class="s4">'s =&gt; !s'</span><span class="s3">, </span><span class="s1">success)):</span>
+                <span class="s3">await </span><span class="s1">success.dispose()</span>
+                <span class="s3">return</span>
+        <span class="s3">except </span><span class="s1">NetworkError:</span>
+            <span class="s3">if </span><span class="s1">success </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s3">await </span><span class="s1">success.dispose()</span>
+            <span class="s3">return</span>
+
+        <span class="s0"># page is navigated and context is destroyed.</span>
+        <span class="s0"># Try again in the new execution context.</span>
+        <span class="s3">if </span><span class="s1">(isinstance(error</span><span class="s3">, </span><span class="s1">NetworkError) </span><span class="s3">and</span>
+                <span class="s4">'Execution context was destroyed' </span><span class="s3">in </span><span class="s1">error.args[</span><span class="s5">0</span><span class="s1">]):</span>
+            <span class="s3">return</span>
+
+        <span class="s0"># Try again in the new execution context.</span>
+        <span class="s3">if </span><span class="s1">(isinstance(error</span><span class="s3">, </span><span class="s1">NetworkError) </span><span class="s3">and</span>
+                <span class="s4">'Cannot find context with specified id' </span><span class="s3">in </span><span class="s1">error.args[</span><span class="s5">0</span><span class="s1">]):</span>
+            <span class="s3">return</span>
+
+        <span class="s3">if </span><span class="s1">error:</span>
+            <span class="s1">self.promise.set_exception(error)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.promise.set_result(success)</span>
+
+        <span class="s1">self._cleanup()</span>
+
+    <span class="s3">def </span><span class="s1">_cleanup(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">self._timeout </span><span class="s3">and not </span><span class="s1">self._timeoutError:</span>
+            <span class="s1">self._timeoutTimer.cancel()</span>
+        <span class="s1">self._frame._waitTasks.remove(self)</span>
+
+
+<span class="s1">waitForPredicatePageFunction = </span><span class="s4">&quot;&quot;&quot; 
+async function waitForPredicatePageFunction(predicateBody, polling, timeout, ...args) { 
+  const predicate = new Function('...args', predicateBody); 
+  let timedOut = false; 
+  if (timeout) 
+    setTimeout(() =&gt; timedOut = true, timeout); 
+  if (polling === 'raf') 
+    return await pollRaf(); 
+  if (polling === 'mutation') 
+    return await pollMutation(); 
+  if (typeof polling === 'number') 
+    return await pollInterval(polling); 
+ 
+  /** 
+   * @return {!Promise&lt;*&gt;} 
+   */ 
+  function pollMutation() { 
+    const success = predicate.apply(null, args); 
+    if (success) 
+      return Promise.resolve(success); 
+ 
+    let fulfill; 
+    const result = new Promise(x =&gt; fulfill = x); 
+    const observer = new MutationObserver(mutations =&gt; { 
+      if (timedOut) { 
+        observer.disconnect(); 
+        fulfill(); 
+      } 
+      const success = predicate.apply(null, args); 
+      if (success) { 
+        observer.disconnect(); 
+        fulfill(success); 
+      } 
+    }); 
+    observer.observe(document, { 
+      childList: true, 
+      subtree: true, 
+      attributes: true 
+    }); 
+    return result; 
+  } 
+ 
+  /** 
+   * @return {!Promise&lt;*&gt;} 
+   */ 
+  function pollRaf() { 
+    let fulfill; 
+    const result = new Promise(x =&gt; fulfill = x); 
+    onRaf(); 
+    return result; 
+ 
+    function onRaf() { 
+      if (timedOut) { 
+        fulfill(); 
+        return; 
+      } 
+      const success = predicate.apply(null, args); 
+      if (success) 
+        fulfill(success); 
+      else 
+        requestAnimationFrame(onRaf); 
+    } 
+  } 
+ 
+  /** 
+   * @param {number} pollInterval 
+   * @return {!Promise&lt;*&gt;} 
+   */ 
+  function pollInterval(pollInterval) { 
+    let fulfill; 
+    const result = new Promise(x =&gt; fulfill = x); 
+    onTimeout(); 
+    return result; 
+ 
+    function onTimeout() { 
+      if (timedOut) { 
+        fulfill(); 
+        return; 
+      } 
+      const success = predicate.apply(null, args); 
+      if (success) 
+        fulfill(success); 
+      else 
+        setTimeout(onTimeout, pollInterval); 
+    } 
+  } 
+} 
+&quot;&quot;&quot;  </span><span class="s0"># noqa: E501</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,444 @@
+<html>
+<head>
+<title>matchers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+matchers.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+This module provides the step matchers functionality that matches a 
+step definition (as text) with step-functions that implement this step. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span><span class="s3">, </span><span class="s1">print_function</span><span class="s3">, </span><span class="s1">with_statement</span>
+<span class="s3">import </span><span class="s1">copy</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">import </span><span class="s1">warnings</span>
+<span class="s3">import </span><span class="s1">parse</span>
+<span class="s3">import </span><span class="s1">six</span>
+<span class="s3">from </span><span class="s1">parse_type </span><span class="s3">import </span><span class="s1">cfparse</span>
+<span class="s3">from </span><span class="s1">behave._types </span><span class="s3">import </span><span class="s1">ChainedExceptionUtil</span><span class="s3">, </span><span class="s1">ExceptionUtil</span>
+<span class="s3">from </span><span class="s1">behave.model_core </span><span class="s3">import </span><span class="s1">Argument</span><span class="s3">, </span><span class="s1">FileLocation</span><span class="s3">, </span><span class="s1">Replayable</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># SECTION: Exceptions</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">StepParseError(ValueError):</span>
+    <span class="s2">&quot;&quot;&quot;Exception class, used when step matching fails before a step is run. 
+    This is normally the case when an error occurs during the type conversion 
+    of step parameters. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">text=</span><span class="s3">None, </span><span class="s1">exc_cause=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">if not </span><span class="s1">text </span><span class="s3">and </span><span class="s1">exc_cause:</span>
+            <span class="s1">text = six.text_type(exc_cause)</span>
+        <span class="s3">if </span><span class="s1">exc_cause </span><span class="s3">and </span><span class="s1">six.PY2:</span>
+            <span class="s0"># -- NOTE: Python2 does not show chained-exception causes.</span>
+            <span class="s0">#    Therefore, provide some hint (see also: PEP-3134).</span>
+            <span class="s1">cause_text = ExceptionUtil.describe(exc_cause</span><span class="s3">,</span>
+                                                <span class="s1">use_traceback=</span><span class="s3">True,</span>
+                                                <span class="s1">prefix=</span><span class="s4">&quot;CAUSED-BY: &quot;</span><span class="s1">)</span>
+            <span class="s1">text += </span><span class="s4">u&quot;</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">+ cause_text</span>
+
+        <span class="s1">ValueError.__init__(self</span><span class="s3">, </span><span class="s1">text)</span>
+        <span class="s3">if </span><span class="s1">exc_cause:</span>
+            <span class="s0"># -- CHAINED EXCEPTION (see: PEP 3134)</span>
+            <span class="s1">ChainedExceptionUtil.set_cause(self</span><span class="s3">, </span><span class="s1">exc_cause)</span>
+
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># SECTION: Model Elements</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">Match(Replayable):</span>
+    <span class="s2">&quot;&quot;&quot;An parameter-matched *feature file* step name extracted using 
+    step decorator `parameters`_. 
+ 
+    .. attribute:: func 
+ 
+       The step function that this match will be applied to. 
+ 
+    .. attribute:: arguments 
+ 
+       A list of :class:`~behave.model_core.Argument` instances containing the 
+       matched parameters from the step name. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">type = </span><span class="s4">&quot;match&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">func</span><span class="s3">, </span><span class="s1">arguments=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(Match</span><span class="s3">, </span><span class="s1">self).__init__()</span>
+        <span class="s1">self.func = func</span>
+        <span class="s1">self.arguments = arguments</span>
+        <span class="s1">self.location = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">func:</span>
+            <span class="s1">self.location = self.make_location(func)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">if </span><span class="s1">self.func:</span>
+            <span class="s1">func_name = self.func.__name__</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">func_name = </span><span class="s4">'&lt;no function&gt;'</span>
+        <span class="s3">return </span><span class="s4">'&lt;Match %s, %s&gt;' </span><span class="s1">% (func_name</span><span class="s3">, </span><span class="s1">self.location)</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">if not </span><span class="s1">isinstance(other</span><span class="s3">, </span><span class="s1">Match):</span>
+            <span class="s3">return False</span>
+        <span class="s3">return </span><span class="s1">(self.func</span><span class="s3">, </span><span class="s1">self.location) == (other.func</span><span class="s3">, </span><span class="s1">other.location)</span>
+
+    <span class="s3">def </span><span class="s1">with_arguments(self</span><span class="s3">, </span><span class="s1">arguments):</span>
+        <span class="s1">match = copy.copy(self)</span>
+        <span class="s1">match.arguments = arguments</span>
+        <span class="s3">return </span><span class="s1">match</span>
+
+    <span class="s3">def </span><span class="s1">run(self</span><span class="s3">, </span><span class="s1">context):</span>
+        <span class="s1">args = []</span>
+        <span class="s1">kwargs = {}</span>
+        <span class="s3">for </span><span class="s1">arg </span><span class="s3">in </span><span class="s1">self.arguments:</span>
+            <span class="s3">if </span><span class="s1">arg.name </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">kwargs[arg.name] = arg.value</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">args.append(arg.value)</span>
+
+        <span class="s3">with </span><span class="s1">context.use_with_user_mode():</span>
+            <span class="s1">self.func(context</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">make_location(step_function):</span>
+        <span class="s2">&quot;&quot;&quot;Extracts the location information from the step function and 
+        builds a FileLocation object with (filename, line_number) info. 
+ 
+        :param step_function: Function whose location should be determined. 
+        :return: FileLocation object for step function. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">FileLocation.for_function(step_function)</span>
+
+
+<span class="s3">class </span><span class="s1">NoMatch(Match):</span>
+    <span class="s2">&quot;&quot;&quot;Used for an &quot;undefined step&quot; when it can not be matched with a 
+    step definition. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">Match.__init__(self</span><span class="s3">, </span><span class="s1">func=</span><span class="s3">None</span><span class="s1">)</span>
+        <span class="s1">self.func = </span><span class="s3">None</span>
+        <span class="s1">self.arguments = []</span>
+        <span class="s1">self.location = </span><span class="s3">None</span>
+
+
+<span class="s3">class </span><span class="s1">MatchWithError(Match):</span>
+    <span class="s2">&quot;&quot;&quot;Match class when error occur during step-matching 
+ 
+    REASON: 
+      * Type conversion error occured. 
+      * ... 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">func</span><span class="s3">, </span><span class="s1">error):</span>
+        <span class="s3">if not </span><span class="s1">ExceptionUtil.has_traceback(error):</span>
+            <span class="s1">ExceptionUtil.set_traceback(error)</span>
+        <span class="s1">Match.__init__(self</span><span class="s3">, </span><span class="s1">func=func)</span>
+        <span class="s1">self.stored_error = error</span>
+
+    <span class="s3">def </span><span class="s1">run(self</span><span class="s3">, </span><span class="s1">context):</span>
+        <span class="s2">&quot;&quot;&quot;Raises stored error from step matching phase (type conversion).&quot;&quot;&quot;</span>
+        <span class="s3">raise </span><span class="s1">StepParseError(exc_cause=self.stored_error)</span>
+
+
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># SECTION: Matchers</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">Matcher(object):</span>
+    <span class="s2">&quot;&quot;&quot;Pull parameters out of step names. 
+ 
+    .. attribute:: pattern 
+ 
+       The match pattern attached to the step function. 
+ 
+    .. attribute:: func 
+ 
+       The step function the pattern is being attached to. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">schema = </span><span class="s4">u&quot;@%s('%s')&quot;   </span><span class="s0"># Schema used to describe step definition (matcher)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">func</span><span class="s3">, </span><span class="s1">pattern</span><span class="s3">, </span><span class="s1">step_type=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.func = func</span>
+        <span class="s1">self.pattern = pattern</span>
+        <span class="s1">self.step_type = step_type</span>
+        <span class="s1">self._location = </span><span class="s3">None</span>
+
+    <span class="s0"># -- BACKWARD-COMPATIBILITY:</span>
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">string(self):</span>
+        <span class="s1">warnings.warn(</span><span class="s4">&quot;deprecated: Use 'pattern' instead&quot;</span><span class="s3">, </span><span class="s1">DeprecationWarning)</span>
+        <span class="s3">return </span><span class="s1">self.pattern</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">location(self):</span>
+        <span class="s3">if </span><span class="s1">self._location </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">self._location = Match.make_location(self.func)</span>
+        <span class="s3">return </span><span class="s1">self._location</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">regex_pattern(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return the used textual regex pattern.&quot;&quot;&quot;</span>
+        <span class="s0"># -- ASSUMPTION: pattern attribute provides regex-pattern</span>
+        <span class="s0"># NOTE: Method must be overridden if assumption is not met.</span>
+        <span class="s3">return </span><span class="s1">self.pattern</span>
+
+    <span class="s3">def </span><span class="s1">describe(self</span><span class="s3">, </span><span class="s1">schema=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Provide a textual description of the step function/matcher object. 
+ 
+        :param schema:  Text schema to use. 
+        :return: Textual description of this step definition (matcher). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">step_type = self.step_type </span><span class="s3">or </span><span class="s4">&quot;step&quot;</span>
+        <span class="s3">if not </span><span class="s1">schema:</span>
+            <span class="s1">schema = self.schema</span>
+        <span class="s3">return </span><span class="s1">schema % (step_type</span><span class="s3">, </span><span class="s1">self.pattern)</span>
+
+
+    <span class="s3">def </span><span class="s1">check_match(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s2">&quot;&quot;&quot;Match me against the &quot;step&quot; name supplied. 
+ 
+        Return None, if I don't match otherwise return a list of matches as 
+        :class:`~behave.model_core.Argument` instances. 
+ 
+        The return value from this function will be converted into a 
+        :class:`~behave.matchers.Match` instance by *behave*. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s3">def </span><span class="s1">match(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s0"># -- PROTECT AGAINST: Type conversion errors (with ParseMatcher).</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">result = self.check_match(step)</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:  </span><span class="s0"># pylint: disable=broad-except</span>
+            <span class="s3">return </span><span class="s1">MatchWithError(self.func</span><span class="s3">, </span><span class="s1">e)</span>
+
+        <span class="s3">if </span><span class="s1">result </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return None     </span><span class="s0"># -- NO-MATCH</span>
+        <span class="s3">return </span><span class="s1">Match(self.func</span><span class="s3">, </span><span class="s1">result)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">u&quot;&lt;%s: %r&gt;&quot; </span><span class="s1">% (self.__class__.__name__</span><span class="s3">, </span><span class="s1">self.pattern)</span>
+
+
+<span class="s3">class </span><span class="s1">ParseMatcher(Matcher):</span>
+    <span class="s2">&quot;&quot;&quot;Uses :class:`~parse.Parser` class to be able to use simpler 
+    parse expressions compared to normal regular expressions. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">custom_types = {}</span>
+    <span class="s1">parser_class = parse.Parser</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">func</span><span class="s3">, </span><span class="s1">pattern</span><span class="s3">, </span><span class="s1">step_type=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(ParseMatcher</span><span class="s3">, </span><span class="s1">self).__init__(func</span><span class="s3">, </span><span class="s1">pattern</span><span class="s3">, </span><span class="s1">step_type)</span>
+        <span class="s1">self.parser = self.parser_class(pattern</span><span class="s3">, </span><span class="s1">self.custom_types)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">regex_pattern(self):</span>
+        <span class="s0"># -- OVERWRITTEN: Pattern as regex text.</span>
+        <span class="s3">return </span><span class="s1">self.parser._expression  </span><span class="s0"># pylint: disable=protected-access</span>
+
+    <span class="s3">def </span><span class="s1">check_match(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s0"># -- FAILURE-POINT: Type conversion of parameters may fail here.</span>
+        <span class="s0">#    NOTE: Type converter should raise ValueError in case of PARSE ERRORS.</span>
+        <span class="s1">result = self.parser.parse(step)</span>
+        <span class="s3">if not </span><span class="s1">result:</span>
+            <span class="s3">return None</span>
+
+        <span class="s1">args = []</span>
+        <span class="s3">for </span><span class="s1">index</span><span class="s3">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">enumerate(result.fixed):</span>
+            <span class="s1">start</span><span class="s3">, </span><span class="s1">end = result.spans[index]</span>
+            <span class="s1">args.append(Argument(start</span><span class="s3">, </span><span class="s1">end</span><span class="s3">, </span><span class="s1">step[start:end]</span><span class="s3">, </span><span class="s1">value))</span>
+        <span class="s3">for </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">result.named.items():</span>
+            <span class="s1">start</span><span class="s3">, </span><span class="s1">end = result.spans[name]</span>
+            <span class="s1">args.append(Argument(start</span><span class="s3">, </span><span class="s1">end</span><span class="s3">, </span><span class="s1">step[start:end]</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">name))</span>
+        <span class="s1">args.sort(key=</span><span class="s3">lambda </span><span class="s1">x: x.start)</span>
+        <span class="s3">return </span><span class="s1">args</span>
+
+
+<span class="s3">class </span><span class="s1">CFParseMatcher(ParseMatcher):</span>
+    <span class="s2">&quot;&quot;&quot;Uses :class:`~parse_type.cfparse.Parser` instead of &quot;parse.Parser&quot;. 
+    Provides support for automatic generation of type variants 
+    for fields with CardinalityField part. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">parser_class = cfparse.Parser</span>
+
+
+<span class="s3">def </span><span class="s1">register_type(**kw):</span>
+    <span class="s0"># pylint: disable=anomalous-backslash-in-string</span>
+    <span class="s0"># REQUIRED-BY: code example</span>
+    <span class="s2">&quot;&quot;&quot;Registers a custom type that will be available to &quot;parse&quot; 
+    for type conversion during step matching. 
+ 
+    Converters should be supplied as ``name=callable`` arguments (or as dict). 
+ 
+    A type converter should follow :pypi:`parse` module rules. 
+    In general, a type converter is a function that converts text (as string) 
+    into a value-type (type converted value). 
+ 
+    EXAMPLE: 
+ 
+    .. code-block:: python 
+ 
+        from behave import register_type, given 
+        import parse 
+ 
+        # -- TYPE CONVERTER: For a simple, positive integer number. 
+        @parse.with_pattern(r&quot;\d+&quot;) 
+        def parse_number(text): 
+            return int(text) 
+ 
+        # -- REGISTER TYPE-CONVERTER: With behave 
+        register_type(Number=parse_number) 
+ 
+        # -- STEP DEFINITIONS: Use type converter. 
+        @given('{amount:Number} vehicles') 
+        def step_impl(context, amount): 
+            assert isinstance(amount, int) 
+    &quot;&quot;&quot;</span>
+    <span class="s1">ParseMatcher.custom_types.update(kw)</span>
+
+
+<span class="s3">class </span><span class="s1">RegexMatcher(Matcher):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">func</span><span class="s3">, </span><span class="s1">pattern</span><span class="s3">, </span><span class="s1">step_type=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">super(RegexMatcher</span><span class="s3">, </span><span class="s1">self).__init__(func</span><span class="s3">, </span><span class="s1">pattern</span><span class="s3">, </span><span class="s1">step_type)</span>
+        <span class="s1">self.regex = re.compile(self.pattern)</span>
+
+    <span class="s3">def </span><span class="s1">check_match(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s1">m = self.regex.match(step)</span>
+        <span class="s3">if not </span><span class="s1">m:</span>
+            <span class="s3">return None</span>
+
+        <span class="s1">groupindex = dict((y</span><span class="s3">, </span><span class="s1">x) </span><span class="s3">for </span><span class="s1">x</span><span class="s3">, </span><span class="s1">y </span><span class="s3">in </span><span class="s1">self.regex.groupindex.items())</span>
+        <span class="s1">args = []</span>
+        <span class="s3">for </span><span class="s1">index</span><span class="s3">, </span><span class="s1">group </span><span class="s3">in </span><span class="s1">enumerate(m.groups()):</span>
+            <span class="s1">index += </span><span class="s5">1</span>
+            <span class="s1">name = groupindex.get(index</span><span class="s3">, None</span><span class="s1">)</span>
+            <span class="s1">args.append(Argument(m.start(index)</span><span class="s3">, </span><span class="s1">m.end(index)</span><span class="s3">, </span><span class="s1">group</span><span class="s3">,</span>
+                                 <span class="s1">group</span><span class="s3">, </span><span class="s1">name))</span>
+
+        <span class="s3">return </span><span class="s1">args</span>
+
+<span class="s3">class </span><span class="s1">SimplifiedRegexMatcher(RegexMatcher):</span>
+    <span class="s2">&quot;&quot;&quot;Simplified regular expression step-matcher that automatically adds 
+    start-of-line/end-of-line matcher symbols to string: 
+ 
+    .. code-block:: python 
+ 
+        @when(u'a step passes')     # re.pattern = &quot;^a step passes$&quot; 
+        def step_impl(context): pass 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">func</span><span class="s3">, </span><span class="s1">pattern</span><span class="s3">, </span><span class="s1">step_type=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">assert not </span><span class="s1">(pattern.startswith(</span><span class="s4">&quot;^&quot;</span><span class="s1">) </span><span class="s3">or </span><span class="s1">pattern.endswith(</span><span class="s4">&quot;$&quot;</span><span class="s1">))</span><span class="s3">, </span><span class="s1">\</span>
+            <span class="s4">&quot;Regular expression should not use begin/end-markers: &quot;</span><span class="s1">+ pattern</span>
+        <span class="s1">expression = </span><span class="s4">&quot;^%s$&quot; </span><span class="s1">% pattern</span>
+        <span class="s1">super(SimplifiedRegexMatcher</span><span class="s3">, </span><span class="s1">self).__init__(func</span><span class="s3">, </span><span class="s1">expression</span><span class="s3">, </span><span class="s1">step_type)</span>
+        <span class="s1">self.pattern = pattern</span>
+
+
+<span class="s3">class </span><span class="s1">CucumberRegexMatcher(RegexMatcher):</span>
+    <span class="s2">&quot;&quot;&quot;Compatible to (old) Cucumber style regular expressions. 
+    Text must contain start-of-line/end-of-line matcher symbols to string: 
+ 
+    .. code-block:: python 
+ 
+        @when(u'^a step passes$')   # re.pattern = &quot;^a step passes$&quot; 
+        def step_impl(context): pass 
+    &quot;&quot;&quot;</span>
+
+<span class="s1">matcher_mapping = {</span>
+    <span class="s4">&quot;parse&quot;</span><span class="s1">: ParseMatcher</span><span class="s3">,</span>
+    <span class="s4">&quot;cfparse&quot;</span><span class="s1">: CFParseMatcher</span><span class="s3">,</span>
+    <span class="s4">&quot;re&quot;</span><span class="s1">: SimplifiedRegexMatcher</span><span class="s3">,</span>
+
+    <span class="s0"># -- BACKWARD-COMPATIBLE REGEX MATCHER: Old Cucumber compatible style.</span>
+    <span class="s0"># To make it the default step-matcher use the following snippet:</span>
+    <span class="s0">#   # -- FILE: features/environment.py</span>
+    <span class="s0">#   from behave import use_step_matcher</span>
+    <span class="s0">#   def before_all(context):</span>
+    <span class="s0">#       use_step_matcher(&quot;re0&quot;)</span>
+    <span class="s4">&quot;re0&quot;</span><span class="s1">: CucumberRegexMatcher</span><span class="s3">,</span>
+<span class="s1">}</span>
+<span class="s1">current_matcher = ParseMatcher      </span><span class="s0"># pylint: disable=invalid-name</span>
+
+
+<span class="s3">def </span><span class="s1">use_step_matcher(name):</span>
+    <span class="s2">&quot;&quot;&quot;Change the parameter matcher used in parsing step text. 
+ 
+    The change is immediate and may be performed between step definitions in 
+    your step implementation modules - allowing adjacent steps to use different 
+    matchers if necessary. 
+ 
+    There are several parsers available in *behave* (by default): 
+ 
+    **parse** (the default, based on: :pypi:`parse`) 
+        Provides a simple parser that replaces regular expressions for 
+        step parameters with a readable syntax like ``{param:Type}``. 
+        The syntax is inspired by the Python builtin ``string.format()`` 
+        function. 
+        Step parameters must use the named fields syntax of :pypi:`parse` 
+        in step definitions. The named fields are extracted, 
+        optionally type converted and then used as step function arguments. 
+ 
+        Supports type conversions by using type converters 
+        (see :func:`~behave.register_type()`). 
+ 
+    **cfparse** (extends: :pypi:`parse`, requires: :pypi:`parse_type`) 
+        Provides an extended parser with &quot;Cardinality Field&quot; (CF) support. 
+        Automatically creates missing type converters for related cardinality 
+        as long as a type converter for cardinality=1 is provided. 
+        Supports parse expressions like: 
+ 
+        * ``{values:Type+}`` (cardinality=1..N, many) 
+        * ``{values:Type*}`` (cardinality=0..N, many0) 
+        * ``{value:Type?}``  (cardinality=0..1, optional) 
+ 
+        Supports type conversions (as above). 
+ 
+    **re** 
+        This uses full regular expressions to parse the clause text. You will 
+        need to use named groups &quot;(?P&lt;name&gt;...)&quot; to define the variables pulled 
+        from the text and passed to your ``step()`` function. 
+ 
+        Type conversion is **not supported**. 
+        A step function writer may implement type conversion 
+        inside the step function (implementation). 
+ 
+    You may `define your own matcher`_. 
+ 
+    .. _`define your own matcher`: api.html#step-parameters 
+    &quot;&quot;&quot;</span>
+    <span class="s3">global </span><span class="s1">current_matcher  </span><span class="s0"># pylint: disable=global-statement</span>
+    <span class="s1">current_matcher = matcher_mapping[name]</span>
+
+<span class="s3">def </span><span class="s1">step_matcher(name):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    DEPRECATED, use :func:`use_step_matcher()` instead. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># -- BACKWARD-COMPATIBLE NAME: Mark as deprecated.</span>
+    <span class="s1">warnings.warn(</span><span class="s4">&quot;deprecated: Use 'use_step_matcher()' instead&quot;</span><span class="s3">,</span>
+                  <span class="s1">DeprecationWarning</span><span class="s3">, </span><span class="s1">stacklevel=</span><span class="s5">2</span><span class="s1">)</span>
+    <span class="s1">use_step_matcher(name)</span>
+
+<span class="s3">def </span><span class="s1">get_matcher(func</span><span class="s3">, </span><span class="s1">pattern):</span>
+    <span class="s3">return </span><span class="s1">current_matcher(func</span><span class="s3">, </span><span class="s1">pattern)</span>
+</pre>
+</body>
+</html>

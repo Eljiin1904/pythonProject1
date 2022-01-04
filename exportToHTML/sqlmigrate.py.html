@@ -1,0 +1,89 @@
+<html>
+<head>
+<title>sqlmigrate.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sqlmigrate.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">connections</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.loader </span><span class="s0">import </span><span class="s1">AmbiguityError</span><span class="s0">, </span><span class="s1">MigrationLoader</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s2">&quot;Prints the SQL statements for the named migration.&quot;</span>
+
+    <span class="s1">output_transaction = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span><span class="s2">'app_label'</span><span class="s0">, </span><span class="s1">help=</span><span class="s2">'App label of the application containing the migration.'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span><span class="s2">'migration_name'</span><span class="s0">, </span><span class="s1">help=</span><span class="s2">'Migration name to print the SQL for.'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--database'</span><span class="s0">, </span><span class="s1">default=DEFAULT_DB_ALIAS</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Nominates a database to create SQL for. Defaults to the &quot;default&quot; database.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--backwards'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Creates SQL to unapply the migration, rather than to apply it'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">execute(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s3"># sqlmigrate doesn't support coloring its output but we need to force</span>
+        <span class="s3"># no_color=True so that the BEGIN/COMMIT statements added by</span>
+        <span class="s3"># output_transaction don't get colored either.</span>
+        <span class="s1">options[</span><span class="s2">'no_color'</span><span class="s1">] = </span><span class="s0">True</span>
+        <span class="s0">return </span><span class="s1">super().execute(*args</span><span class="s0">, </span><span class="s1">**options)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s3"># Get the database we're operating from</span>
+        <span class="s1">connection = connections[options[</span><span class="s2">'database'</span><span class="s1">]]</span>
+
+        <span class="s3"># Load up a loader to get all the migration data, but don't replace</span>
+        <span class="s3"># migrations.</span>
+        <span class="s1">loader = MigrationLoader(connection</span><span class="s0">, </span><span class="s1">replace_migrations=</span><span class="s0">False</span><span class="s1">)</span>
+
+        <span class="s3"># Resolve command-line arguments into a migration</span>
+        <span class="s1">app_label</span><span class="s0">, </span><span class="s1">migration_name = options[</span><span class="s2">'app_label'</span><span class="s1">]</span><span class="s0">, </span><span class="s1">options[</span><span class="s2">'migration_name'</span><span class="s1">]</span>
+        <span class="s3"># Validate app_label</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">apps.get_app_config(app_label)</span>
+        <span class="s0">except </span><span class="s1">LookupError </span><span class="s0">as </span><span class="s1">err:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(str(err))</span>
+        <span class="s0">if </span><span class="s1">app_label </span><span class="s0">not in </span><span class="s1">loader.migrated_apps:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;App '%s' does not have migrations&quot; </span><span class="s1">% app_label)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">migration = loader.get_migration_by_prefix(app_label</span><span class="s0">, </span><span class="s1">migration_name)</span>
+        <span class="s0">except </span><span class="s1">AmbiguityError:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;More than one migration matches '%s' in app '%s'. Please be more specific.&quot; </span><span class="s1">% (</span>
+                <span class="s1">migration_name</span><span class="s0">, </span><span class="s1">app_label))</span>
+        <span class="s0">except </span><span class="s1">KeyError:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;Cannot find a migration matching '%s' from app '%s'. Is it in INSTALLED_APPS?&quot; </span><span class="s1">% (</span>
+                <span class="s1">migration_name</span><span class="s0">, </span><span class="s1">app_label))</span>
+        <span class="s1">target = (app_label</span><span class="s0">, </span><span class="s1">migration.name)</span>
+
+        <span class="s3"># Show begin/end around output for atomic migrations, if the database</span>
+        <span class="s3"># supports transactional DDL.</span>
+        <span class="s1">self.output_transaction = migration.atomic </span><span class="s0">and </span><span class="s1">connection.features.can_rollback_ddl</span>
+
+        <span class="s3"># Make a plan that represents just the requested migrations and show SQL</span>
+        <span class="s3"># for it</span>
+        <span class="s1">plan = [(loader.graph.nodes[target]</span><span class="s0">, </span><span class="s1">options[</span><span class="s2">'backwards'</span><span class="s1">])]</span>
+        <span class="s1">sql_statements = loader.collect_sql(plan)</span>
+        <span class="s0">if not </span><span class="s1">sql_statements </span><span class="s0">and </span><span class="s1">options[</span><span class="s2">'verbosity'</span><span class="s1">] &gt;= </span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s1">self.stderr.write(</span><span class="s2">'No operations found.'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">.join(sql_statements)</span>
+</pre>
+</body>
+</html>

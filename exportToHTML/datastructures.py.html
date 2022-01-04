@@ -1,0 +1,187 @@
+<html>
+<head>
+<title>datastructures.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+datastructures.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+:mod:`websockets.datastructures` defines a class for manipulating HTTP headers. 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">Any</span><span class="s2">,</span>
+    <span class="s1">Dict</span><span class="s2">,</span>
+    <span class="s1">Iterable</span><span class="s2">,</span>
+    <span class="s1">Iterator</span><span class="s2">,</span>
+    <span class="s1">List</span><span class="s2">,</span>
+    <span class="s1">Mapping</span><span class="s2">,</span>
+    <span class="s1">MutableMapping</span><span class="s2">,</span>
+    <span class="s1">Tuple</span><span class="s2">,</span>
+    <span class="s1">Union</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;Headers&quot;</span><span class="s2">, </span><span class="s3">&quot;HeadersLike&quot;</span><span class="s2">, </span><span class="s3">&quot;MultipleValuesError&quot;</span><span class="s1">]</span>
+
+
+<span class="s2">class </span><span class="s1">MultipleValuesError(LookupError):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Exception raised when :class:`Headers` has more than one value for a key. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self) -&gt; str:</span>
+        <span class="s4"># Implement the same logic as KeyError_str in Objects/exceptions.c.</span>
+        <span class="s2">if </span><span class="s1">len(self.args) == </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">repr(self.args[</span><span class="s5">0</span><span class="s1">])</span>
+        <span class="s2">return </span><span class="s1">super().__str__()</span>
+
+
+<span class="s2">class </span><span class="s1">Headers(MutableMapping[str</span><span class="s2">, </span><span class="s1">str]):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Efficient data structure for manipulating HTTP headers. 
+ 
+    A :class:`list` of ``(name, values)`` is inefficient for lookups. 
+ 
+    A :class:`dict` doesn't suffice because header names are case-insensitive 
+    and multiple occurrences of headers with the same name are possible. 
+ 
+    :class:`Headers` stores HTTP headers in a hybrid data structure to provide 
+    efficient insertions and lookups while preserving the original data. 
+ 
+    In order to account for multiple values with minimal hassle, 
+    :class:`Headers` follows this logic: 
+ 
+    - When getting a header with ``headers[name]``: 
+        - if there's no value, :exc:`KeyError` is raised; 
+        - if there's exactly one value, it's returned; 
+        - if there's more than one value, :exc:`MultipleValuesError` is raised. 
+ 
+    - When setting a header with ``headers[name] = value``, the value is 
+      appended to the list of values for that header. 
+ 
+    - When deleting a header with ``del headers[name]``, all values for that 
+      header are removed (this is slow). 
+ 
+    Other methods for manipulating headers are consistent with this logic. 
+ 
+    As long as no header occurs multiple times, :class:`Headers` behaves like 
+    :class:`dict`, except keys are lower-cased to provide case-insensitivity. 
+ 
+    Two methods support manipulating multiple values explicitly: 
+ 
+    - :meth:`get_all` returns a list of all values for a header; 
+    - :meth:`raw_items` returns an iterator of ``(name, values)`` pairs. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">__slots__ = [</span><span class="s3">&quot;_dict&quot;</span><span class="s2">, </span><span class="s3">&quot;_list&quot;</span><span class="s1">]</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args: Any</span><span class="s2">, </span><span class="s1">**kwargs: str) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self._dict: Dict[str</span><span class="s2">, </span><span class="s1">List[str]] = {}</span>
+        <span class="s1">self._list: List[Tuple[str</span><span class="s2">, </span><span class="s1">str]] = []</span>
+        <span class="s4"># MutableMapping.update calls __setitem__ for each (name, value) pair.</span>
+        <span class="s1">self.update(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">__str__(self) -&gt; str:</span>
+        <span class="s2">return </span><span class="s3">&quot;&quot;</span><span class="s1">.join(</span><span class="s3">f&quot;</span><span class="s2">{</span><span class="s1">key</span><span class="s2">}</span><span class="s3">: </span><span class="s2">{</span><span class="s1">value</span><span class="s2">}\r\n</span><span class="s3">&quot; </span><span class="s2">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">self._list) + </span><span class="s3">&quot;</span><span class="s2">\r\n</span><span class="s3">&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self) -&gt; str:</span>
+        <span class="s2">return </span><span class="s3">f&quot;</span><span class="s2">{</span><span class="s1">self.__class__.__name__</span><span class="s2">}</span><span class="s3">(</span><span class="s2">{</span><span class="s1">self._list</span><span class="s2">!r}</span><span class="s3">)&quot;</span>
+
+    <span class="s2">def </span><span class="s1">copy(self) -&gt; </span><span class="s3">&quot;Headers&quot;</span><span class="s1">:</span>
+        <span class="s1">copy = self.__class__()</span>
+        <span class="s1">copy._dict = self._dict.copy()</span>
+        <span class="s1">copy._list = self._list.copy()</span>
+        <span class="s2">return </span><span class="s1">copy</span>
+
+    <span class="s2">def </span><span class="s1">serialize(self) -&gt; bytes:</span>
+        <span class="s4"># Headers only contain ASCII characters.</span>
+        <span class="s2">return </span><span class="s1">str(self).encode()</span>
+
+    <span class="s4"># Collection methods</span>
+
+    <span class="s2">def </span><span class="s1">__contains__(self</span><span class="s2">, </span><span class="s1">key: object) -&gt; bool:</span>
+        <span class="s2">return </span><span class="s1">isinstance(key</span><span class="s2">, </span><span class="s1">str) </span><span class="s2">and </span><span class="s1">key.lower() </span><span class="s2">in </span><span class="s1">self._dict</span>
+
+    <span class="s2">def </span><span class="s1">__iter__(self) -&gt; Iterator[str]:</span>
+        <span class="s2">return </span><span class="s1">iter(self._dict)</span>
+
+    <span class="s2">def </span><span class="s1">__len__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">len(self._dict)</span>
+
+    <span class="s4"># MutableMapping methods</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">key: str) -&gt; str:</span>
+        <span class="s1">value = self._dict[key.lower()]</span>
+        <span class="s2">if </span><span class="s1">len(value) == </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">value[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">MultipleValuesError(key)</span>
+
+    <span class="s2">def </span><span class="s1">__setitem__(self</span><span class="s2">, </span><span class="s1">key: str</span><span class="s2">, </span><span class="s1">value: str) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self._dict.setdefault(key.lower()</span><span class="s2">, </span><span class="s1">[]).append(value)</span>
+        <span class="s1">self._list.append((key</span><span class="s2">, </span><span class="s1">value))</span>
+
+    <span class="s2">def </span><span class="s1">__delitem__(self</span><span class="s2">, </span><span class="s1">key: str) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">key_lower = key.lower()</span>
+        <span class="s1">self._dict.__delitem__(key_lower)</span>
+        <span class="s4"># This is inefficent. Fortunately deleting HTTP headers is uncommon.</span>
+        <span class="s1">self._list = [(k</span><span class="s2">, </span><span class="s1">v) </span><span class="s2">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">self._list </span><span class="s2">if </span><span class="s1">k.lower() != key_lower]</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: Any) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">Headers):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+        <span class="s2">return </span><span class="s1">self._list == other._list</span>
+
+    <span class="s2">def </span><span class="s1">clear(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Remove all headers. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self._dict = {}</span>
+        <span class="s1">self._list = []</span>
+
+    <span class="s4"># Methods for handling multiple values</span>
+
+    <span class="s2">def </span><span class="s1">get_all(self</span><span class="s2">, </span><span class="s1">key: str) -&gt; List[str]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return the (possibly empty) list of all values for a header. 
+ 
+        :param key: header name 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._dict.get(key.lower()</span><span class="s2">, </span><span class="s1">[])</span>
+
+    <span class="s2">def </span><span class="s1">raw_items(self) -&gt; Iterator[Tuple[str</span><span class="s2">, </span><span class="s1">str]]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return an iterator of all values as ``(name, value)`` pairs. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">iter(self._list)</span>
+
+
+<span class="s1">HeadersLike = Union[Headers</span><span class="s2">, </span><span class="s1">Mapping[str</span><span class="s2">, </span><span class="s1">str]</span><span class="s2">, </span><span class="s1">Iterable[Tuple[str</span><span class="s2">, </span><span class="s1">str]]]</span>
+<span class="s1">HeadersLike__doc__ = </span><span class="s3">&quot;&quot;&quot;Types accepted wherever :class:`Headers` is expected&quot;&quot;&quot;</span>
+<span class="s4"># Remove try / except when dropping support for Python &lt; 3.7</span>
+<span class="s2">try</span><span class="s1">:</span>
+    <span class="s1">HeadersLike.__doc__ = HeadersLike__doc__</span>
+<span class="s2">except </span><span class="s1">AttributeError:  </span><span class="s4"># pragma: no cover</span>
+    <span class="s2">pass</span>
+</pre>
+</body>
+</html>

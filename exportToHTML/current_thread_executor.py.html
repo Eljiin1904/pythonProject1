@@ -1,0 +1,102 @@
+<html>
+<head>
+<title>current_thread_executor.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+current_thread_executor.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">queue</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">from </span><span class="s1">concurrent.futures </span><span class="s0">import </span><span class="s1">Executor</span><span class="s0">, </span><span class="s1">Future</span>
+
+
+<span class="s0">class </span><span class="s1">_WorkItem:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Represents an item needing to be run in the executor. 
+    Copied from ThreadPoolExecutor (but it's private, so we're not going to rely on importing it) 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">future</span><span class="s0">, </span><span class="s1">fn</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs):</span>
+        <span class="s1">self.future = future</span>
+        <span class="s1">self.fn = fn</span>
+        <span class="s1">self.args = args</span>
+        <span class="s1">self.kwargs = kwargs</span>
+
+    <span class="s0">def </span><span class="s1">run(self):</span>
+        <span class="s0">if not </span><span class="s1">self.future.set_running_or_notify_cancel():</span>
+            <span class="s0">return</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">result = self.fn(*self.args</span><span class="s0">, </span><span class="s1">**self.kwargs)</span>
+        <span class="s0">except </span><span class="s1">BaseException </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">self.future.set_exception(exc)</span>
+            <span class="s3"># Break a reference cycle with the exception 'exc'</span>
+            <span class="s1">self = </span><span class="s0">None</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.future.set_result(result)</span>
+
+
+<span class="s0">class </span><span class="s1">CurrentThreadExecutor(Executor):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    An Executor that actually runs code in the thread it is instantiated in. 
+    Passed to other threads running async code, so they can run sync code in 
+    the thread they came from. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self._work_thread = threading.current_thread()</span>
+        <span class="s1">self._work_queue = queue.Queue()</span>
+        <span class="s1">self._broken = </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">run_until_future(self</span><span class="s0">, </span><span class="s1">future):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Runs the code in the work queue until a result is available from the future. 
+        Should be run from the thread the executor is initialised in. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Check we're in the right thread</span>
+        <span class="s0">if </span><span class="s1">threading.current_thread() != self._work_thread:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                <span class="s4">&quot;You cannot run CurrentThreadExecutor from a different thread&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">future.add_done_callback(self._work_queue.put)</span>
+        <span class="s3"># Keep getting and running work items until we get the future we're waiting for</span>
+        <span class="s3"># back via the future's done callback.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s3"># Get a work item and run it</span>
+                <span class="s1">work_item = self._work_queue.get()</span>
+                <span class="s0">if </span><span class="s1">work_item </span><span class="s0">is </span><span class="s1">future:</span>
+                    <span class="s0">return</span>
+                <span class="s1">work_item.run()</span>
+                <span class="s0">del </span><span class="s1">work_item</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">self._broken = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">submit(self</span><span class="s0">, </span><span class="s1">fn</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s3"># Check they're not submitting from the same thread</span>
+        <span class="s0">if </span><span class="s1">threading.current_thread() == self._work_thread:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                <span class="s4">&quot;You cannot submit onto CurrentThreadExecutor from its own thread&quot;</span>
+            <span class="s1">)</span>
+        <span class="s3"># Check they're not too late or the executor errored</span>
+        <span class="s0">if </span><span class="s1">self._broken:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;CurrentThreadExecutor already quit or is broken&quot;</span><span class="s1">)</span>
+        <span class="s3"># Add to work queue</span>
+        <span class="s1">f = Future()</span>
+        <span class="s1">work_item = _WorkItem(f</span><span class="s0">, </span><span class="s1">fn</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs)</span>
+        <span class="s1">self._work_queue.put(work_item)</span>
+        <span class="s3"># Return the future</span>
+        <span class="s0">return </span><span class="s1">f</span>
+</pre>
+</body>
+</html>

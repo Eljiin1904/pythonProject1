@@ -1,0 +1,133 @@
+<html>
+<head>
+<title>test_windows_pipes.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+.s6 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_windows_pipes.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">errno</span>
+<span class="s0">import </span><span class="s1">select</span>
+
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">.._core.tests.tutil </span><span class="s0">import </span><span class="s1">gc_collect_harder</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span><span class="s0">, </span><span class="s1">move_on_after</span>
+<span class="s0">from </span><span class="s1">..testing </span><span class="s0">import </span><span class="s1">wait_all_tasks_blocked</span><span class="s0">, </span><span class="s1">check_one_way_stream</span>
+
+<span class="s0">if </span><span class="s1">sys.platform == </span><span class="s2">&quot;win32&quot;</span><span class="s1">:</span>
+    <span class="s0">from </span><span class="s1">.._windows_pipes </span><span class="s0">import </span><span class="s1">PipeSendStream</span><span class="s0">, </span><span class="s1">PipeReceiveStream</span>
+    <span class="s0">from </span><span class="s1">.._core._windows_cffi </span><span class="s0">import </span><span class="s1">_handle</span><span class="s0">, </span><span class="s1">kernel32</span>
+    <span class="s0">from </span><span class="s1">asyncio.windows_utils </span><span class="s0">import </span><span class="s1">pipe</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s1">pytestmark = pytest.mark.skip(reason=</span><span class="s2">&quot;windows only&quot;</span><span class="s1">)</span>
+    <span class="s1">pipe = </span><span class="s0">None  </span><span class="s3"># type: Any</span>
+    <span class="s1">PipeSendStream = </span><span class="s0">None  </span><span class="s3"># type: Any</span>
+    <span class="s1">PipeReceiveStream = </span><span class="s0">None  </span><span class="s3"># type: Any</span>
+
+
+<span class="s0">async def </span><span class="s1">make_pipe() -&gt; </span><span class="s2">&quot;Tuple[PipeSendStream, PipeReceiveStream]&quot;</span><span class="s1">:</span>
+    <span class="s4">&quot;&quot;&quot;Makes a new pair of pipes.&quot;&quot;&quot;</span>
+    <span class="s1">(r</span><span class="s0">, </span><span class="s1">w) = pipe()</span>
+    <span class="s0">return </span><span class="s1">PipeSendStream(w)</span><span class="s0">, </span><span class="s1">PipeReceiveStream(r)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_pipe_typecheck():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">PipeSendStream(</span><span class="s5">1.0</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">PipeReceiveStream(</span><span class="s0">None</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_pipe_error_on_close():</span>
+    <span class="s3"># Make sure we correctly handle a failure from kernel32.CloseHandle</span>
+    <span class="s1">r</span><span class="s0">, </span><span class="s1">w = pipe()</span>
+
+    <span class="s1">send_stream = PipeSendStream(w)</span>
+    <span class="s1">receive_stream = PipeReceiveStream(r)</span>
+
+    <span class="s0">assert </span><span class="s1">kernel32.CloseHandle(_handle(r))</span>
+    <span class="s0">assert </span><span class="s1">kernel32.CloseHandle(_handle(w))</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(OSError):</span>
+        <span class="s0">await </span><span class="s1">send_stream.aclose()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(OSError):</span>
+        <span class="s0">await </span><span class="s1">receive_stream.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_pipes_combined():</span>
+    <span class="s1">write</span><span class="s0">, </span><span class="s1">read = </span><span class="s0">await </span><span class="s1">make_pipe()</span>
+    <span class="s1">count = </span><span class="s5">2 </span><span class="s1">** </span><span class="s5">20</span>
+    <span class="s1">replicas = </span><span class="s5">3</span>
+
+    <span class="s0">async def </span><span class="s1">sender():</span>
+        <span class="s0">async with </span><span class="s1">write:</span>
+            <span class="s1">big = bytearray(count)</span>
+            <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(replicas):</span>
+                <span class="s0">await </span><span class="s1">write.send_all(big)</span>
+
+    <span class="s0">async def </span><span class="s1">reader():</span>
+        <span class="s0">async with </span><span class="s1">read:</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s1">total_received = </span><span class="s5">0</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s3"># 5000 is chosen because it doesn't evenly divide 2**20</span>
+                <span class="s1">received = len(</span><span class="s0">await </span><span class="s1">read.receive_some(</span><span class="s5">5000</span><span class="s1">))</span>
+                <span class="s0">if not </span><span class="s1">received:</span>
+                    <span class="s0">break</span>
+                <span class="s1">total_received += received</span>
+
+            <span class="s0">assert </span><span class="s1">total_received == count * replicas</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">n:</span>
+        <span class="s1">n.start_soon(sender)</span>
+        <span class="s1">n.start_soon(reader)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_async_with():</span>
+    <span class="s1">w</span><span class="s0">, </span><span class="s1">r = </span><span class="s0">await </span><span class="s1">make_pipe()</span>
+    <span class="s0">async with </span><span class="s1">w</span><span class="s0">, </span><span class="s1">r:</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">w.send_all(</span><span class="s6">b&quot;&quot;</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">r.receive_some(</span><span class="s5">10</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_close_during_write():</span>
+    <span class="s1">w</span><span class="s0">, </span><span class="s1">r = </span><span class="s0">await </span><span class="s1">make_pipe()</span>
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+
+        <span class="s0">async def </span><span class="s1">write_forever():</span>
+            <span class="s0">with </span><span class="s1">pytest.raises(_core.ClosedResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+                <span class="s0">while True</span><span class="s1">:</span>
+                    <span class="s0">await </span><span class="s1">w.send_all(</span><span class="s6">b&quot;x&quot; </span><span class="s1">* </span><span class="s5">4096</span><span class="s1">)</span>
+            <span class="s0">assert </span><span class="s2">&quot;another task&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+        <span class="s1">nursery.start_soon(write_forever)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked(</span><span class="s5">0.1</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">w.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_pipe_fully():</span>
+    <span class="s3"># passing make_clogged_pipe tests wait_send_all_might_not_block, and we</span>
+    <span class="s3"># can't implement that on Windows</span>
+    <span class="s0">await </span><span class="s1">check_one_way_stream(make_pipe</span><span class="s0">, None</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

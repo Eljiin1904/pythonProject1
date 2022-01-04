@@ -1,0 +1,89 @@
+<html>
+<head>
+<title>_executor.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_executor.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">from </span><span class="s1">pyee._base </span><span class="s2">import </span><span class="s1">EventEmitter</span>
+
+<span class="s2">from </span><span class="s1">concurrent.futures </span><span class="s2">import </span><span class="s1">ThreadPoolExecutor</span>
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;ExecutorEventEmitter&quot;</span><span class="s1">]</span>
+
+
+<span class="s2">class </span><span class="s1">ExecutorEventEmitter(EventEmitter):</span>
+    <span class="s4">&quot;&quot;&quot;An event emitter class which runs handlers in a ``concurrent.futures`` 
+    executor. 
+ 
+    By default, this class creates a default ``ThreadPoolExecutor``, but 
+    a custom executor may also be passed in explicitly to, for instance, 
+    use a ``ProcessPoolExecutor`` instead. 
+ 
+    This class runs all emitted events on the configured executor. Errors 
+    captured by the resulting Future are automatically emitted on the 
+    ``error`` event. This is unlike the BaseEventEmitter, which have no error 
+    handling. 
+ 
+    The underlying executor may be shut down by calling the ``shutdown`` 
+    method. Alternately you can treat the event emitter as a context manager:: 
+ 
+        with ExecutorEventEmitter() as ee: 
+            # Underlying executor open 
+ 
+            @ee.on('data') 
+            def handler(data): 
+                print(data) 
+ 
+            ee.emit('event') 
+ 
+        # Underlying executor closed 
+ 
+    Since the function call is scheduled on an executor, emit is always 
+    non-blocking. 
+ 
+    No effort is made to ensure thread safety, beyond using an executor. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">executor=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">super(ExecutorEventEmitter</span><span class="s2">, </span><span class="s1">self).__init__()</span>
+        <span class="s2">if </span><span class="s1">executor:</span>
+            <span class="s1">self._executor = executor</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._executor = ThreadPoolExecutor()</span>
+
+    <span class="s2">def </span><span class="s1">_emit_run(self</span><span class="s2">, </span><span class="s1">f</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs):</span>
+        <span class="s1">future = self._executor.submit(f</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+        <span class="s1">@future.add_done_callback</span>
+        <span class="s2">def </span><span class="s1">_callback(f):</span>
+            <span class="s1">exc = f.exception()</span>
+            <span class="s2">if </span><span class="s1">exc:</span>
+                <span class="s1">self.emit(</span><span class="s3">&quot;error&quot;</span><span class="s2">, </span><span class="s1">exc)</span>
+
+    <span class="s2">def </span><span class="s1">shutdown(self</span><span class="s2">, </span><span class="s1">wait=</span><span class="s2">True</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot;Call ``shutdown`` on the internal executor.&quot;&quot;&quot;</span>
+
+        <span class="s1">self._executor.shutdown(wait=wait)</span>
+
+    <span class="s2">def </span><span class="s1">__enter__(self):</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">__exit__(self</span><span class="s2">, </span><span class="s1">type</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">traceback):</span>
+        <span class="s1">self.shutdown()</span>
+</pre>
+</body>
+</html>

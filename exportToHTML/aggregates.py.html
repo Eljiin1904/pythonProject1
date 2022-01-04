@@ -1,0 +1,104 @@
+<html>
+<head>
+<title>aggregates.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+aggregates.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.contrib.gis.db.models.fields </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">ExtentField</span><span class="s0">, </span><span class="s1">GeometryCollectionField</span><span class="s0">, </span><span class="s1">GeometryField</span><span class="s0">, </span><span class="s1">LineStringField</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Aggregate</span><span class="s0">, </span><span class="s1">Value</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+
+<span class="s1">__all__ = [</span><span class="s2">'Collect'</span><span class="s0">, </span><span class="s2">'Extent'</span><span class="s0">, </span><span class="s2">'Extent3D'</span><span class="s0">, </span><span class="s2">'MakeLine'</span><span class="s0">, </span><span class="s2">'Union'</span><span class="s1">]</span>
+
+
+<span class="s0">class </span><span class="s1">GeoAggregate(Aggregate):</span>
+    <span class="s1">function = </span><span class="s0">None</span>
+    <span class="s1">is_extent = </span><span class="s0">False</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">output_field(self):</span>
+        <span class="s0">return </span><span class="s1">self.output_field_class(self.source_expressions[</span><span class="s3">0</span><span class="s1">].output_field.srid)</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">function=</span><span class="s0">None, </span><span class="s1">**extra_context):</span>
+        <span class="s4"># this will be called again in parent, but it's needed now - before</span>
+        <span class="s4"># we get the spatial_aggregate_name</span>
+        <span class="s1">connection.ops.check_expression_support(self)</span>
+        <span class="s0">return </span><span class="s1">super().as_sql(</span>
+            <span class="s1">compiler</span><span class="s0">,</span>
+            <span class="s1">connection</span><span class="s0">,</span>
+            <span class="s1">function=function </span><span class="s0">or </span><span class="s1">connection.ops.spatial_aggregate_name(self.name)</span><span class="s0">,</span>
+            <span class="s1">**extra_context</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">as_oracle(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">**extra_context):</span>
+        <span class="s0">if not </span><span class="s1">self.is_extent:</span>
+            <span class="s1">tolerance = self.extra.get(</span><span class="s2">'tolerance'</span><span class="s1">) </span><span class="s0">or </span><span class="s1">getattr(self</span><span class="s0">, </span><span class="s2">'tolerance'</span><span class="s0">, </span><span class="s3">0.05</span><span class="s1">)</span>
+            <span class="s1">clone = self.copy()</span>
+            <span class="s1">clone.set_source_expressions([</span>
+                <span class="s1">*self.get_source_expressions()</span><span class="s0">,</span>
+                <span class="s1">Value(tolerance)</span><span class="s0">,</span>
+            <span class="s1">])</span>
+            <span class="s1">template = </span><span class="s2">'%(function)s(SDOAGGRTYPE(%(expressions)s))'</span>
+            <span class="s0">return </span><span class="s1">clone.as_sql(compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">template=template</span><span class="s0">, </span><span class="s1">**extra_context)</span>
+        <span class="s0">return </span><span class="s1">self.as_sql(compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">**extra_context)</span>
+
+    <span class="s0">def </span><span class="s1">resolve_expression(self</span><span class="s0">, </span><span class="s1">query=</span><span class="s0">None, </span><span class="s1">allow_joins=</span><span class="s0">True, </span><span class="s1">reuse=</span><span class="s0">None, </span><span class="s1">summarize=</span><span class="s0">False, </span><span class="s1">for_save=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s1">c = super().resolve_expression(query</span><span class="s0">, </span><span class="s1">allow_joins</span><span class="s0">, </span><span class="s1">reuse</span><span class="s0">, </span><span class="s1">summarize</span><span class="s0">, </span><span class="s1">for_save)</span>
+        <span class="s0">for </span><span class="s1">expr </span><span class="s0">in </span><span class="s1">c.get_source_expressions():</span>
+            <span class="s0">if not </span><span class="s1">hasattr(expr.field</span><span class="s0">, </span><span class="s2">'geom_type'</span><span class="s1">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">'Geospatial aggregates only allowed on geometry fields.'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">c</span>
+
+
+<span class="s0">class </span><span class="s1">Collect(GeoAggregate):</span>
+    <span class="s1">name = </span><span class="s2">'Collect'</span>
+    <span class="s1">output_field_class = GeometryCollectionField</span>
+
+
+<span class="s0">class </span><span class="s1">Extent(GeoAggregate):</span>
+    <span class="s1">name = </span><span class="s2">'Extent'</span>
+    <span class="s1">is_extent = </span><span class="s2">'2D'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">output_field=ExtentField()</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+    <span class="s0">def </span><span class="s1">convert_value(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">return </span><span class="s1">connection.ops.convert_extent(value)</span>
+
+
+<span class="s0">class </span><span class="s1">Extent3D(GeoAggregate):</span>
+    <span class="s1">name = </span><span class="s2">'Extent3D'</span>
+    <span class="s1">is_extent = </span><span class="s2">'3D'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">output_field=ExtentField()</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+    <span class="s0">def </span><span class="s1">convert_value(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">return </span><span class="s1">connection.ops.convert_extent3d(value)</span>
+
+
+<span class="s0">class </span><span class="s1">MakeLine(GeoAggregate):</span>
+    <span class="s1">name = </span><span class="s2">'MakeLine'</span>
+    <span class="s1">output_field_class = LineStringField</span>
+
+
+<span class="s0">class </span><span class="s1">Union(GeoAggregate):</span>
+    <span class="s1">name = </span><span class="s2">'Union'</span>
+    <span class="s1">output_field_class = GeometryField</span>
+</pre>
+</body>
+</html>

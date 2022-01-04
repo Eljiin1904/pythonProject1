@@ -1,0 +1,379 @@
+<html>
+<head>
+<title>coverage.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+coverage.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Coverage module.&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">functools </span><span class="s3">import </span><span class="s1">cmp_to_key</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">Dict</span><span class="s3">, </span><span class="s1">List</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer </span><span class="s3">import </span><span class="s1">helper</span>
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">CDPSession</span>
+<span class="s3">from </span><span class="s1">pyppeteer.errors </span><span class="s3">import </span><span class="s1">PageError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.execution_context </span><span class="s3">import </span><span class="s1">EVALUATION_SCRIPT_URL</span>
+<span class="s3">from </span><span class="s1">pyppeteer.helper </span><span class="s3">import </span><span class="s1">debugError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.util </span><span class="s3">import </span><span class="s1">merge_dict</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+
+<span class="s3">class </span><span class="s1">Coverage(object):</span>
+    <span class="s2">&quot;&quot;&quot;Coverage class. 
+ 
+    Coverage gathers information about parts of JavaScript and CSS that were 
+    used by the page. 
+ 
+    An example of using JavaScript and CSS coverage to get percentage of 
+    initially executed code:: 
+ 
+        # Enable both JavaScript and CSS coverage 
+        await page.coverage.startJSCoverage() 
+        await page.coverage.startCSSCoverage() 
+ 
+        # Navigate to page 
+        await page.goto('https://example.com') 
+        # Disable JS and CSS coverage and get results 
+        jsCoverage = await page.coverage.stopJSCoverage() 
+        cssCoverage = await page.coverage.stopCSSCoverage() 
+        totalBytes = 0 
+        usedBytes = 0 
+        coverage = jsCoverage + cssCoverage 
+        for entry in coverage: 
+            totalBytes += len(entry['text']) 
+            for range in entry['ranges']: 
+                usedBytes += range['end'] - range['start'] - 1 
+ 
+        print('Bytes used: {}%'.format(usedBytes / totalBytes * 100)) 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._jsCoverage = JSCoverage(client)</span>
+        <span class="s1">self._cssCoverage = CSSCoverage(client)</span>
+
+    <span class="s3">async def </span><span class="s1">startJSCoverage(self</span><span class="s3">, </span><span class="s1">options: Dict = </span><span class="s3">None, </span><span class="s1">**kwargs: Any</span>
+                              <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Start JS coverage measurement. 
+ 
+        Available options are: 
+ 
+        * ``resetOnNavigation`` (bool): Whether to reset coverage on every 
+          navigation. Defaults to ``True``. 
+        * ``reportAnonymousScript`` (bool): Whether anonymous script generated 
+          by the page should be reported. Defaults to ``False``. 
+ 
+        .. note:: 
+            Anonymous scripts are ones that don't have an associated url. These 
+            are scripts that are dynamically created on the page using ``eval`` 
+            of ``new Function``. If ``reportAnonymousScript`` is set to 
+            ``True``, anonymous scripts will have 
+            ``__pyppeteer_evaluation_script__`` as their url. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">await </span><span class="s1">self._jsCoverage.start(options)</span>
+
+    <span class="s3">async def </span><span class="s1">stopJSCoverage(self) -&gt; List:</span>
+        <span class="s2">&quot;&quot;&quot;Stop JS coverage measurement and get result. 
+ 
+        Return list of coverage reports for all scripts. Each report includes: 
+ 
+        * ``url`` (str): Script url. 
+        * ``text`` (str): Script content. 
+        * ``ranges`` (List[Dict]): Script ranges that were executed. Ranges are 
+          sorted and non-overlapping. 
+ 
+          * ``start`` (int): A start offset in text, inclusive. 
+          * ``end`` (int): An end offset in text, exclusive. 
+ 
+        .. note:: 
+           JavaScript coverage doesn't include anonymous scripts by default. 
+           However, scripts with sourceURLs are reported. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self._jsCoverage.stop()</span>
+
+    <span class="s3">async def </span><span class="s1">startCSSCoverage(self</span><span class="s3">, </span><span class="s1">options: Dict = </span><span class="s3">None, </span><span class="s1">**kwargs: Any</span>
+                               <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Start CSS coverage measurement. 
+ 
+        Available options are: 
+ 
+        * ``resetOnNavigation`` (bool): Whether to reset coverage on every 
+          navigation. Defaults to ``True``. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">await </span><span class="s1">self._cssCoverage.start(options)</span>
+
+    <span class="s3">async def </span><span class="s1">stopCSSCoverage(self) -&gt; List:</span>
+        <span class="s2">&quot;&quot;&quot;Stop CSS coverage measurement and get result. 
+ 
+        Return list of coverage reports for all non-anonymous scripts. Each 
+        report includes: 
+ 
+        * ``url`` (str): StyleSheet url. 
+        * ``text`` (str): StyleSheet content. 
+        * ``ranges`` (List[Dict]): StyleSheet ranges that were executed. Ranges 
+          are sorted and non-overlapping. 
+ 
+          * ``start`` (int): A start offset in text, inclusive. 
+          * ``end`` (int): An end offset in text, exclusive. 
+ 
+        .. note:: 
+           CSS coverage doesn't include dynamically injected style tags without 
+           sourceURLs (but currently includes... to be fixed). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self._cssCoverage.stop()</span>
+
+
+<span class="s3">class </span><span class="s1">JSCoverage(object):</span>
+    <span class="s2">&quot;&quot;&quot;JavaScript Coverage class.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._enabled = </span><span class="s3">False</span>
+        <span class="s1">self._scriptURLs: Dict = dict()</span>
+        <span class="s1">self._scriptSources: Dict = dict()</span>
+        <span class="s1">self._eventListeners: List = list()</span>
+        <span class="s1">self._resetOnNavigation = </span><span class="s3">False</span>
+
+    <span class="s3">async def </span><span class="s1">start(self</span><span class="s3">, </span><span class="s1">options: Dict = </span><span class="s3">None, </span><span class="s1">**kwargs: Any) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Start coverage measurement.&quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">if </span><span class="s1">self._enabled:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'JSCoverage is always enabled.'</span><span class="s1">)</span>
+        <span class="s1">self._resetOnNavigation = (</span><span class="s3">True if </span><span class="s4">'resetOnNavigation' </span><span class="s3">not in </span><span class="s1">options</span>
+                                   <span class="s3">else </span><span class="s1">bool(options[</span><span class="s4">'resetOnNavigation'</span><span class="s1">]))</span>
+        <span class="s1">self._reportAnonymousScript = bool(options.get(</span><span class="s4">'reportAnonymousScript'</span><span class="s1">))  </span><span class="s0"># noqa: E501</span>
+        <span class="s1">self._enabled = </span><span class="s3">True</span>
+        <span class="s1">self._scriptURLs.clear()</span>
+        <span class="s1">self._scriptSources.clear()</span>
+        <span class="s1">self._eventListeners = [</span>
+            <span class="s1">helper.addEventListener(</span>
+                <span class="s1">self._client</span><span class="s3">, </span><span class="s4">'Debugger.scriptParsed'</span><span class="s3">,</span>
+                <span class="s3">lambda </span><span class="s1">e: self._client._loop.create_task(</span>
+                    <span class="s1">self._onScriptParsed(e)))</span><span class="s3">,</span>
+            <span class="s1">helper.addEventListener(</span>
+                <span class="s1">self._client</span><span class="s3">, </span><span class="s4">'Runtime.executionContextsCleared'</span><span class="s3">,</span>
+                <span class="s1">self._onExecutionContextsCleared)</span><span class="s3">,</span>
+        <span class="s1">]</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Profiler.enable'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Profiler.startPreciseCoverage'</span><span class="s3">,</span>
+                                <span class="s1">{</span><span class="s4">'callCount'</span><span class="s1">: </span><span class="s3">False, </span><span class="s4">'detailed'</span><span class="s1">: </span><span class="s3">True</span><span class="s1">})</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Debugger.enable'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Debugger.setSkipAllPauses'</span><span class="s3">, </span><span class="s1">{</span><span class="s4">'skip'</span><span class="s1">: </span><span class="s3">True</span><span class="s1">})</span>
+
+    <span class="s3">def </span><span class="s1">_onExecutionContextsCleared(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if not </span><span class="s1">self._resetOnNavigation:</span>
+            <span class="s3">return</span>
+        <span class="s1">self._scriptURLs.clear()</span>
+        <span class="s1">self._scriptSources.clear()</span>
+
+    <span class="s3">async def </span><span class="s1">_onScriptParsed(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s0"># Ignore pyppeteer-injected scripts</span>
+        <span class="s3">if </span><span class="s1">event.get(</span><span class="s4">'url'</span><span class="s1">) == EVALUATION_SCRIPT_URL:</span>
+            <span class="s3">return</span>
+        <span class="s0"># Ignore other anonymous scripts unless the reportAnonymousScript</span>
+        <span class="s0"># option is True</span>
+        <span class="s3">if not </span><span class="s1">event.get(</span><span class="s4">'url'</span><span class="s1">) </span><span class="s3">and not </span><span class="s1">self._reportAnonymousScript:</span>
+            <span class="s3">return</span>
+
+        <span class="s1">scriptId = event.get(</span><span class="s4">'scriptId'</span><span class="s1">)</span>
+        <span class="s1">url = event.get(</span><span class="s4">'url'</span><span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">url </span><span class="s3">and </span><span class="s1">self._reportAnonymousScript:</span>
+            <span class="s1">url = </span><span class="s4">f'debugger://VM</span><span class="s3">{</span><span class="s1">scriptId</span><span class="s3">}</span><span class="s4">'</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">response = </span><span class="s3">await </span><span class="s1">self._client.send(</span>
+                <span class="s4">'Debugger.getScriptSource'</span><span class="s3">,</span>
+                <span class="s1">{</span><span class="s4">'scriptId'</span><span class="s1">: scriptId}</span>
+            <span class="s1">)</span>
+            <span class="s1">self._scriptURLs[scriptId] = url</span>
+            <span class="s1">self._scriptSources[scriptId] = response.get(</span><span class="s4">'scriptSource'</span><span class="s1">)</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s0"># This might happen if the page has already navigated away.</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+    <span class="s3">async def </span><span class="s1">stop(self) -&gt; List:</span>
+        <span class="s2">&quot;&quot;&quot;Stop coverage measurement and return results.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">self._enabled:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'JSCoverage is not enabled.'</span><span class="s1">)</span>
+        <span class="s1">self._enabled = </span><span class="s3">False</span>
+
+        <span class="s1">result = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Profiler.takePreciseCoverage'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Profiler.stopPreciseCoverage'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Profiler.disable'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Debugger.disable'</span><span class="s1">)</span>
+        <span class="s1">helper.removeEventListeners(self._eventListeners)</span>
+
+        <span class="s1">coverage: List = []</span>
+        <span class="s3">for </span><span class="s1">entry </span><span class="s3">in </span><span class="s1">result.get(</span><span class="s4">'result'</span><span class="s3">, </span><span class="s1">[]):</span>
+            <span class="s1">url = self._scriptURLs.get(entry.get(</span><span class="s4">'scriptId'</span><span class="s1">))</span>
+            <span class="s1">text = self._scriptSources.get(entry.get(</span><span class="s4">'scriptId'</span><span class="s1">))</span>
+            <span class="s3">if </span><span class="s1">text </span><span class="s3">is None or </span><span class="s1">url </span><span class="s3">is None</span><span class="s1">:</span>
+                <span class="s3">continue</span>
+            <span class="s1">flattenRanges: List = []</span>
+            <span class="s3">for </span><span class="s1">func </span><span class="s3">in </span><span class="s1">entry.get(</span><span class="s4">'functions'</span><span class="s3">, </span><span class="s1">[]):</span>
+                <span class="s1">flattenRanges.extend(func.get(</span><span class="s4">'ranges'</span><span class="s3">, </span><span class="s1">[]))</span>
+            <span class="s1">ranges = convertToDisjointRanges(flattenRanges)</span>
+            <span class="s1">coverage.append({</span><span class="s4">'url'</span><span class="s1">: url</span><span class="s3">, </span><span class="s4">'ranges'</span><span class="s1">: ranges</span><span class="s3">, </span><span class="s4">'text'</span><span class="s1">: text})</span>
+        <span class="s3">return </span><span class="s1">coverage</span>
+
+
+<span class="s3">class </span><span class="s1">CSSCoverage(object):</span>
+    <span class="s2">&quot;&quot;&quot;CSS Coverage class.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._enabled = </span><span class="s3">False</span>
+        <span class="s1">self._stylesheetURLs: Dict = dict()</span>
+        <span class="s1">self._stylesheetSources: Dict = dict()</span>
+        <span class="s1">self._eventListeners: List = []</span>
+        <span class="s1">self._resetOnNavigation = </span><span class="s3">False</span>
+
+    <span class="s3">async def </span><span class="s1">start(self</span><span class="s3">, </span><span class="s1">options: Dict = </span><span class="s3">None, </span><span class="s1">**kwargs: Any) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Start coverage measurement.&quot;&quot;&quot;</span>
+        <span class="s1">options = merge_dict(options</span><span class="s3">, </span><span class="s1">kwargs)</span>
+        <span class="s3">if </span><span class="s1">self._enabled:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'CSSCoverage is already enabled.'</span><span class="s1">)</span>
+        <span class="s1">self._resetOnNavigation = (</span><span class="s3">True if </span><span class="s4">'resetOnNavigation' </span><span class="s3">not in </span><span class="s1">options</span>
+                                   <span class="s3">else </span><span class="s1">bool(options[</span><span class="s4">'resetOnNavigation'</span><span class="s1">]))</span>
+        <span class="s1">self._enabled = </span><span class="s3">True</span>
+        <span class="s1">self._stylesheetURLs.clear()</span>
+        <span class="s1">self._stylesheetSources.clear()</span>
+        <span class="s1">self._eventListeners = [</span>
+            <span class="s1">helper.addEventListener(</span>
+                <span class="s1">self._client</span><span class="s3">, </span><span class="s4">'CSS.styleSheetAdded'</span><span class="s3">,</span>
+                <span class="s3">lambda </span><span class="s1">e: self._client._loop.create_task(</span>
+                    <span class="s1">self._onStyleSheet(e)))</span><span class="s3">,</span>
+            <span class="s1">helper.addEventListener(</span>
+                <span class="s1">self._client</span><span class="s3">, </span><span class="s4">'Runtime.executionContextsCleared'</span><span class="s3">,</span>
+                <span class="s1">self._onExecutionContextsCleared)</span><span class="s3">,</span>
+        <span class="s1">]</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'DOM.enable'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'CSS.enable'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'CSS.startRuleUsageTracking'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_onExecutionContextsCleared(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if not </span><span class="s1">self._resetOnNavigation:</span>
+            <span class="s3">return</span>
+        <span class="s1">self._stylesheetURLs.clear()</span>
+        <span class="s1">self._stylesheetSources.clear()</span>
+
+    <span class="s3">async def </span><span class="s1">_onStyleSheet(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">header = event.get(</span><span class="s4">'header'</span><span class="s3">, </span><span class="s1">{})</span>
+        <span class="s0"># Ignore anonymous scripts</span>
+        <span class="s3">if not </span><span class="s1">header.get(</span><span class="s4">'sourceURL'</span><span class="s1">):</span>
+            <span class="s3">return</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">response = </span><span class="s3">await </span><span class="s1">self._client.send(</span>
+                <span class="s4">'CSS.getStyleSheetText'</span><span class="s3">,</span>
+                <span class="s1">{</span><span class="s4">'styleSheetId'</span><span class="s1">: header[</span><span class="s4">'styleSheetId'</span><span class="s1">]}</span>
+            <span class="s1">)</span>
+            <span class="s1">self._stylesheetURLs[header[</span><span class="s4">'styleSheetId'</span><span class="s1">]] = header[</span><span class="s4">'sourceURL'</span><span class="s1">]</span>
+            <span class="s1">self._stylesheetSources[header[</span><span class="s4">'styleSheetId'</span><span class="s1">]] = response[</span><span class="s4">'text'</span><span class="s1">]</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s0"># This might happen if the page has already navigated away.</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+    <span class="s3">async def </span><span class="s1">stop(self) -&gt; List:</span>
+        <span class="s2">&quot;&quot;&quot;Stop coverage measurement and return results.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">self._enabled:</span>
+            <span class="s3">raise </span><span class="s1">PageError(</span><span class="s4">'CSSCoverage is not enabled.'</span><span class="s1">)</span>
+        <span class="s1">self._enabled = </span><span class="s3">False</span>
+        <span class="s1">result = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'CSS.stopRuleUsageTracking'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'CSS.disable'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'DOM.disable'</span><span class="s1">)</span>
+        <span class="s1">helper.removeEventListeners(self._eventListeners)</span>
+
+        <span class="s0"># aggregate by styleSheetId</span>
+        <span class="s1">styleSheetIdToCoverage: Dict = {}</span>
+        <span class="s3">for </span><span class="s1">entry </span><span class="s3">in </span><span class="s1">result[</span><span class="s4">'ruleUsage'</span><span class="s1">]:</span>
+            <span class="s1">ranges = styleSheetIdToCoverage.get(entry[</span><span class="s4">'styleSheetId'</span><span class="s1">])</span>
+            <span class="s3">if not </span><span class="s1">ranges:</span>
+                <span class="s1">ranges = []</span>
+                <span class="s1">styleSheetIdToCoverage[entry[</span><span class="s4">'styleSheetId'</span><span class="s1">]] = ranges</span>
+            <span class="s1">ranges.append({</span>
+                <span class="s4">'startOffset'</span><span class="s1">: entry[</span><span class="s4">'startOffset'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s4">'endOffset'</span><span class="s1">: entry[</span><span class="s4">'endOffset'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s4">'count'</span><span class="s1">: </span><span class="s5">1 </span><span class="s3">if </span><span class="s1">entry[</span><span class="s4">'used'</span><span class="s1">] </span><span class="s3">else </span><span class="s5">0</span>
+            <span class="s1">})</span>
+
+        <span class="s1">coverage = []</span>
+        <span class="s3">for </span><span class="s1">styleSheetId </span><span class="s3">in </span><span class="s1">self._stylesheetURLs:</span>
+            <span class="s1">url = self._stylesheetURLs.get(styleSheetId)</span>
+            <span class="s1">text = self._stylesheetSources.get(styleSheetId)</span>
+            <span class="s1">ranges = convertToDisjointRanges(</span>
+                <span class="s1">styleSheetIdToCoverage.get(styleSheetId</span><span class="s3">, </span><span class="s1">[])</span>
+            <span class="s1">)</span>
+            <span class="s1">coverage.append({</span><span class="s4">'url'</span><span class="s1">: url</span><span class="s3">, </span><span class="s4">'ranges'</span><span class="s1">: ranges</span><span class="s3">, </span><span class="s4">'text'</span><span class="s1">: text})</span>
+
+        <span class="s3">return </span><span class="s1">coverage</span>
+
+
+<span class="s3">def </span><span class="s1">convertToDisjointRanges(nestedRanges: List[Any]  </span><span class="s0"># noqa: C901</span>
+                            <span class="s1">) -&gt; List[Any]:</span>
+    <span class="s2">&quot;&quot;&quot;Convert ranges.&quot;&quot;&quot;</span>
+    <span class="s1">points: List = []</span>
+    <span class="s3">for </span><span class="s1">nested_range </span><span class="s3">in </span><span class="s1">nestedRanges:</span>
+        <span class="s1">points.append({</span><span class="s4">'offset'</span><span class="s1">: nested_range[</span><span class="s4">'startOffset'</span><span class="s1">]</span><span class="s3">, </span><span class="s4">'type'</span><span class="s1">: </span><span class="s5">0</span><span class="s3">,</span>
+                       <span class="s4">'range'</span><span class="s1">: nested_range})</span>
+        <span class="s1">points.append({</span><span class="s4">'offset'</span><span class="s1">: nested_range[</span><span class="s4">'endOffset'</span><span class="s1">]</span><span class="s3">, </span><span class="s4">'type'</span><span class="s1">: </span><span class="s5">1</span><span class="s3">,</span>
+                       <span class="s4">'range'</span><span class="s1">: nested_range})</span>
+
+    <span class="s0"># Sort points to form a valid parenthesis sequence.</span>
+    <span class="s3">def </span><span class="s1">_sort_func(a: Dict</span><span class="s3">, </span><span class="s1">b: Dict) -&gt; int:</span>
+        <span class="s0"># Sort with increasing offsets.</span>
+        <span class="s3">if </span><span class="s1">a[</span><span class="s4">'offset'</span><span class="s1">] != b[</span><span class="s4">'offset'</span><span class="s1">]:</span>
+            <span class="s3">return </span><span class="s1">a[</span><span class="s4">'offset'</span><span class="s1">] - b[</span><span class="s4">'offset'</span><span class="s1">]</span>
+        <span class="s0"># All &quot;end&quot; points should go before &quot;start&quot; points.</span>
+        <span class="s3">if </span><span class="s1">a[</span><span class="s4">'type'</span><span class="s1">] != b[</span><span class="s4">'type'</span><span class="s1">]:</span>
+            <span class="s3">return </span><span class="s1">b[</span><span class="s4">'type'</span><span class="s1">] - a[</span><span class="s4">'type'</span><span class="s1">]</span>
+        <span class="s1">aLength = a[</span><span class="s4">'range'</span><span class="s1">][</span><span class="s4">'endOffset'</span><span class="s1">] - a[</span><span class="s4">'range'</span><span class="s1">][</span><span class="s4">'startOffset'</span><span class="s1">]</span>
+        <span class="s1">bLength = b[</span><span class="s4">'range'</span><span class="s1">][</span><span class="s4">'endOffset'</span><span class="s1">] - b[</span><span class="s4">'range'</span><span class="s1">][</span><span class="s4">'startOffset'</span><span class="s1">]</span>
+        <span class="s0"># For two &quot;start&quot; points, the one with longer range goes first.</span>
+        <span class="s3">if </span><span class="s1">a[</span><span class="s4">'type'</span><span class="s1">] == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">bLength - aLength</span>
+        <span class="s0"># For two &quot;end&quot; points, the one with shorter range goes first.</span>
+        <span class="s3">return </span><span class="s1">aLength - bLength</span>
+
+    <span class="s1">points.sort(key=cmp_to_key(_sort_func))</span>
+
+    <span class="s1">hitCountStack: List[int] = []</span>
+    <span class="s1">results: List[Dict] = []</span>
+    <span class="s1">lastOffset = </span><span class="s5">0</span>
+    <span class="s0"># Run scanning line to intersect all ranges.</span>
+    <span class="s3">for </span><span class="s1">point </span><span class="s3">in </span><span class="s1">points:</span>
+        <span class="s3">if </span><span class="s1">(hitCountStack </span><span class="s3">and</span>
+                <span class="s1">lastOffset &lt; point[</span><span class="s4">'offset'</span><span class="s1">] </span><span class="s3">and</span>
+                <span class="s1">hitCountStack[len(hitCountStack) - </span><span class="s5">1</span><span class="s1">] &gt; </span><span class="s5">0</span><span class="s1">):</span>
+            <span class="s1">lastResult = results[-</span><span class="s5">1</span><span class="s1">] </span><span class="s3">if </span><span class="s1">results </span><span class="s3">else None</span>
+            <span class="s3">if </span><span class="s1">lastResult </span><span class="s3">and </span><span class="s1">lastResult[</span><span class="s4">'end'</span><span class="s1">] == lastOffset:</span>
+                <span class="s1">lastResult[</span><span class="s4">'end'</span><span class="s1">] = point[</span><span class="s4">'offset'</span><span class="s1">]</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">results.append({</span><span class="s4">'start'</span><span class="s1">: lastOffset</span><span class="s3">, </span><span class="s4">'end'</span><span class="s1">: point[</span><span class="s4">'offset'</span><span class="s1">]})</span>
+        <span class="s1">lastOffset = point[</span><span class="s4">'offset'</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">point[</span><span class="s4">'type'</span><span class="s1">] == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">hitCountStack.append(point[</span><span class="s4">'range'</span><span class="s1">][</span><span class="s4">'count'</span><span class="s1">])</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">hitCountStack.pop()</span>
+    <span class="s0"># Filter out empty ranges.</span>
+    <span class="s3">return </span><span class="s1">[range </span><span class="s3">for </span><span class="s1">range </span><span class="s3">in </span><span class="s1">results </span><span class="s3">if </span><span class="s1">range[</span><span class="s4">'end'</span><span class="s1">] - range[</span><span class="s4">'start'</span><span class="s1">] &gt; </span><span class="s5">1</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

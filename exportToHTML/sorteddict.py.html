@@ -1,0 +1,834 @@
+<html>
+<head>
+<title>sorteddict.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sorteddict.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Sorted Dict 
+============== 
+ 
+:doc:`Sorted Containers&lt;index&gt;` is an Apache2 licensed Python sorted 
+collections library, written in pure-Python, and fast as C-extensions. The 
+:doc:`introduction&lt;introduction&gt;` is the best way to get started. 
+ 
+Sorted dict implementations: 
+ 
+.. currentmodule:: sortedcontainers 
+ 
+* :class:`SortedDict` 
+* :class:`SortedKeysView` 
+* :class:`SortedItemsView` 
+* :class:`SortedValuesView` 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">sys</span>
+<span class="s2">import </span><span class="s1">warnings</span>
+
+<span class="s2">from </span><span class="s1">itertools </span><span class="s2">import </span><span class="s1">chain</span>
+
+<span class="s2">from </span><span class="s1">.sortedlist </span><span class="s2">import </span><span class="s1">SortedList</span><span class="s2">, </span><span class="s1">recursive_repr</span>
+<span class="s2">from </span><span class="s1">.sortedset </span><span class="s2">import </span><span class="s1">SortedSet</span>
+
+<span class="s3">###############################################################################</span>
+<span class="s3"># BEGIN Python 2/3 Shims</span>
+<span class="s3">###############################################################################</span>
+
+<span class="s2">try</span><span class="s1">:</span>
+    <span class="s2">from </span><span class="s1">collections.abc </span><span class="s2">import </span><span class="s1">(</span>
+        <span class="s1">ItemsView</span><span class="s2">, </span><span class="s1">KeysView</span><span class="s2">, </span><span class="s1">Mapping</span><span class="s2">, </span><span class="s1">ValuesView</span><span class="s2">, </span><span class="s1">Sequence</span>
+    <span class="s1">)</span>
+<span class="s2">except </span><span class="s1">ImportError:</span>
+    <span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">ItemsView</span><span class="s2">, </span><span class="s1">KeysView</span><span class="s2">, </span><span class="s1">Mapping</span><span class="s2">, </span><span class="s1">ValuesView</span><span class="s2">, </span><span class="s1">Sequence</span>
+
+<span class="s3">###############################################################################</span>
+<span class="s3"># END Python 2/3 Shims</span>
+<span class="s3">###############################################################################</span>
+
+
+<span class="s2">class </span><span class="s1">SortedDict(dict):</span>
+    <span class="s0">&quot;&quot;&quot;Sorted dict is a sorted mutable mapping. 
+ 
+    Sorted dict keys are maintained in sorted order. The design of sorted dict 
+    is simple: sorted dict inherits from dict to store items and maintains a 
+    sorted list of keys. 
+ 
+    Sorted dict keys must be hashable and comparable. The hash and total 
+    ordering of keys must not change while they are stored in the sorted dict. 
+ 
+    Mutable mapping methods: 
+ 
+    * :func:`SortedDict.__getitem__` (inherited from dict) 
+    * :func:`SortedDict.__setitem__` 
+    * :func:`SortedDict.__delitem__` 
+    * :func:`SortedDict.__iter__` 
+    * :func:`SortedDict.__len__` (inherited from dict) 
+ 
+    Methods for adding items: 
+ 
+    * :func:`SortedDict.setdefault` 
+    * :func:`SortedDict.update` 
+ 
+    Methods for removing items: 
+ 
+    * :func:`SortedDict.clear` 
+    * :func:`SortedDict.pop` 
+    * :func:`SortedDict.popitem` 
+ 
+    Methods for looking up items: 
+ 
+    * :func:`SortedDict.__contains__` (inherited from dict) 
+    * :func:`SortedDict.get` (inherited from dict) 
+    * :func:`SortedDict.peekitem` 
+ 
+    Methods for views: 
+ 
+    * :func:`SortedDict.keys` 
+    * :func:`SortedDict.items` 
+    * :func:`SortedDict.values` 
+ 
+    Methods for miscellany: 
+ 
+    * :func:`SortedDict.copy` 
+    * :func:`SortedDict.fromkeys` 
+    * :func:`SortedDict.__reversed__` 
+    * :func:`SortedDict.__eq__` (inherited from dict) 
+    * :func:`SortedDict.__ne__` (inherited from dict) 
+    * :func:`SortedDict.__repr__` 
+    * :func:`SortedDict._check` 
+ 
+    Sorted list methods available (applies to keys): 
+ 
+    * :func:`SortedList.bisect_left` 
+    * :func:`SortedList.bisect_right` 
+    * :func:`SortedList.count` 
+    * :func:`SortedList.index` 
+    * :func:`SortedList.irange` 
+    * :func:`SortedList.islice` 
+    * :func:`SortedList._reset` 
+ 
+    Additional sorted list methods available, if key-function used: 
+ 
+    * :func:`SortedKeyList.bisect_key_left` 
+    * :func:`SortedKeyList.bisect_key_right` 
+    * :func:`SortedKeyList.irange_key` 
+ 
+    Sorted dicts may only be compared for equality and inequality. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">&quot;&quot;&quot;Initialize sorted dict instance. 
+ 
+        Optional key-function argument defines a callable that, like the `key` 
+        argument to the built-in `sorted` function, extracts a comparison key 
+        from each dictionary key. If no function is specified, the default 
+        compares the dictionary keys directly. The key-function argument must 
+        be provided as a positional argument and must come before all other 
+        arguments. 
+ 
+        Optional iterable argument provides an initial sequence of pairs to 
+        initialize the sorted dict. Each pair in the sequence defines the key 
+        and corresponding value. If a key is seen more than once, the last 
+        value associated with it is stored in the new sorted dict. 
+ 
+        Optional mapping argument provides an initial mapping of items to 
+        initialize the sorted dict. 
+ 
+        If keyword arguments are given, the keywords themselves, with their 
+        associated values, are added as items to the dictionary. If a key is 
+        specified both in the positional argument and as a keyword argument, 
+        the value associated with the keyword is stored in the 
+        sorted dict. 
+ 
+        Sorted dict keys must be hashable, per the requirement for Python's 
+        dictionaries. Keys (or the result of the key-function) must also be 
+        comparable, per the requirement for sorted lists. 
+ 
+        &gt;&gt;&gt; d = {'alpha': 1, 'beta': 2} 
+        &gt;&gt;&gt; SortedDict([('alpha', 1), ('beta', 2)]) == d 
+        True 
+        &gt;&gt;&gt; SortedDict({'alpha': 1, 'beta': 2}) == d 
+        True 
+        &gt;&gt;&gt; SortedDict(alpha=1, beta=2) == d 
+        True 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">args </span><span class="s2">and </span><span class="s1">(args[</span><span class="s4">0</span><span class="s1">] </span><span class="s2">is None or </span><span class="s1">callable(args[</span><span class="s4">0</span><span class="s1">])):</span>
+            <span class="s1">_key = self._key = args[</span><span class="s4">0</span><span class="s1">]</span>
+            <span class="s1">args = args[</span><span class="s4">1</span><span class="s1">:]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">_key = self._key = </span><span class="s2">None</span>
+
+        <span class="s1">self._list = SortedList(key=_key)</span>
+
+        <span class="s3"># Reaching through ``self._list`` repeatedly adds unnecessary overhead</span>
+        <span class="s3"># so cache references to sorted list methods.</span>
+
+        <span class="s1">_list = self._list</span>
+        <span class="s1">self._list_add = _list.add</span>
+        <span class="s1">self._list_clear = _list.clear</span>
+        <span class="s1">self._list_iter = _list.__iter__</span>
+        <span class="s1">self._list_reversed = _list.__reversed__</span>
+        <span class="s1">self._list_pop = _list.pop</span>
+        <span class="s1">self._list_remove = _list.remove</span>
+        <span class="s1">self._list_update = _list.update</span>
+
+        <span class="s3"># Expose some sorted list methods publicly.</span>
+
+        <span class="s1">self.bisect_left = _list.bisect_left</span>
+        <span class="s1">self.bisect = _list.bisect_right</span>
+        <span class="s1">self.bisect_right = _list.bisect_right</span>
+        <span class="s1">self.index = _list.index</span>
+        <span class="s1">self.irange = _list.irange</span>
+        <span class="s1">self.islice = _list.islice</span>
+        <span class="s1">self._reset = _list._reset</span>
+
+        <span class="s2">if </span><span class="s1">_key </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">self.bisect_key_left = _list.bisect_key_left</span>
+            <span class="s1">self.bisect_key_right = _list.bisect_key_right</span>
+            <span class="s1">self.bisect_key = _list.bisect_key</span>
+            <span class="s1">self.irange_key = _list.irange_key</span>
+
+        <span class="s1">self._update(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">key(self):</span>
+        <span class="s0">&quot;&quot;&quot;Function used to extract comparison key from keys. 
+ 
+        Sorted dict compares keys directly when the key function is none. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._key</span>
+
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">iloc(self):</span>
+        <span class="s0">&quot;&quot;&quot;Cached reference of sorted keys view. 
+ 
+        Deprecated in version 2 of Sorted Containers. Use 
+        :func:`SortedDict.keys` instead. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># pylint: disable=attribute-defined-outside-init</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._iloc</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s1">warnings.warn(</span>
+                <span class="s5">'sorted_dict.iloc is deprecated.'</span>
+                <span class="s5">' Use SortedDict.keys() instead.'</span><span class="s2">,</span>
+                <span class="s1">DeprecationWarning</span><span class="s2">,</span>
+                <span class="s1">stacklevel=</span><span class="s4">2</span><span class="s2">,</span>
+            <span class="s1">)</span>
+            <span class="s1">_iloc = self._iloc = SortedKeysView(self)</span>
+            <span class="s2">return </span><span class="s1">_iloc</span>
+
+
+    <span class="s2">def </span><span class="s1">clear(self):</span>
+
+        <span class="s0">&quot;&quot;&quot;Remove all items from sorted dict. 
+ 
+        Runtime complexity: `O(n)` 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">dict.clear(self)</span>
+        <span class="s1">self._list_clear()</span>
+
+
+    <span class="s2">def </span><span class="s1">__delitem__(self</span><span class="s2">, </span><span class="s1">key):</span>
+        <span class="s0">&quot;&quot;&quot;Remove item from sorted dict identified by `key`. 
+ 
+        ``sd.__delitem__(key)`` &lt;==&gt; ``del sd[key]`` 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; del sd['b'] 
+        &gt;&gt;&gt; sd 
+        SortedDict({'a': 1, 'c': 3}) 
+        &gt;&gt;&gt; del sd['z'] 
+        Traceback (most recent call last): 
+          ... 
+        KeyError: 'z' 
+ 
+        :param key: `key` for item lookup 
+        :raises KeyError: if key not found 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">dict.__delitem__(self</span><span class="s2">, </span><span class="s1">key)</span>
+        <span class="s1">self._list_remove(key)</span>
+
+
+    <span class="s2">def </span><span class="s1">__iter__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return an iterator over the keys of the sorted dict. 
+ 
+        ``sd.__iter__()`` &lt;==&gt; ``iter(sd)`` 
+ 
+        Iterating the sorted dict while adding or deleting items may raise a 
+        :exc:`RuntimeError` or fail to iterate over all keys. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._list_iter()</span>
+
+
+    <span class="s2">def </span><span class="s1">__reversed__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return a reverse iterator over the keys of the sorted dict. 
+ 
+        ``sd.__reversed__()`` &lt;==&gt; ``reversed(sd)`` 
+ 
+        Iterating the sorted dict while adding or deleting items may raise a 
+        :exc:`RuntimeError` or fail to iterate over all keys. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._list_reversed()</span>
+
+
+    <span class="s2">def </span><span class="s1">__setitem__(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s0">&quot;&quot;&quot;Store item in sorted dict with `key` and corresponding `value`. 
+ 
+        ``sd.__setitem__(key, value)`` &lt;==&gt; ``sd[key] = value`` 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict() 
+        &gt;&gt;&gt; sd['c'] = 3 
+        &gt;&gt;&gt; sd['a'] = 1 
+        &gt;&gt;&gt; sd['b'] = 2 
+        &gt;&gt;&gt; sd 
+        SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+ 
+        :param key: key for item 
+        :param value: value for item 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">key </span><span class="s2">not in </span><span class="s1">self:</span>
+            <span class="s1">self._list_add(key)</span>
+        <span class="s1">dict.__setitem__(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value)</span>
+
+    <span class="s1">_setitem = __setitem__</span>
+
+
+    <span class="s2">def </span><span class="s1">__or__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">Mapping):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+        <span class="s1">items = chain(self.items()</span><span class="s2">, </span><span class="s1">other.items())</span>
+        <span class="s2">return </span><span class="s1">self.__class__(self._key</span><span class="s2">, </span><span class="s1">items)</span>
+
+
+    <span class="s2">def </span><span class="s1">__ror__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">Mapping):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+        <span class="s1">items = chain(other.items()</span><span class="s2">, </span><span class="s1">self.items())</span>
+        <span class="s2">return </span><span class="s1">self.__class__(self._key</span><span class="s2">, </span><span class="s1">items)</span>
+
+
+    <span class="s2">def </span><span class="s1">__ior__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s1">self._update(other)</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+
+    <span class="s2">def </span><span class="s1">copy(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return a shallow copy of the sorted dict. 
+ 
+        Runtime complexity: `O(n)` 
+ 
+        :return: new sorted dict 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.__class__(self._key</span><span class="s2">, </span><span class="s1">self.items())</span>
+
+    <span class="s1">__copy__ = copy</span>
+
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">fromkeys(cls</span><span class="s2">, </span><span class="s1">iterable</span><span class="s2">, </span><span class="s1">value=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot;Return a new sorted dict initailized from `iterable` and `value`. 
+ 
+        Items in the sorted dict have keys from `iterable` and values equal to 
+        `value`. 
+ 
+        Runtime complexity: `O(n*log(n))` 
+ 
+        :return: new sorted dict 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">cls((key</span><span class="s2">, </span><span class="s1">value) </span><span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">iterable)</span>
+
+
+    <span class="s2">def </span><span class="s1">keys(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return new sorted keys view of the sorted dict's keys. 
+ 
+        See :class:`SortedKeysView` for details. 
+ 
+        :return: new sorted keys view 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">SortedKeysView(self)</span>
+
+
+    <span class="s2">def </span><span class="s1">items(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return new sorted items view of the sorted dict's items. 
+ 
+        See :class:`SortedItemsView` for details. 
+ 
+        :return: new sorted items view 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">SortedItemsView(self)</span>
+
+
+    <span class="s2">def </span><span class="s1">values(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return new sorted values view of the sorted dict's values. 
+ 
+        See :class:`SortedValuesView` for details. 
+ 
+        :return: new sorted values view 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">SortedValuesView(self)</span>
+
+
+    <span class="s2">if </span><span class="s1">sys.hexversion &lt; </span><span class="s4">0x03000000</span><span class="s1">:</span>
+        <span class="s2">def </span><span class="s1">__make_raise_attributeerror(original</span><span class="s2">, </span><span class="s1">alternate):</span>
+            <span class="s3"># pylint: disable=no-self-argument</span>
+            <span class="s1">message = (</span>
+                <span class="s5">'SortedDict.{original}() is not implemented.'</span>
+                <span class="s5">' Use SortedDict.{alternate}() instead.'</span>
+            <span class="s1">).format(original=original</span><span class="s2">, </span><span class="s1">alternate=alternate)</span>
+            <span class="s2">def </span><span class="s1">method(self):</span>
+                <span class="s3"># pylint: disable=missing-docstring,unused-argument</span>
+                <span class="s2">raise </span><span class="s1">AttributeError(message)</span>
+            <span class="s1">method.__name__ = original  </span><span class="s3"># pylint: disable=non-str-assignment-to-dunder-name</span>
+            <span class="s1">method.__doc__ = message</span>
+            <span class="s2">return </span><span class="s1">property(method)</span>
+
+        <span class="s1">iteritems = __make_raise_attributeerror(</span><span class="s5">'iteritems'</span><span class="s2">, </span><span class="s5">'items'</span><span class="s1">)</span>
+        <span class="s1">iterkeys = __make_raise_attributeerror(</span><span class="s5">'iterkeys'</span><span class="s2">, </span><span class="s5">'keys'</span><span class="s1">)</span>
+        <span class="s1">itervalues = __make_raise_attributeerror(</span><span class="s5">'itervalues'</span><span class="s2">, </span><span class="s5">'values'</span><span class="s1">)</span>
+        <span class="s1">viewitems = __make_raise_attributeerror(</span><span class="s5">'viewitems'</span><span class="s2">, </span><span class="s5">'items'</span><span class="s1">)</span>
+        <span class="s1">viewkeys = __make_raise_attributeerror(</span><span class="s5">'viewkeys'</span><span class="s2">, </span><span class="s5">'keys'</span><span class="s1">)</span>
+        <span class="s1">viewvalues = __make_raise_attributeerror(</span><span class="s5">'viewvalues'</span><span class="s2">, </span><span class="s5">'values'</span><span class="s1">)</span>
+
+
+    <span class="s2">class </span><span class="s1">_NotGiven(object):</span>
+        <span class="s3"># pylint: disable=too-few-public-methods</span>
+        <span class="s2">def </span><span class="s1">__repr__(self):</span>
+            <span class="s2">return </span><span class="s5">'&lt;not-given&gt;'</span>
+
+    <span class="s1">__not_given = _NotGiven()</span>
+
+    <span class="s2">def </span><span class="s1">pop(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">default=__not_given):</span>
+        <span class="s0">&quot;&quot;&quot;Remove and return value for item identified by `key`. 
+ 
+        If the `key` is not found then return `default` if given. If `default` 
+        is not given then raise :exc:`KeyError`. 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; sd.pop('c') 
+        3 
+        &gt;&gt;&gt; sd.pop('z', 26) 
+        26 
+        &gt;&gt;&gt; sd.pop('y') 
+        Traceback (most recent call last): 
+          ... 
+        KeyError: 'y' 
+ 
+        :param key: `key` for item 
+        :param default: `default` value if key not found (optional) 
+        :return: value for item 
+        :raises KeyError: if `key` not found and `default` not given 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">key </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s1">self._list_remove(key)</span>
+            <span class="s2">return </span><span class="s1">dict.pop(self</span><span class="s2">, </span><span class="s1">key)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">default </span><span class="s2">is </span><span class="s1">self.__not_given:</span>
+                <span class="s2">raise </span><span class="s1">KeyError(key)</span>
+            <span class="s2">return </span><span class="s1">default</span>
+
+
+    <span class="s2">def </span><span class="s1">popitem(self</span><span class="s2">, </span><span class="s1">index=-</span><span class="s4">1</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot;Remove and return ``(key, value)`` pair at `index` from sorted dict. 
+ 
+        Optional argument `index` defaults to -1, the last item in the sorted 
+        dict. Specify ``index=0`` for the first item in the sorted dict. 
+ 
+        If the sorted dict is empty, raises :exc:`KeyError`. 
+ 
+        If the `index` is out of range, raises :exc:`IndexError`. 
+ 
+        Runtime complexity: `O(log(n))` 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; sd.popitem() 
+        ('c', 3) 
+        &gt;&gt;&gt; sd.popitem(0) 
+        ('a', 1) 
+        &gt;&gt;&gt; sd.popitem(100) 
+        Traceback (most recent call last): 
+          ... 
+        IndexError: list index out of range 
+ 
+        :param int index: `index` of item (default -1) 
+        :return: key and value pair 
+        :raises KeyError: if sorted dict is empty 
+        :raises IndexError: if `index` out of range 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self:</span>
+            <span class="s2">raise </span><span class="s1">KeyError(</span><span class="s5">'popitem(): dictionary is empty'</span><span class="s1">)</span>
+
+        <span class="s1">key = self._list_pop(index)</span>
+        <span class="s1">value = dict.pop(self</span><span class="s2">, </span><span class="s1">key)</span>
+        <span class="s2">return </span><span class="s1">(key</span><span class="s2">, </span><span class="s1">value)</span>
+
+
+    <span class="s2">def </span><span class="s1">peekitem(self</span><span class="s2">, </span><span class="s1">index=-</span><span class="s4">1</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot;Return ``(key, value)`` pair at `index` in sorted dict. 
+ 
+        Optional argument `index` defaults to -1, the last item in the sorted 
+        dict. Specify ``index=0`` for the first item in the sorted dict. 
+ 
+        Unlike :func:`SortedDict.popitem`, the sorted dict is not modified. 
+ 
+        If the `index` is out of range, raises :exc:`IndexError`. 
+ 
+        Runtime complexity: `O(log(n))` 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; sd.peekitem() 
+        ('c', 3) 
+        &gt;&gt;&gt; sd.peekitem(0) 
+        ('a', 1) 
+        &gt;&gt;&gt; sd.peekitem(100) 
+        Traceback (most recent call last): 
+          ... 
+        IndexError: list index out of range 
+ 
+        :param int index: index of item (default -1) 
+        :return: key and value pair 
+        :raises IndexError: if `index` out of range 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">key = self._list[index]</span>
+        <span class="s2">return </span><span class="s1">key</span><span class="s2">, </span><span class="s1">self[key]</span>
+
+
+    <span class="s2">def </span><span class="s1">setdefault(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot;Return value for item identified by `key` in sorted dict. 
+ 
+        If `key` is in the sorted dict then return its value. If `key` is not 
+        in the sorted dict then insert `key` with value `default` and return 
+        `default`. 
+ 
+        Optional argument `default` defaults to none. 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict() 
+        &gt;&gt;&gt; sd.setdefault('a', 1) 
+        1 
+        &gt;&gt;&gt; sd.setdefault('a', 10) 
+        1 
+        &gt;&gt;&gt; sd 
+        SortedDict({'a': 1}) 
+ 
+        :param key: key for item 
+        :param default: value for item (default None) 
+        :return: value for item identified by `key` 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">key </span><span class="s2">in </span><span class="s1">self:</span>
+            <span class="s2">return </span><span class="s1">self[key]</span>
+        <span class="s1">dict.__setitem__(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">default)</span>
+        <span class="s1">self._list_add(key)</span>
+        <span class="s2">return </span><span class="s1">default</span>
+
+
+    <span class="s2">def </span><span class="s1">update(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">&quot;&quot;&quot;Update sorted dict with items from `args` and `kwargs`. 
+ 
+        Overwrites existing items. 
+ 
+        Optional arguments `args` and `kwargs` may be a mapping, an iterable of 
+        pairs or keyword arguments. See :func:`SortedDict.__init__` for 
+        details. 
+ 
+        :param args: mapping or iterable of pairs 
+        :param kwargs: keyword arguments mapping 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self:</span>
+            <span class="s1">dict.update(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">self._list_update(dict.__iter__(self))</span>
+            <span class="s2">return</span>
+
+        <span class="s2">if not </span><span class="s1">kwargs </span><span class="s2">and </span><span class="s1">len(args) == </span><span class="s4">1 </span><span class="s2">and </span><span class="s1">isinstance(args[</span><span class="s4">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">dict):</span>
+            <span class="s1">pairs = args[</span><span class="s4">0</span><span class="s1">]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">pairs = dict(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+        <span class="s2">if </span><span class="s1">(</span><span class="s4">10 </span><span class="s1">* len(pairs)) &gt; len(self):</span>
+            <span class="s1">dict.update(self</span><span class="s2">, </span><span class="s1">pairs)</span>
+            <span class="s1">self._list_clear()</span>
+            <span class="s1">self._list_update(dict.__iter__(self))</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">pairs:</span>
+                <span class="s1">self._setitem(key</span><span class="s2">, </span><span class="s1">pairs[key])</span>
+
+    <span class="s1">_update = update</span>
+
+
+    <span class="s2">def </span><span class="s1">__reduce__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Support for pickle. 
+ 
+        The tricks played with caching references in 
+        :func:`SortedDict.__init__` confuse pickle so customize the reducer. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">items = dict.copy(self)</span>
+        <span class="s2">return </span><span class="s1">(type(self)</span><span class="s2">, </span><span class="s1">(self._key</span><span class="s2">, </span><span class="s1">items))</span>
+
+
+    <span class="s1">@recursive_repr()</span>
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return string representation of sorted dict. 
+ 
+        ``sd.__repr__()`` &lt;==&gt; ``repr(sd)`` 
+ 
+        :return: string representation 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">_key = self._key</span>
+        <span class="s1">type_name = type(self).__name__</span>
+        <span class="s1">key_arg = </span><span class="s5">'' </span><span class="s2">if </span><span class="s1">_key </span><span class="s2">is None else </span><span class="s5">'{0!r}, '</span><span class="s1">.format(_key)</span>
+        <span class="s1">item_format = </span><span class="s5">'{0!r}: {1!r}'</span><span class="s1">.format</span>
+        <span class="s1">items = </span><span class="s5">', '</span><span class="s1">.join(item_format(key</span><span class="s2">, </span><span class="s1">self[key]) </span><span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">self._list)</span>
+        <span class="s2">return </span><span class="s5">'{0}({1}{{{2}}})'</span><span class="s1">.format(type_name</span><span class="s2">, </span><span class="s1">key_arg</span><span class="s2">, </span><span class="s1">items)</span>
+
+
+    <span class="s2">def </span><span class="s1">_check(self):</span>
+        <span class="s0">&quot;&quot;&quot;Check invariants of sorted dict. 
+ 
+        Runtime complexity: `O(n)` 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">_list = self._list</span>
+        <span class="s1">_list._check()</span>
+        <span class="s2">assert </span><span class="s1">len(self) == len(_list)</span>
+        <span class="s2">assert </span><span class="s1">all(key </span><span class="s2">in </span><span class="s1">self </span><span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">_list)</span>
+
+
+<span class="s2">def </span><span class="s1">_view_delitem(self</span><span class="s2">, </span><span class="s1">index):</span>
+    <span class="s0">&quot;&quot;&quot;Remove item at `index` from sorted dict. 
+ 
+    ``view.__delitem__(index)`` &lt;==&gt; ``del view[index]`` 
+ 
+    Supports slicing. 
+ 
+    Runtime complexity: `O(log(n))` -- approximate. 
+ 
+    &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+    &gt;&gt;&gt; view = sd.keys() 
+    &gt;&gt;&gt; del view[0] 
+    &gt;&gt;&gt; sd 
+    SortedDict({'b': 2, 'c': 3}) 
+    &gt;&gt;&gt; del view[-1] 
+    &gt;&gt;&gt; sd 
+    SortedDict({'b': 2}) 
+    &gt;&gt;&gt; del view[:] 
+    &gt;&gt;&gt; sd 
+    SortedDict({}) 
+ 
+    :param index: integer or slice for indexing 
+    :raises IndexError: if index out of range 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">_mapping = self._mapping</span>
+    <span class="s1">_list = _mapping._list</span>
+    <span class="s1">dict_delitem = dict.__delitem__</span>
+    <span class="s2">if </span><span class="s1">isinstance(index</span><span class="s2">, </span><span class="s1">slice):</span>
+        <span class="s1">keys = _list[index]</span>
+        <span class="s2">del </span><span class="s1">_list[index]</span>
+        <span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">keys:</span>
+            <span class="s1">dict_delitem(_mapping</span><span class="s2">, </span><span class="s1">key)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">key = _list.pop(index)</span>
+        <span class="s1">dict_delitem(_mapping</span><span class="s2">, </span><span class="s1">key)</span>
+
+
+<span class="s2">class </span><span class="s1">SortedKeysView(KeysView</span><span class="s2">, </span><span class="s1">Sequence):</span>
+    <span class="s0">&quot;&quot;&quot;Sorted keys view is a dynamic view of the sorted dict's keys. 
+ 
+    When the sorted dict's keys change, the view reflects those changes. 
+ 
+    The keys view implements the set and sequence abstract base classes. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">__slots__ = ()</span>
+
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_from_iterable(cls</span><span class="s2">, </span><span class="s1">it):</span>
+        <span class="s2">return </span><span class="s1">SortedSet(it)</span>
+
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">index):</span>
+        <span class="s0">&quot;&quot;&quot;Lookup key at `index` in sorted keys views. 
+ 
+        ``skv.__getitem__(index)`` &lt;==&gt; ``skv[index]`` 
+ 
+        Supports slicing. 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; skv = sd.keys() 
+        &gt;&gt;&gt; skv[0] 
+        'a' 
+        &gt;&gt;&gt; skv[-1] 
+        'c' 
+        &gt;&gt;&gt; skv[:] 
+        ['a', 'b', 'c'] 
+        &gt;&gt;&gt; skv[100] 
+        Traceback (most recent call last): 
+          ... 
+        IndexError: list index out of range 
+ 
+        :param index: integer or slice for indexing 
+        :return: key or list of keys 
+        :raises IndexError: if index out of range 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self._mapping._list[index]</span>
+
+
+    <span class="s1">__delitem__ = _view_delitem</span>
+
+
+<span class="s2">class </span><span class="s1">SortedItemsView(ItemsView</span><span class="s2">, </span><span class="s1">Sequence):</span>
+    <span class="s0">&quot;&quot;&quot;Sorted items view is a dynamic view of the sorted dict's items. 
+ 
+    When the sorted dict's items change, the view reflects those changes. 
+ 
+    The items view implements the set and sequence abstract base classes. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">__slots__ = ()</span>
+
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_from_iterable(cls</span><span class="s2">, </span><span class="s1">it):</span>
+        <span class="s2">return </span><span class="s1">SortedSet(it)</span>
+
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">index):</span>
+        <span class="s0">&quot;&quot;&quot;Lookup item at `index` in sorted items view. 
+ 
+        ``siv.__getitem__(index)`` &lt;==&gt; ``siv[index]`` 
+ 
+        Supports slicing. 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; siv = sd.items() 
+        &gt;&gt;&gt; siv[0] 
+        ('a', 1) 
+        &gt;&gt;&gt; siv[-1] 
+        ('c', 3) 
+        &gt;&gt;&gt; siv[:] 
+        [('a', 1), ('b', 2), ('c', 3)] 
+        &gt;&gt;&gt; siv[100] 
+        Traceback (most recent call last): 
+          ... 
+        IndexError: list index out of range 
+ 
+        :param index: integer or slice for indexing 
+        :return: item or list of items 
+        :raises IndexError: if index out of range 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">_mapping = self._mapping</span>
+        <span class="s1">_mapping_list = _mapping._list</span>
+
+        <span class="s2">if </span><span class="s1">isinstance(index</span><span class="s2">, </span><span class="s1">slice):</span>
+            <span class="s1">keys = _mapping_list[index]</span>
+            <span class="s2">return </span><span class="s1">[(key</span><span class="s2">, </span><span class="s1">_mapping[key]) </span><span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">keys]</span>
+
+        <span class="s1">key = _mapping_list[index]</span>
+        <span class="s2">return </span><span class="s1">key</span><span class="s2">, </span><span class="s1">_mapping[key]</span>
+
+
+    <span class="s1">__delitem__ = _view_delitem</span>
+
+
+<span class="s2">class </span><span class="s1">SortedValuesView(ValuesView</span><span class="s2">, </span><span class="s1">Sequence):</span>
+    <span class="s0">&quot;&quot;&quot;Sorted values view is a dynamic view of the sorted dict's values. 
+ 
+    When the sorted dict's values change, the view reflects those changes. 
+ 
+    The values view implements the sequence abstract base class. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">__slots__ = ()</span>
+
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">index):</span>
+        <span class="s0">&quot;&quot;&quot;Lookup value at `index` in sorted values view. 
+ 
+        ``siv.__getitem__(index)`` &lt;==&gt; ``siv[index]`` 
+ 
+        Supports slicing. 
+ 
+        Runtime complexity: `O(log(n))` -- approximate. 
+ 
+        &gt;&gt;&gt; sd = SortedDict({'a': 1, 'b': 2, 'c': 3}) 
+        &gt;&gt;&gt; svv = sd.values() 
+        &gt;&gt;&gt; svv[0] 
+        1 
+        &gt;&gt;&gt; svv[-1] 
+        3 
+        &gt;&gt;&gt; svv[:] 
+        [1, 2, 3] 
+        &gt;&gt;&gt; svv[100] 
+        Traceback (most recent call last): 
+          ... 
+        IndexError: list index out of range 
+ 
+        :param index: integer or slice for indexing 
+        :return: value or list of values 
+        :raises IndexError: if index out of range 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">_mapping = self._mapping</span>
+        <span class="s1">_mapping_list = _mapping._list</span>
+
+        <span class="s2">if </span><span class="s1">isinstance(index</span><span class="s2">, </span><span class="s1">slice):</span>
+            <span class="s1">keys = _mapping_list[index]</span>
+            <span class="s2">return </span><span class="s1">[_mapping[key] </span><span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">keys]</span>
+
+        <span class="s1">key = _mapping_list[index]</span>
+        <span class="s2">return </span><span class="s1">_mapping[key]</span>
+
+
+    <span class="s1">__delitem__ = _view_delitem</span>
+</pre>
+</body>
+</html>

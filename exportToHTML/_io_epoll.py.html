@@ -1,0 +1,338 @@
+<html>
+<head>
+<title>_io_epoll.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_io_epoll.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">select</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">attr</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">defaultdict</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Dict</span><span class="s0">, </span><span class="s1">TYPE_CHECKING</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">._run </span><span class="s0">import </span><span class="s1">_public</span>
+<span class="s0">from </span><span class="s1">._io_common </span><span class="s0">import </span><span class="s1">wake_all</span>
+<span class="s0">from </span><span class="s1">._wakeup_socketpair </span><span class="s0">import </span><span class="s1">WakeupSocketpair</span>
+
+<span class="s0">assert not </span><span class="s1">TYPE_CHECKING </span><span class="s0">or </span><span class="s1">sys.platform == </span><span class="s2">&quot;linux&quot;</span>
+
+
+<span class="s1">@attr.s(slots=</span><span class="s0">True, </span><span class="s1">eq=</span><span class="s0">False, </span><span class="s1">frozen=</span><span class="s0">True</span><span class="s1">)</span>
+<span class="s0">class </span><span class="s1">_EpollStatistics:</span>
+    <span class="s1">tasks_waiting_read = attr.ib()</span>
+    <span class="s1">tasks_waiting_write = attr.ib()</span>
+    <span class="s1">backend = attr.ib(default=</span><span class="s2">&quot;epoll&quot;</span><span class="s1">)</span>
+
+
+<span class="s3"># Some facts about epoll</span>
+<span class="s3"># ----------------------</span>
+<span class="s3">#</span>
+<span class="s3"># Internally, an epoll object is sort of like a WeakKeyDictionary where the</span>
+<span class="s3"># keys are tuples of (fd number, file object). When you call epoll_ctl, you</span>
+<span class="s3"># pass in an fd; that gets converted to an (fd number, file object) tuple by</span>
+<span class="s3"># looking up the fd in the process's fd table at the time of the call. When an</span>
+<span class="s3"># event happens on the file object, epoll_wait drops the file object part, and</span>
+<span class="s3"># just returns the fd number in its event. So from the outside it looks like</span>
+<span class="s3"># it's keeping a table of fds, but really it's a bit more complicated. This</span>
+<span class="s3"># has some subtle consequences.</span>
+<span class="s3">#</span>
+<span class="s3"># In general, file objects inside the kernel are reference counted. Each entry</span>
+<span class="s3"># in a process's fd table holds a strong reference to the corresponding file</span>
+<span class="s3"># object, and most operations that use file objects take a temporary strong</span>
+<span class="s3"># reference while they're working. So when you call close() on an fd, that</span>
+<span class="s3"># might or might not cause the file object to be deallocated -- it depends on</span>
+<span class="s3"># whether there are any other references to that file object. Some common ways</span>
+<span class="s3"># this can happen:</span>
+<span class="s3">#</span>
+<span class="s3"># - after calling dup(), you have two fds in the same process referring to the</span>
+<span class="s3">#   same file object. Even if you close one fd (= remove that entry from the</span>
+<span class="s3">#   fd table), the file object will be kept alive by the other fd.</span>
+<span class="s3"># - when calling fork(), the child inherits a copy of the parent's fd table,</span>
+<span class="s3">#   so all the file objects get another reference. (But if the fork() is</span>
+<span class="s3">#   followed by exec(), then all of the child's fds that have the CLOEXEC flag</span>
+<span class="s3">#   set will be closed at that point.)</span>
+<span class="s3"># - most syscalls that work on fds take a strong reference to the underlying</span>
+<span class="s3">#   file object while they're using it. So there's one thread blocked in</span>
+<span class="s3">#   read(fd), and then another thread calls close() on the last fd referring</span>
+<span class="s3">#   to that object, the underlying file won't actually be closed until</span>
+<span class="s3">#   after read() returns.</span>
+<span class="s3">#</span>
+<span class="s3"># However, epoll does *not* take a reference to any of the file objects in its</span>
+<span class="s3"># interest set (that's what makes it similar to a WeakKeyDictionary). File</span>
+<span class="s3"># objects inside an epoll interest set will be deallocated if all *other*</span>
+<span class="s3"># references to them are closed. And when that happens, the epoll object will</span>
+<span class="s3"># automatically deregister that file object and stop reporting events on it.</span>
+<span class="s3"># So that's quite handy.</span>
+<span class="s3">#</span>
+<span class="s3"># But, what happens if we do this?</span>
+<span class="s3">#</span>
+<span class="s3">#   fd1 = open(...)</span>
+<span class="s3">#   epoll_ctl(EPOLL_CTL_ADD, fd1, ...)</span>
+<span class="s3">#   fd2 = dup(fd1)</span>
+<span class="s3">#   close(fd1)</span>
+<span class="s3">#</span>
+<span class="s3"># In this case, the dup() keeps the underlying file object alive, so it</span>
+<span class="s3"># remains registered in the epoll object's interest set, as the tuple (fd1,</span>
+<span class="s3"># file object). But, fd1 no longer refers to this file object! You might think</span>
+<span class="s3"># there was some magic to handle this, but unfortunately no; the consequences</span>
+<span class="s3"># are totally predictable from what I said above:</span>
+<span class="s3">#</span>
+<span class="s3"># If any events occur on the file object, then epoll will report them as</span>
+<span class="s3"># happening on fd1, even though that doesn't make sense.</span>
+<span class="s3">#</span>
+<span class="s3"># Perhaps we would like to deregister fd1 to stop getting nonsensical events.</span>
+<span class="s3"># But how? When we call epoll_ctl, we have to pass an fd number, which will</span>
+<span class="s3"># get expanded to an (fd number, file object) tuple. We can't pass fd1,</span>
+<span class="s3"># because when epoll_ctl tries to look it up, it won't find our file object.</span>
+<span class="s3"># And we can't pass fd2, because that will get expanded to (fd2, file object),</span>
+<span class="s3"># which is a different lookup key. In fact, it's *impossible* to de-register</span>
+<span class="s3"># this fd!</span>
+<span class="s3">#</span>
+<span class="s3"># We could even have fd1 get assigned to another file object, and then we can</span>
+<span class="s3"># have multiple keys registered simultaneously using the same fd number, like:</span>
+<span class="s3"># (fd1, file object 1), (fd1, file object 2). And if events happen on either</span>
+<span class="s3"># file object, then epoll will happily report that something happened to</span>
+<span class="s3"># &quot;fd1&quot;.</span>
+<span class="s3">#</span>
+<span class="s3"># Now here's what makes this especially nasty: suppose the old file object</span>
+<span class="s3"># becomes, say, readable. That means that every time we call epoll_wait, it</span>
+<span class="s3"># will return immediately to tell us that &quot;fd1&quot; is readable. Normally, we</span>
+<span class="s3"># would handle this by de-registering fd1, waking up the corresponding call to</span>
+<span class="s3"># wait_readable, then the user will call read() or recv() or something, and</span>
+<span class="s3"># we're fine. But if this happens on a stale fd where we can't remove the</span>
+<span class="s3"># registration, then we might get stuck in a state where epoll_wait *always*</span>
+<span class="s3"># returns immediately, so our event loop becomes unable to sleep, and now our</span>
+<span class="s3"># program is burning 100% of the CPU doing nothing, with no way out.</span>
+<span class="s3">#</span>
+<span class="s3">#</span>
+<span class="s3"># What does this mean for Trio?</span>
+<span class="s3"># -----------------------------</span>
+<span class="s3">#</span>
+<span class="s3"># Since we don't control the user's code, we have no way to guarantee that we</span>
+<span class="s3"># don't get stuck with stale fd's in our epoll interest set. For example, a</span>
+<span class="s3"># user could call wait_readable(fd) in one task, and then while that's</span>
+<span class="s3"># running, they might close(fd) from another task. In this situation, they're</span>
+<span class="s3"># *supposed* to call notify_closing(fd) to let us know what's happening, so we</span>
+<span class="s3"># can interrupt the wait_readable() call and avoid getting into this mess. And</span>
+<span class="s3"># that's the only thing that can possibly work correctly in all cases. But</span>
+<span class="s3"># sometimes user code has bugs. So if this does happen, we'd like to degrade</span>
+<span class="s3"># gracefully, and survive without corrupting Trio's internal state or</span>
+<span class="s3"># otherwise causing the whole program to explode messily.</span>
+<span class="s3">#</span>
+<span class="s3"># Our solution: we always use EPOLLONESHOT. This way, we might get *one*</span>
+<span class="s3"># spurious event on a stale fd, but then epoll will automatically silence it</span>
+<span class="s3"># until we explicitly say that we want more events... and if we have a stale</span>
+<span class="s3"># fd, then we actually can't re-enable it! So we can't get stuck in an</span>
+<span class="s3"># infinite busy-loop. If there's a stale fd hanging around, then it might</span>
+<span class="s3"># cause a spurious `BusyResourceError`, or cause one wait_* call to return</span>
+<span class="s3"># before it should have... but in general, the wait_* functions are allowed to</span>
+<span class="s3"># have some spurious wakeups; the user code will just attempt the operation,</span>
+<span class="s3"># get EWOULDBLOCK, and call wait_* again. And the program as a whole will</span>
+<span class="s3"># survive, any exceptions will propagate, etc.</span>
+<span class="s3">#</span>
+<span class="s3"># As a bonus, EPOLLONESHOT also saves us having to explicitly deregister fds</span>
+<span class="s3"># on the normal wakeup path, so it's a bit more efficient in general.</span>
+<span class="s3">#</span>
+<span class="s3"># However, EPOLLONESHOT has a few trade-offs to consider:</span>
+<span class="s3">#</span>
+<span class="s3"># First, you can't combine EPOLLONESHOT with EPOLLEXCLUSIVE. This is a bit sad</span>
+<span class="s3"># in one somewhat rare case: if you have a multi-process server where a group</span>
+<span class="s3"># of processes all share the same listening socket, then EPOLLEXCLUSIVE can be</span>
+<span class="s3"># used to avoid &quot;thundering herd&quot; problems when a new connection comes in. But</span>
+<span class="s3"># this isn't too bad. It's not clear if EPOLLEXCLUSIVE even works for us</span>
+<span class="s3"># anyway:</span>
+<span class="s3">#</span>
+<span class="s3">#   https://stackoverflow.com/questions/41582560/how-does-epolls-epollexclusive-mode-interact-with-level-triggering</span>
+<span class="s3">#</span>
+<span class="s3"># And it's not clear that EPOLLEXCLUSIVE is a great approach either:</span>
+<span class="s3">#</span>
+<span class="s3">#   https://blog.cloudflare.com/the-sad-state-of-linux-socket-balancing/</span>
+<span class="s3">#</span>
+<span class="s3"># And if we do need to support this, we could always add support through some</span>
+<span class="s3"># more-specialized API in the future. So this isn't a blocker to using</span>
+<span class="s3"># EPOLLONESHOT.</span>
+<span class="s3">#</span>
+<span class="s3"># Second, EPOLLONESHOT does not actually *deregister* the fd after delivering</span>
+<span class="s3"># an event (EPOLL_CTL_DEL). Instead, it keeps the fd registered, but</span>
+<span class="s3"># effectively does an EPOLL_CTL_MOD to set the fd's interest flags to</span>
+<span class="s3"># all-zeros. So we could still end up with an fd hanging around in the</span>
+<span class="s3"># interest set for a long time, even if we're not using it.</span>
+<span class="s3">#</span>
+<span class="s3"># Fortunately, this isn't a problem, because it's only a weak reference – if</span>
+<span class="s3"># we have a stale fd that's been silenced by EPOLLONESHOT, then it wastes a</span>
+<span class="s3"># tiny bit of kernel memory remembering this fd that can never be revived, but</span>
+<span class="s3"># when the underlying file object is eventually closed, that memory will be</span>
+<span class="s3"># reclaimed. So that's OK.</span>
+<span class="s3">#</span>
+<span class="s3"># The other issue is that when someone calls wait_*, using EPOLLONESHOT means</span>
+<span class="s3"># that if we have ever waited for this fd before, we have to use EPOLL_CTL_MOD</span>
+<span class="s3"># to re-enable it; but if it's a new fd, we have to use EPOLL_CTL_ADD. How do</span>
+<span class="s3"># we know which one to use? There's no reasonable way to track which fds are</span>
+<span class="s3"># currently registered -- remember, we're assuming the user might have gone</span>
+<span class="s3"># and rearranged their fds without telling us!</span>
+<span class="s3">#</span>
+<span class="s3"># Fortunately, this also has a simple solution: if we wait on a socket or</span>
+<span class="s3"># other fd once, then we'll probably wait on it lots of times. And the epoll</span>
+<span class="s3"># object itself knows which fds it already has registered. So when an fd comes</span>
+<span class="s3"># in, we optimistically assume that it's been waited on before, and try doing</span>
+<span class="s3"># EPOLL_CTL_MOD. And if that fails with an ENOENT error, then we try again</span>
+<span class="s3"># with EPOLL_CTL_ADD.</span>
+<span class="s3">#</span>
+<span class="s3"># So that's why this code is the way it is. And now you know more than you</span>
+<span class="s3"># wanted to about how epoll works.</span>
+
+
+<span class="s1">@attr.s(slots=</span><span class="s0">True, </span><span class="s1">eq=</span><span class="s0">False</span><span class="s1">)</span>
+<span class="s0">class </span><span class="s1">EpollWaiters:</span>
+    <span class="s1">read_task = attr.ib(default=</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s1">write_task = attr.ib(default=</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s1">current_flags = attr.ib(default=</span><span class="s4">0</span><span class="s1">)</span>
+
+
+<span class="s1">@attr.s(slots=</span><span class="s0">True, </span><span class="s1">eq=</span><span class="s0">False, </span><span class="s1">hash=</span><span class="s0">False</span><span class="s1">)</span>
+<span class="s0">class </span><span class="s1">EpollIOManager:</span>
+    <span class="s1">_epoll = attr.ib(factory=select.epoll)</span>
+    <span class="s3"># {fd: EpollWaiters}</span>
+    <span class="s1">_registered = attr.ib(</span>
+        <span class="s1">factory=</span><span class="s0">lambda</span><span class="s1">: defaultdict(EpollWaiters)</span><span class="s0">, </span><span class="s1">type=Dict[int</span><span class="s0">, </span><span class="s1">EpollWaiters]</span>
+    <span class="s1">)</span>
+    <span class="s1">_force_wakeup = attr.ib(factory=WakeupSocketpair)</span>
+    <span class="s1">_force_wakeup_fd = attr.ib(default=</span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__attrs_post_init__(self):</span>
+        <span class="s1">self._epoll.register(self._force_wakeup.wakeup_sock</span><span class="s0">, </span><span class="s1">select.EPOLLIN)</span>
+        <span class="s1">self._force_wakeup_fd = self._force_wakeup.wakeup_sock.fileno()</span>
+
+    <span class="s0">def </span><span class="s1">statistics(self):</span>
+        <span class="s1">tasks_waiting_read = </span><span class="s4">0</span>
+        <span class="s1">tasks_waiting_write = </span><span class="s4">0</span>
+        <span class="s0">for </span><span class="s1">waiter </span><span class="s0">in </span><span class="s1">self._registered.values():</span>
+            <span class="s0">if </span><span class="s1">waiter.read_task </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">tasks_waiting_read += </span><span class="s4">1</span>
+            <span class="s0">if </span><span class="s1">waiter.write_task </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">tasks_waiting_write += </span><span class="s4">1</span>
+        <span class="s0">return </span><span class="s1">_EpollStatistics(</span>
+            <span class="s1">tasks_waiting_read=tasks_waiting_read</span><span class="s0">,</span>
+            <span class="s1">tasks_waiting_write=tasks_waiting_write</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">close(self):</span>
+        <span class="s1">self._epoll.close()</span>
+        <span class="s1">self._force_wakeup.close()</span>
+
+    <span class="s0">def </span><span class="s1">force_wakeup(self):</span>
+        <span class="s1">self._force_wakeup.wakeup_thread_and_signal_safe()</span>
+
+    <span class="s3"># Return value must be False-y IFF the timeout expired, NOT if any I/O</span>
+    <span class="s3"># happened or force_wakeup was called. Otherwise it can be anything; gets</span>
+    <span class="s3"># passed straight through to process_events.</span>
+    <span class="s0">def </span><span class="s1">get_events(self</span><span class="s0">, </span><span class="s1">timeout):</span>
+        <span class="s3"># max_events must be &gt; 0 or epoll gets cranky</span>
+        <span class="s3"># accessing self._registered from a thread looks dangerous, but it's</span>
+        <span class="s3"># OK because it doesn't matter if our value is a little bit off.</span>
+        <span class="s1">max_events = max(</span><span class="s4">1</span><span class="s0">, </span><span class="s1">len(self._registered))</span>
+        <span class="s0">return </span><span class="s1">self._epoll.poll(timeout</span><span class="s0">, </span><span class="s1">max_events)</span>
+
+    <span class="s0">def </span><span class="s1">process_events(self</span><span class="s0">, </span><span class="s1">events):</span>
+        <span class="s0">for </span><span class="s1">fd</span><span class="s0">, </span><span class="s1">flags </span><span class="s0">in </span><span class="s1">events:</span>
+            <span class="s0">if </span><span class="s1">fd == self._force_wakeup_fd:</span>
+                <span class="s1">self._force_wakeup.drain()</span>
+                <span class="s0">continue</span>
+            <span class="s1">waiters = self._registered[fd]</span>
+            <span class="s3"># EPOLLONESHOT always clears the flags when an event is delivered</span>
+            <span class="s1">waiters.current_flags = </span><span class="s4">0</span>
+            <span class="s3"># Clever hack stolen from selectors.EpollSelector: an event</span>
+            <span class="s3"># with EPOLLHUP or EPOLLERR flags wakes both readers and</span>
+            <span class="s3"># writers.</span>
+            <span class="s0">if </span><span class="s1">flags &amp; ~select.EPOLLIN </span><span class="s0">and </span><span class="s1">waiters.write_task </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">_core.reschedule(waiters.write_task)</span>
+                <span class="s1">waiters.write_task = </span><span class="s0">None</span>
+            <span class="s0">if </span><span class="s1">flags &amp; ~select.EPOLLOUT </span><span class="s0">and </span><span class="s1">waiters.read_task </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">_core.reschedule(waiters.read_task)</span>
+                <span class="s1">waiters.read_task = </span><span class="s0">None</span>
+            <span class="s1">self._update_registrations(fd)</span>
+
+    <span class="s0">def </span><span class="s1">_update_registrations(self</span><span class="s0">, </span><span class="s1">fd):</span>
+        <span class="s1">waiters = self._registered[fd]</span>
+        <span class="s1">wanted_flags = </span><span class="s4">0</span>
+        <span class="s0">if </span><span class="s1">waiters.read_task </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">wanted_flags |= select.EPOLLIN</span>
+        <span class="s0">if </span><span class="s1">waiters.write_task </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">wanted_flags |= select.EPOLLOUT</span>
+        <span class="s0">if </span><span class="s1">wanted_flags != waiters.current_flags:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s3"># First try EPOLL_CTL_MOD</span>
+                    <span class="s1">self._epoll.modify(fd</span><span class="s0">, </span><span class="s1">wanted_flags | select.EPOLLONESHOT)</span>
+                <span class="s0">except </span><span class="s1">OSError:</span>
+                    <span class="s3"># If that fails, it might be a new fd; try EPOLL_CTL_ADD</span>
+                    <span class="s1">self._epoll.register(fd</span><span class="s0">, </span><span class="s1">wanted_flags | select.EPOLLONESHOT)</span>
+                <span class="s1">waiters.current_flags = wanted_flags</span>
+            <span class="s0">except </span><span class="s1">OSError </span><span class="s0">as </span><span class="s1">exc:</span>
+                <span class="s3"># If everything fails, probably it's a bad fd, e.g. because</span>
+                <span class="s3"># the fd was closed behind our back. In this case we don't</span>
+                <span class="s3"># want to try to unregister the fd, because that will probably</span>
+                <span class="s3"># fail too. Just clear our state and wake everyone up.</span>
+                <span class="s0">del </span><span class="s1">self._registered[fd]</span>
+                <span class="s3"># This could raise (in case we're calling this inside one of</span>
+                <span class="s3"># the to-be-woken tasks), so we have to do it last.</span>
+                <span class="s1">wake_all(waiters</span><span class="s0">, </span><span class="s1">exc)</span>
+                <span class="s0">return</span>
+        <span class="s0">if not </span><span class="s1">wanted_flags:</span>
+            <span class="s0">del </span><span class="s1">self._registered[fd]</span>
+
+    <span class="s0">async def </span><span class="s1">_epoll_wait(self</span><span class="s0">, </span><span class="s1">fd</span><span class="s0">, </span><span class="s1">attr_name):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(fd</span><span class="s0">, </span><span class="s1">int):</span>
+            <span class="s1">fd = fd.fileno()</span>
+        <span class="s1">waiters = self._registered[fd]</span>
+        <span class="s0">if </span><span class="s1">getattr(waiters</span><span class="s0">, </span><span class="s1">attr_name) </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">_core.BusyResourceError(</span>
+                <span class="s2">&quot;another task is already reading / writing this fd&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">setattr(waiters</span><span class="s0">, </span><span class="s1">attr_name</span><span class="s0">, </span><span class="s1">_core.current_task())</span>
+        <span class="s1">self._update_registrations(fd)</span>
+
+        <span class="s0">def </span><span class="s1">abort(_):</span>
+            <span class="s1">setattr(waiters</span><span class="s0">, </span><span class="s1">attr_name</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s1">self._update_registrations(fd)</span>
+            <span class="s0">return </span><span class="s1">_core.Abort.SUCCEEDED</span>
+
+        <span class="s0">await </span><span class="s1">_core.wait_task_rescheduled(abort)</span>
+
+    <span class="s1">@_public</span>
+    <span class="s0">async def </span><span class="s1">wait_readable(self</span><span class="s0">, </span><span class="s1">fd):</span>
+        <span class="s0">await </span><span class="s1">self._epoll_wait(fd</span><span class="s0">, </span><span class="s2">&quot;read_task&quot;</span><span class="s1">)</span>
+
+    <span class="s1">@_public</span>
+    <span class="s0">async def </span><span class="s1">wait_writable(self</span><span class="s0">, </span><span class="s1">fd):</span>
+        <span class="s0">await </span><span class="s1">self._epoll_wait(fd</span><span class="s0">, </span><span class="s2">&quot;write_task&quot;</span><span class="s1">)</span>
+
+    <span class="s1">@_public</span>
+    <span class="s0">def </span><span class="s1">notify_closing(self</span><span class="s0">, </span><span class="s1">fd):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(fd</span><span class="s0">, </span><span class="s1">int):</span>
+            <span class="s1">fd = fd.fileno()</span>
+        <span class="s1">wake_all(</span>
+            <span class="s1">self._registered[fd]</span><span class="s0">,</span>
+            <span class="s1">_core.ClosedResourceError(</span><span class="s2">&quot;another task closed this fd&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s0">del </span><span class="s1">self._registered[fd]</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self._epoll.unregister(fd)</span>
+        <span class="s0">except </span><span class="s1">(OSError</span><span class="s0">, </span><span class="s1">ValueError):</span>
+            <span class="s0">pass</span>
+</pre>
+</body>
+</html>

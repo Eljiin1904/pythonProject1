@@ -1,0 +1,852 @@
+<html>
+<head>
+<title>network_manager.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+.s6 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+network_manager.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Network Manager module.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">asyncio</span>
+<span class="s3">import </span><span class="s1">base64</span>
+<span class="s3">from </span><span class="s1">collections </span><span class="s3">import </span><span class="s1">OrderedDict</span>
+<span class="s3">import </span><span class="s1">copy</span>
+<span class="s3">import </span><span class="s1">json</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">from </span><span class="s1">types </span><span class="s3">import </span><span class="s1">SimpleNamespace</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Awaitable</span><span class="s3">, </span><span class="s1">Dict</span><span class="s3">, </span><span class="s1">List</span><span class="s3">, </span><span class="s1">Optional</span><span class="s3">, </span><span class="s1">Union</span><span class="s3">, </span><span class="s1">TYPE_CHECKING</span>
+<span class="s3">from </span><span class="s1">urllib.parse </span><span class="s3">import </span><span class="s1">unquote</span>
+
+<span class="s3">from </span><span class="s1">pyee </span><span class="s3">import </span><span class="s1">EventEmitter</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">CDPSession</span>
+<span class="s3">from </span><span class="s1">pyppeteer.errors </span><span class="s3">import </span><span class="s1">NetworkError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.frame_manager </span><span class="s3">import </span><span class="s1">FrameManager</span><span class="s3">, </span><span class="s1">Frame</span>
+<span class="s3">from </span><span class="s1">pyppeteer.helper </span><span class="s3">import </span><span class="s1">debugError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.multimap </span><span class="s3">import </span><span class="s1">Multimap</span>
+
+<span class="s3">if </span><span class="s1">TYPE_CHECKING:</span>
+    <span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Set  </span><span class="s0"># noqa: F401</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+
+<span class="s3">class </span><span class="s1">NetworkManager(EventEmitter):</span>
+    <span class="s2">&quot;&quot;&quot;NetworkManager class.&quot;&quot;&quot;</span>
+
+    <span class="s1">Events = SimpleNamespace(</span>
+        <span class="s1">Request=</span><span class="s4">'request'</span><span class="s3">,</span>
+        <span class="s1">Response=</span><span class="s4">'response'</span><span class="s3">,</span>
+        <span class="s1">RequestFailed=</span><span class="s4">'requestfailed'</span><span class="s3">,</span>
+        <span class="s1">RequestFinished=</span><span class="s4">'requestfinished'</span><span class="s3">,</span>
+    <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">, </span><span class="s1">frameManager: FrameManager) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Make new NetworkManager.&quot;&quot;&quot;</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._frameManager = frameManager</span>
+        <span class="s1">self._requestIdToRequest: Dict[Optional[str]</span><span class="s3">, </span><span class="s1">Request] = dict()</span>
+        <span class="s1">self._requestIdToResponseWillBeSent: Dict[Optional[str]</span><span class="s3">, </span><span class="s1">Dict] = dict()</span>
+        <span class="s1">self._extraHTTPHeaders: OrderedDict[str</span><span class="s3">, </span><span class="s1">str] = OrderedDict()</span>
+        <span class="s1">self._offline: bool = </span><span class="s3">False</span>
+        <span class="s1">self._credentials: Optional[Dict[str</span><span class="s3">, </span><span class="s1">str]] = </span><span class="s3">None</span>
+        <span class="s1">self._attemptedAuthentications: Set[Optional[str]] = set()</span>
+        <span class="s1">self._userRequestInterceptionEnabled = </span><span class="s3">False</span>
+        <span class="s1">self._protocolRequestInterceptionEnabled = </span><span class="s3">False</span>
+        <span class="s1">self._requestHashToRequestIds = Multimap()</span>
+        <span class="s1">self._requestHashToInterceptionIds = Multimap()</span>
+
+        <span class="s1">self._client.on(</span>
+            <span class="s4">'Network.requestWillBeSent'</span><span class="s3">,</span>
+            <span class="s3">lambda </span><span class="s1">event: self._client._loop.create_task(</span>
+                <span class="s1">self._onRequestWillBeSent(event)</span>
+            <span class="s1">)</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._client.on(</span><span class="s4">'Network.requestIntercepted'</span><span class="s3">, </span><span class="s1">self._onRequestIntercepted)  </span><span class="s0"># noqa: E501</span>
+        <span class="s1">self._client.on(</span><span class="s4">'Network.requestServedFromCache'</span><span class="s3">, </span><span class="s1">self._onRequestServedFromCache)  </span><span class="s0"># noqa: #501</span>
+        <span class="s1">self._client.on(</span><span class="s4">'Network.responseReceived'</span><span class="s3">, </span><span class="s1">self._onResponseReceived)</span>
+        <span class="s1">self._client.on(</span><span class="s4">'Network.loadingFinished'</span><span class="s3">, </span><span class="s1">self._onLoadingFinished)</span>
+        <span class="s1">self._client.on(</span><span class="s4">'Network.loadingFailed'</span><span class="s3">, </span><span class="s1">self._onLoadingFailed)</span>
+
+    <span class="s3">async def </span><span class="s1">authenticate(self</span><span class="s3">, </span><span class="s1">credentials: Dict[str</span><span class="s3">, </span><span class="s1">str]) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Provide credentials for http auth.&quot;&quot;&quot;</span>
+        <span class="s1">self._credentials = credentials</span>
+        <span class="s3">await </span><span class="s1">self._updateProtocolRequestInterception()</span>
+
+    <span class="s3">async def </span><span class="s1">setExtraHTTPHeaders(self</span><span class="s3">, </span><span class="s1">extraHTTPHeaders: Dict[str</span><span class="s3">, </span><span class="s1">str]</span>
+                                  <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Set extra http headers.&quot;&quot;&quot;</span>
+        <span class="s1">self._extraHTTPHeaders = OrderedDict()</span>
+        <span class="s3">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">extraHTTPHeaders.items():</span>
+            <span class="s3">if not </span><span class="s1">isinstance(v</span><span class="s3">, </span><span class="s1">str):</span>
+                <span class="s3">raise </span><span class="s1">TypeError(</span>
+                    <span class="s4">f'Expected value of header &quot;</span><span class="s3">{</span><span class="s1">k</span><span class="s3">}</span><span class="s4">&quot; to be string, '</span>
+                    <span class="s4">f'but </span><span class="s3">{</span><span class="s1">type(v)</span><span class="s3">} </span><span class="s4">is found.'</span><span class="s1">)</span>
+            <span class="s1">self._extraHTTPHeaders[k.lower()] = v</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.setExtraHTTPHeaders'</span><span class="s3">,</span>
+                                <span class="s1">{</span><span class="s4">'headers'</span><span class="s1">: self._extraHTTPHeaders})</span>
+
+    <span class="s3">def </span><span class="s1">extraHTTPHeaders(self) -&gt; Dict[str</span><span class="s3">, </span><span class="s1">str]:</span>
+        <span class="s2">&quot;&quot;&quot;Get extra http headers.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">dict(**self._extraHTTPHeaders)</span>
+
+    <span class="s3">async def </span><span class="s1">setOfflineMode(self</span><span class="s3">, </span><span class="s1">value: bool) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Change offline mode enable/disable.&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._offline == value:</span>
+            <span class="s3">return</span>
+        <span class="s1">self._offline = value</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.emulateNetworkConditions'</span><span class="s3">, </span><span class="s1">{</span>
+            <span class="s4">'offline'</span><span class="s1">: self._offline</span><span class="s3">,</span>
+            <span class="s4">'latency'</span><span class="s1">: </span><span class="s5">0</span><span class="s3">,</span>
+            <span class="s4">'downloadThroughput'</span><span class="s1">: -</span><span class="s5">1</span><span class="s3">,</span>
+            <span class="s4">'uploadThroughput'</span><span class="s1">: -</span><span class="s5">1</span><span class="s3">,</span>
+        <span class="s1">})</span>
+
+    <span class="s3">async def </span><span class="s1">setUserAgent(self</span><span class="s3">, </span><span class="s1">userAgent: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Set user agent.&quot;&quot;&quot;</span>
+        <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.setUserAgentOverride'</span><span class="s3">,</span>
+                                <span class="s1">{</span><span class="s4">'userAgent'</span><span class="s1">: userAgent})</span>
+
+    <span class="s3">async def </span><span class="s1">setRequestInterception(self</span><span class="s3">, </span><span class="s1">value: bool) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Enable request interception.&quot;&quot;&quot;</span>
+        <span class="s1">self._userRequestInterceptionEnabled = value</span>
+        <span class="s3">await </span><span class="s1">self._updateProtocolRequestInterception()</span>
+
+    <span class="s3">async def </span><span class="s1">_updateProtocolRequestInterception(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">enabled = (self._userRequestInterceptionEnabled </span><span class="s3">or</span>
+                   <span class="s1">bool(self._credentials))</span>
+        <span class="s3">if </span><span class="s1">enabled == self._protocolRequestInterceptionEnabled:</span>
+            <span class="s3">return</span>
+        <span class="s1">self._protocolRequestInterceptionEnabled = enabled</span>
+        <span class="s1">patterns = [{</span><span class="s4">'urlPattern'</span><span class="s1">: </span><span class="s4">'*'</span><span class="s1">}] </span><span class="s3">if </span><span class="s1">enabled </span><span class="s3">else </span><span class="s1">[]</span>
+        <span class="s3">await </span><span class="s1">asyncio.gather(</span>
+            <span class="s1">self._client.send(</span>
+                <span class="s4">'Network.setCacheDisabled'</span><span class="s3">,</span>
+                <span class="s1">{</span><span class="s4">'cacheDisabled'</span><span class="s1">: enabled}</span><span class="s3">,</span>
+            <span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">self._client.send(</span>
+                <span class="s4">'Network.setRequestInterception'</span><span class="s3">,</span>
+                <span class="s1">{</span><span class="s4">'patterns'</span><span class="s1">: patterns}</span><span class="s3">,</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">_onRequestWillBeSent(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">if </span><span class="s1">self._protocolRequestInterceptionEnabled:</span>
+            <span class="s1">requestHash = generateRequestHash(event.get(</span><span class="s4">'request'</span><span class="s3">, </span><span class="s1">{}))</span>
+            <span class="s1">interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)  </span><span class="s0"># noqa: E501</span>
+            <span class="s3">if </span><span class="s1">interceptionId:</span>
+                <span class="s1">self._onRequest(event</span><span class="s3">, </span><span class="s1">interceptionId)</span>
+                <span class="s1">self._requestHashToInterceptionIds.delete(requestHash</span><span class="s3">, </span><span class="s1">interceptionId)  </span><span class="s0"># noqa: E501</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">self._requestHashToRequestIds.set(requestHash</span><span class="s3">, </span><span class="s1">event.get(</span><span class="s4">'requestId'</span><span class="s1">))  </span><span class="s0"># noqa: E501</span>
+                <span class="s1">self._requestIdToResponseWillBeSent[event.get(</span><span class="s4">'requestId'</span><span class="s1">)] = event  </span><span class="s0"># noqa: E501</span>
+            <span class="s3">return</span>
+        <span class="s1">self._onRequest(event</span><span class="s3">, None</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">_send(self</span><span class="s3">, </span><span class="s1">method: str</span><span class="s3">, </span><span class="s1">msg: dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">await </span><span class="s1">self._client.send(method</span><span class="s3">, </span><span class="s1">msg)</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+    <span class="s3">def </span><span class="s1">_onRequestIntercepted(self</span><span class="s3">, </span><span class="s1">event: dict) -&gt; </span><span class="s3">None</span><span class="s1">:  </span><span class="s0"># noqa: C901</span>
+        <span class="s3">if </span><span class="s1">event.get(</span><span class="s4">'authChallenge'</span><span class="s1">):</span>
+            <span class="s1">response = </span><span class="s4">'Default'</span>
+            <span class="s3">if </span><span class="s1">event[</span><span class="s4">'interceptionId'</span><span class="s1">] </span><span class="s3">in </span><span class="s1">self._attemptedAuthentications:</span>
+                <span class="s1">response = </span><span class="s4">'CancelAuth'</span>
+            <span class="s3">elif </span><span class="s1">self._credentials:</span>
+                <span class="s1">response = </span><span class="s4">'ProvideCredentials'</span>
+                <span class="s1">self._attemptedAuthentications.add(event[</span><span class="s4">'interceptionId'</span><span class="s1">])</span>
+            <span class="s1">username = getattr(self</span><span class="s3">, </span><span class="s4">'_credentials'</span><span class="s3">, </span><span class="s1">{}).get(</span><span class="s4">'username'</span><span class="s1">)</span>
+            <span class="s1">password = getattr(self</span><span class="s3">, </span><span class="s4">'_credentials'</span><span class="s3">, </span><span class="s1">{}).get(</span><span class="s4">'password'</span><span class="s1">)</span>
+
+            <span class="s1">self._client._loop.create_task(self._send(</span>
+                <span class="s4">'Network.continueInterceptedRequest'</span><span class="s3">, </span><span class="s1">{</span>
+                    <span class="s4">'interceptionId'</span><span class="s1">: event[</span><span class="s4">'interceptionId'</span><span class="s1">]</span><span class="s3">,</span>
+                    <span class="s4">'authChallengeResponse'</span><span class="s1">: {</span>
+                        <span class="s4">'response'</span><span class="s1">: response</span><span class="s3">,</span>
+                        <span class="s4">'username'</span><span class="s1">: username</span><span class="s3">,</span>
+                        <span class="s4">'password'</span><span class="s1">: password</span><span class="s3">,</span>
+                    <span class="s1">}</span>
+                <span class="s1">}</span>
+            <span class="s1">))</span>
+            <span class="s3">return</span>
+
+        <span class="s3">if </span><span class="s1">(</span><span class="s3">not </span><span class="s1">self._userRequestInterceptionEnabled </span><span class="s3">and</span>
+                <span class="s1">self._protocolRequestInterceptionEnabled):</span>
+            <span class="s1">self._client._loop.create_task(self._send(</span>
+                <span class="s4">'Network.continueInterceptedRequest'</span><span class="s3">, </span><span class="s1">{</span>
+                    <span class="s4">'interceptionId'</span><span class="s1">: event[</span><span class="s4">'interceptionId'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">}</span>
+            <span class="s1">))</span>
+
+        <span class="s1">requestHash = generateRequestHash(event[</span><span class="s4">'request'</span><span class="s1">])</span>
+        <span class="s1">requestId = self._requestHashToRequestIds.firstValue(requestHash)</span>
+        <span class="s3">if </span><span class="s1">requestId:</span>
+            <span class="s1">requestWillBeSentEvent = self._requestIdToResponseWillBeSent[requestId]  </span><span class="s0"># noqa: E501</span>
+            <span class="s1">self._onRequest(requestWillBeSentEvent</span><span class="s3">, </span><span class="s1">event.get(</span><span class="s4">'interceptionId'</span><span class="s1">))  </span><span class="s0"># noqa: E501</span>
+            <span class="s1">self._requestHashToRequestIds.delete(requestHash</span><span class="s3">, </span><span class="s1">requestId)</span>
+            <span class="s1">self._requestIdToResponseWillBeSent.pop(requestId</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._requestHashToInterceptionIds.set(requestHash</span><span class="s3">, </span><span class="s1">event[</span><span class="s4">'interceptionId'</span><span class="s1">])  </span><span class="s0"># noqa: E501</span>
+
+    <span class="s3">def </span><span class="s1">_onRequest(self</span><span class="s3">, </span><span class="s1">event: Dict</span><span class="s3">, </span><span class="s1">interceptionId: Optional[str]) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">redirectChain: List[Request] = list()</span>
+        <span class="s3">if </span><span class="s1">event.get(</span><span class="s4">'redirectResponse'</span><span class="s1">):</span>
+            <span class="s1">request = self._requestIdToRequest.get(event[</span><span class="s4">'requestId'</span><span class="s1">])</span>
+            <span class="s3">if </span><span class="s1">request:</span>
+                <span class="s1">redirectResponse = event[</span><span class="s4">'redirectResponse'</span><span class="s1">]</span>
+                <span class="s1">self._handleRequestRedirect(</span>
+                    <span class="s1">request</span><span class="s3">,</span>
+                    <span class="s1">redirectResponse.get(</span><span class="s4">'status'</span><span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">redirectResponse.get(</span><span class="s4">'headers'</span><span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">redirectResponse.get(</span><span class="s4">'fromDiskCache'</span><span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">redirectResponse.get(</span><span class="s4">'fromServiceWorker'</span><span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">redirectResponse.get(</span><span class="s4">'SecurityDetails'</span><span class="s1">)</span><span class="s3">,</span>
+                <span class="s1">)</span>
+                <span class="s1">redirectChain = request._redirectChain</span>
+
+        <span class="s1">isNavigationRequest = bool(</span>
+            <span class="s1">event.get(</span><span class="s4">'requestId'</span><span class="s1">) == event.get(</span><span class="s4">'loaderId'</span><span class="s1">) </span><span class="s3">and</span>
+            <span class="s1">event.get(</span><span class="s4">'type'</span><span class="s1">) == </span><span class="s4">'Document'</span>
+        <span class="s1">)</span>
+        <span class="s1">self._handleRequestStart(</span>
+            <span class="s1">event[</span><span class="s4">'requestId'</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s1">interceptionId</span><span class="s3">,</span>
+            <span class="s1">event.get(</span><span class="s4">'request'</span><span class="s3">, </span><span class="s1">{}).get(</span><span class="s4">'url'</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">isNavigationRequest</span><span class="s3">,</span>
+            <span class="s1">event.get(</span><span class="s4">'type'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">event.get(</span><span class="s4">'request'</span><span class="s3">, </span><span class="s1">{})</span><span class="s3">,</span>
+            <span class="s1">event.get(</span><span class="s4">'frameId'</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">redirectChain</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_onRequestServedFromCache(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">request = self._requestIdToRequest.get(event.get(</span><span class="s4">'requestId'</span><span class="s1">))</span>
+        <span class="s3">if </span><span class="s1">request:</span>
+            <span class="s1">request._fromMemoryCache = </span><span class="s3">True</span>
+
+    <span class="s3">def </span><span class="s1">_handleRequestRedirect(self</span><span class="s3">, </span><span class="s1">request: </span><span class="s4">'Request'</span><span class="s3">, </span><span class="s1">redirectStatus: int</span><span class="s3">,</span>
+                               <span class="s1">redirectHeaders: Dict</span><span class="s3">, </span><span class="s1">fromDiskCache: bool</span><span class="s3">,</span>
+                               <span class="s1">fromServiceWorker: bool</span><span class="s3">,</span>
+                               <span class="s1">securityDetails: Dict = </span><span class="s3">None</span><span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">response = Response(self._client</span><span class="s3">, </span><span class="s1">request</span><span class="s3">, </span><span class="s1">redirectStatus</span><span class="s3">,</span>
+                            <span class="s1">redirectHeaders</span><span class="s3">, </span><span class="s1">fromDiskCache</span><span class="s3">, </span><span class="s1">fromServiceWorker</span><span class="s3">,</span>
+                            <span class="s1">securityDetails)</span>
+        <span class="s1">request._response = response</span>
+        <span class="s1">request._redirectChain.append(request)</span>
+        <span class="s1">response._bodyLoadedPromiseFulfill(</span>
+            <span class="s1">NetworkError(</span><span class="s4">'Response body is unavailable for redirect response'</span><span class="s1">)</span>
+        <span class="s1">)</span>
+        <span class="s1">self._requestIdToRequest.pop(request._requestId</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">self._attemptedAuthentications.discard(request._interceptionId)</span>
+        <span class="s1">self.emit(NetworkManager.Events.Response</span><span class="s3">, </span><span class="s1">response)</span>
+        <span class="s1">self.emit(NetworkManager.Events.RequestFinished</span><span class="s3">, </span><span class="s1">request)</span>
+
+    <span class="s3">def </span><span class="s1">_handleRequestStart(self</span><span class="s3">, </span><span class="s1">requestId: str</span><span class="s3">,</span>
+                            <span class="s1">interceptionId: Optional[str]</span><span class="s3">, </span><span class="s1">url: str</span><span class="s3">,</span>
+                            <span class="s1">isNavigationRequest: bool</span><span class="s3">, </span><span class="s1">resourceType: str</span><span class="s3">,</span>
+                            <span class="s1">requestPayload: Dict</span><span class="s3">, </span><span class="s1">frameId: Optional[str]</span><span class="s3">,</span>
+                            <span class="s1">redirectChain: List[</span><span class="s4">'Request'</span><span class="s1">]</span>
+                            <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">frame = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">frameId </span><span class="s3">and </span><span class="s1">self._frameManager </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s1">frame = self._frameManager.frame(frameId)</span>
+
+        <span class="s1">request = Request(self._client</span><span class="s3">, </span><span class="s1">requestId</span><span class="s3">, </span><span class="s1">interceptionId</span><span class="s3">,</span>
+                          <span class="s1">isNavigationRequest</span><span class="s3">,</span>
+                          <span class="s1">self._userRequestInterceptionEnabled</span><span class="s3">, </span><span class="s1">url</span><span class="s3">,</span>
+                          <span class="s1">resourceType</span><span class="s3">, </span><span class="s1">requestPayload</span><span class="s3">, </span><span class="s1">frame</span><span class="s3">, </span><span class="s1">redirectChain)</span>
+        <span class="s1">self._requestIdToRequest[requestId] = request</span>
+        <span class="s1">self.emit(NetworkManager.Events.Request</span><span class="s3">, </span><span class="s1">request)</span>
+
+    <span class="s3">def </span><span class="s1">_onResponseReceived(self</span><span class="s3">, </span><span class="s1">event: dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">request = self._requestIdToRequest.get(event[</span><span class="s4">'requestId'</span><span class="s1">])</span>
+        <span class="s0"># FileUpload sends a response without a matching request.</span>
+        <span class="s3">if not </span><span class="s1">request:</span>
+            <span class="s3">return</span>
+        <span class="s1">_resp = event.get(</span><span class="s4">'response'</span><span class="s3">, </span><span class="s1">{})</span>
+        <span class="s1">response = Response(self._client</span><span class="s3">, </span><span class="s1">request</span><span class="s3">,</span>
+                            <span class="s1">_resp.get(</span><span class="s4">'status'</span><span class="s3">, </span><span class="s5">0</span><span class="s1">)</span><span class="s3">,</span>
+                            <span class="s1">_resp.get(</span><span class="s4">'headers'</span><span class="s3">, </span><span class="s1">{})</span><span class="s3">,</span>
+                            <span class="s1">_resp.get(</span><span class="s4">'fromDiskCache'</span><span class="s1">)</span><span class="s3">,</span>
+                            <span class="s1">_resp.get(</span><span class="s4">'fromServiceWorker'</span><span class="s1">)</span><span class="s3">,</span>
+                            <span class="s1">_resp.get(</span><span class="s4">'securityDetails'</span><span class="s1">))</span>
+        <span class="s1">request._response = response</span>
+        <span class="s1">self.emit(NetworkManager.Events.Response</span><span class="s3">, </span><span class="s1">response)</span>
+
+    <span class="s3">def </span><span class="s1">_onLoadingFinished(self</span><span class="s3">, </span><span class="s1">event: dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">request = self._requestIdToRequest.get(event[</span><span class="s4">'requestId'</span><span class="s1">])</span>
+        <span class="s0"># For certain requestIds we never receive requestWillBeSent event.</span>
+        <span class="s0"># @see https://crbug.com/750469</span>
+        <span class="s3">if not </span><span class="s1">request:</span>
+            <span class="s3">return</span>
+        <span class="s1">response = request.response</span>
+        <span class="s3">if </span><span class="s1">response:</span>
+            <span class="s1">response._bodyLoadedPromiseFulfill(</span><span class="s3">None</span><span class="s1">)</span>
+        <span class="s1">self._requestIdToRequest.pop(request._requestId</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">self._attemptedAuthentications.discard(request._interceptionId)</span>
+        <span class="s1">self.emit(NetworkManager.Events.RequestFinished</span><span class="s3">, </span><span class="s1">request)</span>
+
+    <span class="s3">def </span><span class="s1">_onLoadingFailed(self</span><span class="s3">, </span><span class="s1">event: dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">request = self._requestIdToRequest.get(event[</span><span class="s4">'requestId'</span><span class="s1">])</span>
+        <span class="s0"># For certain requestIds we never receive requestWillBeSent event.</span>
+        <span class="s0"># @see https://crbug.com/750469</span>
+        <span class="s3">if not </span><span class="s1">request:</span>
+            <span class="s3">return</span>
+        <span class="s1">request._failureText = event.get(</span><span class="s4">'errorText'</span><span class="s1">)</span>
+        <span class="s1">response = request.response</span>
+        <span class="s3">if </span><span class="s1">response:</span>
+            <span class="s1">response._bodyLoadedPromiseFulfill(</span><span class="s3">None</span><span class="s1">)</span>
+        <span class="s1">self._requestIdToRequest.pop(request._requestId</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">self._attemptedAuthentications.discard(request._interceptionId)</span>
+        <span class="s1">self.emit(NetworkManager.Events.RequestFailed</span><span class="s3">, </span><span class="s1">request)</span>
+
+
+<span class="s3">class </span><span class="s1">Request(object):</span>
+    <span class="s2">&quot;&quot;&quot;Request class. 
+ 
+    Whenever the page sends a request, such as for a network resource, the 
+    following events are emitted by pyppeteer's page: 
+ 
+    - ``'request'``: emitted when the request is issued by the page. 
+    - ``'response'``: emitted when/if the response is received for the request. 
+    - ``'requestfinished'``: emitted when the response body is downloaded and 
+      the request is complete. 
+ 
+    If request fails at some point, then instead of ``'requestfinished'`` event 
+    (and possibly instead of ``'response'`` event), the ``'requestfailed'`` 
+    event is emitted. 
+ 
+    If request gets a ``'redirect'`` response, the request is successfully 
+    finished with the ``'requestfinished'`` event, and a new request is issued 
+    to a redirect url. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">, </span><span class="s1">requestId: Optional[str]</span><span class="s3">,</span>
+                 <span class="s1">interceptionId: Optional[str]</span><span class="s3">, </span><span class="s1">isNavigationRequest: bool</span><span class="s3">,</span>
+                 <span class="s1">allowInterception: bool</span><span class="s3">, </span><span class="s1">url: str</span><span class="s3">, </span><span class="s1">resourceType: str</span><span class="s3">,</span>
+                 <span class="s1">payload: dict</span><span class="s3">, </span><span class="s1">frame: Optional[Frame]</span><span class="s3">,</span>
+                 <span class="s1">redirectChain: List[</span><span class="s4">'Request'</span><span class="s1">]</span>
+                 <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._requestId = requestId</span>
+        <span class="s1">self._isNavigationRequest = isNavigationRequest</span>
+        <span class="s1">self._interceptionId = interceptionId</span>
+        <span class="s1">self._allowInterception = allowInterception</span>
+        <span class="s1">self._interceptionHandled = </span><span class="s3">False</span>
+        <span class="s1">self._response: Optional[Response] = </span><span class="s3">None</span>
+        <span class="s1">self._failureText: Optional[str] = </span><span class="s3">None</span>
+
+        <span class="s1">self._url = url</span>
+        <span class="s1">self._resourceType = resourceType.lower()</span>
+        <span class="s1">self._method = payload.get(</span><span class="s4">'method'</span><span class="s1">)</span>
+        <span class="s1">self._postData = payload.get(</span><span class="s4">'postData'</span><span class="s1">)</span>
+        <span class="s1">headers = payload.get(</span><span class="s4">'headers'</span><span class="s3">, </span><span class="s1">{})</span>
+        <span class="s1">self._headers = {k.lower(): v </span><span class="s3">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">headers.items()}</span>
+        <span class="s1">self._frame = frame</span>
+        <span class="s1">self._redirectChain = redirectChain</span>
+
+        <span class="s1">self._fromMemoryCache = </span><span class="s3">False</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">url(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;URL of this request.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._url</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">resourceType(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Resource type of this request perceived by the rendering engine. 
+ 
+        ResourceType will be one of the following: ``document``, 
+        ``stylesheet``, ``image``, ``media``, ``font``, ``script``, 
+        ``texttrack``, ``xhr``, ``fetch``, ``eventsource``, ``websocket``, 
+        ``manifest``, ``other``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._resourceType</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">method(self) -&gt; Optional[str]:</span>
+        <span class="s2">&quot;&quot;&quot;Return this request's method (GET, POST, etc.).&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._method</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">postData(self) -&gt; Optional[str]:</span>
+        <span class="s2">&quot;&quot;&quot;Return post body of this request.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._postData</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">headers(self) -&gt; Dict:</span>
+        <span class="s2">&quot;&quot;&quot;Return a dictionary of HTTP headers of this request. 
+ 
+        All header names are lower-case. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._headers</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">response(self) -&gt; Optional[</span><span class="s4">'Response'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return matching :class:`Response` object, or ``None``. 
+ 
+        If the response has not been received, return ``None``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._response</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">frame(self) -&gt; Optional[Frame]:</span>
+        <span class="s2">&quot;&quot;&quot;Return a matching :class:`~pyppeteer.frame_manager.frame` object. 
+ 
+        Return ``None`` if navigating to error page. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._frame</span>
+
+    <span class="s3">def </span><span class="s1">isNavigationRequest(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Whether this request is driving frame's navigation.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._isNavigationRequest</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">redirectChain(self) -&gt; List[</span><span class="s4">'Request'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return chain of requests initiated to fetch a resource. 
+ 
+        * If there are no redirects and request was successful, the chain will 
+          be empty. 
+        * If a server responds with at least a single redirect, then the chain 
+          will contain all the requests that were redirected. 
+ 
+        ``redirectChain`` is shared between all the requests of the same chain. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">copy.copy(self._redirectChain)</span>
+
+    <span class="s3">def </span><span class="s1">failure(self) -&gt; Optional[Dict]:</span>
+        <span class="s2">&quot;&quot;&quot;Return error text. 
+ 
+        Return ``None`` unless this request was failed, as reported by 
+        ``requestfailed`` event. 
+ 
+        When request failed, this method return dictionary which has a 
+        ``errorText`` field, which contains human-readable error message, e.g. 
+        ``'net::ERR_RAILED'``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">self._failureText:</span>
+            <span class="s3">return None</span>
+        <span class="s3">return </span><span class="s1">{</span><span class="s4">'errorText'</span><span class="s1">: self._failureText}</span>
+
+    <span class="s3">async def </span><span class="s1">continue_(self</span><span class="s3">, </span><span class="s1">overrides: Dict = </span><span class="s3">None</span><span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Continue request with optional request overrides. 
+ 
+        To use this method, request interception should be enabled by 
+        :meth:`pyppeteer.page.Page.setRequestInterception`. If request 
+        interception is not enabled, raise ``NetworkError``. 
+ 
+        ``overrides`` can have the following fields: 
+ 
+        * ``url`` (str): If set, the request url will be changed. 
+        * ``method`` (str): If set, change the request method (e.g. ``GET``). 
+        * ``postData`` (str): If set, change the post data or request. 
+        * ``headers`` (dict): If set, change the request HTTP header. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">overrides </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">overrides = {}</span>
+
+        <span class="s3">if not </span><span class="s1">self._allowInterception:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Request interception is not enabled.'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">self._interceptionHandled:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Request is already handled.'</span><span class="s1">)</span>
+
+        <span class="s1">self._interceptionHandled = </span><span class="s3">True</span>
+        <span class="s1">opt = {</span><span class="s4">'interceptionId'</span><span class="s1">: self._interceptionId}</span>
+        <span class="s1">opt.update(overrides)</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.continueInterceptedRequest'</span><span class="s3">, </span><span class="s1">opt)</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+    <span class="s3">async def </span><span class="s1">respond(self</span><span class="s3">, </span><span class="s1">response: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:  </span><span class="s0"># noqa: C901</span>
+        <span class="s2">&quot;&quot;&quot;Fulfills request with given response. 
+ 
+        To use this, request interception should by enabled by 
+        :meth:`pyppeteer.page.Page.setRequestInterception`. Request 
+        interception is not enabled, raise ``NetworkError``. 
+ 
+        ``response`` is a dictionary which can have the following fields: 
+ 
+        * ``status`` (int): Response status code, defaults to 200. 
+        * ``headers`` (dict): Optional response headers. 
+        * ``contentType`` (str): If set, equals to setting ``Content-Type`` 
+          response header. 
+        * ``body`` (str|bytes): Optional response body. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._url.startswith(</span><span class="s4">'data:'</span><span class="s1">):</span>
+            <span class="s3">return</span>
+        <span class="s3">if not </span><span class="s1">self._allowInterception:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Request interception is not enabled.'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">self._interceptionHandled:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Request is already handled.'</span><span class="s1">)</span>
+        <span class="s1">self._interceptionHandled = </span><span class="s3">True</span>
+
+        <span class="s3">if </span><span class="s1">response.get(</span><span class="s4">'body'</span><span class="s1">) </span><span class="s3">and </span><span class="s1">isinstance(response[</span><span class="s4">'body'</span><span class="s1">]</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s1">responseBody: Optional[bytes] = response[</span><span class="s4">'body'</span><span class="s1">].encode(</span><span class="s4">'utf-8'</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">responseBody = response.get(</span><span class="s4">'body'</span><span class="s1">)</span>
+
+        <span class="s1">responseHeaders = {}</span>
+        <span class="s3">if </span><span class="s1">response.get(</span><span class="s4">'headers'</span><span class="s1">):</span>
+            <span class="s3">for </span><span class="s1">header </span><span class="s3">in </span><span class="s1">response[</span><span class="s4">'headers'</span><span class="s1">]:</span>
+                <span class="s1">responseHeaders[header.lower()] = response[</span><span class="s4">'headers'</span><span class="s1">][header]</span>
+        <span class="s3">if </span><span class="s1">response.get(</span><span class="s4">'contentType'</span><span class="s1">):</span>
+            <span class="s1">responseHeaders[</span><span class="s4">'content-type'</span><span class="s1">] = response[</span><span class="s4">'contentType'</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">responseBody </span><span class="s3">and </span><span class="s4">'content-length' </span><span class="s3">not in </span><span class="s1">responseHeaders:</span>
+            <span class="s1">responseHeaders[</span><span class="s4">'content-length'</span><span class="s1">] = len(responseBody)</span>
+
+        <span class="s1">statusCode = response.get(</span><span class="s4">'status'</span><span class="s3">, </span><span class="s5">200</span><span class="s1">)</span>
+        <span class="s1">statusText = statusTexts.get(statusCode</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s1">statusLine = </span><span class="s4">f'HTTP/1.1 </span><span class="s3">{</span><span class="s1">statusCode</span><span class="s3">} {</span><span class="s1">statusText</span><span class="s3">}</span><span class="s4">'</span>
+
+        <span class="s1">CRLF = </span><span class="s4">'</span><span class="s3">\r\n</span><span class="s4">'</span>
+        <span class="s1">text = statusLine + CRLF</span>
+        <span class="s3">for </span><span class="s1">header </span><span class="s3">in </span><span class="s1">responseHeaders:</span>
+            <span class="s1">text = </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">text</span><span class="s3">}{</span><span class="s1">header</span><span class="s3">}</span><span class="s4">: </span><span class="s3">{</span><span class="s1">responseHeaders[header]</span><span class="s3">}{</span><span class="s1">CRLF</span><span class="s3">}</span><span class="s4">'</span>
+        <span class="s1">text = text + CRLF</span>
+        <span class="s1">responseBuffer = text.encode(</span><span class="s4">'utf-8'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">responseBody:</span>
+            <span class="s1">responseBuffer = responseBuffer + responseBody</span>
+
+        <span class="s1">rawResponse = base64.b64encode(responseBuffer).decode(</span><span class="s4">'ascii'</span><span class="s1">)</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.continueInterceptedRequest'</span><span class="s3">, </span><span class="s1">{</span>
+                <span class="s4">'interceptionId'</span><span class="s1">: self._interceptionId</span><span class="s3">,</span>
+                <span class="s4">'rawResponse'</span><span class="s1">: rawResponse</span><span class="s3">,</span>
+            <span class="s1">})</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+    <span class="s3">async def </span><span class="s1">abort(self</span><span class="s3">, </span><span class="s1">errorCode: str = </span><span class="s4">'failed'</span><span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Abort request. 
+ 
+        To use this, request interception should be enabled by 
+        :meth:`pyppeteer.page.Page.setRequestInterception`. 
+        If request interception is not enabled, raise ``NetworkError``. 
+ 
+        ``errorCode`` is an optional error code string. Defaults to ``failed``, 
+        could be one of the following: 
+ 
+        - ``aborted``: An operation was aborted (due to user action). 
+        - ``accessdenied``: Permission to access a resource, other than the 
+          network, was denied. 
+        - ``addressunreachable``: The IP address is unreachable. This usually 
+          means that there is no route to the specified host or network. 
+        - ``blockedbyclient``: The client chose to block the request. 
+        - ``blockedbyresponse``: The request failed because the request was 
+          delivered along with requirements which are not met 
+          ('X-Frame-Options' and 'Content-Security-Policy' ancestor check, 
+          for instance). 
+        - ``connectionaborted``: A connection timeout as a result of not 
+          receiving an ACK for data sent. 
+        - ``connectionclosed``: A connection was closed (corresponding to a TCP 
+          FIN). 
+        - ``connectionfailed``: A connection attempt failed. 
+        - ``connectionrefused``: A connection attempt was refused. 
+        - ``connectionreset``: A connection was reset (corresponding to a TCP 
+          RST). 
+        - ``internetdisconnected``: The Internet connection has been lost. 
+        - ``namenotresolved``: The host name could not be resolved. 
+        - ``timedout``: An operation timed out. 
+        - ``failed``: A generic failure occurred. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">errorReason = errorReasons[errorCode]</span>
+        <span class="s3">if not </span><span class="s1">errorReason:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Unknown error code: {}'</span><span class="s1">.format(errorCode))</span>
+        <span class="s3">if not </span><span class="s1">self._allowInterception:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Request interception is not enabled.'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">self._interceptionHandled:</span>
+            <span class="s3">raise </span><span class="s1">NetworkError(</span><span class="s4">'Request is already handled.'</span><span class="s1">)</span>
+        <span class="s1">self._interceptionHandled = </span><span class="s3">True</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.continueInterceptedRequest'</span><span class="s3">, </span><span class="s1">dict(</span>
+                <span class="s1">interceptionId=self._interceptionId</span><span class="s3">,</span>
+                <span class="s1">errorReason=errorReason</span><span class="s3">,</span>
+            <span class="s1">))</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+
+<span class="s1">errorReasons = {</span>
+    <span class="s4">'aborted'</span><span class="s1">: </span><span class="s4">'Aborted'</span><span class="s3">,</span>
+    <span class="s4">'accessdenied'</span><span class="s1">: </span><span class="s4">'AccessDenied'</span><span class="s3">,</span>
+    <span class="s4">'addressunreachable'</span><span class="s1">: </span><span class="s4">'AddressUnreachable'</span><span class="s3">,</span>
+    <span class="s4">'blockedbyclient'</span><span class="s1">: </span><span class="s4">'BlockedByClient'</span><span class="s3">,</span>
+    <span class="s4">'blockedbyresponse'</span><span class="s1">: </span><span class="s4">'BlockedByResponse'</span><span class="s3">,</span>
+    <span class="s4">'connectionaborted'</span><span class="s1">: </span><span class="s4">'ConnectionAborted'</span><span class="s3">,</span>
+    <span class="s4">'connectionclosed'</span><span class="s1">: </span><span class="s4">'ConnectionClosed'</span><span class="s3">,</span>
+    <span class="s4">'connectionfailed'</span><span class="s1">: </span><span class="s4">'ConnectionFailed'</span><span class="s3">,</span>
+    <span class="s4">'connectionrefused'</span><span class="s1">: </span><span class="s4">'ConnectionRefused'</span><span class="s3">,</span>
+    <span class="s4">'connectionreset'</span><span class="s1">: </span><span class="s4">'ConnectionReset'</span><span class="s3">,</span>
+    <span class="s4">'internetdisconnected'</span><span class="s1">: </span><span class="s4">'InternetDisconnected'</span><span class="s3">,</span>
+    <span class="s4">'namenotresolved'</span><span class="s1">: </span><span class="s4">'NameNotResolved'</span><span class="s3">,</span>
+    <span class="s4">'timedout'</span><span class="s1">: </span><span class="s4">'TimedOut'</span><span class="s3">,</span>
+    <span class="s4">'failed'</span><span class="s1">: </span><span class="s4">'Failed'</span><span class="s3">,</span>
+<span class="s1">}</span>
+
+
+<span class="s3">class </span><span class="s1">Response(object):</span>
+    <span class="s2">&quot;&quot;&quot;Response class represents responses which are received by ``Page``.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">, </span><span class="s1">request: Request</span><span class="s3">, </span><span class="s1">status: int</span><span class="s3">,</span>
+                 <span class="s1">headers: Dict[str</span><span class="s3">, </span><span class="s1">str]</span><span class="s3">, </span><span class="s1">fromDiskCache: bool</span><span class="s3">,</span>
+                 <span class="s1">fromServiceWorker: bool</span><span class="s3">, </span><span class="s1">securityDetails: Dict = </span><span class="s3">None</span>
+                 <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._request = request</span>
+        <span class="s1">self._status = status</span>
+        <span class="s1">self._contentPromise = self._client._loop.create_future()</span>
+        <span class="s1">self._bodyLoadedPromise = self._client._loop.create_future()</span>
+
+        <span class="s1">self._url = request.url</span>
+        <span class="s1">self._fromDiskCache = fromDiskCache</span>
+        <span class="s1">self._fromServiceWorker = fromServiceWorker</span>
+        <span class="s1">self._headers = {k.lower(): v </span><span class="s3">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">headers.items()}</span>
+        <span class="s1">self._securityDetails: Union[Dict</span><span class="s3">, </span><span class="s1">SecurityDetails] = {}</span>
+        <span class="s3">if </span><span class="s1">securityDetails:</span>
+            <span class="s1">self._securityDetails = SecurityDetails(</span>
+                <span class="s1">securityDetails[</span><span class="s4">'subjectName'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">securityDetails[</span><span class="s4">'issuer'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">securityDetails[</span><span class="s4">'validFrom'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">securityDetails[</span><span class="s4">'validTo'</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">securityDetails[</span><span class="s4">'protocol'</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_bodyLoadedPromiseFulfill(self</span><span class="s3">, </span><span class="s1">value: Optional[Exception]) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._bodyLoadedPromise.set_result(value)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">url(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;URL of the response.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._url</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">ok(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Return bool whether this request is successful (200-299) or not.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._status == </span><span class="s5">0 </span><span class="s3">or </span><span class="s5">200 </span><span class="s1">&lt;= self._status &lt;= </span><span class="s5">299</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">status(self) -&gt; int:</span>
+        <span class="s2">&quot;&quot;&quot;Status code of the response.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._status</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">headers(self) -&gt; Dict:</span>
+        <span class="s2">&quot;&quot;&quot;Return dictionary of HTTP headers of this response. 
+ 
+        All header names are lower-case. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._headers</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">securityDetails(self) -&gt; Union[Dict</span><span class="s3">, </span><span class="s4">'SecurityDetails'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return security details associated with this response. 
+ 
+        Security details if the response was received over the secure 
+        connection, or `None` otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._securityDetails</span>
+
+    <span class="s3">async def </span><span class="s1">_bufread(self) -&gt; bytes:</span>
+        <span class="s1">result = </span><span class="s3">await </span><span class="s1">self._bodyLoadedPromise</span>
+        <span class="s3">if </span><span class="s1">isinstance(result</span><span class="s3">, </span><span class="s1">Exception):</span>
+            <span class="s3">raise </span><span class="s1">result</span>
+        <span class="s1">response = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Network.getResponseBody'</span><span class="s3">, </span><span class="s1">{</span>
+            <span class="s4">'requestId'</span><span class="s1">: self._request._requestId</span>
+        <span class="s1">})</span>
+        <span class="s1">body = response.get(</span><span class="s4">'body'</span><span class="s3">, </span><span class="s6">b''</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">response.get(</span><span class="s4">'base64Encoded'</span><span class="s1">):</span>
+            <span class="s3">return </span><span class="s1">base64.b64decode(body)</span>
+        <span class="s3">return </span><span class="s1">body</span>
+
+    <span class="s3">def </span><span class="s1">buffer(self) -&gt; Awaitable[bytes]:</span>
+        <span class="s2">&quot;&quot;&quot;Return awaitable which resolves to bytes with response body.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">self._contentPromise.done():</span>
+            <span class="s3">return </span><span class="s1">self._client._loop.create_task(self._bufread())</span>
+        <span class="s3">return </span><span class="s1">self._contentPromise</span>
+
+    <span class="s3">async def </span><span class="s1">text(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get text representation of response body.&quot;&quot;&quot;</span>
+        <span class="s1">content = </span><span class="s3">await </span><span class="s1">self.buffer()</span>
+        <span class="s3">if </span><span class="s1">isinstance(content</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s3">return </span><span class="s1">content</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">content.decode(</span><span class="s4">'utf-8'</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">json(self) -&gt; dict:</span>
+        <span class="s2">&quot;&quot;&quot;Get JSON representation of response body.&quot;&quot;&quot;</span>
+        <span class="s1">content = </span><span class="s3">await </span><span class="s1">self.text()</span>
+        <span class="s3">return </span><span class="s1">json.loads(content)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">request(self) -&gt; Request:</span>
+        <span class="s2">&quot;&quot;&quot;Get matching :class:`Request` object.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._request</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">fromCache(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Return ``True`` if the response was served from cache. 
+ 
+        Here `cache` is either the browser's disk cache or memory cache. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._fromDiskCache </span><span class="s3">or </span><span class="s1">self._request._fromMemoryCache</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">fromServiceWorker(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Return ``True`` if the response was served by a service worker.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._fromServiceWorker</span>
+
+
+<span class="s3">def </span><span class="s1">generateRequestHash(request: dict) -&gt; str:</span>
+    <span class="s2">&quot;&quot;&quot;Generate request hash.&quot;&quot;&quot;</span>
+    <span class="s1">normalizedURL = request.get(</span><span class="s4">'url'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+    <span class="s3">try</span><span class="s1">:</span>
+        <span class="s1">normalizedURL = unquote(normalizedURL)</span>
+    <span class="s3">except </span><span class="s1">Exception:</span>
+        <span class="s3">pass</span>
+
+    <span class="s1">_hash = {</span>
+        <span class="s4">'url'</span><span class="s1">: normalizedURL</span><span class="s3">,</span>
+        <span class="s4">'method'</span><span class="s1">: request.get(</span><span class="s4">'method'</span><span class="s1">)</span><span class="s3">,</span>
+        <span class="s4">'postData'</span><span class="s1">: request.get(</span><span class="s4">'postData'</span><span class="s1">)</span><span class="s3">,</span>
+        <span class="s4">'headers'</span><span class="s1">: {}</span><span class="s3">,</span>
+    <span class="s1">}</span>
+
+    <span class="s3">if not </span><span class="s1">normalizedURL.startswith(</span><span class="s4">'data:'</span><span class="s1">):</span>
+        <span class="s1">headers = list(request[</span><span class="s4">'headers'</span><span class="s1">].keys())</span>
+        <span class="s1">headers.sort()</span>
+        <span class="s3">for </span><span class="s1">header </span><span class="s3">in </span><span class="s1">headers:</span>
+            <span class="s1">headerValue = request[</span><span class="s4">'headers'</span><span class="s1">][header]</span>
+            <span class="s1">header = header.lower()</span>
+            <span class="s3">if </span><span class="s1">header </span><span class="s3">in </span><span class="s1">[</span>
+                <span class="s4">'accept'</span><span class="s3">,</span>
+                <span class="s4">'referer'</span><span class="s3">,</span>
+                <span class="s4">'x-devtools-emulate-network-conditions-client-id'</span><span class="s3">,</span>
+                <span class="s4">'cookie'</span><span class="s3">,</span>
+            <span class="s1">]:</span>
+                <span class="s3">continue</span>
+            <span class="s1">_hash[</span><span class="s4">'headers'</span><span class="s1">][header] = headerValue</span>
+    <span class="s3">return </span><span class="s1">json.dumps(_hash)</span>
+
+
+<span class="s3">class </span><span class="s1">SecurityDetails(object):</span>
+    <span class="s2">&quot;&quot;&quot;Class represents responses which are received by page.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">subjectName: str</span><span class="s3">, </span><span class="s1">issuer: str</span><span class="s3">, </span><span class="s1">validFrom: int</span><span class="s3">,</span>
+                 <span class="s1">validTo: int</span><span class="s3">, </span><span class="s1">protocol: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._subjectName = subjectName</span>
+        <span class="s1">self._issuer = issuer</span>
+        <span class="s1">self._validFrom = validFrom</span>
+        <span class="s1">self._validTo = validTo</span>
+        <span class="s1">self._protocol = protocol</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">subjectName(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Return the subject to which the certificate was issued to.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._subjectName</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">issuer(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Return a string with the name of issuer of the certificate.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._issuer</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">validFrom(self) -&gt; int:</span>
+        <span class="s2">&quot;&quot;&quot;Return UnixTime of the start of validity of the certificate.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._validFrom</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">validTo(self) -&gt; int:</span>
+        <span class="s2">&quot;&quot;&quot;Return UnixTime of the end of validity of the certificate.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._validTo</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">protocol(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Return string of with the security protocol, e.g. &quot;TLS1.2&quot;.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._protocol</span>
+
+
+<span class="s1">statusTexts = {</span>
+    <span class="s4">'100'</span><span class="s1">: </span><span class="s4">'Continue'</span><span class="s3">,</span>
+    <span class="s4">'101'</span><span class="s1">: </span><span class="s4">'Switching Protocols'</span><span class="s3">,</span>
+    <span class="s4">'102'</span><span class="s1">: </span><span class="s4">'Processing'</span><span class="s3">,</span>
+    <span class="s4">'200'</span><span class="s1">: </span><span class="s4">'OK'</span><span class="s3">,</span>
+    <span class="s4">'201'</span><span class="s1">: </span><span class="s4">'Created'</span><span class="s3">,</span>
+    <span class="s4">'202'</span><span class="s1">: </span><span class="s4">'Accepted'</span><span class="s3">,</span>
+    <span class="s4">'203'</span><span class="s1">: </span><span class="s4">'Non-Authoritative Information'</span><span class="s3">,</span>
+    <span class="s4">'204'</span><span class="s1">: </span><span class="s4">'No Content'</span><span class="s3">,</span>
+    <span class="s4">'206'</span><span class="s1">: </span><span class="s4">'Partial Content'</span><span class="s3">,</span>
+    <span class="s4">'207'</span><span class="s1">: </span><span class="s4">'Multi-Status'</span><span class="s3">,</span>
+    <span class="s4">'208'</span><span class="s1">: </span><span class="s4">'Already Reported'</span><span class="s3">,</span>
+    <span class="s4">'209'</span><span class="s1">: </span><span class="s4">'IM Used'</span><span class="s3">,</span>
+    <span class="s4">'300'</span><span class="s1">: </span><span class="s4">'Multiple Choices'</span><span class="s3">,</span>
+    <span class="s4">'301'</span><span class="s1">: </span><span class="s4">'Moved Permanently'</span><span class="s3">,</span>
+    <span class="s4">'302'</span><span class="s1">: </span><span class="s4">'Found'</span><span class="s3">,</span>
+    <span class="s4">'303'</span><span class="s1">: </span><span class="s4">'See Other'</span><span class="s3">,</span>
+    <span class="s4">'304'</span><span class="s1">: </span><span class="s4">'Not Modified'</span><span class="s3">,</span>
+    <span class="s4">'305'</span><span class="s1">: </span><span class="s4">'Use Proxy'</span><span class="s3">,</span>
+    <span class="s4">'306'</span><span class="s1">: </span><span class="s4">'Switch Proxy'</span><span class="s3">,</span>
+    <span class="s4">'307'</span><span class="s1">: </span><span class="s4">'Temporary Redirect'</span><span class="s3">,</span>
+    <span class="s4">'308'</span><span class="s1">: </span><span class="s4">'Permanent Redirect'</span><span class="s3">,</span>
+    <span class="s4">'400'</span><span class="s1">: </span><span class="s4">'Bad Request'</span><span class="s3">,</span>
+    <span class="s4">'401'</span><span class="s1">: </span><span class="s4">'Unauthorized'</span><span class="s3">,</span>
+    <span class="s4">'402'</span><span class="s1">: </span><span class="s4">'Payment Required'</span><span class="s3">,</span>
+    <span class="s4">'403'</span><span class="s1">: </span><span class="s4">'Forbidden'</span><span class="s3">,</span>
+    <span class="s4">'404'</span><span class="s1">: </span><span class="s4">'Not Found'</span><span class="s3">,</span>
+    <span class="s4">'405'</span><span class="s1">: </span><span class="s4">'Method Not Allowed'</span><span class="s3">,</span>
+    <span class="s4">'406'</span><span class="s1">: </span><span class="s4">'Not Acceptable'</span><span class="s3">,</span>
+    <span class="s4">'407'</span><span class="s1">: </span><span class="s4">'Proxy Authentication Required'</span><span class="s3">,</span>
+    <span class="s4">'408'</span><span class="s1">: </span><span class="s4">'Request Timeout'</span><span class="s3">,</span>
+    <span class="s4">'409'</span><span class="s1">: </span><span class="s4">'Conflict'</span><span class="s3">,</span>
+    <span class="s4">'410'</span><span class="s1">: </span><span class="s4">'Gone'</span><span class="s3">,</span>
+    <span class="s4">'411'</span><span class="s1">: </span><span class="s4">'Length Required'</span><span class="s3">,</span>
+    <span class="s4">'412'</span><span class="s1">: </span><span class="s4">'Precondition Failed'</span><span class="s3">,</span>
+    <span class="s4">'413'</span><span class="s1">: </span><span class="s4">'Payload Too Large'</span><span class="s3">,</span>
+    <span class="s4">'414'</span><span class="s1">: </span><span class="s4">'URI Too Long'</span><span class="s3">,</span>
+    <span class="s4">'415'</span><span class="s1">: </span><span class="s4">'Unsupported Media Type'</span><span class="s3">,</span>
+    <span class="s4">'416'</span><span class="s1">: </span><span class="s4">'Range Not Satisfiable'</span><span class="s3">,</span>
+    <span class="s4">'417'</span><span class="s1">: </span><span class="s4">'Expectation Failed'</span><span class="s3">,</span>
+    <span class="s4">'418'</span><span class="s1">: </span><span class="s4">'I</span><span class="s3">\'</span><span class="s4">m a teapot'</span><span class="s3">,</span>
+    <span class="s4">'421'</span><span class="s1">: </span><span class="s4">'Misdirected Request'</span><span class="s3">,</span>
+    <span class="s4">'422'</span><span class="s1">: </span><span class="s4">'Unprocessable Entity'</span><span class="s3">,</span>
+    <span class="s4">'423'</span><span class="s1">: </span><span class="s4">'Locked'</span><span class="s3">,</span>
+    <span class="s4">'424'</span><span class="s1">: </span><span class="s4">'Failed Dependency'</span><span class="s3">,</span>
+    <span class="s4">'426'</span><span class="s1">: </span><span class="s4">'Upgrade Required'</span><span class="s3">,</span>
+    <span class="s4">'428'</span><span class="s1">: </span><span class="s4">'Precondition Required'</span><span class="s3">,</span>
+    <span class="s4">'429'</span><span class="s1">: </span><span class="s4">'Too Many Requests'</span><span class="s3">,</span>
+    <span class="s4">'431'</span><span class="s1">: </span><span class="s4">'Request Header Fields Too Large'</span><span class="s3">,</span>
+    <span class="s4">'451'</span><span class="s1">: </span><span class="s4">'Unavailable For Legal Reasons'</span><span class="s3">,</span>
+    <span class="s4">'500'</span><span class="s1">: </span><span class="s4">'Internal Server Error'</span><span class="s3">,</span>
+    <span class="s4">'501'</span><span class="s1">: </span><span class="s4">'Not Implemented'</span><span class="s3">,</span>
+    <span class="s4">'502'</span><span class="s1">: </span><span class="s4">'Bad Gateway'</span><span class="s3">,</span>
+    <span class="s4">'503'</span><span class="s1">: </span><span class="s4">'Service Unavailable'</span><span class="s3">,</span>
+    <span class="s4">'504'</span><span class="s1">: </span><span class="s4">'Gateway Timeout'</span><span class="s3">,</span>
+    <span class="s4">'505'</span><span class="s1">: </span><span class="s4">'HTTP Version Not Supported'</span><span class="s3">,</span>
+    <span class="s4">'506'</span><span class="s1">: </span><span class="s4">'Variant Also Negotiates'</span><span class="s3">,</span>
+    <span class="s4">'507'</span><span class="s1">: </span><span class="s4">'Insufficient Storage'</span><span class="s3">,</span>
+    <span class="s4">'508'</span><span class="s1">: </span><span class="s4">'Loop Detected'</span><span class="s3">,</span>
+    <span class="s4">'510'</span><span class="s1">: </span><span class="s4">'Not Extended'</span><span class="s3">,</span>
+    <span class="s4">'511'</span><span class="s1">: </span><span class="s4">'Network Authentication Required'</span><span class="s3">,</span>
+<span class="s1">}</span>
+</pre>
+</body>
+</html>

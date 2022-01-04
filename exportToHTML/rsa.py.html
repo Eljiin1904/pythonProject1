@@ -1,0 +1,450 @@
+<html>
+<head>
+<title>rsa.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+rsa.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">abc</span>
+<span class="s2">import </span><span class="s1">typing</span>
+<span class="s2">from </span><span class="s1">math </span><span class="s2">import </span><span class="s1">gcd</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">UnsupportedAlgorithm</span><span class="s2">, </span><span class="s1">_Reasons</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">RSABackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">_serialization</span><span class="s2">, </span><span class="s1">hashes</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives._asymmetric </span><span class="s2">import </span><span class="s1">AsymmetricPadding</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.asymmetric </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AsymmetricSignatureContext</span><span class="s2">,</span>
+    <span class="s1">AsymmetricVerificationContext</span><span class="s2">,</span>
+    <span class="s1">utils </span><span class="s2">as </span><span class="s1">asym_utils</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">RSAPrivateKey(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">signer(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">padding: AsymmetricPadding</span><span class="s2">, </span><span class="s1">algorithm: hashes.HashAlgorithm</span>
+    <span class="s1">) -&gt; AsymmetricSignatureContext:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Returns an AsymmetricSignatureContext used for signing data. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">decrypt(self</span><span class="s2">, </span><span class="s1">ciphertext: bytes</span><span class="s2">, </span><span class="s1">padding: AsymmetricPadding) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Decrypts the provided ciphertext. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">key_size(self) -&gt; int:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The bit length of the public modulus. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">public_key(self) -&gt; </span><span class="s4">&quot;RSAPublicKey&quot;</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The RSAPublicKey associated with this private key. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">sign(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">padding: AsymmetricPadding</span><span class="s2">,</span>
+        <span class="s1">algorithm: typing.Union[asym_utils.Prehashed</span><span class="s2">, </span><span class="s1">hashes.HashAlgorithm]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Signs the data. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">private_numbers(self) -&gt; </span><span class="s4">&quot;RSAPrivateNumbers&quot;</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Returns an RSAPrivateNumbers. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">private_bytes(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">encoding: _serialization.Encoding</span><span class="s2">,</span>
+        <span class="s1">format: _serialization.PrivateFormat</span><span class="s2">,</span>
+        <span class="s1">encryption_algorithm: _serialization.KeySerializationEncryption</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Returns the key serialized as bytes. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s1">RSAPrivateKeyWithSerialization = RSAPrivateKey</span>
+
+
+<span class="s2">class </span><span class="s1">RSAPublicKey(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">verifier(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">signature: bytes</span><span class="s2">,</span>
+        <span class="s1">padding: AsymmetricPadding</span><span class="s2">,</span>
+        <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+    <span class="s1">) -&gt; AsymmetricVerificationContext:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Returns an AsymmetricVerificationContext used for verifying signatures. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">encrypt(self</span><span class="s2">, </span><span class="s1">plaintext: bytes</span><span class="s2">, </span><span class="s1">padding: AsymmetricPadding) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Encrypts the given plaintext. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">key_size(self) -&gt; int:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The bit length of the public modulus. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">public_numbers(self) -&gt; </span><span class="s4">&quot;RSAPublicNumbers&quot;</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Returns an RSAPublicNumbers 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">public_bytes(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">encoding: _serialization.Encoding</span><span class="s2">,</span>
+        <span class="s1">format: _serialization.PublicFormat</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Returns the key serialized as bytes. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">verify(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">signature: bytes</span><span class="s2">,</span>
+        <span class="s1">data: bytes</span><span class="s2">,</span>
+        <span class="s1">padding: AsymmetricPadding</span><span class="s2">,</span>
+        <span class="s1">algorithm: typing.Union[asym_utils.Prehashed</span><span class="s2">, </span><span class="s1">hashes.HashAlgorithm]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Verifies the signature of the data. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">recover_data_from_signature(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">signature: bytes</span><span class="s2">,</span>
+        <span class="s1">padding: AsymmetricPadding</span><span class="s2">,</span>
+        <span class="s1">algorithm: typing.Optional[hashes.HashAlgorithm]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Recovers the original data from the signature. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s1">RSAPublicKeyWithSerialization = RSAPublicKey</span>
+
+
+<span class="s2">def </span><span class="s1">generate_private_key(</span>
+    <span class="s1">public_exponent: int</span><span class="s2">, </span><span class="s1">key_size: int</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; RSAPrivateKey:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">RSABackend):</span>
+        <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+            <span class="s4">&quot;Backend object does not implement RSABackend.&quot;</span><span class="s2">,</span>
+            <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">_verify_rsa_parameters(public_exponent</span><span class="s2">, </span><span class="s1">key_size)</span>
+    <span class="s2">return </span><span class="s1">backend.generate_rsa_private_key(public_exponent</span><span class="s2">, </span><span class="s1">key_size)</span>
+
+
+<span class="s2">def </span><span class="s1">_verify_rsa_parameters(public_exponent: int</span><span class="s2">, </span><span class="s1">key_size: int) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+    <span class="s2">if </span><span class="s1">public_exponent </span><span class="s2">not in </span><span class="s1">(</span><span class="s5">3</span><span class="s2">, </span><span class="s5">65537</span><span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s4">&quot;public_exponent must be either 3 (for legacy compatibility) or &quot;</span>
+            <span class="s4">&quot;65537. Almost everyone should choose 65537 here!&quot;</span>
+        <span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">key_size &lt; </span><span class="s5">512</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;key_size must be at least 512-bits.&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_check_private_key_components(</span>
+    <span class="s1">p: int</span><span class="s2">,</span>
+    <span class="s1">q: int</span><span class="s2">,</span>
+    <span class="s1">private_exponent: int</span><span class="s2">,</span>
+    <span class="s1">dmp1: int</span><span class="s2">,</span>
+    <span class="s1">dmq1: int</span><span class="s2">,</span>
+    <span class="s1">iqmp: int</span><span class="s2">,</span>
+    <span class="s1">public_exponent: int</span><span class="s2">,</span>
+    <span class="s1">modulus: int</span><span class="s2">,</span>
+<span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+    <span class="s2">if </span><span class="s1">modulus &lt; </span><span class="s5">3</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;modulus must be &gt;= 3.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">p &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;p must be &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">q &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;q must be &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">dmp1 &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;dmp1 must be &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">dmq1 &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;dmq1 must be &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">iqmp &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;iqmp must be &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">private_exponent &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;private_exponent must be &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">public_exponent &lt; </span><span class="s5">3 </span><span class="s2">or </span><span class="s1">public_exponent &gt;= modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;public_exponent must be &gt;= 3 and &lt; modulus.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">public_exponent &amp; </span><span class="s5">1 </span><span class="s1">== </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;public_exponent must be odd.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">dmp1 &amp; </span><span class="s5">1 </span><span class="s1">== </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;dmp1 must be odd.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">dmq1 &amp; </span><span class="s5">1 </span><span class="s1">== </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;dmq1 must be odd.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">p * q != modulus:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;p*q must equal modulus.&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_check_public_key_components(e: int</span><span class="s2">, </span><span class="s1">n: int) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+    <span class="s2">if </span><span class="s1">n &lt; </span><span class="s5">3</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;n must be &gt;= 3.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">e &lt; </span><span class="s5">3 </span><span class="s2">or </span><span class="s1">e &gt;= n:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;e must be &gt;= 3 and &lt; n.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">e &amp; </span><span class="s5">1 </span><span class="s1">== </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;e must be odd.&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_modinv(e: int</span><span class="s2">, </span><span class="s1">m: int) -&gt; int:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Modular Multiplicative Inverse. Returns x such that: (x*e) mod m == 1 
+    &quot;&quot;&quot;</span>
+    <span class="s1">x1</span><span class="s2">, </span><span class="s1">x2 = </span><span class="s5">1</span><span class="s2">, </span><span class="s5">0</span>
+    <span class="s1">a</span><span class="s2">, </span><span class="s1">b = e</span><span class="s2">, </span><span class="s1">m</span>
+    <span class="s2">while </span><span class="s1">b &gt; </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s1">q</span><span class="s2">, </span><span class="s1">r = divmod(a</span><span class="s2">, </span><span class="s1">b)</span>
+        <span class="s1">xn = x1 - q * x2</span>
+        <span class="s1">a</span><span class="s2">, </span><span class="s1">b</span><span class="s2">, </span><span class="s1">x1</span><span class="s2">, </span><span class="s1">x2 = b</span><span class="s2">, </span><span class="s1">r</span><span class="s2">, </span><span class="s1">x2</span><span class="s2">, </span><span class="s1">xn</span>
+    <span class="s2">return </span><span class="s1">x1 % m</span>
+
+
+<span class="s2">def </span><span class="s1">rsa_crt_iqmp(p: int</span><span class="s2">, </span><span class="s1">q: int) -&gt; int:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Compute the CRT (q ** -1) % p value from RSA primes p and q. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">_modinv(q</span><span class="s2">, </span><span class="s1">p)</span>
+
+
+<span class="s2">def </span><span class="s1">rsa_crt_dmp1(private_exponent: int</span><span class="s2">, </span><span class="s1">p: int) -&gt; int:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Compute the CRT private_exponent % (p - 1) value from the RSA 
+    private_exponent (d) and p. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">private_exponent % (p - </span><span class="s5">1</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">rsa_crt_dmq1(private_exponent: int</span><span class="s2">, </span><span class="s1">q: int) -&gt; int:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Compute the CRT private_exponent % (q - 1) value from the RSA 
+    private_exponent (d) and q. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">private_exponent % (q - </span><span class="s5">1</span><span class="s1">)</span>
+
+
+<span class="s0"># Controls the number of iterations rsa_recover_prime_factors will perform</span>
+<span class="s0"># to obtain the prime factors. Each iteration increments by 2 so the actual</span>
+<span class="s0"># maximum attempts is half this number.</span>
+<span class="s1">_MAX_RECOVERY_ATTEMPTS = </span><span class="s5">1000</span>
+
+
+<span class="s2">def </span><span class="s1">rsa_recover_prime_factors(</span>
+    <span class="s1">n: int</span><span class="s2">, </span><span class="s1">e: int</span><span class="s2">, </span><span class="s1">d: int</span>
+<span class="s1">) -&gt; typing.Tuple[int</span><span class="s2">, </span><span class="s1">int]:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Compute factors p and q from the private exponent d. We assume that n has 
+    no more than two factors. This function is adapted from code in PyCrypto. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># See 8.2.2(i) in Handbook of Applied Cryptography.</span>
+    <span class="s1">ktot = d * e - </span><span class="s5">1</span>
+    <span class="s0"># The quantity d*e-1 is a multiple of phi(n), even,</span>
+    <span class="s0"># and can be represented as t*2^s.</span>
+    <span class="s1">t = ktot</span>
+    <span class="s2">while </span><span class="s1">t % </span><span class="s5">2 </span><span class="s1">== </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s1">t = t // </span><span class="s5">2</span>
+    <span class="s0"># Cycle through all multiplicative inverses in Zn.</span>
+    <span class="s0"># The algorithm is non-deterministic, but there is a 50% chance</span>
+    <span class="s0"># any candidate a leads to successful factoring.</span>
+    <span class="s0"># See &quot;Digitalized Signatures and Public Key Functions as Intractable</span>
+    <span class="s0"># as Factorization&quot;, M. Rabin, 1979</span>
+    <span class="s1">spotted = </span><span class="s2">False</span>
+    <span class="s1">a = </span><span class="s5">2</span>
+    <span class="s2">while not </span><span class="s1">spotted </span><span class="s2">and </span><span class="s1">a &lt; _MAX_RECOVERY_ATTEMPTS:</span>
+        <span class="s1">k = t</span>
+        <span class="s0"># Cycle through all values a^{t*2^i}=a^k</span>
+        <span class="s2">while </span><span class="s1">k &lt; ktot:</span>
+            <span class="s1">cand = pow(a</span><span class="s2">, </span><span class="s1">k</span><span class="s2">, </span><span class="s1">n)</span>
+            <span class="s0"># Check if a^k is a non-trivial root of unity (mod n)</span>
+            <span class="s2">if </span><span class="s1">cand != </span><span class="s5">1 </span><span class="s2">and </span><span class="s1">cand != (n - </span><span class="s5">1</span><span class="s1">) </span><span class="s2">and </span><span class="s1">pow(cand</span><span class="s2">, </span><span class="s5">2</span><span class="s2">, </span><span class="s1">n) == </span><span class="s5">1</span><span class="s1">:</span>
+                <span class="s0"># We have found a number such that (cand-1)(cand+1)=0 (mod n).</span>
+                <span class="s0"># Either of the terms divides n.</span>
+                <span class="s1">p = gcd(cand + </span><span class="s5">1</span><span class="s2">, </span><span class="s1">n)</span>
+                <span class="s1">spotted = </span><span class="s2">True</span>
+                <span class="s2">break</span>
+            <span class="s1">k *= </span><span class="s5">2</span>
+        <span class="s0"># This value was not any good... let's try another!</span>
+        <span class="s1">a += </span><span class="s5">2</span>
+    <span class="s2">if not </span><span class="s1">spotted:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Unable to compute factors p and q from exponent d.&quot;</span><span class="s1">)</span>
+    <span class="s0"># Found !</span>
+    <span class="s1">q</span><span class="s2">, </span><span class="s1">r = divmod(n</span><span class="s2">, </span><span class="s1">p)</span>
+    <span class="s2">assert </span><span class="s1">r == </span><span class="s5">0</span>
+    <span class="s1">p</span><span class="s2">, </span><span class="s1">q = sorted((p</span><span class="s2">, </span><span class="s1">q)</span><span class="s2">, </span><span class="s1">reverse=</span><span class="s2">True</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">(p</span><span class="s2">, </span><span class="s1">q)</span>
+
+
+<span class="s2">class </span><span class="s1">RSAPrivateNumbers(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">p: int</span><span class="s2">,</span>
+        <span class="s1">q: int</span><span class="s2">,</span>
+        <span class="s1">d: int</span><span class="s2">,</span>
+        <span class="s1">dmp1: int</span><span class="s2">,</span>
+        <span class="s1">dmq1: int</span><span class="s2">,</span>
+        <span class="s1">iqmp: int</span><span class="s2">,</span>
+        <span class="s1">public_numbers: </span><span class="s4">&quot;RSAPublicNumbers&quot;</span><span class="s2">,</span>
+    <span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">(</span>
+            <span class="s2">not </span><span class="s1">isinstance(p</span><span class="s2">, </span><span class="s1">int)</span>
+            <span class="s2">or not </span><span class="s1">isinstance(q</span><span class="s2">, </span><span class="s1">int)</span>
+            <span class="s2">or not </span><span class="s1">isinstance(d</span><span class="s2">, </span><span class="s1">int)</span>
+            <span class="s2">or not </span><span class="s1">isinstance(dmp1</span><span class="s2">, </span><span class="s1">int)</span>
+            <span class="s2">or not </span><span class="s1">isinstance(dmq1</span><span class="s2">, </span><span class="s1">int)</span>
+            <span class="s2">or not </span><span class="s1">isinstance(iqmp</span><span class="s2">, </span><span class="s1">int)</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;RSAPrivateNumbers p, q, d, dmp1, dmq1, iqmp arguments must&quot;</span>
+                <span class="s4">&quot; all be an integers.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(public_numbers</span><span class="s2">, </span><span class="s1">RSAPublicNumbers):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;RSAPrivateNumbers public_numbers must be an RSAPublicNumbers&quot;</span>
+                <span class="s4">&quot; instance.&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._p = p</span>
+        <span class="s1">self._q = q</span>
+        <span class="s1">self._d = d</span>
+        <span class="s1">self._dmp1 = dmp1</span>
+        <span class="s1">self._dmq1 = dmq1</span>
+        <span class="s1">self._iqmp = iqmp</span>
+        <span class="s1">self._public_numbers = public_numbers</span>
+
+    <span class="s1">p = utils.read_only_property(</span><span class="s4">&quot;_p&quot;</span><span class="s1">)</span>
+    <span class="s1">q = utils.read_only_property(</span><span class="s4">&quot;_q&quot;</span><span class="s1">)</span>
+    <span class="s1">d = utils.read_only_property(</span><span class="s4">&quot;_d&quot;</span><span class="s1">)</span>
+    <span class="s1">dmp1 = utils.read_only_property(</span><span class="s4">&quot;_dmp1&quot;</span><span class="s1">)</span>
+    <span class="s1">dmq1 = utils.read_only_property(</span><span class="s4">&quot;_dmq1&quot;</span><span class="s1">)</span>
+    <span class="s1">iqmp = utils.read_only_property(</span><span class="s4">&quot;_iqmp&quot;</span><span class="s1">)</span>
+    <span class="s1">public_numbers = utils.read_only_property(</span><span class="s4">&quot;_public_numbers&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">private_key(self</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; RSAPrivateKey:</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.load_rsa_private_numbers(self)</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">RSAPrivateNumbers):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s1">self.p == other.p</span>
+            <span class="s2">and </span><span class="s1">self.q == other.q</span>
+            <span class="s2">and </span><span class="s1">self.d == other.d</span>
+            <span class="s2">and </span><span class="s1">self.dmp1 == other.dmp1</span>
+            <span class="s2">and </span><span class="s1">self.dmq1 == other.dmq1</span>
+            <span class="s2">and </span><span class="s1">self.iqmp == other.iqmp</span>
+            <span class="s2">and </span><span class="s1">self.public_numbers == other.public_numbers</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self):</span>
+        <span class="s2">return </span><span class="s1">hash(</span>
+            <span class="s1">(</span>
+                <span class="s1">self.p</span><span class="s2">,</span>
+                <span class="s1">self.q</span><span class="s2">,</span>
+                <span class="s1">self.d</span><span class="s2">,</span>
+                <span class="s1">self.dmp1</span><span class="s2">,</span>
+                <span class="s1">self.dmq1</span><span class="s2">,</span>
+                <span class="s1">self.iqmp</span><span class="s2">,</span>
+                <span class="s1">self.public_numbers</span><span class="s2">,</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">RSAPublicNumbers(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">e: int</span><span class="s2">, </span><span class="s1">n: int):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(e</span><span class="s2">, </span><span class="s1">int) </span><span class="s2">or not </span><span class="s1">isinstance(n</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;RSAPublicNumbers arguments must be integers.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._e = e</span>
+        <span class="s1">self._n = n</span>
+
+    <span class="s1">e = utils.read_only_property(</span><span class="s4">&quot;_e&quot;</span><span class="s1">)</span>
+    <span class="s1">n = utils.read_only_property(</span><span class="s4">&quot;_n&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">public_key(self</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span><span class="s1">) -&gt; RSAPublicKey:</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">return </span><span class="s1">backend.load_rsa_public_numbers(self)</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;RSAPublicNumbers(e={0.e}, n={0.n})&gt;&quot;</span><span class="s1">.format(self)</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">RSAPublicNumbers):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">self.e == other.e </span><span class="s2">and </span><span class="s1">self.n == other.n</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other):</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self):</span>
+        <span class="s2">return </span><span class="s1">hash((self.e</span><span class="s2">, </span><span class="s1">self.n))</span>
+</pre>
+</body>
+</html>

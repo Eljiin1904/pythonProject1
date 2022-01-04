@@ -1,0 +1,249 @@
+<html>
+<head>
+<title>indexes.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+indexes.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">NotSupportedError</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Func</span><span class="s0">, </span><span class="s1">Index</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+
+<span class="s1">__all__ = [</span>
+    <span class="s2">'BloomIndex'</span><span class="s0">, </span><span class="s2">'BrinIndex'</span><span class="s0">, </span><span class="s2">'BTreeIndex'</span><span class="s0">, </span><span class="s2">'GinIndex'</span><span class="s0">, </span><span class="s2">'GistIndex'</span><span class="s0">,</span>
+    <span class="s2">'HashIndex'</span><span class="s0">, </span><span class="s2">'SpGistIndex'</span><span class="s0">,</span>
+<span class="s1">]</span>
+
+
+<span class="s0">class </span><span class="s1">PostgresIndex(Index):</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">max_name_length(self):</span>
+        <span class="s3"># Allow an index name longer than 30 characters when the suffix is</span>
+        <span class="s3"># longer than the usual 3 character limit. The 30 character limit for</span>
+        <span class="s3"># cross-database compatibility isn't applicable to PostgreSQL-specific</span>
+        <span class="s3"># indexes.</span>
+        <span class="s0">return </span><span class="s1">Index.max_name_length - len(Index.suffix) + len(self.suffix)</span>
+
+    <span class="s0">def </span><span class="s1">create_sql(self</span><span class="s0">, </span><span class="s1">model</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">using=</span><span class="s2">''</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.check_supported(schema_editor)</span>
+        <span class="s1">statement = super().create_sql(model</span><span class="s0">, </span><span class="s1">schema_editor</span><span class="s0">, </span><span class="s1">using=</span><span class="s2">' USING %s' </span><span class="s1">% self.suffix</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">with_params = self.get_with_params()</span>
+        <span class="s0">if </span><span class="s1">with_params:</span>
+            <span class="s1">statement.parts[</span><span class="s2">'extra'</span><span class="s1">] = </span><span class="s2">'WITH (%s) %s' </span><span class="s1">% (</span>
+                <span class="s2">', '</span><span class="s1">.join(with_params)</span><span class="s0">,</span>
+                <span class="s1">statement.parts[</span><span class="s2">'extra'</span><span class="s1">]</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">statement</span>
+
+    <span class="s0">def </span><span class="s1">check_supported(self</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s0">return </span><span class="s1">[]</span>
+
+
+<span class="s0">class </span><span class="s1">BloomIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'bloom'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">length=</span><span class="s0">None, </span><span class="s1">columns=()</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">if </span><span class="s1">len(self.fields) &gt; </span><span class="s4">32</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">'Bloom indexes support a maximum of 32 fields.'</span><span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance(columns</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">'BloomIndex.columns must be a list or tuple.'</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">len(columns) &gt; len(self.fields):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'BloomIndex.columns cannot have more values than fields.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">all(</span><span class="s4">0 </span><span class="s1">&lt; col &lt;= </span><span class="s4">4095 </span><span class="s0">for </span><span class="s1">col </span><span class="s0">in </span><span class="s1">columns):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'BloomIndex.columns must contain integers from 1 to 4095.'</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">length </span><span class="s0">is not None and not </span><span class="s4">0 </span><span class="s1">&lt; length &lt;= </span><span class="s4">4096</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s2">'BloomIndex.length must be None or an integer from 1 to 4096.'</span><span class="s0">,</span>
+            <span class="s1">)</span>
+        <span class="s1">self.length = length</span>
+        <span class="s1">self.columns = columns</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.length </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'length'</span><span class="s1">] = self.length</span>
+        <span class="s0">if </span><span class="s1">self.columns:</span>
+            <span class="s1">kwargs[</span><span class="s2">'columns'</span><span class="s1">] = self.columns</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.length </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'length = %d' </span><span class="s1">% self.length)</span>
+        <span class="s0">if </span><span class="s1">self.columns:</span>
+            <span class="s1">with_params.extend(</span>
+                <span class="s2">'col%d = %d' </span><span class="s1">% (i</span><span class="s0">, </span><span class="s1">v)</span>
+                <span class="s0">for </span><span class="s1">i</span><span class="s0">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">enumerate(self.columns</span><span class="s0">, </span><span class="s1">start=</span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+
+<span class="s0">class </span><span class="s1">BrinIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'brin'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">autosummarize=</span><span class="s0">None, </span><span class="s1">pages_per_range=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s0">if </span><span class="s1">pages_per_range </span><span class="s0">is not None and </span><span class="s1">pages_per_range &lt;= </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">'pages_per_range must be None or a positive integer'</span><span class="s1">)</span>
+        <span class="s1">self.autosummarize = autosummarize</span>
+        <span class="s1">self.pages_per_range = pages_per_range</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.autosummarize </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'autosummarize'</span><span class="s1">] = self.autosummarize</span>
+        <span class="s0">if </span><span class="s1">self.pages_per_range </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'pages_per_range'</span><span class="s1">] = self.pages_per_range</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.autosummarize </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'autosummarize = %s' </span><span class="s1">% (</span><span class="s2">'on' </span><span class="s0">if </span><span class="s1">self.autosummarize </span><span class="s0">else </span><span class="s2">'off'</span><span class="s1">))</span>
+        <span class="s0">if </span><span class="s1">self.pages_per_range </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'pages_per_range = %d' </span><span class="s1">% self.pages_per_range)</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+
+<span class="s0">class </span><span class="s1">BTreeIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'btree'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">fillfactor=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.fillfactor = fillfactor</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'fillfactor'</span><span class="s1">] = self.fillfactor</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'fillfactor = %d' </span><span class="s1">% self.fillfactor)</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+
+<span class="s0">class </span><span class="s1">GinIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'gin'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">fastupdate=</span><span class="s0">None, </span><span class="s1">gin_pending_list_limit=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.fastupdate = fastupdate</span>
+        <span class="s1">self.gin_pending_list_limit = gin_pending_list_limit</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.fastupdate </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'fastupdate'</span><span class="s1">] = self.fastupdate</span>
+        <span class="s0">if </span><span class="s1">self.gin_pending_list_limit </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'gin_pending_list_limit'</span><span class="s1">] = self.gin_pending_list_limit</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.gin_pending_list_limit </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'gin_pending_list_limit = %d' </span><span class="s1">% self.gin_pending_list_limit)</span>
+        <span class="s0">if </span><span class="s1">self.fastupdate </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'fastupdate = %s' </span><span class="s1">% (</span><span class="s2">'on' </span><span class="s0">if </span><span class="s1">self.fastupdate </span><span class="s0">else </span><span class="s2">'off'</span><span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+
+<span class="s0">class </span><span class="s1">GistIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'gist'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">buffering=</span><span class="s0">None, </span><span class="s1">fillfactor=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.buffering = buffering</span>
+        <span class="s1">self.fillfactor = fillfactor</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.buffering </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'buffering'</span><span class="s1">] = self.buffering</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'fillfactor'</span><span class="s1">] = self.fillfactor</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.buffering </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'buffering = %s' </span><span class="s1">% (</span><span class="s2">'on' </span><span class="s0">if </span><span class="s1">self.buffering </span><span class="s0">else </span><span class="s2">'off'</span><span class="s1">))</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'fillfactor = %d' </span><span class="s1">% self.fillfactor)</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+    <span class="s0">def </span><span class="s1">check_supported(self</span><span class="s0">, </span><span class="s1">schema_editor):</span>
+        <span class="s0">if </span><span class="s1">self.include </span><span class="s0">and not </span><span class="s1">schema_editor.connection.features.supports_covering_gist_indexes:</span>
+            <span class="s0">raise </span><span class="s1">NotSupportedError(</span><span class="s2">'Covering GiST indexes requires PostgreSQL 12+.'</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">HashIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'hash'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">fillfactor=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.fillfactor = fillfactor</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'fillfactor'</span><span class="s1">] = self.fillfactor</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'fillfactor = %d' </span><span class="s1">% self.fillfactor)</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+
+<span class="s0">class </span><span class="s1">SpGistIndex(PostgresIndex):</span>
+    <span class="s1">suffix = </span><span class="s2">'spgist'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">fillfactor=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.fillfactor = fillfactor</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">deconstruct(self):</span>
+        <span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = super().deconstruct()</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">kwargs[</span><span class="s2">'fillfactor'</span><span class="s1">] = self.fillfactor</span>
+        <span class="s0">return </span><span class="s1">path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span>
+
+    <span class="s0">def </span><span class="s1">get_with_params(self):</span>
+        <span class="s1">with_params = []</span>
+        <span class="s0">if </span><span class="s1">self.fillfactor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">with_params.append(</span><span class="s2">'fillfactor = %d' </span><span class="s1">% self.fillfactor)</span>
+        <span class="s0">return </span><span class="s1">with_params</span>
+
+
+<span class="s0">class </span><span class="s1">OpClass(Func):</span>
+    <span class="s1">template = </span><span class="s2">'%(expressions)s %(name)s'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">name=name)</span>
+</pre>
+</body>
+</html>

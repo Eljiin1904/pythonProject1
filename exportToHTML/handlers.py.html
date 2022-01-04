@@ -1,0 +1,118 @@
+<html>
+<head>
+<title>handlers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+handlers.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">urllib.parse </span><span class="s0">import </span><span class="s1">urlparse</span>
+<span class="s0">from </span><span class="s1">urllib.request </span><span class="s0">import </span><span class="s1">url2pathname</span>
+
+<span class="s0">from </span><span class="s1">asgiref.sync </span><span class="s0">import </span><span class="s1">sync_to_async</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.contrib.staticfiles </span><span class="s0">import </span><span class="s1">utils</span>
+<span class="s0">from </span><span class="s1">django.contrib.staticfiles.views </span><span class="s0">import </span><span class="s1">serve</span>
+<span class="s0">from </span><span class="s1">django.core.handlers.asgi </span><span class="s0">import </span><span class="s1">ASGIHandler</span>
+<span class="s0">from </span><span class="s1">django.core.handlers.exception </span><span class="s0">import </span><span class="s1">response_for_exception</span>
+<span class="s0">from </span><span class="s1">django.core.handlers.wsgi </span><span class="s0">import </span><span class="s1">WSGIHandler</span><span class="s0">, </span><span class="s1">get_path_info</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">Http404</span>
+
+
+<span class="s0">class </span><span class="s1">StaticFilesHandlerMixin:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Common methods used by WSGI and ASGI handlers. 
+    &quot;&quot;&quot;</span>
+    <span class="s3"># May be used to differentiate between handler types (e.g. in a</span>
+    <span class="s3"># request_finished signal)</span>
+    <span class="s1">handles_files = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">load_middleware(self):</span>
+        <span class="s3"># Middleware are already loaded for self.application; no need to reload</span>
+        <span class="s3"># them for self.</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">get_base_url(self):</span>
+        <span class="s1">utils.check_settings()</span>
+        <span class="s0">return </span><span class="s1">settings.STATIC_URL</span>
+
+    <span class="s0">def </span><span class="s1">_should_handle(self</span><span class="s0">, </span><span class="s1">path):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Check if the path should be handled. Ignore the path if: 
+        * the host is provided as part of the base_url 
+        * the request's path isn't under the media path (or equal) 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">path.startswith(self.base_url[</span><span class="s4">2</span><span class="s1">]) </span><span class="s0">and not </span><span class="s1">self.base_url[</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">file_path(self</span><span class="s0">, </span><span class="s1">url):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the relative path to the media file on disk for the given URL. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">relative_url = url[len(self.base_url[</span><span class="s4">2</span><span class="s1">]):]</span>
+        <span class="s0">return </span><span class="s1">url2pathname(relative_url)</span>
+
+    <span class="s0">def </span><span class="s1">serve(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s2">&quot;&quot;&quot;Serve the request path.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">serve(request</span><span class="s0">, </span><span class="s1">self.file_path(request.path)</span><span class="s0">, </span><span class="s1">insecure=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_response(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.serve(request)</span>
+        <span class="s0">except </span><span class="s1">Http404 </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">return </span><span class="s1">response_for_exception(request</span><span class="s0">, </span><span class="s1">e)</span>
+
+    <span class="s0">async def </span><span class="s1">get_response_async(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return await </span><span class="s1">sync_to_async(self.serve</span><span class="s0">, </span><span class="s1">thread_sensitive=</span><span class="s0">False</span><span class="s1">)(request)</span>
+        <span class="s0">except </span><span class="s1">Http404 </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">return await </span><span class="s1">sync_to_async(response_for_exception</span><span class="s0">, </span><span class="s1">thread_sensitive=</span><span class="s0">False</span><span class="s1">)(request</span><span class="s0">, </span><span class="s1">e)</span>
+
+
+<span class="s0">class </span><span class="s1">StaticFilesHandler(StaticFilesHandlerMixin</span><span class="s0">, </span><span class="s1">WSGIHandler):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    WSGI middleware that intercepts calls to the static files directory, as 
+    defined by the STATIC_URL setting, and serves those files. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">application):</span>
+        <span class="s1">self.application = application</span>
+        <span class="s1">self.base_url = urlparse(self.get_base_url())</span>
+        <span class="s1">super().__init__()</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">environ</span><span class="s0">, </span><span class="s1">start_response):</span>
+        <span class="s0">if not </span><span class="s1">self._should_handle(get_path_info(environ)):</span>
+            <span class="s0">return </span><span class="s1">self.application(environ</span><span class="s0">, </span><span class="s1">start_response)</span>
+        <span class="s0">return </span><span class="s1">super().__call__(environ</span><span class="s0">, </span><span class="s1">start_response)</span>
+
+
+<span class="s0">class </span><span class="s1">ASGIStaticFilesHandler(StaticFilesHandlerMixin</span><span class="s0">, </span><span class="s1">ASGIHandler):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    ASGI application which wraps another and intercepts requests for static 
+    files, passing them off to Django's static file serving. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">application):</span>
+        <span class="s1">self.application = application</span>
+        <span class="s1">self.base_url = urlparse(self.get_base_url())</span>
+
+    <span class="s0">async def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">scope</span><span class="s0">, </span><span class="s1">receive</span><span class="s0">, </span><span class="s1">send):</span>
+        <span class="s3"># Only even look at HTTP requests</span>
+        <span class="s0">if </span><span class="s1">scope[</span><span class="s5">'type'</span><span class="s1">] == </span><span class="s5">'http' </span><span class="s0">and </span><span class="s1">self._should_handle(scope[</span><span class="s5">'path'</span><span class="s1">]):</span>
+            <span class="s3"># Serve static content</span>
+            <span class="s3"># (the one thing super() doesn't do is __call__, apparently)</span>
+            <span class="s0">return await </span><span class="s1">super().__call__(scope</span><span class="s0">, </span><span class="s1">receive</span><span class="s0">, </span><span class="s1">send)</span>
+        <span class="s3"># Hand off to the main app</span>
+        <span class="s0">return await </span><span class="s1">self.application(scope</span><span class="s0">, </span><span class="s1">receive</span><span class="s0">, </span><span class="s1">send)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,378 @@
+<html>
+<head>
+<title>templates.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+templates.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">argparse</span>
+<span class="s0">import </span><span class="s1">cgi</span>
+<span class="s0">import </span><span class="s1">mimetypes</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">posixpath</span>
+<span class="s0">import </span><span class="s1">shutil</span>
+<span class="s0">import </span><span class="s1">stat</span>
+<span class="s0">import </span><span class="s1">tempfile</span>
+<span class="s0">from </span><span class="s1">importlib </span><span class="s0">import </span><span class="s1">import_module</span>
+<span class="s0">from </span><span class="s1">urllib.request </span><span class="s0">import </span><span class="s1">urlretrieve</span>
+
+<span class="s0">import </span><span class="s1">django</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span>
+<span class="s0">from </span><span class="s1">django.core.management.utils </span><span class="s0">import </span><span class="s1">handle_extensions</span>
+<span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">Context</span><span class="s0">, </span><span class="s1">Engine</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">archive</span>
+<span class="s0">from </span><span class="s1">django.utils.version </span><span class="s0">import </span><span class="s1">get_docs_version</span>
+
+
+<span class="s0">class </span><span class="s1">TemplateCommand(BaseCommand):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Copy either a Django application layout template or a Django project 
+    layout template into the specified directory. 
+ 
+    :param style: A color style object (see django.core.management.color). 
+    :param app_or_project: The string 'app' or 'project'. 
+    :param name: The name of the application or project. 
+    :param directory: The directory to which the template should be copied. 
+    :param options: The additional variables passed to project or app templates 
+    &quot;&quot;&quot;</span>
+    <span class="s1">requires_system_checks = []</span>
+    <span class="s3"># The supported URL schemes</span>
+    <span class="s1">url_schemes = [</span><span class="s4">'http'</span><span class="s0">, </span><span class="s4">'https'</span><span class="s0">, </span><span class="s4">'ftp'</span><span class="s1">]</span>
+    <span class="s3"># Rewrite the following suffixes when determining the target filename.</span>
+    <span class="s1">rewrite_template_suffixes = (</span>
+        <span class="s3"># Allow shipping invalid .py files without byte-compilation.</span>
+        <span class="s1">(</span><span class="s4">'.py-tpl'</span><span class="s0">, </span><span class="s4">'.py'</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span><span class="s4">'name'</span><span class="s0">, </span><span class="s1">help=</span><span class="s4">'Name of the application or project.'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span><span class="s4">'directory'</span><span class="s0">, </span><span class="s1">nargs=</span><span class="s4">'?'</span><span class="s0">, </span><span class="s1">help=</span><span class="s4">'Optional destination directory'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span><span class="s4">'--template'</span><span class="s0">, </span><span class="s1">help=</span><span class="s4">'The path or URL to load the template from.'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s4">'--extension'</span><span class="s0">, </span><span class="s4">'-e'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s4">'extensions'</span><span class="s0">,</span>
+            <span class="s1">action=</span><span class="s4">'append'</span><span class="s0">, </span><span class="s1">default=[</span><span class="s4">'py'</span><span class="s1">]</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s4">'The file extension(s) to render (default: &quot;py&quot;). '</span>
+                 <span class="s4">'Separate multiple extensions with commas, or use '</span>
+                 <span class="s4">'-e multiple times.'</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s4">'--name'</span><span class="s0">, </span><span class="s4">'-n'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s4">'files'</span><span class="s0">,</span>
+            <span class="s1">action=</span><span class="s4">'append'</span><span class="s0">, </span><span class="s1">default=[]</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s4">'The file name(s) to render. Separate multiple file names '</span>
+                 <span class="s4">'with commas, or use -n multiple times.'</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s4">'--exclude'</span><span class="s0">, </span><span class="s4">'-x'</span><span class="s0">,</span>
+            <span class="s1">action=</span><span class="s4">'append'</span><span class="s0">, </span><span class="s1">default=argparse.SUPPRESS</span><span class="s0">, </span><span class="s1">nargs=</span><span class="s4">'?'</span><span class="s0">, </span><span class="s1">const=</span><span class="s4">''</span><span class="s0">,</span>
+            <span class="s1">help=(</span>
+                <span class="s4">'The directory name(s) to exclude, in addition to .git and '</span>
+                <span class="s4">'__pycache__. Can be used multiple times.'</span>
+            <span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">app_or_project</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">target=</span><span class="s0">None, </span><span class="s1">**options):</span>
+        <span class="s1">self.app_or_project = app_or_project</span>
+        <span class="s1">self.a_or_an = </span><span class="s4">'an' </span><span class="s0">if </span><span class="s1">app_or_project == </span><span class="s4">'app' </span><span class="s0">else </span><span class="s4">'a'</span>
+        <span class="s1">self.paths_to_remove = []</span>
+        <span class="s1">self.verbosity = options[</span><span class="s4">'verbosity'</span><span class="s1">]</span>
+
+        <span class="s1">self.validate_name(name)</span>
+
+        <span class="s3"># if some directory is given, make sure it's nicely expanded</span>
+        <span class="s0">if </span><span class="s1">target </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">top_dir = os.path.join(os.getcwd()</span><span class="s0">, </span><span class="s1">name)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">os.makedirs(top_dir)</span>
+            <span class="s0">except </span><span class="s1">FileExistsError:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s4">&quot;'%s' already exists&quot; </span><span class="s1">% top_dir)</span>
+            <span class="s0">except </span><span class="s1">OSError </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(e)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">top_dir = os.path.abspath(os.path.expanduser(target))</span>
+            <span class="s0">if </span><span class="s1">app_or_project == </span><span class="s4">'app'</span><span class="s1">:</span>
+                <span class="s1">self.validate_name(os.path.basename(top_dir)</span><span class="s0">, </span><span class="s4">'directory'</span><span class="s1">)</span>
+            <span class="s0">if not </span><span class="s1">os.path.exists(top_dir):</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s4">&quot;Destination directory '%s' does not &quot;</span>
+                                   <span class="s4">&quot;exist, please create it first.&quot; </span><span class="s1">% top_dir)</span>
+
+        <span class="s1">extensions = tuple(handle_extensions(options[</span><span class="s4">'extensions'</span><span class="s1">]))</span>
+        <span class="s1">extra_files = []</span>
+        <span class="s1">excluded_directories = [</span><span class="s4">'.git'</span><span class="s0">, </span><span class="s4">'__pycache__'</span><span class="s1">]</span>
+        <span class="s0">for </span><span class="s1">file </span><span class="s0">in </span><span class="s1">options[</span><span class="s4">'files'</span><span class="s1">]:</span>
+            <span class="s1">extra_files.extend(map(</span><span class="s0">lambda </span><span class="s1">x: x.strip()</span><span class="s0">, </span><span class="s1">file.split(</span><span class="s4">','</span><span class="s1">)))</span>
+        <span class="s0">if </span><span class="s1">exclude := options.get(</span><span class="s4">'exclude'</span><span class="s1">):</span>
+            <span class="s0">for </span><span class="s1">directory </span><span class="s0">in </span><span class="s1">exclude:</span>
+                <span class="s1">excluded_directories.append(directory.strip())</span>
+        <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">self.stdout.write(</span>
+                <span class="s4">'Rendering %s template files with extensions: %s'</span>
+                <span class="s1">% (app_or_project</span><span class="s0">, </span><span class="s4">', '</span><span class="s1">.join(extensions))</span>
+            <span class="s1">)</span>
+            <span class="s1">self.stdout.write(</span>
+                <span class="s4">'Rendering %s template files with filenames: %s'</span>
+                <span class="s1">% (app_or_project</span><span class="s0">, </span><span class="s4">', '</span><span class="s1">.join(extra_files))</span>
+            <span class="s1">)</span>
+        <span class="s1">base_name = </span><span class="s4">'%s_name' </span><span class="s1">% app_or_project</span>
+        <span class="s1">base_subdir = </span><span class="s4">'%s_template' </span><span class="s1">% app_or_project</span>
+        <span class="s1">base_directory = </span><span class="s4">'%s_directory' </span><span class="s1">% app_or_project</span>
+        <span class="s1">camel_case_name = </span><span class="s4">'camel_case_%s_name' </span><span class="s1">% app_or_project</span>
+        <span class="s1">camel_case_value = </span><span class="s4">''</span><span class="s1">.join(x </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">name.title() </span><span class="s0">if </span><span class="s1">x != </span><span class="s4">'_'</span><span class="s1">)</span>
+
+        <span class="s1">context = Context({</span>
+            <span class="s1">**options</span><span class="s0">,</span>
+            <span class="s1">base_name: name</span><span class="s0">,</span>
+            <span class="s1">base_directory: top_dir</span><span class="s0">,</span>
+            <span class="s1">camel_case_name: camel_case_value</span><span class="s0">,</span>
+            <span class="s4">'docs_version'</span><span class="s1">: get_docs_version()</span><span class="s0">,</span>
+            <span class="s4">'django_version'</span><span class="s1">: django.__version__</span><span class="s0">,</span>
+        <span class="s1">}</span><span class="s0">, </span><span class="s1">autoescape=</span><span class="s0">False</span><span class="s1">)</span>
+
+        <span class="s3"># Setup a stub settings environment for template rendering</span>
+        <span class="s0">if not </span><span class="s1">settings.configured:</span>
+            <span class="s1">settings.configure()</span>
+            <span class="s1">django.setup()</span>
+
+        <span class="s1">template_dir = self.handle_template(options[</span><span class="s4">'template'</span><span class="s1">]</span><span class="s0">,</span>
+                                            <span class="s1">base_subdir)</span>
+        <span class="s1">prefix_length = len(template_dir) + </span><span class="s5">1</span>
+
+        <span class="s0">for </span><span class="s1">root</span><span class="s0">, </span><span class="s1">dirs</span><span class="s0">, </span><span class="s1">files </span><span class="s0">in </span><span class="s1">os.walk(template_dir):</span>
+
+            <span class="s1">path_rest = root[prefix_length:]</span>
+            <span class="s1">relative_dir = path_rest.replace(base_name</span><span class="s0">, </span><span class="s1">name)</span>
+            <span class="s0">if </span><span class="s1">relative_dir:</span>
+                <span class="s1">target_dir = os.path.join(top_dir</span><span class="s0">, </span><span class="s1">relative_dir)</span>
+                <span class="s1">os.makedirs(target_dir</span><span class="s0">, </span><span class="s1">exist_ok=</span><span class="s0">True</span><span class="s1">)</span>
+
+            <span class="s0">for </span><span class="s1">dirname </span><span class="s0">in </span><span class="s1">dirs[:]:</span>
+                <span class="s0">if </span><span class="s4">'exclude' </span><span class="s0">not in </span><span class="s1">options:</span>
+                    <span class="s0">if </span><span class="s1">dirname.startswith(</span><span class="s4">'.'</span><span class="s1">) </span><span class="s0">or </span><span class="s1">dirname == </span><span class="s4">'__pycache__'</span><span class="s1">:</span>
+                        <span class="s1">dirs.remove(dirname)</span>
+                <span class="s0">elif </span><span class="s1">dirname </span><span class="s0">in </span><span class="s1">excluded_directories:</span>
+                    <span class="s1">dirs.remove(dirname)</span>
+
+            <span class="s0">for </span><span class="s1">filename </span><span class="s0">in </span><span class="s1">files:</span>
+                <span class="s0">if </span><span class="s1">filename.endswith((</span><span class="s4">'.pyo'</span><span class="s0">, </span><span class="s4">'.pyc'</span><span class="s0">, </span><span class="s4">'.py.class'</span><span class="s1">)):</span>
+                    <span class="s3"># Ignore some files as they cause various breakages.</span>
+                    <span class="s0">continue</span>
+                <span class="s1">old_path = os.path.join(root</span><span class="s0">, </span><span class="s1">filename)</span>
+                <span class="s1">new_path = os.path.join(</span>
+                    <span class="s1">top_dir</span><span class="s0">, </span><span class="s1">relative_dir</span><span class="s0">, </span><span class="s1">filename.replace(base_name</span><span class="s0">, </span><span class="s1">name)</span>
+                <span class="s1">)</span>
+                <span class="s0">for </span><span class="s1">old_suffix</span><span class="s0">, </span><span class="s1">new_suffix </span><span class="s0">in </span><span class="s1">self.rewrite_template_suffixes:</span>
+                    <span class="s0">if </span><span class="s1">new_path.endswith(old_suffix):</span>
+                        <span class="s1">new_path = new_path[:-len(old_suffix)] + new_suffix</span>
+                        <span class="s0">break  </span><span class="s3"># Only rewrite once</span>
+
+                <span class="s0">if </span><span class="s1">os.path.exists(new_path):</span>
+                    <span class="s0">raise </span><span class="s1">CommandError(</span>
+                        <span class="s4">&quot;%s already exists. Overlaying %s %s into an existing &quot;</span>
+                        <span class="s4">&quot;directory won't replace conflicting files.&quot; </span><span class="s1">% (</span>
+                            <span class="s1">new_path</span><span class="s0">, </span><span class="s1">self.a_or_an</span><span class="s0">, </span><span class="s1">app_or_project</span><span class="s0">,</span>
+                        <span class="s1">)</span>
+                    <span class="s1">)</span>
+
+                <span class="s3"># Only render the Python files, as we don't want to</span>
+                <span class="s3"># accidentally render Django templates files</span>
+                <span class="s0">if </span><span class="s1">new_path.endswith(extensions) </span><span class="s0">or </span><span class="s1">filename </span><span class="s0">in </span><span class="s1">extra_files:</span>
+                    <span class="s0">with </span><span class="s1">open(old_path</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s4">'utf-8'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">template_file:</span>
+                        <span class="s1">content = template_file.read()</span>
+                    <span class="s1">template = Engine().from_string(content)</span>
+                    <span class="s1">content = template.render(context)</span>
+                    <span class="s0">with </span><span class="s1">open(new_path</span><span class="s0">, </span><span class="s4">'w'</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s4">'utf-8'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">new_file:</span>
+                        <span class="s1">new_file.write(content)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">shutil.copyfile(old_path</span><span class="s0">, </span><span class="s1">new_path)</span>
+
+                <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+                    <span class="s1">self.stdout.write(</span><span class="s4">'Creating %s' </span><span class="s1">% new_path)</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">shutil.copymode(old_path</span><span class="s0">, </span><span class="s1">new_path)</span>
+                    <span class="s1">self.make_writeable(new_path)</span>
+                <span class="s0">except </span><span class="s1">OSError:</span>
+                    <span class="s1">self.stderr.write(</span>
+                        <span class="s4">&quot;Notice: Couldn't set permission bits on %s. You're &quot;</span>
+                        <span class="s4">&quot;probably using an uncommon filesystem setup. No &quot;</span>
+                        <span class="s4">&quot;problem.&quot; </span><span class="s1">% new_path</span><span class="s0">, </span><span class="s1">self.style.NOTICE)</span>
+
+        <span class="s0">if </span><span class="s1">self.paths_to_remove:</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span><span class="s4">'Cleaning up temporary files.'</span><span class="s1">)</span>
+            <span class="s0">for </span><span class="s1">path_to_remove </span><span class="s0">in </span><span class="s1">self.paths_to_remove:</span>
+                <span class="s0">if </span><span class="s1">os.path.isfile(path_to_remove):</span>
+                    <span class="s1">os.remove(path_to_remove)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">shutil.rmtree(path_to_remove)</span>
+
+    <span class="s0">def </span><span class="s1">handle_template(self</span><span class="s0">, </span><span class="s1">template</span><span class="s0">, </span><span class="s1">subdir):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Determine where the app or project templates are. 
+        Use django.__path__[0] as the default because the Django install 
+        directory isn't known. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">template </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">os.path.join(django.__path__[</span><span class="s5">0</span><span class="s1">]</span><span class="s0">, </span><span class="s4">'conf'</span><span class="s0">, </span><span class="s1">subdir)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">template.startswith(</span><span class="s4">'file://'</span><span class="s1">):</span>
+                <span class="s1">template = template[</span><span class="s5">7</span><span class="s1">:]</span>
+            <span class="s1">expanded_template = os.path.expanduser(template)</span>
+            <span class="s1">expanded_template = os.path.normpath(expanded_template)</span>
+            <span class="s0">if </span><span class="s1">os.path.isdir(expanded_template):</span>
+                <span class="s0">return </span><span class="s1">expanded_template</span>
+            <span class="s0">if </span><span class="s1">self.is_url(template):</span>
+                <span class="s3"># downloads the file and returns the path</span>
+                <span class="s1">absolute_path = self.download(template)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">absolute_path = os.path.abspath(expanded_template)</span>
+            <span class="s0">if </span><span class="s1">os.path.exists(absolute_path):</span>
+                <span class="s0">return </span><span class="s1">self.extract(absolute_path)</span>
+
+        <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s4">&quot;couldn't handle %s template %s.&quot; </span><span class="s1">%</span>
+                           <span class="s1">(self.app_or_project</span><span class="s0">, </span><span class="s1">template))</span>
+
+    <span class="s0">def </span><span class="s1">validate_name(self</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">name_or_dir=</span><span class="s4">'name'</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">name </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s4">'you must provide {an} {app} name'</span><span class="s1">.format(</span>
+                <span class="s1">an=self.a_or_an</span><span class="s0">,</span>
+                <span class="s1">app=self.app_or_project</span><span class="s0">,</span>
+            <span class="s1">))</span>
+        <span class="s3"># Check it's a valid directory name.</span>
+        <span class="s0">if not </span><span class="s1">name.isidentifier():</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span>
+                <span class="s4">&quot;'{name}' is not a valid {app} {type}. Please make sure the &quot;</span>
+                <span class="s4">&quot;{type} is a valid identifier.&quot;</span><span class="s1">.format(</span>
+                    <span class="s1">name=name</span><span class="s0">,</span>
+                    <span class="s1">app=self.app_or_project</span><span class="s0">,</span>
+                    <span class="s1">type=name_or_dir</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s3"># Check it cannot be imported.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">import_module(name)</span>
+        <span class="s0">except </span><span class="s1">ImportError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span>
+                <span class="s4">&quot;'{name}' conflicts with the name of an existing Python &quot;</span>
+                <span class="s4">&quot;module and cannot be used as {an} {app} {type}. Please try &quot;</span>
+                <span class="s4">&quot;another {type}.&quot;</span><span class="s1">.format(</span>
+                    <span class="s1">name=name</span><span class="s0">,</span>
+                    <span class="s1">an=self.a_or_an</span><span class="s0">,</span>
+                    <span class="s1">app=self.app_or_project</span><span class="s0">,</span>
+                    <span class="s1">type=name_or_dir</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">download(self</span><span class="s0">, </span><span class="s1">url):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Download the given URL and return the file name. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">def </span><span class="s1">cleanup_url(url):</span>
+            <span class="s1">tmp = url.rstrip(</span><span class="s4">'/'</span><span class="s1">)</span>
+            <span class="s1">filename = tmp.split(</span><span class="s4">'/'</span><span class="s1">)[-</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s0">if </span><span class="s1">url.endswith(</span><span class="s4">'/'</span><span class="s1">):</span>
+                <span class="s1">display_url = tmp + </span><span class="s4">'/'</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">display_url = url</span>
+            <span class="s0">return </span><span class="s1">filename</span><span class="s0">, </span><span class="s1">display_url</span>
+
+        <span class="s1">prefix = </span><span class="s4">'django_%s_template_' </span><span class="s1">% self.app_or_project</span>
+        <span class="s1">tempdir = tempfile.mkdtemp(prefix=prefix</span><span class="s0">, </span><span class="s1">suffix=</span><span class="s4">'_download'</span><span class="s1">)</span>
+        <span class="s1">self.paths_to_remove.append(tempdir)</span>
+        <span class="s1">filename</span><span class="s0">, </span><span class="s1">display_url = cleanup_url(url)</span>
+
+        <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">self.stdout.write(</span><span class="s4">'Downloading %s' </span><span class="s1">% display_url)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">the_path</span><span class="s0">, </span><span class="s1">info = urlretrieve(url</span><span class="s0">, </span><span class="s1">os.path.join(tempdir</span><span class="s0">, </span><span class="s1">filename))</span>
+        <span class="s0">except </span><span class="s1">OSError </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s4">&quot;couldn't download URL %s to %s: %s&quot; </span><span class="s1">%</span>
+                               <span class="s1">(url</span><span class="s0">, </span><span class="s1">filename</span><span class="s0">, </span><span class="s1">e))</span>
+
+        <span class="s1">used_name = the_path.split(</span><span class="s4">'/'</span><span class="s1">)[-</span><span class="s5">1</span><span class="s1">]</span>
+
+        <span class="s3"># Trying to get better name from response headers</span>
+        <span class="s1">content_disposition = info.get(</span><span class="s4">'content-disposition'</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">content_disposition:</span>
+            <span class="s1">_</span><span class="s0">, </span><span class="s1">params = cgi.parse_header(content_disposition)</span>
+            <span class="s1">guessed_filename = params.get(</span><span class="s4">'filename'</span><span class="s1">) </span><span class="s0">or </span><span class="s1">used_name</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">guessed_filename = used_name</span>
+
+        <span class="s3"># Falling back to content type guessing</span>
+        <span class="s1">ext = self.splitext(guessed_filename)[</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s1">content_type = info.get(</span><span class="s4">'content-type'</span><span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">ext </span><span class="s0">and </span><span class="s1">content_type:</span>
+            <span class="s1">ext = mimetypes.guess_extension(content_type)</span>
+            <span class="s0">if </span><span class="s1">ext:</span>
+                <span class="s1">guessed_filename += ext</span>
+
+        <span class="s3"># Move the temporary file to a filename that has better</span>
+        <span class="s3"># chances of being recognized by the archive utils</span>
+        <span class="s0">if </span><span class="s1">used_name != guessed_filename:</span>
+            <span class="s1">guessed_path = os.path.join(tempdir</span><span class="s0">, </span><span class="s1">guessed_filename)</span>
+            <span class="s1">shutil.move(the_path</span><span class="s0">, </span><span class="s1">guessed_path)</span>
+            <span class="s0">return </span><span class="s1">guessed_path</span>
+
+        <span class="s3"># Giving up</span>
+        <span class="s0">return </span><span class="s1">the_path</span>
+
+    <span class="s0">def </span><span class="s1">splitext(self</span><span class="s0">, </span><span class="s1">the_path):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Like os.path.splitext, but takes off .tar, too 
+        &quot;&quot;&quot;</span>
+        <span class="s1">base</span><span class="s0">, </span><span class="s1">ext = posixpath.splitext(the_path)</span>
+        <span class="s0">if </span><span class="s1">base.lower().endswith(</span><span class="s4">'.tar'</span><span class="s1">):</span>
+            <span class="s1">ext = base[-</span><span class="s5">4</span><span class="s1">:] + ext</span>
+            <span class="s1">base = base[:-</span><span class="s5">4</span><span class="s1">]</span>
+        <span class="s0">return </span><span class="s1">base</span><span class="s0">, </span><span class="s1">ext</span>
+
+    <span class="s0">def </span><span class="s1">extract(self</span><span class="s0">, </span><span class="s1">filename):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Extract the given file to a temporary directory and return 
+        the path of the directory with the extracted content. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">prefix = </span><span class="s4">'django_%s_template_' </span><span class="s1">% self.app_or_project</span>
+        <span class="s1">tempdir = tempfile.mkdtemp(prefix=prefix</span><span class="s0">, </span><span class="s1">suffix=</span><span class="s4">'_extract'</span><span class="s1">)</span>
+        <span class="s1">self.paths_to_remove.append(tempdir)</span>
+        <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">self.stdout.write(</span><span class="s4">'Extracting %s' </span><span class="s1">% filename)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">archive.extract(filename</span><span class="s0">, </span><span class="s1">tempdir)</span>
+            <span class="s0">return </span><span class="s1">tempdir</span>
+        <span class="s0">except </span><span class="s1">(archive.ArchiveException</span><span class="s0">, </span><span class="s1">OSError) </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s4">&quot;couldn't extract file %s to %s: %s&quot; </span><span class="s1">%</span>
+                               <span class="s1">(filename</span><span class="s0">, </span><span class="s1">tempdir</span><span class="s0">, </span><span class="s1">e))</span>
+
+    <span class="s0">def </span><span class="s1">is_url(self</span><span class="s0">, </span><span class="s1">template):</span>
+        <span class="s2">&quot;&quot;&quot;Return True if the name looks like a URL.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s4">':' </span><span class="s0">not in </span><span class="s1">template:</span>
+            <span class="s0">return False</span>
+        <span class="s1">scheme = template.split(</span><span class="s4">':'</span><span class="s0">, </span><span class="s5">1</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">].lower()</span>
+        <span class="s0">return </span><span class="s1">scheme </span><span class="s0">in </span><span class="s1">self.url_schemes</span>
+
+    <span class="s0">def </span><span class="s1">make_writeable(self</span><span class="s0">, </span><span class="s1">filename):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Make sure that the file is writeable. 
+        Useful if our source is read-only. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">os.access(filename</span><span class="s0">, </span><span class="s1">os.W_OK):</span>
+            <span class="s1">st = os.stat(filename)</span>
+            <span class="s1">new_permissions = stat.S_IMODE(st.st_mode) | stat.S_IWUSR</span>
+            <span class="s1">os.chmod(filename</span><span class="s0">, </span><span class="s1">new_permissions)</span>
+</pre>
+</body>
+</html>

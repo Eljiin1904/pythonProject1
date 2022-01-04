@@ -1,0 +1,173 @@
+<html>
+<head>
+<title>test_unbounded_queue.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_unbounded_queue.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">itertools</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">... </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">...testing </span><span class="s0">import </span><span class="s1">assert_checkpoints</span><span class="s0">, </span><span class="s1">wait_all_tasks_blocked</span>
+
+<span class="s1">pytestmark = pytest.mark.filterwarnings(</span>
+    <span class="s2">&quot;ignore:.*UnboundedQueue:trio.TrioDeprecationWarning&quot;</span>
+<span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_UnboundedQueue_basic():</span>
+    <span class="s1">q = _core.UnboundedQueue()</span>
+    <span class="s1">q.put_nowait(</span><span class="s2">&quot;hi&quot;</span><span class="s1">)</span>
+    <span class="s0">assert await </span><span class="s1">q.get_batch() == [</span><span class="s2">&quot;hi&quot;</span><span class="s1">]</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.WouldBlock):</span>
+        <span class="s1">q.get_batch_nowait()</span>
+    <span class="s1">q.put_nowait(</span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s1">q.put_nowait(</span><span class="s3">2</span><span class="s1">)</span>
+    <span class="s1">q.put_nowait(</span><span class="s3">3</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">q.get_batch_nowait() == [</span><span class="s3">1</span><span class="s0">, </span><span class="s3">2</span><span class="s0">, </span><span class="s3">3</span><span class="s1">]</span>
+
+    <span class="s0">assert </span><span class="s1">q.empty()</span>
+    <span class="s0">assert </span><span class="s1">q.qsize() == </span><span class="s3">0</span>
+    <span class="s1">q.put_nowait(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">assert not </span><span class="s1">q.empty()</span>
+    <span class="s0">assert </span><span class="s1">q.qsize() == </span><span class="s3">1</span>
+
+    <span class="s1">stats = q.statistics()</span>
+    <span class="s0">assert </span><span class="s1">stats.qsize == </span><span class="s3">1</span>
+    <span class="s0">assert </span><span class="s1">stats.tasks_waiting == </span><span class="s3">0</span>
+
+    <span class="s4"># smoke test</span>
+    <span class="s1">repr(q)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_UnboundedQueue_blocking():</span>
+    <span class="s1">record = []</span>
+    <span class="s1">q = _core.UnboundedQueue()</span>
+
+    <span class="s0">async def </span><span class="s1">get_batch_consumer():</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">batch = </span><span class="s0">await </span><span class="s1">q.get_batch()</span>
+            <span class="s0">assert </span><span class="s1">batch</span>
+            <span class="s1">record.append(batch)</span>
+
+    <span class="s0">async def </span><span class="s1">aiter_consumer():</span>
+        <span class="s0">async for </span><span class="s1">batch </span><span class="s0">in </span><span class="s1">q:</span>
+            <span class="s0">assert </span><span class="s1">batch</span>
+            <span class="s1">record.append(batch)</span>
+
+    <span class="s0">for </span><span class="s1">consumer </span><span class="s0">in </span><span class="s1">(get_batch_consumer</span><span class="s0">, </span><span class="s1">aiter_consumer):</span>
+        <span class="s1">record.clear()</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(consumer)</span>
+            <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+            <span class="s1">stats = q.statistics()</span>
+            <span class="s0">assert </span><span class="s1">stats.qsize == </span><span class="s3">0</span>
+            <span class="s0">assert </span><span class="s1">stats.tasks_waiting == </span><span class="s3">1</span>
+            <span class="s1">q.put_nowait(</span><span class="s3">10</span><span class="s1">)</span>
+            <span class="s1">q.put_nowait(</span><span class="s3">11</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+            <span class="s1">q.put_nowait(</span><span class="s3">12</span><span class="s1">)</span>
+            <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+            <span class="s0">assert </span><span class="s1">record == [[</span><span class="s3">10</span><span class="s0">, </span><span class="s3">11</span><span class="s1">]</span><span class="s0">, </span><span class="s1">[</span><span class="s3">12</span><span class="s1">]]</span>
+            <span class="s1">nursery.cancel_scope.cancel()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_UnboundedQueue_fairness():</span>
+    <span class="s1">q = _core.UnboundedQueue()</span>
+
+    <span class="s4"># If there's no-one else around, we can put stuff in and take it out</span>
+    <span class="s4"># again, no problem</span>
+    <span class="s1">q.put_nowait(</span><span class="s3">1</span><span class="s1">)</span>
+    <span class="s1">q.put_nowait(</span><span class="s3">2</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">q.get_batch_nowait() == [</span><span class="s3">1</span><span class="s0">, </span><span class="s3">2</span><span class="s1">]</span>
+
+    <span class="s1">result = </span><span class="s0">None</span>
+
+    <span class="s0">async def </span><span class="s1">get_batch(q):</span>
+        <span class="s0">nonlocal </span><span class="s1">result</span>
+        <span class="s1">result = </span><span class="s0">await </span><span class="s1">q.get_batch()</span>
+
+    <span class="s4"># But if someone else is waiting to read, then they get dibs</span>
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(get_batch</span><span class="s0">, </span><span class="s1">q)</span>
+        <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+        <span class="s1">q.put_nowait(</span><span class="s3">3</span><span class="s1">)</span>
+        <span class="s1">q.put_nowait(</span><span class="s3">4</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(_core.WouldBlock):</span>
+            <span class="s1">q.get_batch_nowait()</span>
+    <span class="s0">assert </span><span class="s1">result == [</span><span class="s3">3</span><span class="s0">, </span><span class="s3">4</span><span class="s1">]</span>
+
+    <span class="s4"># If two tasks are trying to read, they alternate</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">reader(name):</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">record.append((name</span><span class="s0">, await </span><span class="s1">q.get_batch()))</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(reader</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(reader</span><span class="s0">, </span><span class="s2">&quot;b&quot;</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">20</span><span class="s1">):</span>
+            <span class="s1">q.put_nowait(i)</span>
+            <span class="s0">await </span><span class="s1">_core.wait_all_tasks_blocked()</span>
+
+        <span class="s1">nursery.cancel_scope.cancel()</span>
+
+    <span class="s0">assert </span><span class="s1">record == list(zip(itertools.cycle(</span><span class="s2">&quot;ab&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">[[i] </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">20</span><span class="s1">)]))</span>
+
+
+<span class="s0">async def </span><span class="s1">test_UnboundedQueue_trivial_yields():</span>
+    <span class="s1">q = _core.UnboundedQueue()</span>
+
+    <span class="s1">q.put_nowait(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">await </span><span class="s1">q.get_batch()</span>
+
+    <span class="s1">q.put_nowait(</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">async for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">q:  </span><span class="s4"># noqa # pragma: no branch</span>
+            <span class="s0">break</span>
+
+
+<span class="s0">async def </span><span class="s1">test_UnboundedQueue_no_spurious_wakeups():</span>
+    <span class="s4"># If we have two tasks waiting, and put two items into the queue... then</span>
+    <span class="s4"># only one task wakes up</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">async def </span><span class="s1">getter(q</span><span class="s0">, </span><span class="s1">i):</span>
+        <span class="s1">got = </span><span class="s0">await </span><span class="s1">q.get_batch()</span>
+        <span class="s1">record.append((i</span><span class="s0">, </span><span class="s1">got))</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">q = _core.UnboundedQueue()</span>
+        <span class="s1">nursery.start_soon(getter</span><span class="s0">, </span><span class="s1">q</span><span class="s0">, </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+        <span class="s1">nursery.start_soon(getter</span><span class="s0">, </span><span class="s1">q</span><span class="s0">, </span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s3">10</span><span class="s1">):</span>
+            <span class="s1">q.put_nowait(i)</span>
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+
+        <span class="s0">assert </span><span class="s1">record == [(</span><span class="s3">1</span><span class="s0">, </span><span class="s1">list(range(</span><span class="s3">10</span><span class="s1">)))]</span>
+
+        <span class="s1">nursery.cancel_scope.cancel()</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,264 @@
+<html>
+<head>
+<title>pyparser.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+pyparser.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># mako/pyparser.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">&quot;&quot;&quot;Handles parsing of Python code. 
+ 
+Parsing to AST is done via _ast on Python &gt; 2.5, otherwise the compiler 
+module is used. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">operator</span>
+
+<span class="s3">import </span><span class="s1">_ast</span>
+
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">_ast_util</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">compat</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">exceptions</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">util</span>
+<span class="s3">from </span><span class="s1">mako.compat </span><span class="s3">import </span><span class="s1">arg_stringname</span>
+
+<span class="s3">if </span><span class="s1">compat.py3k:</span>
+    <span class="s0"># words that cannot be assigned to (notably</span>
+    <span class="s0"># smaller than the total keys in __builtins__)</span>
+    <span class="s1">reserved = set([</span><span class="s4">&quot;True&quot;</span><span class="s3">, </span><span class="s4">&quot;False&quot;</span><span class="s3">, </span><span class="s4">&quot;None&quot;</span><span class="s3">, </span><span class="s4">&quot;print&quot;</span><span class="s1">])</span>
+
+    <span class="s0"># the &quot;id&quot; attribute on a function node</span>
+    <span class="s1">arg_id = operator.attrgetter(</span><span class="s4">&quot;arg&quot;</span><span class="s1">)</span>
+<span class="s3">else</span><span class="s1">:</span>
+    <span class="s0"># words that cannot be assigned to (notably</span>
+    <span class="s0"># smaller than the total keys in __builtins__)</span>
+    <span class="s1">reserved = set([</span><span class="s4">&quot;True&quot;</span><span class="s3">, </span><span class="s4">&quot;False&quot;</span><span class="s3">, </span><span class="s4">&quot;None&quot;</span><span class="s1">])</span>
+
+    <span class="s0"># the &quot;id&quot; attribute on a function node</span>
+    <span class="s1">arg_id = operator.attrgetter(</span><span class="s4">&quot;id&quot;</span><span class="s1">)</span>
+
+<span class="s1">util.restore__ast(_ast)</span>
+
+
+<span class="s3">def </span><span class="s1">parse(code</span><span class="s3">, </span><span class="s1">mode=</span><span class="s4">&quot;exec&quot;</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+    <span class="s2">&quot;&quot;&quot;Parse an expression into AST&quot;&quot;&quot;</span>
+
+    <span class="s3">try</span><span class="s1">:</span>
+        <span class="s3">return </span><span class="s1">_ast_util.parse(code</span><span class="s3">, </span><span class="s4">&quot;&lt;unknown&gt;&quot;</span><span class="s3">, </span><span class="s1">mode)</span>
+    <span class="s3">except </span><span class="s1">Exception:</span>
+        <span class="s3">raise </span><span class="s1">exceptions.SyntaxException(</span>
+            <span class="s4">&quot;(%s) %s (%r)&quot;</span>
+            <span class="s1">% (</span>
+                <span class="s1">compat.exception_as().__class__.__name__</span><span class="s3">,</span>
+                <span class="s1">compat.exception_as()</span><span class="s3">,</span>
+                <span class="s1">code[</span><span class="s5">0</span><span class="s1">:</span><span class="s5">50</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">**exception_kwargs</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">FindIdentifiers(_ast_util.NodeVisitor):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">listener</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">self.in_function = </span><span class="s3">False</span>
+        <span class="s1">self.in_assign_targets = </span><span class="s3">False</span>
+        <span class="s1">self.local_ident_stack = set()</span>
+        <span class="s1">self.listener = listener</span>
+        <span class="s1">self.exception_kwargs = exception_kwargs</span>
+
+    <span class="s3">def </span><span class="s1">_add_declared(self</span><span class="s3">, </span><span class="s1">name):</span>
+        <span class="s3">if not </span><span class="s1">self.in_function:</span>
+            <span class="s1">self.listener.declared_identifiers.add(name)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.local_ident_stack.add(name)</span>
+
+    <span class="s3">def </span><span class="s1">visit_ClassDef(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self._add_declared(node.name)</span>
+
+    <span class="s3">def </span><span class="s1">visit_Assign(self</span><span class="s3">, </span><span class="s1">node):</span>
+
+        <span class="s0"># flip around the visiting of Assign so the expression gets</span>
+        <span class="s0"># evaluated first, in the case of a clause like &quot;x=x+5&quot; (x</span>
+        <span class="s0"># is undeclared)</span>
+
+        <span class="s1">self.visit(node.value)</span>
+        <span class="s1">in_a = self.in_assign_targets</span>
+        <span class="s1">self.in_assign_targets = </span><span class="s3">True</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.targets:</span>
+            <span class="s1">self.visit(n)</span>
+        <span class="s1">self.in_assign_targets = in_a</span>
+
+    <span class="s3">if </span><span class="s1">compat.py3k:</span>
+
+        <span class="s0"># ExceptHandler is in Python 2, but this block only works in</span>
+        <span class="s0"># Python 3 (and is required there)</span>
+
+        <span class="s3">def </span><span class="s1">visit_ExceptHandler(self</span><span class="s3">, </span><span class="s1">node):</span>
+            <span class="s3">if </span><span class="s1">node.name </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">self._add_declared(node.name)</span>
+            <span class="s3">if </span><span class="s1">node.type </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">self.visit(node.type)</span>
+            <span class="s3">for </span><span class="s1">statement </span><span class="s3">in </span><span class="s1">node.body:</span>
+                <span class="s1">self.visit(statement)</span>
+
+    <span class="s3">def </span><span class="s1">visit_Lambda(self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">*args):</span>
+        <span class="s1">self._visit_function(node</span><span class="s3">, True</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visit_FunctionDef(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self._add_declared(node.name)</span>
+        <span class="s1">self._visit_function(node</span><span class="s3">, False</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_expand_tuples(self</span><span class="s3">, </span><span class="s1">args):</span>
+        <span class="s3">for </span><span class="s1">arg </span><span class="s3">in </span><span class="s1">args:</span>
+            <span class="s3">if </span><span class="s1">isinstance(arg</span><span class="s3">, </span><span class="s1">_ast.Tuple):</span>
+                <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">arg.elts:</span>
+                    <span class="s3">yield </span><span class="s1">n</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">yield </span><span class="s1">arg</span>
+
+    <span class="s3">def </span><span class="s1">_visit_function(self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">islambda):</span>
+
+        <span class="s0"># push function state onto stack.  dont log any more</span>
+        <span class="s0"># identifiers as &quot;declared&quot; until outside of the function,</span>
+        <span class="s0"># but keep logging identifiers as &quot;undeclared&quot;. track</span>
+        <span class="s0"># argument names in each function header so they arent</span>
+        <span class="s0"># counted as &quot;undeclared&quot;</span>
+
+        <span class="s1">inf = self.in_function</span>
+        <span class="s1">self.in_function = </span><span class="s3">True</span>
+
+        <span class="s1">local_ident_stack = self.local_ident_stack</span>
+        <span class="s1">self.local_ident_stack = local_ident_stack.union(</span>
+            <span class="s1">[arg_id(arg) </span><span class="s3">for </span><span class="s1">arg </span><span class="s3">in </span><span class="s1">self._expand_tuples(node.args.args)]</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">islambda:</span>
+            <span class="s1">self.visit(node.body)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.body:</span>
+                <span class="s1">self.visit(n)</span>
+        <span class="s1">self.in_function = inf</span>
+        <span class="s1">self.local_ident_stack = local_ident_stack</span>
+
+    <span class="s3">def </span><span class="s1">visit_For(self</span><span class="s3">, </span><span class="s1">node):</span>
+
+        <span class="s0"># flip around visit</span>
+
+        <span class="s1">self.visit(node.iter)</span>
+        <span class="s1">self.visit(node.target)</span>
+        <span class="s3">for </span><span class="s1">statement </span><span class="s3">in </span><span class="s1">node.body:</span>
+            <span class="s1">self.visit(statement)</span>
+        <span class="s3">for </span><span class="s1">statement </span><span class="s3">in </span><span class="s1">node.orelse:</span>
+            <span class="s1">self.visit(statement)</span>
+
+    <span class="s3">def </span><span class="s1">visit_Name(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s1">isinstance(node.ctx</span><span class="s3">, </span><span class="s1">_ast.Store):</span>
+            <span class="s0"># this is eqiuvalent to visit_AssName in</span>
+            <span class="s0"># compiler</span>
+            <span class="s1">self._add_declared(node.id)</span>
+        <span class="s3">elif </span><span class="s1">(</span>
+            <span class="s1">node.id </span><span class="s3">not in </span><span class="s1">reserved</span>
+            <span class="s3">and </span><span class="s1">node.id </span><span class="s3">not in </span><span class="s1">self.listener.declared_identifiers</span>
+            <span class="s3">and </span><span class="s1">node.id </span><span class="s3">not in </span><span class="s1">self.local_ident_stack</span>
+        <span class="s1">):</span>
+            <span class="s1">self.listener.undeclared_identifiers.add(node.id)</span>
+
+    <span class="s3">def </span><span class="s1">visit_Import(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">node.names:</span>
+            <span class="s3">if </span><span class="s1">name.asname </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">self._add_declared(name.asname)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">self._add_declared(name.name.split(</span><span class="s4">&quot;.&quot;</span><span class="s1">)[</span><span class="s5">0</span><span class="s1">])</span>
+
+    <span class="s3">def </span><span class="s1">visit_ImportFrom(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">node.names:</span>
+            <span class="s3">if </span><span class="s1">name.asname </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">self._add_declared(name.asname)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">if </span><span class="s1">name.name == </span><span class="s4">&quot;*&quot;</span><span class="s1">:</span>
+                    <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                        <span class="s4">&quot;'import *' is not supported, since all identifier &quot;</span>
+                        <span class="s4">&quot;names must be explicitly declared.  Please use the &quot;</span>
+                        <span class="s4">&quot;form 'from &lt;modulename&gt; import &lt;name1&gt;, &lt;name2&gt;, &quot;</span>
+                        <span class="s4">&quot;...' instead.&quot;</span><span class="s3">,</span>
+                        <span class="s1">**self.exception_kwargs</span>
+                    <span class="s1">)</span>
+                <span class="s1">self._add_declared(name.name)</span>
+
+
+<span class="s3">class </span><span class="s1">FindTuple(_ast_util.NodeVisitor):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">listener</span><span class="s3">, </span><span class="s1">code_factory</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">self.listener = listener</span>
+        <span class="s1">self.exception_kwargs = exception_kwargs</span>
+        <span class="s1">self.code_factory = code_factory</span>
+
+    <span class="s3">def </span><span class="s1">visit_Tuple(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.elts:</span>
+            <span class="s1">p = self.code_factory(n</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+            <span class="s1">self.listener.codeargs.append(p)</span>
+            <span class="s1">self.listener.args.append(ExpressionGenerator(n).value())</span>
+            <span class="s1">ldi = self.listener.declared_identifiers</span>
+            <span class="s1">self.listener.declared_identifiers = ldi.union(</span>
+                <span class="s1">p.declared_identifiers</span>
+            <span class="s1">)</span>
+            <span class="s1">lui = self.listener.undeclared_identifiers</span>
+            <span class="s1">self.listener.undeclared_identifiers = lui.union(</span>
+                <span class="s1">p.undeclared_identifiers</span>
+            <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">ParseFunc(_ast_util.NodeVisitor):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">listener</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">self.listener = listener</span>
+        <span class="s1">self.exception_kwargs = exception_kwargs</span>
+
+    <span class="s3">def </span><span class="s1">visit_FunctionDef(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.listener.funcname = node.name</span>
+
+        <span class="s1">argnames = [arg_id(arg) </span><span class="s3">for </span><span class="s1">arg </span><span class="s3">in </span><span class="s1">node.args.args]</span>
+        <span class="s3">if </span><span class="s1">node.args.vararg:</span>
+            <span class="s1">argnames.append(arg_stringname(node.args.vararg))</span>
+
+        <span class="s3">if </span><span class="s1">compat.py2k:</span>
+            <span class="s0"># kw-only args don't exist in Python 2</span>
+            <span class="s1">kwargnames = []</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">kwargnames = [arg_id(arg) </span><span class="s3">for </span><span class="s1">arg </span><span class="s3">in </span><span class="s1">node.args.kwonlyargs]</span>
+        <span class="s3">if </span><span class="s1">node.args.kwarg:</span>
+            <span class="s1">kwargnames.append(arg_stringname(node.args.kwarg))</span>
+        <span class="s1">self.listener.argnames = argnames</span>
+        <span class="s1">self.listener.defaults = node.args.defaults  </span><span class="s0"># ast</span>
+        <span class="s1">self.listener.kwargnames = kwargnames</span>
+        <span class="s3">if </span><span class="s1">compat.py2k:</span>
+            <span class="s1">self.listener.kwdefaults = []</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.listener.kwdefaults = node.args.kw_defaults</span>
+        <span class="s1">self.listener.varargs = node.args.vararg</span>
+        <span class="s1">self.listener.kwargs = node.args.kwarg</span>
+
+
+<span class="s3">class </span><span class="s1">ExpressionGenerator(object):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">astnode):</span>
+        <span class="s1">self.generator = _ast_util.SourceGenerator(</span><span class="s4">&quot; &quot; </span><span class="s1">* </span><span class="s5">4</span><span class="s1">)</span>
+        <span class="s1">self.generator.visit(astnode)</span>
+
+    <span class="s3">def </span><span class="s1">value(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;&quot;</span><span class="s1">.join(self.generator.result)</span>
+</pre>
+</body>
+</html>

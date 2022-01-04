@@ -1,0 +1,269 @@
+<html>
+<head>
+<title>hashes.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+hashes.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">abc</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AlreadyFinalized</span><span class="s2">,</span>
+    <span class="s1">UnsupportedAlgorithm</span><span class="s2">,</span>
+    <span class="s1">_Reasons</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HashBackend</span>
+
+
+<span class="s2">class </span><span class="s1">HashAlgorithm(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">name(self) -&gt; str:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        A string naming this algorithm (e.g. &quot;sha256&quot;, &quot;md5&quot;). 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">digest_size(self) -&gt; int:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The size of the resulting digest in bytes. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">block_size(self) -&gt; typing.Optional[int]:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The internal block size of the hash function, or None if the hash 
+        function does not use blocks internally (e.g. SHA3). 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">HashContext(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">algorithm(self) -&gt; HashAlgorithm:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        A HashAlgorithm that will be used by this context. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">update(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Processes the provided bytes through the hash. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">finalize(self) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Finalizes the hash context and returns the hash digest as bytes. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">copy(self) -&gt; </span><span class="s4">&quot;HashContext&quot;</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Return a HashContext that is a copy of the current context. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">ExtendableOutputFunction(metaclass=abc.ABCMeta):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    An interface for extendable output functions. 
+    &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">Hash(HashContext):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">algorithm: HashAlgorithm</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None, </span><span class="s1">ctx=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HashBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s4">&quot;Backend object does not implement HashBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(algorithm</span><span class="s2">, </span><span class="s1">HashAlgorithm):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;Expected instance of hashes.HashAlgorithm.&quot;</span><span class="s1">)</span>
+        <span class="s1">self._algorithm = algorithm</span>
+
+        <span class="s1">self._backend = backend</span>
+
+        <span class="s2">if </span><span class="s1">ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self._ctx = self._backend.create_hash_ctx(self.algorithm)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._ctx = ctx</span>
+
+    <span class="s1">algorithm = utils.read_only_property(</span><span class="s4">&quot;_algorithm&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">update(self</span><span class="s2">, </span><span class="s1">data: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s4">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;data&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s1">self._ctx.update(data)</span>
+
+    <span class="s2">def </span><span class="s1">copy(self) -&gt; </span><span class="s4">&quot;Hash&quot;</span><span class="s1">:</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s4">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">Hash(</span>
+            <span class="s1">self.algorithm</span><span class="s2">, </span><span class="s1">backend=self._backend</span><span class="s2">, </span><span class="s1">ctx=self._ctx.copy()</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">finalize(self) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._ctx </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s4">&quot;Context was already finalized.&quot;</span><span class="s1">)</span>
+        <span class="s1">digest = self._ctx.finalize()</span>
+        <span class="s1">self._ctx = </span><span class="s2">None</span>
+        <span class="s2">return </span><span class="s1">digest</span>
+
+
+<span class="s2">class </span><span class="s1">SHA1(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha1&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">20</span>
+    <span class="s1">block_size = </span><span class="s5">64</span>
+
+
+<span class="s2">class </span><span class="s1">SHA512_224(HashAlgorithm):  </span><span class="s0"># noqa: N801</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha512-224&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">28</span>
+    <span class="s1">block_size = </span><span class="s5">128</span>
+
+
+<span class="s2">class </span><span class="s1">SHA512_256(HashAlgorithm):  </span><span class="s0"># noqa: N801</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha512-256&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">32</span>
+    <span class="s1">block_size = </span><span class="s5">128</span>
+
+
+<span class="s2">class </span><span class="s1">SHA224(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha224&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">28</span>
+    <span class="s1">block_size = </span><span class="s5">64</span>
+
+
+<span class="s2">class </span><span class="s1">SHA256(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha256&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">32</span>
+    <span class="s1">block_size = </span><span class="s5">64</span>
+
+
+<span class="s2">class </span><span class="s1">SHA384(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha384&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">48</span>
+    <span class="s1">block_size = </span><span class="s5">128</span>
+
+
+<span class="s2">class </span><span class="s1">SHA512(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha512&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">64</span>
+    <span class="s1">block_size = </span><span class="s5">128</span>
+
+
+<span class="s2">class </span><span class="s1">SHA3_224(HashAlgorithm):  </span><span class="s0"># noqa: N801</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha3-224&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">28</span>
+    <span class="s1">block_size = </span><span class="s2">None</span>
+
+
+<span class="s2">class </span><span class="s1">SHA3_256(HashAlgorithm):  </span><span class="s0"># noqa: N801</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha3-256&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">32</span>
+    <span class="s1">block_size = </span><span class="s2">None</span>
+
+
+<span class="s2">class </span><span class="s1">SHA3_384(HashAlgorithm):  </span><span class="s0"># noqa: N801</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha3-384&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">48</span>
+    <span class="s1">block_size = </span><span class="s2">None</span>
+
+
+<span class="s2">class </span><span class="s1">SHA3_512(HashAlgorithm):  </span><span class="s0"># noqa: N801</span>
+    <span class="s1">name = </span><span class="s4">&quot;sha3-512&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">64</span>
+    <span class="s1">block_size = </span><span class="s2">None</span>
+
+
+<span class="s2">class </span><span class="s1">SHAKE128(HashAlgorithm</span><span class="s2">, </span><span class="s1">ExtendableOutputFunction):</span>
+    <span class="s1">name = </span><span class="s4">&quot;shake128&quot;</span>
+    <span class="s1">block_size = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">digest_size: int):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(digest_size</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;digest_size must be an integer&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">digest_size &lt; </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;digest_size must be a positive integer&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._digest_size = digest_size</span>
+
+    <span class="s1">digest_size = utils.read_only_property(</span><span class="s4">&quot;_digest_size&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">SHAKE256(HashAlgorithm</span><span class="s2">, </span><span class="s1">ExtendableOutputFunction):</span>
+    <span class="s1">name = </span><span class="s4">&quot;shake256&quot;</span>
+    <span class="s1">block_size = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">digest_size: int):</span>
+        <span class="s2">if not </span><span class="s1">isinstance(digest_size</span><span class="s2">, </span><span class="s1">int):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;digest_size must be an integer&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">digest_size &lt; </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;digest_size must be a positive integer&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._digest_size = digest_size</span>
+
+    <span class="s1">digest_size = utils.read_only_property(</span><span class="s4">&quot;_digest_size&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">MD5(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;md5&quot;</span>
+    <span class="s1">digest_size = </span><span class="s5">16</span>
+    <span class="s1">block_size = </span><span class="s5">64</span>
+
+
+<span class="s2">class </span><span class="s1">BLAKE2b(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;blake2b&quot;</span>
+    <span class="s1">_max_digest_size = </span><span class="s5">64</span>
+    <span class="s1">_min_digest_size = </span><span class="s5">1</span>
+    <span class="s1">block_size = </span><span class="s5">128</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">digest_size: int):</span>
+
+        <span class="s2">if </span><span class="s1">digest_size != </span><span class="s5">64</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Digest size must be 64&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._digest_size = digest_size</span>
+
+    <span class="s1">digest_size = utils.read_only_property(</span><span class="s4">&quot;_digest_size&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">BLAKE2s(HashAlgorithm):</span>
+    <span class="s1">name = </span><span class="s4">&quot;blake2s&quot;</span>
+    <span class="s1">block_size = </span><span class="s5">64</span>
+    <span class="s1">_max_digest_size = </span><span class="s5">32</span>
+    <span class="s1">_min_digest_size = </span><span class="s5">1</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">digest_size: int):</span>
+
+        <span class="s2">if </span><span class="s1">digest_size != </span><span class="s5">32</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Digest size must be 32&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._digest_size = digest_size</span>
+
+    <span class="s1">digest_size = utils.read_only_property(</span><span class="s4">&quot;_digest_size&quot;</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

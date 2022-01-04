@@ -1,0 +1,518 @@
+<html>
+<head>
+<title>lxmldriver.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+lxmldriver.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s0"># Copyright 2014 splinter authors. All rights reserved.</span>
+<span class="s0"># Use of this source code is governed by a BSD-style</span>
+<span class="s0"># license that can be found in the LICENSE file.</span>
+
+<span class="s2">import </span><span class="s1">re</span>
+<span class="s2">import </span><span class="s1">time</span>
+<span class="s2">import </span><span class="s1">warnings</span>
+
+<span class="s2">from </span><span class="s1">urllib </span><span class="s2">import </span><span class="s1">parse</span>
+
+<span class="s2">import </span><span class="s1">lxml.etree</span>
+<span class="s2">import </span><span class="s1">lxml.html</span>
+<span class="s2">from </span><span class="s1">lxml.cssselect </span><span class="s2">import </span><span class="s1">CSSSelector</span>
+<span class="s2">from </span><span class="s1">splinter.driver </span><span class="s2">import </span><span class="s1">DriverAPI</span><span class="s2">, </span><span class="s1">ElementAPI</span>
+<span class="s2">from </span><span class="s1">splinter.driver.find_links </span><span class="s2">import </span><span class="s1">FindLinks</span>
+<span class="s2">from </span><span class="s1">splinter.driver.element_present </span><span class="s2">import </span><span class="s1">ElementPresentMixIn</span>
+<span class="s2">from </span><span class="s1">splinter.driver.xpath_utils </span><span class="s2">import </span><span class="s1">_concat_xpath_from_str</span>
+<span class="s2">from </span><span class="s1">splinter.element_list </span><span class="s2">import </span><span class="s1">ElementList</span>
+<span class="s2">from </span><span class="s1">splinter.exceptions </span><span class="s2">import </span><span class="s1">ElementDoesNotExist</span>
+
+
+<span class="s2">class </span><span class="s1">LxmlDriver(ElementPresentMixIn</span><span class="s2">, </span><span class="s1">DriverAPI):</span>
+    <span class="s1">_response = </span><span class="s3">&quot;&quot;</span>
+    <span class="s1">_url = </span><span class="s3">&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">user_agent=</span><span class="s2">None, </span><span class="s1">wait_time=</span><span class="s4">2</span><span class="s1">):</span>
+        <span class="s1">self.wait_time = wait_time</span>
+        <span class="s1">self._history = []</span>
+        <span class="s1">self._last_urls = []</span>
+        <span class="s1">self._forms = {}</span>
+
+        <span class="s1">self.links = FindLinks(self)</span>
+
+    <span class="s2">def </span><span class="s1">__enter__(self):</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">__exit__(self</span><span class="s2">, </span><span class="s1">exc_type</span><span class="s2">, </span><span class="s1">exc_value</span><span class="s2">, </span><span class="s1">traceback):</span>
+        <span class="s2">pass</span>
+
+    <span class="s2">def </span><span class="s1">_do_method(self</span><span class="s2">, </span><span class="s1">action</span><span class="s2">, </span><span class="s1">url</span><span class="s2">, </span><span class="s1">data=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span>
+            <span class="s3">&quot;%s doesn't support doing http methods.&quot; </span><span class="s1">% self.driver_name</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">visit(self</span><span class="s2">, </span><span class="s1">url):</span>
+        <span class="s1">self._do_method(</span><span class="s3">&quot;get&quot;</span><span class="s2">, </span><span class="s1">url)</span>
+
+    <span class="s2">def </span><span class="s1">serialize(self</span><span class="s2">, </span><span class="s1">form):</span>
+        <span class="s1">data = {}</span>
+
+        <span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">form.inputs.keys():</span>
+            <span class="s1">input = form.inputs[key]</span>
+            <span class="s2">if </span><span class="s1">getattr(input</span><span class="s2">, </span><span class="s3">&quot;type&quot;</span><span class="s2">, </span><span class="s3">&quot;&quot;</span><span class="s1">) == </span><span class="s3">&quot;submit&quot;</span><span class="s1">:</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">form.remove(input)</span>
+                <span class="s0"># Issue 595: throws ValueError: Element not child of this node</span>
+                <span class="s2">except </span><span class="s1">ValueError:</span>
+                    <span class="s2">pass</span>
+
+        <span class="s2">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">form.fields.items():</span>
+            <span class="s2">if </span><span class="s1">v </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">continue</span>
+
+            <span class="s2">if </span><span class="s1">isinstance(v</span><span class="s2">, </span><span class="s1">lxml.html.MultipleSelectOptions):</span>
+                <span class="s1">data[k] = list(v)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">data[k] = v</span>
+
+        <span class="s2">for </span><span class="s1">key </span><span class="s2">in </span><span class="s1">form.inputs.keys():</span>
+            <span class="s1">input = form.inputs[key]</span>
+            <span class="s2">if </span><span class="s1">getattr(input</span><span class="s2">, </span><span class="s3">&quot;type&quot;</span><span class="s2">, </span><span class="s3">&quot;&quot;</span><span class="s1">) == </span><span class="s3">&quot;file&quot; </span><span class="s2">and </span><span class="s1">key </span><span class="s2">in </span><span class="s1">data:</span>
+                <span class="s1">data[key] = open(data[key]</span><span class="s2">, </span><span class="s3">&quot;rb&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">data</span>
+
+    <span class="s2">def </span><span class="s1">submit(self</span><span class="s2">, </span><span class="s1">form):</span>
+        <span class="s1">method = form.attrib.get(</span><span class="s3">&quot;method&quot;</span><span class="s2">, </span><span class="s3">&quot;get&quot;</span><span class="s1">).lower()</span>
+        <span class="s1">action = form.attrib.get(</span><span class="s3">&quot;action&quot;</span><span class="s2">, </span><span class="s3">&quot;&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">action.strip() </span><span class="s2">not in </span><span class="s1">[</span><span class="s3">'.'</span><span class="s2">, </span><span class="s3">''</span><span class="s1">]:</span>
+            <span class="s1">url = parse.urljoin(self._url</span><span class="s2">, </span><span class="s1">action)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">url = self._url</span>
+        <span class="s1">self._url = url</span>
+        <span class="s1">data = self.serialize(form)</span>
+
+        <span class="s1">self._do_method(method</span><span class="s2">, </span><span class="s1">url</span><span class="s2">, </span><span class="s1">data=data)</span>
+        <span class="s2">return </span><span class="s1">self._response</span>
+
+    <span class="s2">def </span><span class="s1">submit_data(self</span><span class="s2">, </span><span class="s1">form):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span>
+            <span class="s3">&quot;%s doesn't support submitting then getting the data.&quot; </span><span class="s1">% self.driver_name</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">back(self):</span>
+        <span class="s1">self._last_urls.insert(</span><span class="s4">0</span><span class="s2">, </span><span class="s1">self.url)</span>
+        <span class="s1">self.visit(self._last_urls[</span><span class="s4">1</span><span class="s1">])</span>
+
+    <span class="s2">def </span><span class="s1">forward(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">self.visit(self._last_urls.pop())</span>
+        <span class="s2">except </span><span class="s1">IndexError:</span>
+            <span class="s2">pass</span>
+
+    <span class="s2">def </span><span class="s1">reload(self):</span>
+        <span class="s1">self.visit(self._url)</span>
+
+    <span class="s2">def </span><span class="s1">quit(self):</span>
+        <span class="s2">pass</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">htmltree(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._html</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s1">self._html = lxml.html.fromstring(self.html)</span>
+            <span class="s2">return </span><span class="s1">self._html</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">title(self):</span>
+        <span class="s1">html = self.htmltree</span>
+        <span class="s2">return </span><span class="s1">html.xpath(</span><span class="s3">&quot;//title&quot;</span><span class="s1">)[</span><span class="s4">0</span><span class="s1">].text_content().strip()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">html(self):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span>
+            <span class="s3">&quot;%s doesn't support getting the html of the response.&quot; </span><span class="s1">% self.driver_name</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">url(self):</span>
+        <span class="s2">return </span><span class="s1">self._url</span>
+
+    <span class="s2">def </span><span class="s1">find_option_by_value(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">html = self.htmltree</span>
+        <span class="s1">element = html.xpath(</span><span class="s3">'//option[@value=&quot;%s&quot;]' </span><span class="s1">% value)[</span><span class="s4">0</span><span class="s1">]</span>
+        <span class="s1">control = LxmlControlElement(element.getparent()</span><span class="s2">, </span><span class="s1">self)</span>
+        <span class="s2">return </span><span class="s1">ElementList(</span>
+            <span class="s1">[LxmlOptionElement(element</span><span class="s2">, </span><span class="s1">control)]</span><span class="s2">, </span><span class="s1">find_by=</span><span class="s3">&quot;value&quot;</span><span class="s2">, </span><span class="s1">query=value</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_option_by_text(self</span><span class="s2">, </span><span class="s1">text):</span>
+        <span class="s1">html = self.htmltree</span>
+        <span class="s1">element = html.xpath(</span><span class="s3">'//option[normalize-space(text())=&quot;%s&quot;]' </span><span class="s1">% text)[</span><span class="s4">0</span><span class="s1">]</span>
+        <span class="s1">control = LxmlControlElement(element.getparent()</span><span class="s2">, </span><span class="s1">self)</span>
+        <span class="s2">return </span><span class="s1">ElementList(</span>
+            <span class="s1">[LxmlOptionElement(element</span><span class="s2">, </span><span class="s1">control)]</span><span class="s2">, </span><span class="s1">find_by=</span><span class="s3">&quot;text&quot;</span><span class="s2">, </span><span class="s1">query=text</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_css(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s1">xpath = CSSSelector(selector).path</span>
+        <span class="s2">return </span><span class="s1">self.find_by_xpath(</span>
+            <span class="s1">xpath</span><span class="s2">, </span><span class="s1">original_find=</span><span class="s3">&quot;css&quot;</span><span class="s2">, </span><span class="s1">original_query=selector</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_xpath(self</span><span class="s2">, </span><span class="s1">xpath</span><span class="s2">, </span><span class="s1">original_find=</span><span class="s2">None, </span><span class="s1">original_query=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">html = self.htmltree</span>
+
+        <span class="s1">elements = []</span>
+
+        <span class="s2">for </span><span class="s1">xpath_element </span><span class="s2">in </span><span class="s1">html.xpath(xpath):</span>
+            <span class="s2">if </span><span class="s1">self._element_is_link(xpath_element):</span>
+                <span class="s2">return </span><span class="s1">self._find_links_by_xpath(xpath)</span>
+            <span class="s2">elif </span><span class="s1">self._element_is_control(xpath_element):</span>
+                <span class="s1">elements.append((LxmlControlElement</span><span class="s2">, </span><span class="s1">xpath_element))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">elements.append((LxmlElement</span><span class="s2">, </span><span class="s1">xpath_element))</span>
+
+        <span class="s1">find_by = original_find </span><span class="s2">or </span><span class="s3">&quot;xpath&quot;</span>
+        <span class="s1">query = original_query </span><span class="s2">or </span><span class="s1">xpath</span>
+
+        <span class="s2">return </span><span class="s1">ElementList(</span>
+            <span class="s1">[element_class(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element_class</span><span class="s2">, </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements]</span><span class="s2">,</span>
+            <span class="s1">find_by=find_by</span><span class="s2">,</span>
+            <span class="s1">query=query</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_tag(self</span><span class="s2">, </span><span class="s1">tag):</span>
+        <span class="s2">return </span><span class="s1">self.find_by_xpath(</span>
+            <span class="s3">&quot;//%s&quot; </span><span class="s1">% tag</span><span class="s2">, </span><span class="s1">original_find=</span><span class="s3">&quot;tag&quot;</span><span class="s2">, </span><span class="s1">original_query=tag</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_value(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">elem = self.find_by_xpath(</span>
+            <span class="s3">'//*[@value=&quot;%s&quot;]' </span><span class="s1">% value</span><span class="s2">, </span><span class="s1">original_find=</span><span class="s3">&quot;value&quot;</span><span class="s2">, </span><span class="s1">original_query=value</span>
+        <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">elem:</span>
+            <span class="s2">return </span><span class="s1">elem</span>
+        <span class="s2">return </span><span class="s1">self.find_by_xpath(</span><span class="s3">'//*[.=&quot;%s&quot;]' </span><span class="s1">% value)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_text(self</span><span class="s2">, </span><span class="s1">text):</span>
+        <span class="s1">xpath_str = _concat_xpath_from_str(text)</span>
+        <span class="s2">return </span><span class="s1">self.find_by_xpath(</span>
+            <span class="s1">xpath_str</span><span class="s2">,</span>
+            <span class="s1">original_find=</span><span class="s3">&quot;text&quot;</span><span class="s2">,</span>
+            <span class="s1">original_query=text</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_id(self</span><span class="s2">, </span><span class="s1">id_value):</span>
+        <span class="s2">return </span><span class="s1">self.find_by_xpath(</span>
+            <span class="s3">'//*[@id=&quot;%s&quot;][1]' </span><span class="s1">% id_value</span><span class="s2">,</span>
+            <span class="s1">original_find=</span><span class="s3">&quot;id&quot;</span><span class="s2">,</span>
+            <span class="s1">original_query=id_value</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_name(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s1">html = self.htmltree</span>
+
+        <span class="s1">xpath = </span><span class="s3">'//*[@name=&quot;%s&quot;]' </span><span class="s1">% name</span>
+        <span class="s1">elements = []</span>
+
+        <span class="s2">for </span><span class="s1">xpath_element </span><span class="s2">in </span><span class="s1">html.xpath(xpath):</span>
+            <span class="s1">elements.append(xpath_element)</span>
+
+        <span class="s1">find_by = </span><span class="s3">&quot;name&quot;</span>
+        <span class="s1">query = xpath</span>
+
+        <span class="s2">return </span><span class="s1">ElementList(</span>
+            <span class="s1">[LxmlControlElement(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements]</span><span class="s2">,</span>
+            <span class="s1">find_by=find_by</span><span class="s2">,</span>
+            <span class="s1">query=query</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">find_link_by_text(self</span><span class="s2">, </span><span class="s1">text):</span>
+        <span class="s1">warnings.warn(</span>
+            <span class="s3">'browser.find_link_by_text is deprecated.'</span>
+            <span class="s3">' Use browser.links.find_by_text instead.'</span><span class="s2">,</span>
+            <span class="s1">FutureWarning</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self.links.find_by_text(text)</span>
+
+    <span class="s2">def </span><span class="s1">find_link_by_href(self</span><span class="s2">, </span><span class="s1">href):</span>
+        <span class="s1">warnings.warn(</span>
+            <span class="s3">'browser.find_link_by_href is deprecated.'</span>
+            <span class="s3">' Use browser.links.find_by_href instead.'</span><span class="s2">,</span>
+            <span class="s1">FutureWarning</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self.links.find_by_href(href)</span>
+
+    <span class="s2">def </span><span class="s1">find_link_by_partial_href(self</span><span class="s2">, </span><span class="s1">partial_href):</span>
+        <span class="s1">warnings.warn(</span>
+            <span class="s3">'browser.find_link_by_partial_href is deprecated.'</span>
+            <span class="s3">' Use browser.links.find_by_partial_href instead.'</span><span class="s2">,</span>
+            <span class="s1">FutureWarning</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self.links.find_by_partial_href(partial_href)</span>
+
+    <span class="s2">def </span><span class="s1">find_link_by_partial_text(self</span><span class="s2">, </span><span class="s1">partial_text):</span>
+        <span class="s1">warnings.warn(</span>
+            <span class="s3">'browser.find_link_by_partial_text is deprecated.'</span>
+            <span class="s3">' Use browser.links.find_by_partial_text instead.'</span><span class="s2">,</span>
+            <span class="s1">FutureWarning</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self.links.find_by_partial_text(partial_text)</span>
+
+    <span class="s2">def </span><span class="s1">fill(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">self.find_by_name(name=name).first.fill(value)</span>
+
+    <span class="s2">def </span><span class="s1">fill_form(self</span><span class="s2">, </span><span class="s1">field_values</span><span class="s2">, </span><span class="s1">form_id=</span><span class="s2">None, </span><span class="s1">name=</span><span class="s2">None, </span><span class="s1">ignore_missing=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s1">form = </span><span class="s2">None</span>
+
+        <span class="s2">if </span><span class="s1">name </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">form = self.find_by_name(name)</span>
+        <span class="s2">if </span><span class="s1">form_id </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">form = self.find_by_id(form_id)</span>
+
+        <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">field_values.items():</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s1">form:</span>
+                    <span class="s1">element = form.find_by_name(name)</span>
+                    <span class="s1">control = element.first._element</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">element = self.find_by_name(name)</span>
+                    <span class="s1">control = element.first._control</span>
+                <span class="s1">control_type = control.get(</span><span class="s3">&quot;type&quot;</span><span class="s1">)</span>
+                <span class="s2">if </span><span class="s1">control_type == </span><span class="s3">&quot;checkbox&quot;</span><span class="s1">:</span>
+                    <span class="s2">if </span><span class="s1">value:</span>
+                        <span class="s1">control.value = value  </span><span class="s0"># control.options</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s1">control.value = []</span>
+                <span class="s2">elif </span><span class="s1">control_type == </span><span class="s3">&quot;radio&quot;</span><span class="s1">:</span>
+                    <span class="s1">control.value = (</span>
+                        <span class="s1">value</span>
+                    <span class="s1">)  </span><span class="s0"># [option for option in control.options if option == value]</span>
+                <span class="s2">elif </span><span class="s1">control_type == </span><span class="s3">&quot;select&quot;</span><span class="s1">:</span>
+                    <span class="s2">if </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">list):</span>
+                        <span class="s1">control.value = value</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s1">control.value = [value]</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s0"># text, textarea, password, tel</span>
+                    <span class="s1">control.value = value</span>
+            <span class="s2">except </span><span class="s1">ElementDoesNotExist </span><span class="s2">as </span><span class="s1">e:</span>
+                <span class="s2">if not </span><span class="s1">ignore_missing:</span>
+                    <span class="s2">raise </span><span class="s1">ElementDoesNotExist(e)</span>
+
+    <span class="s2">def </span><span class="s1">choose(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">self.find_by_name(name).first._control.value = value</span>
+
+    <span class="s2">def </span><span class="s1">check(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s1">control = self.find_by_name(name).first._control</span>
+        <span class="s1">control.value = [</span><span class="s3">&quot;checked&quot;</span><span class="s1">]</span>
+
+    <span class="s2">def </span><span class="s1">uncheck(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s1">control = self.find_by_name(name).first._control</span>
+        <span class="s1">control.value = []</span>
+
+    <span class="s2">def </span><span class="s1">attach_file(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">file_path):</span>
+        <span class="s1">control = self.find_by_name(name).first._control</span>
+        <span class="s1">control.value = file_path</span>
+
+    <span class="s2">def </span><span class="s1">_find_links_by_xpath(self</span><span class="s2">, </span><span class="s1">xpath):</span>
+        <span class="s1">html = self.htmltree</span>
+        <span class="s1">links = html.xpath(xpath)</span>
+        <span class="s2">return </span><span class="s1">ElementList(</span>
+            <span class="s1">[LxmlLinkElement(link</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">link </span><span class="s2">in </span><span class="s1">links]</span><span class="s2">,</span>
+            <span class="s1">find_by=</span><span class="s3">&quot;xpath&quot;</span><span class="s2">,</span>
+            <span class="s1">query=xpath</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">select(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">self.find_by_name(name).first._control.value = value</span>
+
+    <span class="s2">def </span><span class="s1">is_text_present(self</span><span class="s2">, </span><span class="s1">text</span><span class="s2">, </span><span class="s1">wait_time=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">wait_time = wait_time </span><span class="s2">or </span><span class="s1">self.wait_time</span>
+        <span class="s1">end_time = time.time() + wait_time</span>
+
+        <span class="s2">while </span><span class="s1">time.time() &lt; end_time:</span>
+            <span class="s2">if </span><span class="s1">self._is_text_present(text):</span>
+                <span class="s2">return True</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">_is_text_present(self</span><span class="s2">, </span><span class="s1">text):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">body = self.find_by_tag(</span><span class="s3">&quot;body&quot;</span><span class="s1">).first</span>
+            <span class="s2">return </span><span class="s1">text </span><span class="s2">in </span><span class="s1">body.text</span>
+        <span class="s2">except </span><span class="s1">ElementDoesNotExist:</span>
+            <span class="s0"># This exception will be thrown if the body tag isn't present</span>
+            <span class="s0"># This has occasionally been observed. Assume that the</span>
+            <span class="s0"># page isn't fully loaded yet</span>
+            <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">is_text_not_present(self</span><span class="s2">, </span><span class="s1">text</span><span class="s2">, </span><span class="s1">wait_time=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">wait_time = wait_time </span><span class="s2">or </span><span class="s1">self.wait_time</span>
+        <span class="s1">end_time = time.time() + wait_time</span>
+
+        <span class="s2">while </span><span class="s1">time.time() &lt; end_time:</span>
+            <span class="s2">if not </span><span class="s1">self._is_text_present(text):</span>
+                <span class="s2">return True</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">_element_is_link(self</span><span class="s2">, </span><span class="s1">element):</span>
+        <span class="s2">return </span><span class="s1">element.tag == </span><span class="s3">&quot;a&quot;</span>
+
+    <span class="s2">def </span><span class="s1">_element_is_control(self</span><span class="s2">, </span><span class="s1">element):</span>
+        <span class="s2">return </span><span class="s1">element.tag </span><span class="s2">in </span><span class="s1">[</span><span class="s3">&quot;button&quot;</span><span class="s2">, </span><span class="s3">&quot;input&quot;</span><span class="s2">, </span><span class="s3">&quot;textarea&quot;</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">cookies(self):</span>
+        <span class="s2">return </span><span class="s1">self._cookie_manager</span>
+
+
+<span class="s2">class </span><span class="s1">LxmlElement(ElementAPI):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">, </span><span class="s1">parent):</span>
+        <span class="s1">self._element = element</span>
+        <span class="s1">self.parent = parent</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">attr):</span>
+        <span class="s2">return </span><span class="s1">self._element.attrib[attr]</span>
+
+    <span class="s2">def </span><span class="s1">find_by_css(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s1">elements = self._element.cssselect(selector)</span>
+        <span class="s2">return </span><span class="s1">ElementList([self.__class__(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements])</span>
+
+    <span class="s2">def </span><span class="s1">find_by_xpath(self</span><span class="s2">, </span><span class="s1">selector):</span>
+        <span class="s1">elements = self._element.xpath(selector)</span>
+        <span class="s2">return </span><span class="s1">ElementList([self.__class__(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements])</span>
+
+    <span class="s2">def </span><span class="s1">find_by_name(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s1">elements = self._element.cssselect(</span><span class="s3">'[name=&quot;%s&quot;]' </span><span class="s1">% name)</span>
+        <span class="s2">return </span><span class="s1">ElementList([self.__class__(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements])</span>
+
+    <span class="s2">def </span><span class="s1">find_by_tag(self</span><span class="s2">, </span><span class="s1">name):</span>
+        <span class="s1">elements = self._element.cssselect(name)</span>
+        <span class="s2">return </span><span class="s1">ElementList([self.__class__(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements])</span>
+
+    <span class="s2">def </span><span class="s1">find_by_value(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">elements = self._element.cssselect(</span><span class="s3">'[value=&quot;%s&quot;]' </span><span class="s1">% value)</span>
+        <span class="s2">return </span><span class="s1">ElementList([self.__class__(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements])</span>
+
+    <span class="s2">def </span><span class="s1">find_by_text(self</span><span class="s2">, </span><span class="s1">text):</span>
+        <span class="s0"># Add a period to the xpath to search only inside the parent.</span>
+        <span class="s1">xpath_str = </span><span class="s3">'.{}'</span><span class="s1">.format(_concat_xpath_from_str(text))</span>
+        <span class="s2">return </span><span class="s1">self.find_by_xpath(xpath_str)</span>
+
+    <span class="s2">def </span><span class="s1">find_by_id(self</span><span class="s2">, </span><span class="s1">id):</span>
+        <span class="s1">elements = self._element.cssselect(</span><span class="s3">&quot;#%s&quot; </span><span class="s1">% id)</span>
+        <span class="s2">return </span><span class="s1">ElementList([self.__class__(element</span><span class="s2">, </span><span class="s1">self) </span><span class="s2">for </span><span class="s1">element </span><span class="s2">in </span><span class="s1">elements])</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">value(self):</span>
+        <span class="s2">return </span><span class="s1">self._element.text_content()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">text(self):</span>
+        <span class="s2">return </span><span class="s1">self.value</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">outer_html(self):</span>
+        <span class="s2">return </span><span class="s1">lxml.html.tostring(self._element</span><span class="s2">, </span><span class="s1">encoding=</span><span class="s3">&quot;unicode&quot;</span><span class="s1">).strip()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">html(self):</span>
+        <span class="s2">return </span><span class="s1">re.match(</span><span class="s3">r&quot;^&lt;[^&lt;&gt;]+&gt;(.*)&lt;/[^&lt;&gt;]+&gt;$&quot;</span><span class="s2">, </span><span class="s1">self.outer_html</span><span class="s2">, </span><span class="s1">re.MULTILINE | re.DOTALL).group(</span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">has_class(self</span><span class="s2">, </span><span class="s1">class_name):</span>
+        <span class="s2">return </span><span class="s1">len(self._element.find_class(class_name)) &gt; </span><span class="s4">0</span>
+
+
+<span class="s2">class </span><span class="s1">LxmlLinkElement(LxmlElement):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">, </span><span class="s1">parent):</span>
+        <span class="s1">super(LxmlLinkElement</span><span class="s2">, </span><span class="s1">self).__init__(element</span><span class="s2">, </span><span class="s1">parent)</span>
+        <span class="s1">self._browser = parent</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">attr):</span>
+        <span class="s2">return </span><span class="s1">super(LxmlLinkElement</span><span class="s2">, </span><span class="s1">self).__getitem__(attr)</span>
+
+    <span class="s2">def </span><span class="s1">click(self):</span>
+        <span class="s2">return </span><span class="s1">self._browser.visit(self[</span><span class="s3">&quot;href&quot;</span><span class="s1">])</span>
+
+
+<span class="s2">class </span><span class="s1">LxmlControlElement(LxmlElement):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">control</span><span class="s2">, </span><span class="s1">parent):</span>
+        <span class="s1">self._control = control</span>
+        <span class="s1">self.parent = parent</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">attr):</span>
+        <span class="s2">return </span><span class="s1">self._control.attrib[attr]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">value(self):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._control.value</span>
+        <span class="s2">except </span><span class="s1">AttributeError:</span>
+            <span class="s2">return </span><span class="s1">self._control.text</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">checked(self):</span>
+        <span class="s2">return </span><span class="s1">bool(self._control.value)</span>
+
+    <span class="s2">def </span><span class="s1">click(self):</span>
+        <span class="s1">parent_form = self._get_parent_form()</span>
+
+        <span class="s2">if </span><span class="s1">self._control.get(</span><span class="s3">&quot;type&quot;</span><span class="s1">) == </span><span class="s3">&quot;submit&quot;</span><span class="s1">:</span>
+            <span class="s1">name = self._control.get(</span><span class="s3">&quot;name&quot;</span><span class="s1">)</span>
+
+            <span class="s2">if </span><span class="s1">name:</span>
+                <span class="s1">value = self._control.get(</span><span class="s3">&quot;value&quot;</span><span class="s2">, </span><span class="s3">&quot;&quot;</span><span class="s1">)</span>
+                <span class="s1">parent_form.append(</span>
+                    <span class="s1">lxml.html.Element(</span><span class="s3">&quot;input&quot;</span><span class="s2">, </span><span class="s1">name=name</span><span class="s2">, </span><span class="s1">value=value</span><span class="s2">, </span><span class="s1">type=</span><span class="s3">&quot;hidden&quot;</span><span class="s1">)</span>
+                <span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">self.parent.submit_data(parent_form)</span>
+
+    <span class="s2">def </span><span class="s1">fill(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">parent_form = self._get_parent_form()</span>
+        <span class="s1">parent_form.fields[self[</span><span class="s3">&quot;name&quot;</span><span class="s1">]] = value</span>
+
+    <span class="s2">def </span><span class="s1">select(self</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">self._control.value = value</span>
+
+    <span class="s2">def </span><span class="s1">_get_parent_form(self):</span>
+        <span class="s1">parent_form = next(self._control.iterancestors(</span><span class="s3">&quot;form&quot;</span><span class="s1">))</span>
+        <span class="s2">return </span><span class="s1">self.parent._forms.setdefault(parent_form._name()</span><span class="s2">, </span><span class="s1">parent_form)</span>
+
+
+<span class="s2">class </span><span class="s1">LxmlOptionElement(LxmlElement):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">control</span><span class="s2">, </span><span class="s1">parent):</span>
+        <span class="s1">self._control = control</span>
+        <span class="s1">self.parent = parent</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">attr):</span>
+        <span class="s2">return </span><span class="s1">self._control.attrib[attr]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">text(self):</span>
+        <span class="s2">return </span><span class="s1">self._control.text</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">value(self):</span>
+        <span class="s2">return </span><span class="s1">self._control.attrib[</span><span class="s3">&quot;value&quot;</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">selected(self):</span>
+        <span class="s2">return </span><span class="s1">self.parent.value == self.value</span>
+</pre>
+</body>
+</html>

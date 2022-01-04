@@ -1,0 +1,260 @@
+<html>
+<head>
+<title>execution_context.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+execution_context.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Execution Context Module.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">import </span><span class="s1">math</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">Dict</span><span class="s3">, </span><span class="s1">Optional</span><span class="s3">, </span><span class="s1">TYPE_CHECKING</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer </span><span class="s3">import </span><span class="s1">helper</span>
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">CDPSession</span>
+<span class="s3">from </span><span class="s1">pyppeteer.errors </span><span class="s3">import </span><span class="s1">ElementHandleError</span><span class="s3">, </span><span class="s1">NetworkError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.helper </span><span class="s3">import </span><span class="s1">debugError</span>
+
+<span class="s3">if </span><span class="s1">TYPE_CHECKING:</span>
+    <span class="s3">from </span><span class="s1">pyppeteer.element_handle </span><span class="s3">import </span><span class="s1">ElementHandle  </span><span class="s0"># noqa: F401</span>
+    <span class="s3">from </span><span class="s1">pyppeteer.frame_manager </span><span class="s3">import </span><span class="s1">Frame  </span><span class="s0"># noqa: F401</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+<span class="s1">EVALUATION_SCRIPT_URL = </span><span class="s4">'__pyppeteer_evaluation_script__'</span>
+<span class="s1">SOURCE_URL_REGEX = re.compile(</span>
+    <span class="s4">r'^[\040\t]*//[@#] sourceURL=\s*(\S*?)\s*$'</span><span class="s3">,</span>
+    <span class="s1">re.MULTILINE</span><span class="s3">,</span>
+<span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">ExecutionContext(object):</span>
+    <span class="s2">&quot;&quot;&quot;Execution Context class.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">, </span><span class="s1">contextPayload: Dict</span><span class="s3">,</span>
+                 <span class="s1">objectHandleFactory: Any</span><span class="s3">, </span><span class="s1">frame: </span><span class="s4">'Frame' </span><span class="s1">= </span><span class="s3">None</span><span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._frame = frame</span>
+        <span class="s1">self._contextId = contextPayload.get(</span><span class="s4">'id'</span><span class="s1">)</span>
+
+        <span class="s1">auxData = contextPayload.get(</span><span class="s4">'auxData'</span><span class="s3">, </span><span class="s1">{</span><span class="s4">'isDefault'</span><span class="s1">: </span><span class="s3">False</span><span class="s1">})</span>
+        <span class="s1">self._isDefault = bool(auxData.get(</span><span class="s4">'isDefault'</span><span class="s1">))</span>
+        <span class="s1">self._objectHandleFactory = objectHandleFactory</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">frame(self) -&gt; Optional[</span><span class="s4">'Frame'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return frame associated with this execution context.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._frame</span>
+
+    <span class="s3">async def </span><span class="s1">evaluate(self</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">, </span><span class="s1">*args: Any</span><span class="s3">,</span>
+                       <span class="s1">force_expr: bool = </span><span class="s3">False</span><span class="s1">) -&gt; Any:</span>
+        <span class="s2">&quot;&quot;&quot;Execute ``pageFunction`` on this context. 
+ 
+        Details see :meth:`pyppeteer.page.Page.evaluate`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">handle = </span><span class="s3">await </span><span class="s1">self.evaluateHandle(</span>
+            <span class="s1">pageFunction</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">force_expr=force_expr)</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">result = </span><span class="s3">await </span><span class="s1">handle.jsonValue()</span>
+        <span class="s3">except </span><span class="s1">NetworkError </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s3">if </span><span class="s4">'Object reference chain is too long' </span><span class="s3">in </span><span class="s1">e.args[</span><span class="s5">0</span><span class="s1">]:</span>
+                <span class="s3">return</span>
+            <span class="s3">if </span><span class="s4">'Object couldn</span><span class="s3">\'</span><span class="s4">t be returned by value' </span><span class="s3">in </span><span class="s1">e.args[</span><span class="s5">0</span><span class="s1">]:</span>
+                <span class="s3">return</span>
+            <span class="s3">raise</span>
+        <span class="s3">await </span><span class="s1">handle.dispose()</span>
+        <span class="s3">return </span><span class="s1">result</span>
+
+    <span class="s3">async def </span><span class="s1">evaluateHandle(self</span><span class="s3">, </span><span class="s1">pageFunction: str</span><span class="s3">, </span><span class="s1">*args: Any</span><span class="s3">,  </span><span class="s0"># noqa: C901</span>
+                             <span class="s1">force_expr: bool = </span><span class="s3">False</span><span class="s1">) -&gt; </span><span class="s4">'JSHandle'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Execute ``pageFunction`` on this context. 
+ 
+        Details see :meth:`pyppeteer.page.Page.evaluateHandle`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">suffix = </span><span class="s4">f'//# sourceURL=</span><span class="s3">{</span><span class="s1">EVALUATION_SCRIPT_URL</span><span class="s3">}</span><span class="s4">'</span>
+
+        <span class="s3">if </span><span class="s1">force_expr </span><span class="s3">or </span><span class="s1">(</span><span class="s3">not </span><span class="s1">args </span><span class="s3">and not </span><span class="s1">helper.is_jsfunc(pageFunction)):</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s3">if </span><span class="s1">SOURCE_URL_REGEX.match(pageFunction):</span>
+                    <span class="s1">expressionWithSourceUrl = pageFunction</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s1">expressionWithSourceUrl = </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">pageFunction</span><span class="s3">}\n{</span><span class="s1">suffix</span><span class="s3">}</span><span class="s4">'</span>
+                <span class="s1">_obj = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Runtime.evaluate'</span><span class="s3">, </span><span class="s1">{</span>
+                    <span class="s4">'expression'</span><span class="s1">: expressionWithSourceUrl</span><span class="s3">,</span>
+                    <span class="s4">'contextId'</span><span class="s1">: self._contextId</span><span class="s3">,</span>
+                    <span class="s4">'returnByValue'</span><span class="s1">: </span><span class="s3">False,</span>
+                    <span class="s4">'awaitPromise'</span><span class="s1">: </span><span class="s3">True,</span>
+                    <span class="s4">'userGesture'</span><span class="s1">: </span><span class="s3">True,</span>
+                <span class="s1">})</span>
+            <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+                <span class="s1">_rewriteError(e)</span>
+
+            <span class="s1">exceptionDetails = _obj.get(</span><span class="s4">'exceptionDetails'</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">exceptionDetails:</span>
+                <span class="s3">raise </span><span class="s1">ElementHandleError(</span>
+                    <span class="s4">'Evaluation failed: {}'</span><span class="s1">.format(</span>
+                        <span class="s1">helper.getExceptionMessage(exceptionDetails)))</span>
+            <span class="s1">remoteObject = _obj.get(</span><span class="s4">'result'</span><span class="s1">)</span>
+            <span class="s3">return </span><span class="s1">self._objectHandleFactory(remoteObject)</span>
+
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">_obj = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Runtime.callFunctionOn'</span><span class="s3">, </span><span class="s1">{</span>
+                <span class="s4">'functionDeclaration'</span><span class="s1">: </span><span class="s4">f'</span><span class="s3">{</span><span class="s1">pageFunction</span><span class="s3">}\n{</span><span class="s1">suffix</span><span class="s3">}\n</span><span class="s4">'</span><span class="s3">,</span>
+                <span class="s4">'executionContextId'</span><span class="s1">: self._contextId</span><span class="s3">,</span>
+                <span class="s4">'arguments'</span><span class="s1">: [self._convertArgument(arg) </span><span class="s3">for </span><span class="s1">arg </span><span class="s3">in </span><span class="s1">args]</span><span class="s3">,</span>
+                <span class="s4">'returnByValue'</span><span class="s1">: </span><span class="s3">False,</span>
+                <span class="s4">'awaitPromise'</span><span class="s1">: </span><span class="s3">True,</span>
+                <span class="s4">'userGesture'</span><span class="s1">: </span><span class="s3">True,</span>
+            <span class="s1">})</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">_rewriteError(e)</span>
+
+        <span class="s1">exceptionDetails = _obj.get(</span><span class="s4">'exceptionDetails'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">exceptionDetails:</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'Evaluation failed: {}'</span><span class="s1">.format(</span>
+                <span class="s1">helper.getExceptionMessage(exceptionDetails)))</span>
+        <span class="s1">remoteObject = _obj.get(</span><span class="s4">'result'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">self._objectHandleFactory(remoteObject)</span>
+
+    <span class="s3">def </span><span class="s1">_convertArgument(self</span><span class="s3">, </span><span class="s1">arg: Any) -&gt; Dict:  </span><span class="s0"># noqa: C901</span>
+        <span class="s3">if </span><span class="s1">arg == math.inf:</span>
+            <span class="s3">return </span><span class="s1">{</span><span class="s4">'unserializableValue'</span><span class="s1">: </span><span class="s4">'Infinity'</span><span class="s1">}</span>
+        <span class="s3">if </span><span class="s1">arg == -math.inf:</span>
+            <span class="s3">return </span><span class="s1">{</span><span class="s4">'unserializableValue'</span><span class="s1">: </span><span class="s4">'-Infinity'</span><span class="s1">}</span>
+        <span class="s1">objectHandle = arg </span><span class="s3">if </span><span class="s1">isinstance(arg</span><span class="s3">, </span><span class="s1">JSHandle) </span><span class="s3">else None</span>
+        <span class="s3">if </span><span class="s1">objectHandle:</span>
+            <span class="s3">if </span><span class="s1">objectHandle._context != self:</span>
+                <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'JSHandles can be evaluated only in the context they were created!'</span><span class="s1">)  </span><span class="s0"># noqa: E501</span>
+            <span class="s3">if </span><span class="s1">objectHandle._disposed:</span>
+                <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'JSHandle is disposed!'</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">objectHandle._remoteObject.get(</span><span class="s4">'unserializableValue'</span><span class="s1">):</span>
+                <span class="s3">return </span><span class="s1">{</span><span class="s4">'unserializableValue'</span><span class="s1">: objectHandle._remoteObject.get(</span><span class="s4">'unserializableValue'</span><span class="s1">)}  </span><span class="s0"># noqa: E501</span>
+            <span class="s3">if not </span><span class="s1">objectHandle._remoteObject.get(</span><span class="s4">'objectId'</span><span class="s1">):</span>
+                <span class="s3">return </span><span class="s1">{</span><span class="s4">'value'</span><span class="s1">: objectHandle._remoteObject.get(</span><span class="s4">'value'</span><span class="s1">)}</span>
+            <span class="s3">return </span><span class="s1">{</span><span class="s4">'objectId'</span><span class="s1">: objectHandle._remoteObject.get(</span><span class="s4">'objectId'</span><span class="s1">)}</span>
+        <span class="s3">return </span><span class="s1">{</span><span class="s4">'value'</span><span class="s1">: arg}</span>
+
+    <span class="s3">async def </span><span class="s1">queryObjects(self</span><span class="s3">, </span><span class="s1">prototypeHandle: </span><span class="s4">'JSHandle'</span><span class="s1">) -&gt; </span><span class="s4">'JSHandle'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Send query. 
+ 
+        Details see :meth:`pyppeteer.page.Page.queryObjects`. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">prototypeHandle._disposed:</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span><span class="s4">'Prototype JSHandle is disposed!'</span><span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">prototypeHandle._remoteObject.get(</span><span class="s4">'objectId'</span><span class="s1">):</span>
+            <span class="s3">raise </span><span class="s1">ElementHandleError(</span>
+                <span class="s4">'Prototype JSHandle must not be referencing primitive value'</span><span class="s1">)</span>
+        <span class="s1">response = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Runtime.queryObjects'</span><span class="s3">, </span><span class="s1">{</span>
+            <span class="s4">'prototypeObjectId'</span><span class="s1">: prototypeHandle._remoteObject[</span><span class="s4">'objectId'</span><span class="s1">]</span><span class="s3">,</span>
+        <span class="s1">})</span>
+        <span class="s3">return </span><span class="s1">self._objectHandleFactory(response.get(</span><span class="s4">'objects'</span><span class="s1">))</span>
+
+
+<span class="s3">class </span><span class="s1">JSHandle(object):</span>
+    <span class="s2">&quot;&quot;&quot;JSHandle class. 
+ 
+    JSHandle represents an in-page JavaScript object. JSHandle can be created 
+    with the :meth:`~pyppeteer.page.Page.evaluateHandle` method. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">context: ExecutionContext</span><span class="s3">, </span><span class="s1">client: CDPSession</span><span class="s3">,</span>
+                 <span class="s1">remoteObject: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._context = context</span>
+        <span class="s1">self._client = client</span>
+        <span class="s1">self._remoteObject = remoteObject</span>
+        <span class="s1">self._disposed = </span><span class="s3">False</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">executionContext(self) -&gt; ExecutionContext:</span>
+        <span class="s2">&quot;&quot;&quot;Get execution context of this handle.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._context</span>
+
+    <span class="s3">async def </span><span class="s1">getProperty(self</span><span class="s3">, </span><span class="s1">propertyName: str) -&gt; </span><span class="s4">'JSHandle'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Get property value of ``propertyName``.&quot;&quot;&quot;</span>
+        <span class="s1">objectHandle = </span><span class="s3">await </span><span class="s1">self._context.evaluateHandle(</span>
+            <span class="s4">'''(object, propertyName) =&gt; { 
+                const result = {__proto__: null}; 
+                result[propertyName] = object[propertyName]; 
+                return result; 
+            }'''</span><span class="s3">, </span><span class="s1">self</span><span class="s3">, </span><span class="s1">propertyName)</span>
+        <span class="s1">properties = </span><span class="s3">await </span><span class="s1">objectHandle.getProperties()</span>
+        <span class="s1">result = properties[propertyName]</span>
+        <span class="s3">await </span><span class="s1">objectHandle.dispose()</span>
+        <span class="s3">return </span><span class="s1">result</span>
+
+    <span class="s3">async def </span><span class="s1">getProperties(self) -&gt; Dict[str</span><span class="s3">, </span><span class="s4">'JSHandle'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Get all properties of this handle.&quot;&quot;&quot;</span>
+        <span class="s1">response = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Runtime.getProperties'</span><span class="s3">, </span><span class="s1">{</span>
+            <span class="s4">'objectId'</span><span class="s1">: self._remoteObject.get(</span><span class="s4">'objectId'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s4">'ownProperties'</span><span class="s1">: </span><span class="s3">True,</span>
+        <span class="s1">})</span>
+        <span class="s1">result = dict()</span>
+        <span class="s3">for </span><span class="s1">prop </span><span class="s3">in </span><span class="s1">response[</span><span class="s4">'result'</span><span class="s1">]:</span>
+            <span class="s3">if not </span><span class="s1">prop.get(</span><span class="s4">'enumerable'</span><span class="s1">):</span>
+                <span class="s3">continue</span>
+            <span class="s1">result[prop.get(</span><span class="s4">'name'</span><span class="s1">)] = self._context._objectHandleFactory(</span>
+                <span class="s1">prop.get(</span><span class="s4">'value'</span><span class="s1">))</span>
+        <span class="s3">return </span><span class="s1">result</span>
+
+    <span class="s3">async def </span><span class="s1">jsonValue(self) -&gt; Dict:</span>
+        <span class="s2">&quot;&quot;&quot;Get Jsonized value of this object.&quot;&quot;&quot;</span>
+        <span class="s1">objectId = self._remoteObject.get(</span><span class="s4">'objectId'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">objectId:</span>
+            <span class="s1">response = </span><span class="s3">await </span><span class="s1">self._client.send(</span><span class="s4">'Runtime.callFunctionOn'</span><span class="s3">, </span><span class="s1">{</span>
+                <span class="s4">'functionDeclaration'</span><span class="s1">: </span><span class="s4">'function() { return this; }'</span><span class="s3">,</span>
+                <span class="s4">'objectId'</span><span class="s1">: objectId</span><span class="s3">,</span>
+                <span class="s4">'returnByValue'</span><span class="s1">: </span><span class="s3">True,</span>
+                <span class="s4">'awaitPromise'</span><span class="s1">: </span><span class="s3">True,</span>
+            <span class="s1">})</span>
+            <span class="s3">return </span><span class="s1">helper.valueFromRemoteObject(response[</span><span class="s4">'result'</span><span class="s1">])</span>
+        <span class="s3">return </span><span class="s1">helper.valueFromRemoteObject(self._remoteObject)</span>
+
+    <span class="s3">def </span><span class="s1">asElement(self) -&gt; Optional[</span><span class="s4">'ElementHandle'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return either null or the object handle itself.&quot;&quot;&quot;</span>
+        <span class="s3">return None</span>
+
+    <span class="s3">async def </span><span class="s1">dispose(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Stop referencing the handle.&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._disposed:</span>
+            <span class="s3">return</span>
+        <span class="s1">self._disposed = </span><span class="s3">True</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s3">await </span><span class="s1">helper.releaseObject(self._client</span><span class="s3">, </span><span class="s1">self._remoteObject)</span>
+        <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e:</span>
+            <span class="s1">debugError(logger</span><span class="s3">, </span><span class="s1">e)</span>
+
+    <span class="s3">def </span><span class="s1">toString(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get string representation.&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._remoteObject.get(</span><span class="s4">'objectId'</span><span class="s1">):</span>
+            <span class="s1">_type = (self._remoteObject.get(</span><span class="s4">'subtype'</span><span class="s1">) </span><span class="s3">or</span>
+                     <span class="s1">self._remoteObject.get(</span><span class="s4">'type'</span><span class="s1">))</span>
+            <span class="s3">return </span><span class="s4">f'JSHandle@</span><span class="s3">{</span><span class="s1">_type</span><span class="s3">}</span><span class="s4">'</span>
+        <span class="s3">return </span><span class="s4">'JSHandle:{}'</span><span class="s1">.format(</span>
+            <span class="s1">helper.valueFromRemoteObject(self._remoteObject))</span>
+
+
+<span class="s3">def </span><span class="s1">_rewriteError(error: Exception) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+    <span class="s3">if </span><span class="s1">error.args[</span><span class="s5">0</span><span class="s1">].endswith(</span><span class="s4">'Cannot find context with specified id'</span><span class="s1">):</span>
+        <span class="s1">msg = </span><span class="s4">'Execution context was destroyed, most likely because of a navigation.'  </span><span class="s0"># noqa: E501</span>
+        <span class="s3">raise </span><span class="s1">type(error)(msg)</span>
+    <span class="s3">raise </span><span class="s1">error</span>
+</pre>
+</body>
+</html>

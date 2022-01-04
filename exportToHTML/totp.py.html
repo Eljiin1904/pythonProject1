@@ -1,0 +1,76 @@
+<html>
+<head>
+<title>totp.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+totp.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">UnsupportedAlgorithm</span><span class="s2">, </span><span class="s1">_Reasons</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HMACBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">constant_time</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.twofactor </span><span class="s2">import </span><span class="s1">InvalidToken</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.twofactor.hotp </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">HOTP</span><span class="s2">,</span>
+    <span class="s1">_ALLOWED_HASH_TYPES</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.twofactor.utils </span><span class="s2">import </span><span class="s1">_generate_uri</span>
+
+
+<span class="s2">class </span><span class="s1">TOTP(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">key: bytes</span><span class="s2">,</span>
+        <span class="s1">length: int</span><span class="s2">,</span>
+        <span class="s1">algorithm: _ALLOWED_HASH_TYPES</span><span class="s2">,</span>
+        <span class="s1">time_step: int</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+        <span class="s1">enforce_key_length: bool = </span><span class="s2">True,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HMACBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement HMACBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._time_step = time_step</span>
+        <span class="s1">self._hotp = HOTP(key</span><span class="s2">, </span><span class="s1">length</span><span class="s2">, </span><span class="s1">algorithm</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">enforce_key_length)</span>
+
+    <span class="s2">def </span><span class="s1">generate(self</span><span class="s2">, </span><span class="s1">time: typing.Union[int</span><span class="s2">, </span><span class="s1">float]) -&gt; bytes:</span>
+        <span class="s1">counter = int(time / self._time_step)</span>
+        <span class="s2">return </span><span class="s1">self._hotp.generate(counter)</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">totp: bytes</span><span class="s2">, </span><span class="s1">time: int) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(self.generate(time)</span><span class="s2">, </span><span class="s1">totp):</span>
+            <span class="s2">raise </span><span class="s1">InvalidToken(</span><span class="s3">&quot;Supplied TOTP value does not match.&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">get_provisioning_uri(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">account_name: str</span><span class="s2">, </span><span class="s1">issuer: typing.Optional[str]</span>
+    <span class="s1">) -&gt; str:</span>
+        <span class="s2">return </span><span class="s1">_generate_uri(</span>
+            <span class="s1">self._hotp</span><span class="s2">,</span>
+            <span class="s3">&quot;totp&quot;</span><span class="s2">,</span>
+            <span class="s1">account_name</span><span class="s2">,</span>
+            <span class="s1">issuer</span><span class="s2">,</span>
+            <span class="s1">[(</span><span class="s3">&quot;period&quot;</span><span class="s2">, </span><span class="s1">int(self._time_step))]</span><span class="s2">,</span>
+        <span class="s1">)</span>
+</pre>
+</body>
+</html>

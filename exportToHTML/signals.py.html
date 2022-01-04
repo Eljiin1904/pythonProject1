@@ -1,0 +1,86 @@
+<html>
+<head>
+<title>signals.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+signals.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+
+<span class="s0">import </span><span class="s1">psycopg2</span>
+<span class="s0">from </span><span class="s1">psycopg2 </span><span class="s0">import </span><span class="s1">ProgrammingError</span>
+<span class="s0">from </span><span class="s1">psycopg2.extras </span><span class="s0">import </span><span class="s1">register_hstore</span>
+
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">connections</span>
+<span class="s0">from </span><span class="s1">django.db.backends.base.base </span><span class="s0">import </span><span class="s1">NO_DB_ALIAS</span>
+
+
+<span class="s1">@functools.lru_cache()</span>
+<span class="s0">def </span><span class="s1">get_hstore_oids(connection_alias):</span>
+    <span class="s2">&quot;&quot;&quot;Return hstore and hstore array OIDs.&quot;&quot;&quot;</span>
+    <span class="s0">with </span><span class="s1">connections[connection_alias].cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+        <span class="s1">cursor.execute(</span>
+            <span class="s3">&quot;SELECT t.oid, typarray &quot;</span>
+            <span class="s3">&quot;FROM pg_type t &quot;</span>
+            <span class="s3">&quot;JOIN pg_namespace ns ON typnamespace = ns.oid &quot;</span>
+            <span class="s3">&quot;WHERE typname = 'hstore'&quot;</span>
+        <span class="s1">)</span>
+        <span class="s1">oids = []</span>
+        <span class="s1">array_oids = []</span>
+        <span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">cursor:</span>
+            <span class="s1">oids.append(row[</span><span class="s4">0</span><span class="s1">])</span>
+            <span class="s1">array_oids.append(row[</span><span class="s4">1</span><span class="s1">])</span>
+        <span class="s0">return </span><span class="s1">tuple(oids)</span><span class="s0">, </span><span class="s1">tuple(array_oids)</span>
+
+
+<span class="s1">@functools.lru_cache()</span>
+<span class="s0">def </span><span class="s1">get_citext_oids(connection_alias):</span>
+    <span class="s2">&quot;&quot;&quot;Return citext array OIDs.&quot;&quot;&quot;</span>
+    <span class="s0">with </span><span class="s1">connections[connection_alias].cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+        <span class="s1">cursor.execute(</span><span class="s3">&quot;SELECT typarray FROM pg_type WHERE typname = 'citext'&quot;</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">tuple(row[</span><span class="s4">0</span><span class="s1">] </span><span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">cursor)</span>
+
+
+<span class="s0">def </span><span class="s1">register_type_handlers(connection</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+    <span class="s0">if </span><span class="s1">connection.vendor != </span><span class="s3">'postgresql' </span><span class="s0">or </span><span class="s1">connection.alias == NO_DB_ALIAS:</span>
+        <span class="s0">return</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">oids</span><span class="s0">, </span><span class="s1">array_oids = get_hstore_oids(connection.alias)</span>
+        <span class="s1">register_hstore(connection.connection</span><span class="s0">, </span><span class="s1">globally=</span><span class="s0">True, </span><span class="s1">oid=oids</span><span class="s0">, </span><span class="s1">array_oid=array_oids)</span>
+    <span class="s0">except </span><span class="s1">ProgrammingError:</span>
+        <span class="s5"># Hstore is not available on the database.</span>
+        <span class="s5">#</span>
+        <span class="s5"># If someone tries to create an hstore field it will error there.</span>
+        <span class="s5"># This is necessary as someone may be using PSQL without extensions</span>
+        <span class="s5"># installed but be using other features of contrib.postgres.</span>
+        <span class="s5">#</span>
+        <span class="s5"># This is also needed in order to create the connection in order to</span>
+        <span class="s5"># install the hstore extension.</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">citext_oids = get_citext_oids(connection.alias)</span>
+        <span class="s1">array_type = psycopg2.extensions.new_array_type(citext_oids</span><span class="s0">, </span><span class="s3">'citext[]'</span><span class="s0">, </span><span class="s1">psycopg2.STRING)</span>
+        <span class="s1">psycopg2.extensions.register_type(array_type</span><span class="s0">, None</span><span class="s1">)</span>
+    <span class="s0">except </span><span class="s1">ProgrammingError:</span>
+        <span class="s5"># citext is not available on the database.</span>
+        <span class="s5">#</span>
+        <span class="s5"># The same comments in the except block of the above call to</span>
+        <span class="s5"># register_hstore() also apply here.</span>
+        <span class="s0">pass</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<html>
+<head>
+<title>admin_modify.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+admin_modify.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+
+<span class="s0">from </span><span class="s1">django </span><span class="s0">import </span><span class="s1">template</span>
+<span class="s0">from </span><span class="s1">django.template.context </span><span class="s0">import </span><span class="s1">Context</span>
+
+<span class="s0">from </span><span class="s1">.base </span><span class="s0">import </span><span class="s1">InclusionAdminNode</span>
+
+<span class="s1">register = template.Library()</span>
+
+
+<span class="s0">def </span><span class="s1">prepopulated_fields_js(context):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Create a list of prepopulated_fields that should render JavaScript for 
+    the prepopulated fields for both the admin form and inlines. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">prepopulated_fields = []</span>
+    <span class="s0">if </span><span class="s3">'adminform' </span><span class="s0">in </span><span class="s1">context:</span>
+        <span class="s1">prepopulated_fields.extend(context[</span><span class="s3">'adminform'</span><span class="s1">].prepopulated_fields)</span>
+    <span class="s0">if </span><span class="s3">'inline_admin_formsets' </span><span class="s0">in </span><span class="s1">context:</span>
+        <span class="s0">for </span><span class="s1">inline_admin_formset </span><span class="s0">in </span><span class="s1">context[</span><span class="s3">'inline_admin_formsets'</span><span class="s1">]:</span>
+            <span class="s0">for </span><span class="s1">inline_admin_form </span><span class="s0">in </span><span class="s1">inline_admin_formset:</span>
+                <span class="s0">if </span><span class="s1">inline_admin_form.original </span><span class="s0">is None</span><span class="s1">:</span>
+                    <span class="s1">prepopulated_fields.extend(inline_admin_form.prepopulated_fields)</span>
+
+    <span class="s1">prepopulated_fields_json = []</span>
+    <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">prepopulated_fields:</span>
+        <span class="s1">prepopulated_fields_json.append({</span>
+            <span class="s3">&quot;id&quot;</span><span class="s1">: </span><span class="s3">&quot;#%s&quot; </span><span class="s1">% field[</span><span class="s3">&quot;field&quot;</span><span class="s1">].auto_id</span><span class="s0">,</span>
+            <span class="s3">&quot;name&quot;</span><span class="s1">: field[</span><span class="s3">&quot;field&quot;</span><span class="s1">].name</span><span class="s0">,</span>
+            <span class="s3">&quot;dependency_ids&quot;</span><span class="s1">: [</span><span class="s3">&quot;#%s&quot; </span><span class="s1">% dependency.auto_id </span><span class="s0">for </span><span class="s1">dependency </span><span class="s0">in </span><span class="s1">field[</span><span class="s3">&quot;dependencies&quot;</span><span class="s1">]]</span><span class="s0">,</span>
+            <span class="s3">&quot;dependency_list&quot;</span><span class="s1">: [dependency.name </span><span class="s0">for </span><span class="s1">dependency </span><span class="s0">in </span><span class="s1">field[</span><span class="s3">&quot;dependencies&quot;</span><span class="s1">]]</span><span class="s0">,</span>
+            <span class="s3">&quot;maxLength&quot;</span><span class="s1">: field[</span><span class="s3">&quot;field&quot;</span><span class="s1">].field.max_length </span><span class="s0">or </span><span class="s4">50</span><span class="s0">,</span>
+            <span class="s3">&quot;allowUnicode&quot;</span><span class="s1">: getattr(field[</span><span class="s3">&quot;field&quot;</span><span class="s1">].field</span><span class="s0">, </span><span class="s3">&quot;allow_unicode&quot;</span><span class="s0">, False</span><span class="s1">)</span>
+        <span class="s1">})</span>
+
+    <span class="s1">context.update({</span>
+        <span class="s3">'prepopulated_fields'</span><span class="s1">: prepopulated_fields</span><span class="s0">,</span>
+        <span class="s3">'prepopulated_fields_json'</span><span class="s1">: json.dumps(prepopulated_fields_json)</span><span class="s0">,</span>
+    <span class="s1">})</span>
+    <span class="s0">return </span><span class="s1">context</span>
+
+
+<span class="s1">@register.tag(name=</span><span class="s3">'prepopulated_fields_js'</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">prepopulated_fields_js_tag(parser</span><span class="s0">, </span><span class="s1">token):</span>
+    <span class="s0">return </span><span class="s1">InclusionAdminNode(parser</span><span class="s0">, </span><span class="s1">token</span><span class="s0">, </span><span class="s1">func=prepopulated_fields_js</span><span class="s0">, </span><span class="s1">template_name=</span><span class="s3">&quot;prepopulated_fields_js.html&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">submit_row(context):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Display the row of buttons for delete and save. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">add = context[</span><span class="s3">'add'</span><span class="s1">]</span>
+    <span class="s1">change = context[</span><span class="s3">'change'</span><span class="s1">]</span>
+    <span class="s1">is_popup = context[</span><span class="s3">'is_popup'</span><span class="s1">]</span>
+    <span class="s1">save_as = context[</span><span class="s3">'save_as'</span><span class="s1">]</span>
+    <span class="s1">show_save = context.get(</span><span class="s3">'show_save'</span><span class="s0">, True</span><span class="s1">)</span>
+    <span class="s1">show_save_and_add_another = context.get(</span><span class="s3">'show_save_and_add_another'</span><span class="s0">, True</span><span class="s1">)</span>
+    <span class="s1">show_save_and_continue = context.get(</span><span class="s3">'show_save_and_continue'</span><span class="s0">, True</span><span class="s1">)</span>
+    <span class="s1">has_add_permission = context[</span><span class="s3">'has_add_permission'</span><span class="s1">]</span>
+    <span class="s1">has_change_permission = context[</span><span class="s3">'has_change_permission'</span><span class="s1">]</span>
+    <span class="s1">has_view_permission = context[</span><span class="s3">'has_view_permission'</span><span class="s1">]</span>
+    <span class="s1">has_editable_inline_admin_formsets = context[</span><span class="s3">'has_editable_inline_admin_formsets'</span><span class="s1">]</span>
+    <span class="s1">can_save = (has_change_permission </span><span class="s0">and </span><span class="s1">change) </span><span class="s0">or </span><span class="s1">(has_add_permission </span><span class="s0">and </span><span class="s1">add) </span><span class="s0">or </span><span class="s1">has_editable_inline_admin_formsets</span>
+    <span class="s1">can_save_and_add_another = (</span>
+        <span class="s1">has_add_permission </span><span class="s0">and</span>
+        <span class="s0">not </span><span class="s1">is_popup </span><span class="s0">and</span>
+        <span class="s1">(</span><span class="s0">not </span><span class="s1">save_as </span><span class="s0">or </span><span class="s1">add) </span><span class="s0">and</span>
+        <span class="s1">can_save </span><span class="s0">and</span>
+        <span class="s1">show_save_and_add_another</span>
+    <span class="s1">)</span>
+    <span class="s1">can_save_and_continue = </span><span class="s0">not </span><span class="s1">is_popup </span><span class="s0">and </span><span class="s1">can_save </span><span class="s0">and </span><span class="s1">has_view_permission </span><span class="s0">and </span><span class="s1">show_save_and_continue</span>
+    <span class="s1">can_change = has_change_permission </span><span class="s0">or </span><span class="s1">has_editable_inline_admin_formsets</span>
+    <span class="s1">ctx = Context(context)</span>
+    <span class="s1">ctx.update({</span>
+        <span class="s3">'can_change'</span><span class="s1">: can_change</span><span class="s0">,</span>
+        <span class="s3">'show_delete_link'</span><span class="s1">: (</span>
+            <span class="s0">not </span><span class="s1">is_popup </span><span class="s0">and </span><span class="s1">context[</span><span class="s3">'has_delete_permission'</span><span class="s1">] </span><span class="s0">and</span>
+            <span class="s1">change </span><span class="s0">and </span><span class="s1">context.get(</span><span class="s3">'show_delete'</span><span class="s0">, True</span><span class="s1">)</span>
+        <span class="s1">)</span><span class="s0">,</span>
+        <span class="s3">'show_save_as_new'</span><span class="s1">: </span><span class="s0">not </span><span class="s1">is_popup </span><span class="s0">and </span><span class="s1">has_change_permission </span><span class="s0">and </span><span class="s1">change </span><span class="s0">and </span><span class="s1">save_as</span><span class="s0">,</span>
+        <span class="s3">'show_save_and_add_another'</span><span class="s1">: can_save_and_add_another</span><span class="s0">,</span>
+        <span class="s3">'show_save_and_continue'</span><span class="s1">: can_save_and_continue</span><span class="s0">,</span>
+        <span class="s3">'show_save'</span><span class="s1">: show_save </span><span class="s0">and </span><span class="s1">can_save</span><span class="s0">,</span>
+        <span class="s3">'show_close'</span><span class="s1">: </span><span class="s0">not</span><span class="s1">(show_save </span><span class="s0">and </span><span class="s1">can_save)</span>
+    <span class="s1">})</span>
+    <span class="s0">return </span><span class="s1">ctx</span>
+
+
+<span class="s1">@register.tag(name=</span><span class="s3">'submit_row'</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">submit_row_tag(parser</span><span class="s0">, </span><span class="s1">token):</span>
+    <span class="s0">return </span><span class="s1">InclusionAdminNode(parser</span><span class="s0">, </span><span class="s1">token</span><span class="s0">, </span><span class="s1">func=submit_row</span><span class="s0">, </span><span class="s1">template_name=</span><span class="s3">'submit_line.html'</span><span class="s1">)</span>
+
+
+<span class="s1">@register.tag(name=</span><span class="s3">'change_form_object_tools'</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">change_form_object_tools_tag(parser</span><span class="s0">, </span><span class="s1">token):</span>
+    <span class="s2">&quot;&quot;&quot;Display the row of change form object tools.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">InclusionAdminNode(</span>
+        <span class="s1">parser</span><span class="s0">, </span><span class="s1">token</span><span class="s0">,</span>
+        <span class="s1">func=</span><span class="s0">lambda </span><span class="s1">context: context</span><span class="s0">,</span>
+        <span class="s1">template_name=</span><span class="s3">'change_form_object_tools.html'</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s1">@register.filter</span>
+<span class="s0">def </span><span class="s1">cell_count(inline_admin_form):</span>
+    <span class="s2">&quot;&quot;&quot;Return the number of cells used in a tabular inline.&quot;&quot;&quot;</span>
+    <span class="s1">count = </span><span class="s4">1  </span><span class="s5"># Hidden cell with hidden 'id' field</span>
+    <span class="s0">for </span><span class="s1">fieldset </span><span class="s0">in </span><span class="s1">inline_admin_form:</span>
+        <span class="s5"># Count all visible fields.</span>
+        <span class="s0">for </span><span class="s1">line </span><span class="s0">in </span><span class="s1">fieldset:</span>
+            <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">line:</span>
+                <span class="s0">if not </span><span class="s1">field.field.is_hidden:</span>
+                    <span class="s1">count += </span><span class="s4">1</span>
+    <span class="s0">if </span><span class="s1">inline_admin_form.formset.can_delete:</span>
+        <span class="s5"># Delete checkbox</span>
+        <span class="s1">count += </span><span class="s4">1</span>
+    <span class="s0">return </span><span class="s1">count</span>
+</pre>
+</body>
+</html>

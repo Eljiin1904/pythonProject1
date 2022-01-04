@@ -1,0 +1,1124 @@
+<html>
+<head>
+<title>server.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #a5c261;}
+.s6 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+server.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+:mod:`websockets.legacy.server` defines the WebSocket server APIs. 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">asyncio</span>
+<span class="s2">import </span><span class="s1">collections.abc</span>
+<span class="s2">import </span><span class="s1">email.utils</span>
+<span class="s2">import </span><span class="s1">functools</span>
+<span class="s2">import </span><span class="s1">http</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">socket</span>
+<span class="s2">import </span><span class="s1">sys</span>
+<span class="s2">import </span><span class="s1">warnings</span>
+<span class="s2">from </span><span class="s1">types </span><span class="s2">import </span><span class="s1">TracebackType</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">Any</span><span class="s2">,</span>
+    <span class="s1">Awaitable</span><span class="s2">,</span>
+    <span class="s1">Callable</span><span class="s2">,</span>
+    <span class="s1">Generator</span><span class="s2">,</span>
+    <span class="s1">List</span><span class="s2">,</span>
+    <span class="s1">Optional</span><span class="s2">,</span>
+    <span class="s1">Sequence</span><span class="s2">,</span>
+    <span class="s1">Set</span><span class="s2">,</span>
+    <span class="s1">Tuple</span><span class="s2">,</span>
+    <span class="s1">Type</span><span class="s2">,</span>
+    <span class="s1">Union</span><span class="s2">,</span>
+    <span class="s1">cast</span><span class="s2">,</span>
+<span class="s1">)</span>
+
+<span class="s2">from </span><span class="s1">..datastructures </span><span class="s2">import </span><span class="s1">Headers</span><span class="s2">, </span><span class="s1">HeadersLike</span><span class="s2">, </span><span class="s1">MultipleValuesError</span>
+<span class="s2">from </span><span class="s1">..exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AbortHandshake</span><span class="s2">,</span>
+    <span class="s1">InvalidHandshake</span><span class="s2">,</span>
+    <span class="s1">InvalidHeader</span><span class="s2">,</span>
+    <span class="s1">InvalidMessage</span><span class="s2">,</span>
+    <span class="s1">InvalidOrigin</span><span class="s2">,</span>
+    <span class="s1">InvalidUpgrade</span><span class="s2">,</span>
+    <span class="s1">NegotiationError</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">..extensions.base </span><span class="s2">import </span><span class="s1">Extension</span><span class="s2">, </span><span class="s1">ServerExtensionFactory</span>
+<span class="s2">from </span><span class="s1">..extensions.permessage_deflate </span><span class="s2">import </span><span class="s1">enable_server_permessage_deflate</span>
+<span class="s2">from </span><span class="s1">..headers </span><span class="s2">import </span><span class="s1">build_extension</span><span class="s2">, </span><span class="s1">parse_extension</span><span class="s2">, </span><span class="s1">parse_subprotocol</span>
+<span class="s2">from </span><span class="s1">..http </span><span class="s2">import </span><span class="s1">USER_AGENT</span>
+<span class="s2">from </span><span class="s1">..typing </span><span class="s2">import </span><span class="s1">ExtensionHeader</span><span class="s2">, </span><span class="s1">Origin</span><span class="s2">, </span><span class="s1">Subprotocol</span>
+<span class="s2">from </span><span class="s1">.handshake </span><span class="s2">import </span><span class="s1">build_response</span><span class="s2">, </span><span class="s1">check_request</span>
+<span class="s2">from </span><span class="s1">.http </span><span class="s2">import </span><span class="s1">read_request</span>
+<span class="s2">from </span><span class="s1">.protocol </span><span class="s2">import </span><span class="s1">WebSocketCommonProtocol</span>
+
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;serve&quot;</span><span class="s2">, </span><span class="s3">&quot;unix_serve&quot;</span><span class="s2">, </span><span class="s3">&quot;WebSocketServerProtocol&quot;</span><span class="s2">, </span><span class="s3">&quot;WebSocketServer&quot;</span><span class="s1">]</span>
+
+<span class="s1">logger = logging.getLogger(</span><span class="s3">&quot;websockets.server&quot;</span><span class="s1">)</span>
+
+
+<span class="s1">HeadersLikeOrCallable = Union[HeadersLike</span><span class="s2">, </span><span class="s1">Callable[[str</span><span class="s2">, </span><span class="s1">Headers]</span><span class="s2">, </span><span class="s1">HeadersLike]]</span>
+
+<span class="s1">HTTPResponse = Tuple[http.HTTPStatus</span><span class="s2">, </span><span class="s1">HeadersLike</span><span class="s2">, </span><span class="s1">bytes]</span>
+
+
+<span class="s2">class </span><span class="s1">WebSocketServerProtocol(WebSocketCommonProtocol):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    :class:`~asyncio.Protocol` subclass implementing a WebSocket server. 
+ 
+    :class:`WebSocketServerProtocol`: 
+ 
+    * performs the opening handshake to establish the connection; 
+    * provides :meth:`recv` and :meth:`send` coroutines for receiving and 
+      sending messages; 
+    * deals with control frames automatically; 
+    * performs the closing handshake to terminate the connection. 
+ 
+    You may customize the opening handshake by subclassing 
+    :class:`WebSocketServer` and overriding: 
+ 
+    * :meth:`process_request` to intercept the client request before any 
+      processing and, if appropriate, to abort the WebSocket request and 
+      return a HTTP response instead; 
+    * :meth:`select_subprotocol` to select a subprotocol, if the client and 
+      the server have multiple subprotocols in common and the default logic 
+      for choosing one isn't suitable (this is rarely needed). 
+ 
+    :class:`WebSocketServerProtocol` supports asynchronous iteration:: 
+ 
+        async for message in websocket: 
+            await process(message) 
+ 
+    The iterator yields incoming messages. It exits normally when the 
+    connection is closed with the close code 1000 (OK) or 1001 (going away). 
+    It raises a :exc:`~websockets.exceptions.ConnectionClosedError` exception 
+    when the connection is closed with any other code. 
+ 
+    Once the connection is open, a `Ping frame`_ is sent every 
+    ``ping_interval`` seconds. This serves as a keepalive. It helps keeping 
+    the connection open, especially in the presence of proxies with short 
+    timeouts on inactive connections. Set ``ping_interval`` to ``None`` to 
+    disable this behavior. 
+ 
+    .. _Ping frame: https://tools.ietf.org/html/rfc6455#section-5.5.2 
+ 
+    If the corresponding `Pong frame`_ isn't received within ``ping_timeout`` 
+    seconds, the connection is considered unusable and is closed with 
+    code 1011. This ensures that the remote endpoint remains responsive. Set 
+    ``ping_timeout`` to ``None`` to disable this behavior. 
+ 
+    .. _Pong frame: https://tools.ietf.org/html/rfc6455#section-5.5.3 
+ 
+    The ``close_timeout`` parameter defines a maximum wait time for completing 
+    the closing handshake and terminating the TCP connection. For legacy 
+    reasons, :meth:`close` completes in at most ``4 * close_timeout`` seconds. 
+ 
+    ``close_timeout`` needs to be a parameter of the protocol because 
+    websockets usually calls :meth:`close` implicitly when the connection 
+    handler terminates. 
+ 
+    To apply a timeout to any other API, wrap it in :func:`~asyncio.wait_for`. 
+ 
+    The ``max_size`` parameter enforces the maximum size for incoming messages 
+    in bytes. The default value is 1 MiB. ``None`` disables the limit. If a 
+    message larger than the maximum size is received, :meth:`recv` will 
+    raise :exc:`~websockets.exceptions.ConnectionClosedError` and the 
+    connection will be closed with code 1009. 
+ 
+    The ``max_queue`` parameter sets the maximum length of the queue that 
+    holds incoming messages. The default value is ``32``. ``None`` disables 
+    the limit. Messages are added to an in-memory queue when they're received; 
+    then :meth:`recv` pops from that queue. In order to prevent excessive 
+    memory consumption when messages are received faster than they can be 
+    processed, the queue must be bounded. If the queue fills up, the protocol 
+    stops processing incoming data until :meth:`recv` is called. In this 
+    situation, various receive buffers (at least in :mod:`asyncio` and in the 
+    OS) will fill up, then the TCP receive window will shrink, slowing down 
+    transmission to avoid packet loss. 
+ 
+    Since Python can use up to 4 bytes of memory to represent a single 
+    character, each connection may use up to ``4 * max_size * max_queue`` 
+    bytes of memory to store incoming messages. By default, this is 128 MiB. 
+    You may want to lower the limits, depending on your application's 
+    requirements. 
+ 
+    The ``read_limit`` argument sets the high-water limit of the buffer for 
+    incoming bytes. The low-water limit is half the high-water limit. The 
+    default value is 64 KiB, half of asyncio's default (based on the current 
+    implementation of :class:`~asyncio.StreamReader`). 
+ 
+    The ``write_limit`` argument sets the high-water limit of the buffer for 
+    outgoing bytes. The low-water limit is a quarter of the high-water limit. 
+    The default value is 64 KiB, equal to asyncio's default (based on the 
+    current implementation of ``FlowControlMixin``). 
+ 
+    As soon as the HTTP request and response in the opening handshake are 
+    processed: 
+ 
+    * the request path is available in the :attr:`path` attribute; 
+    * the request and response HTTP headers are available in the 
+      :attr:`request_headers` and :attr:`response_headers` attributes, 
+      which are :class:`~websockets.http.Headers` instances. 
+ 
+    If a subprotocol was negotiated, it's available in the :attr:`subprotocol` 
+    attribute. 
+ 
+    Once the connection is closed, the code is available in the 
+    :attr:`close_code` attribute and the reason in :attr:`close_reason`. 
+ 
+    All attributes must be treated as read-only. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">is_client = </span><span class="s2">False</span>
+    <span class="s1">side = </span><span class="s3">&quot;server&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">ws_handler: Callable[[</span><span class="s3">&quot;WebSocketServerProtocol&quot;</span><span class="s2">, </span><span class="s1">str]</span><span class="s2">, </span><span class="s1">Awaitable[Any]]</span><span class="s2">,</span>
+        <span class="s1">ws_server: </span><span class="s3">&quot;WebSocketServer&quot;</span><span class="s2">,</span>
+        <span class="s1">*</span><span class="s2">,</span>
+        <span class="s1">origins: Optional[Sequence[Optional[Origin]]] = </span><span class="s2">None,</span>
+        <span class="s1">extensions: Optional[Sequence[ServerExtensionFactory]] = </span><span class="s2">None,</span>
+        <span class="s1">subprotocols: Optional[Sequence[Subprotocol]] = </span><span class="s2">None,</span>
+        <span class="s1">extra_headers: Optional[HeadersLikeOrCallable] = </span><span class="s2">None,</span>
+        <span class="s1">process_request: Optional[</span>
+            <span class="s1">Callable[[str</span><span class="s2">, </span><span class="s1">Headers]</span><span class="s2">, </span><span class="s1">Awaitable[Optional[HTTPResponse]]]</span>
+        <span class="s1">] = </span><span class="s2">None,</span>
+        <span class="s1">select_subprotocol: Optional[</span>
+            <span class="s1">Callable[[Sequence[Subprotocol]</span><span class="s2">, </span><span class="s1">Sequence[Subprotocol]]</span><span class="s2">, </span><span class="s1">Subprotocol]</span>
+        <span class="s1">] = </span><span class="s2">None,</span>
+        <span class="s1">**kwargs: Any</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s4"># For backwards compatibility with 6.0 or earlier.</span>
+        <span class="s2">if </span><span class="s1">origins </span><span class="s2">is not None and </span><span class="s3">&quot;&quot; </span><span class="s2">in </span><span class="s1">origins:</span>
+            <span class="s1">warnings.warn(</span><span class="s3">&quot;use None instead of '' in origins&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning)</span>
+            <span class="s1">origins = [</span><span class="s2">None if </span><span class="s1">origin == </span><span class="s3">&quot;&quot; </span><span class="s2">else </span><span class="s1">origin </span><span class="s2">for </span><span class="s1">origin </span><span class="s2">in </span><span class="s1">origins]</span>
+        <span class="s1">self.ws_handler = ws_handler</span>
+        <span class="s1">self.ws_server = ws_server</span>
+        <span class="s1">self.origins = origins</span>
+        <span class="s1">self.available_extensions = extensions</span>
+        <span class="s1">self.available_subprotocols = subprotocols</span>
+        <span class="s1">self.extra_headers = extra_headers</span>
+        <span class="s1">self._process_request = process_request</span>
+        <span class="s1">self._select_subprotocol = select_subprotocol</span>
+        <span class="s1">super().__init__(**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">connection_made(self</span><span class="s2">, </span><span class="s1">transport: asyncio.BaseTransport) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Register connection and initialize a task to handle it. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">super().connection_made(transport)</span>
+        <span class="s4"># Register the connection with the server before creating the handler</span>
+        <span class="s4"># task. Registering at the beginning of the handler coroutine would</span>
+        <span class="s4"># create a race condition between the creation of the task, which</span>
+        <span class="s4"># schedules its execution, and the moment the handler starts running.</span>
+        <span class="s1">self.ws_server.register(self)</span>
+        <span class="s1">self.handler_task = self.loop.create_task(self.handler())</span>
+
+    <span class="s2">async def </span><span class="s1">handler(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Handle the lifecycle of a WebSocket connection. 
+ 
+        Since this method doesn't have a caller able to handle exceptions, it 
+        attemps to log relevant ones and guarantees that the TCP connection is 
+        closed before exiting. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">path = </span><span class="s2">await </span><span class="s1">self.handshake(</span>
+                    <span class="s1">origins=self.origins</span><span class="s2">,</span>
+                    <span class="s1">available_extensions=self.available_extensions</span><span class="s2">,</span>
+                    <span class="s1">available_subprotocols=self.available_subprotocols</span><span class="s2">,</span>
+                    <span class="s1">extra_headers=self.extra_headers</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s4"># Remove this branch when dropping support for Python &lt; 3.8</span>
+            <span class="s4"># because CancelledError no longer inherits Exception.</span>
+            <span class="s2">except </span><span class="s1">asyncio.CancelledError:  </span><span class="s4"># pragma: no cover</span>
+                <span class="s2">raise</span>
+            <span class="s2">except </span><span class="s1">ConnectionError:</span>
+                <span class="s1">logger.debug(</span><span class="s3">&quot;Connection error in opening handshake&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                <span class="s2">raise</span>
+            <span class="s2">except </span><span class="s1">Exception </span><span class="s2">as </span><span class="s1">exc:</span>
+                <span class="s2">if </span><span class="s1">isinstance(exc</span><span class="s2">, </span><span class="s1">AbortHandshake):</span>
+                    <span class="s1">status</span><span class="s2">, </span><span class="s1">headers</span><span class="s2">, </span><span class="s1">body = exc.status</span><span class="s2">, </span><span class="s1">exc.headers</span><span class="s2">, </span><span class="s1">exc.body</span>
+                <span class="s2">elif </span><span class="s1">isinstance(exc</span><span class="s2">, </span><span class="s1">InvalidOrigin):</span>
+                    <span class="s1">logger.debug(</span><span class="s3">&quot;Invalid origin&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                    <span class="s1">status</span><span class="s2">, </span><span class="s1">headers</span><span class="s2">, </span><span class="s1">body = (</span>
+                        <span class="s1">http.HTTPStatus.FORBIDDEN</span><span class="s2">,</span>
+                        <span class="s1">Headers()</span><span class="s2">,</span>
+                        <span class="s3">f&quot;Failed to open a WebSocket connection: </span><span class="s2">{</span><span class="s1">exc</span><span class="s2">}</span><span class="s3">.</span><span class="s2">\n</span><span class="s3">&quot;</span><span class="s1">.encode()</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s2">elif </span><span class="s1">isinstance(exc</span><span class="s2">, </span><span class="s1">InvalidUpgrade):</span>
+                    <span class="s1">logger.debug(</span><span class="s3">&quot;Invalid upgrade&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                    <span class="s1">status</span><span class="s2">, </span><span class="s1">headers</span><span class="s2">, </span><span class="s1">body = (</span>
+                        <span class="s1">http.HTTPStatus.UPGRADE_REQUIRED</span><span class="s2">,</span>
+                        <span class="s1">Headers([(</span><span class="s3">&quot;Upgrade&quot;</span><span class="s2">, </span><span class="s3">&quot;websocket&quot;</span><span class="s1">)])</span><span class="s2">,</span>
+                        <span class="s1">(</span>
+                            <span class="s3">f&quot;Failed to open a WebSocket connection: </span><span class="s2">{</span><span class="s1">exc</span><span class="s2">}</span><span class="s3">.</span><span class="s2">\n</span><span class="s3">&quot;</span>
+                            <span class="s3">f&quot;</span><span class="s2">\n</span><span class="s3">&quot;</span>
+                            <span class="s3">f&quot;You cannot access a WebSocket server directly &quot;</span>
+                            <span class="s3">f&quot;with a browser. You need a WebSocket client.</span><span class="s2">\n</span><span class="s3">&quot;</span>
+                        <span class="s1">).encode()</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s2">elif </span><span class="s1">isinstance(exc</span><span class="s2">, </span><span class="s1">InvalidHandshake):</span>
+                    <span class="s1">logger.debug(</span><span class="s3">&quot;Invalid handshake&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                    <span class="s1">status</span><span class="s2">, </span><span class="s1">headers</span><span class="s2">, </span><span class="s1">body = (</span>
+                        <span class="s1">http.HTTPStatus.BAD_REQUEST</span><span class="s2">,</span>
+                        <span class="s1">Headers()</span><span class="s2">,</span>
+                        <span class="s3">f&quot;Failed to open a WebSocket connection: </span><span class="s2">{</span><span class="s1">exc</span><span class="s2">}</span><span class="s3">.</span><span class="s2">\n</span><span class="s3">&quot;</span><span class="s1">.encode()</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">logger.warning(</span><span class="s3">&quot;Error in opening handshake&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                    <span class="s1">status</span><span class="s2">, </span><span class="s1">headers</span><span class="s2">, </span><span class="s1">body = (</span>
+                        <span class="s1">http.HTTPStatus.INTERNAL_SERVER_ERROR</span><span class="s2">,</span>
+                        <span class="s1">Headers()</span><span class="s2">,</span>
+                        <span class="s1">(</span>
+                            <span class="s5">b&quot;Failed to open a WebSocket connection.</span><span class="s2">\n</span><span class="s5">&quot;</span>
+                            <span class="s5">b&quot;See server log for more information.</span><span class="s2">\n</span><span class="s5">&quot;</span>
+                        <span class="s1">)</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+
+                <span class="s1">headers.setdefault(</span><span class="s3">&quot;Date&quot;</span><span class="s2">, </span><span class="s1">email.utils.formatdate(usegmt=</span><span class="s2">True</span><span class="s1">))</span>
+                <span class="s1">headers.setdefault(</span><span class="s3">&quot;Server&quot;</span><span class="s2">, </span><span class="s1">USER_AGENT)</span>
+                <span class="s1">headers.setdefault(</span><span class="s3">&quot;Content-Length&quot;</span><span class="s2">, </span><span class="s1">str(len(body)))</span>
+                <span class="s1">headers.setdefault(</span><span class="s3">&quot;Content-Type&quot;</span><span class="s2">, </span><span class="s3">&quot;text/plain&quot;</span><span class="s1">)</span>
+                <span class="s1">headers.setdefault(</span><span class="s3">&quot;Connection&quot;</span><span class="s2">, </span><span class="s3">&quot;close&quot;</span><span class="s1">)</span>
+
+                <span class="s1">self.write_http_response(status</span><span class="s2">, </span><span class="s1">headers</span><span class="s2">, </span><span class="s1">body)</span>
+                <span class="s1">self.fail_connection()</span>
+                <span class="s2">await </span><span class="s1">self.wait_closed()</span>
+                <span class="s2">return</span>
+
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">self.ws_handler(self</span><span class="s2">, </span><span class="s1">path)</span>
+            <span class="s2">except </span><span class="s1">Exception:</span>
+                <span class="s1">logger.error(</span><span class="s3">&quot;Error in connection handler&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                <span class="s2">if not </span><span class="s1">self.closed:</span>
+                    <span class="s1">self.fail_connection(</span><span class="s6">1011</span><span class="s1">)</span>
+                <span class="s2">raise</span>
+
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">await </span><span class="s1">self.close()</span>
+            <span class="s2">except </span><span class="s1">ConnectionError:</span>
+                <span class="s1">logger.debug(</span><span class="s3">&quot;Connection error in closing handshake&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                <span class="s2">raise</span>
+            <span class="s2">except </span><span class="s1">Exception:</span>
+                <span class="s1">logger.warning(</span><span class="s3">&quot;Error in closing handshake&quot;</span><span class="s2">, </span><span class="s1">exc_info=</span><span class="s2">True</span><span class="s1">)</span>
+                <span class="s2">raise</span>
+
+        <span class="s2">except </span><span class="s1">Exception:</span>
+            <span class="s4"># Last-ditch attempt to avoid leaking connections on errors.</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">self.transport.close()</span>
+            <span class="s2">except </span><span class="s1">Exception:  </span><span class="s4"># pragma: no cover</span>
+                <span class="s2">pass</span>
+
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s4"># Unregister the connection with the server when the handler task</span>
+            <span class="s4"># terminates. Registration is tied to the lifecycle of the handler</span>
+            <span class="s4"># task because the server waits for tasks attached to registered</span>
+            <span class="s4"># connections before terminating.</span>
+            <span class="s1">self.ws_server.unregister(self)</span>
+
+    <span class="s2">async def </span><span class="s1">read_http_request(self) -&gt; Tuple[str</span><span class="s2">, </span><span class="s1">Headers]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Read request line and headers from the HTTP request. 
+ 
+        If the request contains a body, it may be read from ``self.reader`` 
+        after this coroutine returns. 
+ 
+        :raises ~websockets.exceptions.InvalidMessage: if the HTTP message is 
+            malformed or isn't an HTTP/1.1 GET request 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">path</span><span class="s2">, </span><span class="s1">headers = </span><span class="s2">await </span><span class="s1">read_request(self.reader)</span>
+        <span class="s2">except </span><span class="s1">asyncio.CancelledError:  </span><span class="s4"># pragma: no cover</span>
+            <span class="s2">raise</span>
+        <span class="s2">except </span><span class="s1">Exception </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s2">raise </span><span class="s1">InvalidMessage(</span><span class="s3">&quot;did not receive a valid HTTP request&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &lt; GET %s HTTP/1.1&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">path)</span>
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &lt; %r&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">headers)</span>
+
+        <span class="s1">self.path = path</span>
+        <span class="s1">self.request_headers = headers</span>
+
+        <span class="s2">return </span><span class="s1">path</span><span class="s2">, </span><span class="s1">headers</span>
+
+    <span class="s2">def </span><span class="s1">write_http_response(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">status: http.HTTPStatus</span><span class="s2">, </span><span class="s1">headers: Headers</span><span class="s2">, </span><span class="s1">body: Optional[bytes] = </span><span class="s2">None</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Write status line and headers to the HTTP response. 
+ 
+        This coroutine is also able to write a response body. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.response_headers = headers</span>
+
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &gt; HTTP/1.1 %d %s&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">status.value</span><span class="s2">, </span><span class="s1">status.phrase)</span>
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &gt; %r&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">headers)</span>
+
+        <span class="s4"># Since the status line and headers only contain ASCII characters,</span>
+        <span class="s4"># we can keep this simple.</span>
+        <span class="s1">response = </span><span class="s3">f&quot;HTTP/1.1 </span><span class="s2">{</span><span class="s1">status.value</span><span class="s2">} {</span><span class="s1">status.phrase</span><span class="s2">}\r\n</span><span class="s3">&quot;</span>
+        <span class="s1">response += str(headers)</span>
+
+        <span class="s1">self.transport.write(response.encode())</span>
+
+        <span class="s2">if </span><span class="s1">body </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">logger.debug(</span><span class="s3">&quot;%s &gt; body (%d bytes)&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">len(body))</span>
+            <span class="s1">self.transport.write(body)</span>
+
+    <span class="s2">async def </span><span class="s1">process_request(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">path: str</span><span class="s2">, </span><span class="s1">request_headers: Headers</span>
+    <span class="s1">) -&gt; Optional[HTTPResponse]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Intercept the HTTP request and return an HTTP response if appropriate. 
+ 
+        If ``process_request`` returns ``None``, the WebSocket handshake 
+        continues. If it returns 3-uple containing a status code, response 
+        headers and a response body, that HTTP response is sent and the 
+        connection is closed. In that case: 
+ 
+        * The HTTP status must be a :class:`~http.HTTPStatus`. 
+        * HTTP headers must be a :class:`~websockets.http.Headers` instance, a 
+          :class:`~collections.abc.Mapping`, or an iterable of ``(name, 
+          value)`` pairs. 
+        * The HTTP response body must be :class:`bytes`. It may be empty. 
+ 
+        This coroutine may be overridden in a :class:`WebSocketServerProtocol` 
+        subclass, for example: 
+ 
+        * to return a HTTP 200 OK response on a given path; then a load 
+          balancer can use this path for a health check; 
+        * to authenticate the request and return a HTTP 401 Unauthorized or a 
+          HTTP 403 Forbidden when authentication fails. 
+ 
+        Instead of subclassing, it is possible to override this method by 
+        passing a ``process_request`` argument to the :func:`serve` function 
+        or the :class:`WebSocketServerProtocol` constructor. This is 
+        equivalent, except ``process_request`` won't have access to the 
+        protocol instance, so it can't store information for later use. 
+ 
+        ``process_request`` is expected to complete quickly. If it may run for 
+        a long time, then it should await :meth:`wait_closed` and exit if 
+        :meth:`wait_closed` completes, or else it could prevent the server 
+        from shutting down. 
+ 
+        :param path: request path, including optional query string 
+        :param request_headers: request headers 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._process_request </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">response = self._process_request(path</span><span class="s2">, </span><span class="s1">request_headers)</span>
+            <span class="s2">if </span><span class="s1">isinstance(response</span><span class="s2">, </span><span class="s1">Awaitable):</span>
+                <span class="s2">return await </span><span class="s1">response</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s4"># For backwards compatibility with 7.0.</span>
+                <span class="s1">warnings.warn(</span>
+                    <span class="s3">&quot;declare process_request as a coroutine&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning</span>
+                <span class="s1">)</span>
+                <span class="s2">return </span><span class="s1">response  </span><span class="s4"># type: ignore</span>
+        <span class="s2">return None</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">process_origin(</span>
+        <span class="s1">headers: Headers</span><span class="s2">, </span><span class="s1">origins: Optional[Sequence[Optional[Origin]]] = </span><span class="s2">None</span>
+    <span class="s1">) -&gt; Optional[Origin]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Handle the Origin HTTP request header. 
+ 
+        :param headers: request headers 
+        :param origins: optional list of acceptable origins 
+        :raises ~websockets.exceptions.InvalidOrigin: if the origin isn't 
+            acceptable 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s4"># &quot;The user agent MUST NOT include more than one Origin header field&quot;</span>
+        <span class="s4"># per https://tools.ietf.org/html/rfc6454#section-7.3.</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">origin = cast(Optional[Origin]</span><span class="s2">, </span><span class="s1">headers.get(</span><span class="s3">&quot;Origin&quot;</span><span class="s1">))</span>
+        <span class="s2">except </span><span class="s1">MultipleValuesError </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s2">raise </span><span class="s1">InvalidHeader(</span><span class="s3">&quot;Origin&quot;</span><span class="s2">, </span><span class="s3">&quot;more than one Origin header found&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+        <span class="s2">if </span><span class="s1">origins </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">origin </span><span class="s2">not in </span><span class="s1">origins:</span>
+                <span class="s2">raise </span><span class="s1">InvalidOrigin(origin)</span>
+        <span class="s2">return </span><span class="s1">origin</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">process_extensions(</span>
+        <span class="s1">headers: Headers</span><span class="s2">,</span>
+        <span class="s1">available_extensions: Optional[Sequence[ServerExtensionFactory]]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; Tuple[Optional[str]</span><span class="s2">, </span><span class="s1">List[Extension]]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Handle the Sec-WebSocket-Extensions HTTP request header. 
+ 
+        Accept or reject each extension proposed in the client request. 
+        Negotiate parameters for accepted extensions. 
+ 
+        Return the Sec-WebSocket-Extensions HTTP response header and the list 
+        of accepted extensions. 
+ 
+        :rfc:`6455` leaves the rules up to the specification of each 
+        :extension. 
+ 
+        To provide this level of flexibility, for each extension proposed by 
+        the client, we check for a match with each extension available in the 
+        server configuration. If no match is found, the extension is ignored. 
+ 
+        If several variants of the same extension are proposed by the client, 
+        it may be accepted several times, which won't make sense in general. 
+        Extensions must implement their own requirements. For this purpose, 
+        the list of previously accepted extensions is provided. 
+ 
+        This process doesn't allow the server to reorder extensions. It can 
+        only select a subset of the extensions proposed by the client. 
+ 
+        Other requirements, for example related to mandatory extensions or the 
+        order of extensions, may be implemented by overriding this method. 
+ 
+        :param headers: request headers 
+        :param extensions: optional list of supported extensions 
+        :raises ~websockets.exceptions.InvalidHandshake: to abort the 
+            handshake with an HTTP 400 error code 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">response_header_value: Optional[str] = </span><span class="s2">None</span>
+
+        <span class="s1">extension_headers: List[ExtensionHeader] = []</span>
+        <span class="s1">accepted_extensions: List[Extension] = []</span>
+
+        <span class="s1">header_values = headers.get_all(</span><span class="s3">&quot;Sec-WebSocket-Extensions&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">header_values </span><span class="s2">and </span><span class="s1">available_extensions:</span>
+
+            <span class="s1">parsed_header_values: List[ExtensionHeader] = sum(</span>
+                <span class="s1">[parse_extension(header_value) </span><span class="s2">for </span><span class="s1">header_value </span><span class="s2">in </span><span class="s1">header_values]</span><span class="s2">, </span><span class="s1">[]</span>
+            <span class="s1">)</span>
+
+            <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">request_params </span><span class="s2">in </span><span class="s1">parsed_header_values:</span>
+
+                <span class="s2">for </span><span class="s1">ext_factory </span><span class="s2">in </span><span class="s1">available_extensions:</span>
+
+                    <span class="s4"># Skip non-matching extensions based on their name.</span>
+                    <span class="s2">if </span><span class="s1">ext_factory.name != name:</span>
+                        <span class="s2">continue</span>
+
+                    <span class="s4"># Skip non-matching extensions based on their params.</span>
+                    <span class="s2">try</span><span class="s1">:</span>
+                        <span class="s1">response_params</span><span class="s2">, </span><span class="s1">extension = ext_factory.process_request_params(</span>
+                            <span class="s1">request_params</span><span class="s2">, </span><span class="s1">accepted_extensions</span>
+                        <span class="s1">)</span>
+                    <span class="s2">except </span><span class="s1">NegotiationError:</span>
+                        <span class="s2">continue</span>
+
+                    <span class="s4"># Add matching extension to the final list.</span>
+                    <span class="s1">extension_headers.append((name</span><span class="s2">, </span><span class="s1">response_params))</span>
+                    <span class="s1">accepted_extensions.append(extension)</span>
+
+                    <span class="s4"># Break out of the loop once we have a match.</span>
+                    <span class="s2">break</span>
+
+                <span class="s4"># If we didn't break from the loop, no extension in our list</span>
+                <span class="s4"># matched what the client sent. The extension is declined.</span>
+
+        <span class="s4"># Serialize extension header.</span>
+        <span class="s2">if </span><span class="s1">extension_headers:</span>
+            <span class="s1">response_header_value = build_extension(extension_headers)</span>
+
+        <span class="s2">return </span><span class="s1">response_header_value</span><span class="s2">, </span><span class="s1">accepted_extensions</span>
+
+    <span class="s4"># Not @staticmethod because it calls self.select_subprotocol()</span>
+    <span class="s2">def </span><span class="s1">process_subprotocol(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">headers: Headers</span><span class="s2">, </span><span class="s1">available_subprotocols: Optional[Sequence[Subprotocol]]</span>
+    <span class="s1">) -&gt; Optional[Subprotocol]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Handle the Sec-WebSocket-Protocol HTTP request header. 
+ 
+        Return Sec-WebSocket-Protocol HTTP response header, which is the same 
+        as the selected subprotocol. 
+ 
+        :param headers: request headers 
+        :param available_subprotocols: optional list of supported subprotocols 
+        :raises ~websockets.exceptions.InvalidHandshake: to abort the 
+            handshake with an HTTP 400 error code 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">subprotocol: Optional[Subprotocol] = </span><span class="s2">None</span>
+
+        <span class="s1">header_values = headers.get_all(</span><span class="s3">&quot;Sec-WebSocket-Protocol&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">header_values </span><span class="s2">and </span><span class="s1">available_subprotocols:</span>
+
+            <span class="s1">parsed_header_values: List[Subprotocol] = sum(</span>
+                <span class="s1">[parse_subprotocol(header_value) </span><span class="s2">for </span><span class="s1">header_value </span><span class="s2">in </span><span class="s1">header_values]</span><span class="s2">, </span><span class="s1">[]</span>
+            <span class="s1">)</span>
+
+            <span class="s1">subprotocol = self.select_subprotocol(</span>
+                <span class="s1">parsed_header_values</span><span class="s2">, </span><span class="s1">available_subprotocols</span>
+            <span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">subprotocol</span>
+
+    <span class="s2">def </span><span class="s1">select_subprotocol(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">client_subprotocols: Sequence[Subprotocol]</span><span class="s2">,</span>
+        <span class="s1">server_subprotocols: Sequence[Subprotocol]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; Optional[Subprotocol]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Pick a subprotocol among those offered by the client. 
+ 
+        If several subprotocols are supported by the client and the server, 
+        the default implementation selects the preferred subprotocols by 
+        giving equal value to the priorities of the client and the server. 
+ 
+        If no subprotocol is supported by the client and the server, it 
+        proceeds without a subprotocol. 
+ 
+        This is unlikely to be the most useful implementation in practice, as 
+        many servers providing a subprotocol will require that the client uses 
+        that subprotocol. Such rules can be implemented in a subclass. 
+ 
+        Instead of subclassing, it is possible to override this method by 
+        passing a ``select_subprotocol`` argument to the :func:`serve` 
+        function or the :class:`WebSocketServerProtocol` constructor. 
+ 
+        :param client_subprotocols: list of subprotocols offered by the client 
+        :param server_subprotocols: list of subprotocols available on the server 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._select_subprotocol </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._select_subprotocol(client_subprotocols</span><span class="s2">, </span><span class="s1">server_subprotocols)</span>
+
+        <span class="s1">subprotocols = set(client_subprotocols) &amp; set(server_subprotocols)</span>
+        <span class="s2">if not </span><span class="s1">subprotocols:</span>
+            <span class="s2">return None</span>
+        <span class="s1">priority = </span><span class="s2">lambda </span><span class="s1">p: (</span>
+            <span class="s1">client_subprotocols.index(p) + server_subprotocols.index(p)</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">sorted(subprotocols</span><span class="s2">, </span><span class="s1">key=priority)[</span><span class="s6">0</span><span class="s1">]</span>
+
+    <span class="s2">async def </span><span class="s1">handshake(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">origins: Optional[Sequence[Optional[Origin]]] = </span><span class="s2">None,</span>
+        <span class="s1">available_extensions: Optional[Sequence[ServerExtensionFactory]] = </span><span class="s2">None,</span>
+        <span class="s1">available_subprotocols: Optional[Sequence[Subprotocol]] = </span><span class="s2">None,</span>
+        <span class="s1">extra_headers: Optional[HeadersLikeOrCallable] = </span><span class="s2">None,</span>
+    <span class="s1">) -&gt; str:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Perform the server side of the opening handshake. 
+ 
+        Return the path of the URI of the request. 
+ 
+        :param origins: list of acceptable values of the Origin HTTP header; 
+            include ``None`` if the lack of an origin is acceptable 
+        :param available_extensions: list of supported extensions in the order 
+            in which they should be used 
+        :param available_subprotocols: list of supported subprotocols in order 
+            of decreasing preference 
+        :param extra_headers: sets additional HTTP response headers when the 
+            handshake succeeds; it can be a :class:`~websockets.http.Headers` 
+            instance, a :class:`~collections.abc.Mapping`, an iterable of 
+            ``(name, value)`` pairs, or a callable taking the request path and 
+            headers in arguments and returning one of the above. 
+        :raises ~websockets.exceptions.InvalidHandshake: if the handshake 
+            fails 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">path</span><span class="s2">, </span><span class="s1">request_headers = </span><span class="s2">await </span><span class="s1">self.read_http_request()</span>
+
+        <span class="s4"># Hook for customizing request handling, for example checking</span>
+        <span class="s4"># authentication or treating some paths as plain HTTP endpoints.</span>
+        <span class="s1">early_response_awaitable = self.process_request(path</span><span class="s2">, </span><span class="s1">request_headers)</span>
+        <span class="s2">if </span><span class="s1">isinstance(early_response_awaitable</span><span class="s2">, </span><span class="s1">Awaitable):</span>
+            <span class="s1">early_response = </span><span class="s2">await </span><span class="s1">early_response_awaitable</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s4"># For backwards compatibility with 7.0.</span>
+            <span class="s1">warnings.warn(</span><span class="s3">&quot;declare process_request as a coroutine&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning)</span>
+            <span class="s1">early_response = early_response_awaitable  </span><span class="s4"># type: ignore</span>
+
+        <span class="s4"># Change the response to a 503 error if the server is shutting down.</span>
+        <span class="s2">if not </span><span class="s1">self.ws_server.is_serving():</span>
+            <span class="s1">early_response = (</span>
+                <span class="s1">http.HTTPStatus.SERVICE_UNAVAILABLE</span><span class="s2">,</span>
+                <span class="s1">[]</span><span class="s2">,</span>
+                <span class="s5">b&quot;Server is shutting down.</span><span class="s2">\n</span><span class="s5">&quot;</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">early_response </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">AbortHandshake(*early_response)</span>
+
+        <span class="s1">key = check_request(request_headers)</span>
+
+        <span class="s1">self.origin = self.process_origin(request_headers</span><span class="s2">, </span><span class="s1">origins)</span>
+
+        <span class="s1">extensions_header</span><span class="s2">, </span><span class="s1">self.extensions = self.process_extensions(</span>
+            <span class="s1">request_headers</span><span class="s2">, </span><span class="s1">available_extensions</span>
+        <span class="s1">)</span>
+
+        <span class="s1">protocol_header = self.subprotocol = self.process_subprotocol(</span>
+            <span class="s1">request_headers</span><span class="s2">, </span><span class="s1">available_subprotocols</span>
+        <span class="s1">)</span>
+
+        <span class="s1">response_headers = Headers()</span>
+
+        <span class="s1">build_response(response_headers</span><span class="s2">, </span><span class="s1">key)</span>
+
+        <span class="s2">if </span><span class="s1">extensions_header </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">response_headers[</span><span class="s3">&quot;Sec-WebSocket-Extensions&quot;</span><span class="s1">] = extensions_header</span>
+
+        <span class="s2">if </span><span class="s1">protocol_header </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">response_headers[</span><span class="s3">&quot;Sec-WebSocket-Protocol&quot;</span><span class="s1">] = protocol_header</span>
+
+        <span class="s2">if </span><span class="s1">callable(extra_headers):</span>
+            <span class="s1">extra_headers = extra_headers(path</span><span class="s2">, </span><span class="s1">self.request_headers)</span>
+        <span class="s2">if </span><span class="s1">extra_headers </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">isinstance(extra_headers</span><span class="s2">, </span><span class="s1">Headers):</span>
+                <span class="s1">extra_headers = extra_headers.raw_items()</span>
+            <span class="s2">elif </span><span class="s1">isinstance(extra_headers</span><span class="s2">, </span><span class="s1">collections.abc.Mapping):</span>
+                <span class="s1">extra_headers = extra_headers.items()</span>
+            <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">extra_headers:</span>
+                <span class="s1">response_headers[name] = value</span>
+
+        <span class="s1">response_headers.setdefault(</span><span class="s3">&quot;Date&quot;</span><span class="s2">, </span><span class="s1">email.utils.formatdate(usegmt=</span><span class="s2">True</span><span class="s1">))</span>
+        <span class="s1">response_headers.setdefault(</span><span class="s3">&quot;Server&quot;</span><span class="s2">, </span><span class="s1">USER_AGENT)</span>
+
+        <span class="s1">self.write_http_response(http.HTTPStatus.SWITCHING_PROTOCOLS</span><span class="s2">, </span><span class="s1">response_headers)</span>
+
+        <span class="s1">self.connection_open()</span>
+
+        <span class="s2">return </span><span class="s1">path</span>
+
+
+<span class="s2">class </span><span class="s1">WebSocketServer:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    WebSocket server returned by :func:`serve`. 
+ 
+    This class provides the same interface as 
+    :class:`~asyncio.AbstractServer`, namely the 
+    :meth:`~asyncio.AbstractServer.close` and 
+    :meth:`~asyncio.AbstractServer.wait_closed` methods. 
+ 
+    It keeps track of WebSocket connections in order to close them properly 
+    when shutting down. 
+ 
+    Instances of this class store a reference to the :class:`~asyncio.Server` 
+    object returned by :meth:`~asyncio.loop.create_server` rather than inherit 
+    from :class:`~asyncio.Server` in part because 
+    :meth:`~asyncio.loop.create_server` doesn't support passing a custom 
+    :class:`~asyncio.Server` class. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">loop: asyncio.AbstractEventLoop) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s4"># Store a reference to loop to avoid relying on self.server._loop.</span>
+        <span class="s1">self.loop = loop</span>
+
+        <span class="s4"># Keep track of active connections.</span>
+        <span class="s1">self.websockets: Set[WebSocketServerProtocol] = set()</span>
+
+        <span class="s4"># Task responsible for closing the server and terminating connections.</span>
+        <span class="s1">self.close_task: Optional[asyncio.Task[</span><span class="s2">None</span><span class="s1">]] = </span><span class="s2">None</span>
+
+        <span class="s4"># Completed when the server is closed and connections are terminated.</span>
+        <span class="s1">self.closed_waiter: asyncio.Future[</span><span class="s2">None</span><span class="s1">] = loop.create_future()</span>
+
+    <span class="s2">def </span><span class="s1">wrap(self</span><span class="s2">, </span><span class="s1">server: asyncio.AbstractServer) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Attach to a given :class:`~asyncio.Server`. 
+ 
+        Since :meth:`~asyncio.loop.create_server` doesn't support injecting a 
+        custom ``Server`` class, the easiest solution that doesn't rely on 
+        private :mod:`asyncio` APIs is to: 
+ 
+        - instantiate a :class:`WebSocketServer` 
+        - give the protocol factory a reference to that instance 
+        - call :meth:`~asyncio.loop.create_server` with the factory 
+        - attach the resulting :class:`~asyncio.Server` with this method 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.server = server</span>
+
+    <span class="s2">def </span><span class="s1">register(self</span><span class="s2">, </span><span class="s1">protocol: WebSocketServerProtocol) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Register a connection with this server. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.websockets.add(protocol)</span>
+
+    <span class="s2">def </span><span class="s1">unregister(self</span><span class="s2">, </span><span class="s1">protocol: WebSocketServerProtocol) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Unregister a connection with this server. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.websockets.remove(protocol)</span>
+
+    <span class="s2">def </span><span class="s1">is_serving(self) -&gt; bool:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Tell whether the server is accepting new connections or shutting down. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s4"># Python ≥ 3.7</span>
+            <span class="s2">return </span><span class="s1">self.server.is_serving()</span>
+        <span class="s2">except </span><span class="s1">AttributeError:  </span><span class="s4"># pragma: no cover</span>
+            <span class="s4"># Python &lt; 3.7</span>
+            <span class="s2">return </span><span class="s1">self.server.sockets </span><span class="s2">is not None</span>
+
+    <span class="s2">def </span><span class="s1">close(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Close the server. 
+ 
+        This method: 
+ 
+        * closes the underlying :class:`~asyncio.Server`; 
+        * rejects new WebSocket connections with an HTTP 503 (service 
+          unavailable) error; this happens when the server accepted the TCP 
+          connection but didn't complete the WebSocket opening handshake prior 
+          to closing; 
+        * closes open WebSocket connections with close code 1001 (going away). 
+ 
+        :meth:`close` is idempotent. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.close_task </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self.close_task = self.loop.create_task(self._close())</span>
+
+    <span class="s2">async def </span><span class="s1">_close(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Implementation of :meth:`close`. 
+ 
+        This calls :meth:`~asyncio.Server.close` on the underlying 
+        :class:`~asyncio.Server` object to stop accepting new connections and 
+        then closes open connections with close code 1001. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s4"># Stop accepting new connections.</span>
+        <span class="s1">self.server.close()</span>
+
+        <span class="s4"># Wait until self.server.close() completes.</span>
+        <span class="s2">await </span><span class="s1">self.server.wait_closed()</span>
+
+        <span class="s4"># Wait until all accepted connections reach connection_made() and call</span>
+        <span class="s4"># register(). See https://bugs.python.org/issue34852 for details.</span>
+        <span class="s2">await </span><span class="s1">asyncio.sleep(</span>
+            <span class="s6">0</span><span class="s2">, </span><span class="s1">loop=self.loop </span><span class="s2">if </span><span class="s1">sys.version_info[:</span><span class="s6">2</span><span class="s1">] &lt; (</span><span class="s6">3</span><span class="s2">, </span><span class="s6">8</span><span class="s1">) </span><span class="s2">else None</span>
+        <span class="s1">)</span>
+
+        <span class="s4"># Close OPEN connections with status code 1001. Since the server was</span>
+        <span class="s4"># closed, handshake() closes OPENING conections with a HTTP 503 error.</span>
+        <span class="s4"># Wait until all connections are closed.</span>
+
+        <span class="s4"># asyncio.wait doesn't accept an empty first argument</span>
+        <span class="s2">if </span><span class="s1">self.websockets:</span>
+            <span class="s2">await </span><span class="s1">asyncio.wait(</span>
+                <span class="s1">[</span>
+                    <span class="s1">asyncio.ensure_future(websocket.close(</span><span class="s6">1001</span><span class="s1">))</span>
+                    <span class="s2">for </span><span class="s1">websocket </span><span class="s2">in </span><span class="s1">self.websockets</span>
+                <span class="s1">]</span><span class="s2">,</span>
+                <span class="s1">loop=self.loop </span><span class="s2">if </span><span class="s1">sys.version_info[:</span><span class="s6">2</span><span class="s1">] &lt; (</span><span class="s6">3</span><span class="s2">, </span><span class="s6">8</span><span class="s1">) </span><span class="s2">else None,</span>
+            <span class="s1">)</span>
+
+        <span class="s4"># Wait until all connection handlers are complete.</span>
+
+        <span class="s4"># asyncio.wait doesn't accept an empty first argument.</span>
+        <span class="s2">if </span><span class="s1">self.websockets:</span>
+            <span class="s2">await </span><span class="s1">asyncio.wait(</span>
+                <span class="s1">[websocket.handler_task </span><span class="s2">for </span><span class="s1">websocket </span><span class="s2">in </span><span class="s1">self.websockets]</span><span class="s2">,</span>
+                <span class="s1">loop=self.loop </span><span class="s2">if </span><span class="s1">sys.version_info[:</span><span class="s6">2</span><span class="s1">] &lt; (</span><span class="s6">3</span><span class="s2">, </span><span class="s6">8</span><span class="s1">) </span><span class="s2">else None,</span>
+            <span class="s1">)</span>
+
+        <span class="s4"># Tell wait_closed() to return.</span>
+        <span class="s1">self.closed_waiter.set_result(</span><span class="s2">None</span><span class="s1">)</span>
+
+    <span class="s2">async def </span><span class="s1">wait_closed(self) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Wait until the server is closed. 
+ 
+        When :meth:`wait_closed` returns, all TCP connections are closed and 
+        all connection handlers have returned. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">await </span><span class="s1">asyncio.shield(self.closed_waiter)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">sockets(self) -&gt; Optional[List[socket.socket]]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        List of :class:`~socket.socket` objects the server is listening to. 
+ 
+        ``None`` if the server is closed. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.server.sockets</span>
+
+
+<span class="s2">class </span><span class="s1">Serve:</span>
+    <span class="s0">&quot;&quot;&quot; 
+ 
+    Create, start, and return a WebSocket server on ``host`` and ``port``. 
+ 
+    Whenever a client connects, the server accepts the connection, creates a 
+    :class:`WebSocketServerProtocol`, performs the opening handshake, and 
+    delegates to the connection handler defined by ``ws_handler``. Once the 
+    handler completes, either normally or with an exception, the server 
+    performs the closing handshake and closes the connection. 
+ 
+    Awaiting :func:`serve` yields a :class:`WebSocketServer`. This instance 
+    provides :meth:`~WebSocketServer.close` and 
+    :meth:`~WebSocketServer.wait_closed` methods for terminating the server 
+    and cleaning up its resources. 
+ 
+    When a server is closed with :meth:`~WebSocketServer.close`, it closes all 
+    connections with close code 1001 (going away). Connections handlers, which 
+    are running the ``ws_handler`` coroutine, will receive a 
+    :exc:`~websockets.exceptions.ConnectionClosedOK` exception on their 
+    current or next interaction with the WebSocket connection. 
+ 
+    :func:`serve` can also be used as an asynchronous context manager:: 
+ 
+        stop = asyncio.Future()  # set this future to exit the server 
+ 
+        async with serve(...): 
+            await stop 
+ 
+    In this case, the server is shut down when exiting the context. 
+ 
+    :func:`serve` is a wrapper around the event loop's 
+    :meth:`~asyncio.loop.create_server` method. It creates and starts a 
+    :class:`asyncio.Server` with :meth:`~asyncio.loop.create_server`. Then it 
+    wraps the :class:`asyncio.Server` in a :class:`WebSocketServer`  and 
+    returns the :class:`WebSocketServer`. 
+ 
+    ``ws_handler`` is the WebSocket handler. It must be a coroutine accepting 
+    two arguments: the WebSocket connection, which is an instance of 
+    :class:`WebSocketServerProtocol`, and the path of the request. 
+ 
+    The ``host`` and ``port`` arguments, as well as unrecognized keyword 
+    arguments, are passed to :meth:`~asyncio.loop.create_server`. 
+ 
+    For example, you can set the ``ssl`` keyword argument to a 
+    :class:`~ssl.SSLContext` to enable TLS. 
+ 
+    ``create_protocol`` defaults to :class:`WebSocketServerProtocol`. It may 
+    be replaced by a wrapper or a subclass to customize the protocol that 
+    manages the connection. 
+ 
+    The behavior of ``ping_interval``, ``ping_timeout``, ``close_timeout``, 
+    ``max_size``, ``max_queue``, ``read_limit``, and ``write_limit`` is 
+    described in :class:`WebSocketServerProtocol`. 
+ 
+    :func:`serve` also accepts the following optional arguments: 
+ 
+    * ``compression`` is a shortcut to configure compression extensions; 
+      by default it enables the &quot;permessage-deflate&quot; extension; set it to 
+      ``None`` to disable compression. 
+    * ``origins`` defines acceptable Origin HTTP headers; include ``None`` in 
+      the list if the lack of an origin is acceptable. 
+    * ``extensions`` is a list of supported extensions in order of 
+      decreasing preference. 
+    * ``subprotocols`` is a list of supported subprotocols in order of 
+      decreasing preference. 
+    * ``extra_headers`` sets additional HTTP response headers  when the 
+      handshake succeeds; it can be a :class:`~websockets.http.Headers` 
+      instance, a :class:`~collections.abc.Mapping`, an iterable of ``(name, 
+      value)`` pairs, or a callable taking the request path and headers in 
+      arguments and returning one of the above. 
+    * ``process_request`` allows intercepting the HTTP request; it must be a 
+      coroutine taking the request path and headers in argument; see 
+      :meth:`~WebSocketServerProtocol.process_request` for details. 
+    * ``select_subprotocol`` allows customizing the logic for selecting a 
+      subprotocol; it must be a callable taking the subprotocols offered by 
+      the client and available on the server in argument; see 
+      :meth:`~WebSocketServerProtocol.select_subprotocol` for details. 
+ 
+    Since there's no useful way to propagate exceptions triggered in handlers, 
+    they're sent to the ``&quot;websockets.server&quot;`` logger instead. 
+    Debugging is much easier if you configure logging to print them:: 
+ 
+        import logging 
+        logger = logging.getLogger(&quot;websockets.server&quot;) 
+        logger.setLevel(logging.ERROR) 
+        logger.addHandler(logging.StreamHandler()) 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">ws_handler: Callable[[WebSocketServerProtocol</span><span class="s2">, </span><span class="s1">str]</span><span class="s2">, </span><span class="s1">Awaitable[Any]]</span><span class="s2">,</span>
+        <span class="s1">host: Optional[Union[str</span><span class="s2">, </span><span class="s1">Sequence[str]]] = </span><span class="s2">None,</span>
+        <span class="s1">port: Optional[int] = </span><span class="s2">None,</span>
+        <span class="s1">*</span><span class="s2">,</span>
+        <span class="s1">create_protocol: Optional[Callable[[Any]</span><span class="s2">, </span><span class="s1">WebSocketServerProtocol]] = </span><span class="s2">None,</span>
+        <span class="s1">ping_interval: Optional[float] = </span><span class="s6">20</span><span class="s2">,</span>
+        <span class="s1">ping_timeout: Optional[float] = </span><span class="s6">20</span><span class="s2">,</span>
+        <span class="s1">close_timeout: Optional[float] = </span><span class="s2">None,</span>
+        <span class="s1">max_size: Optional[int] = </span><span class="s6">2 </span><span class="s1">** </span><span class="s6">20</span><span class="s2">,</span>
+        <span class="s1">max_queue: Optional[int] = </span><span class="s6">2 </span><span class="s1">** </span><span class="s6">5</span><span class="s2">,</span>
+        <span class="s1">read_limit: int = </span><span class="s6">2 </span><span class="s1">** </span><span class="s6">16</span><span class="s2">,</span>
+        <span class="s1">write_limit: int = </span><span class="s6">2 </span><span class="s1">** </span><span class="s6">16</span><span class="s2">,</span>
+        <span class="s1">loop: Optional[asyncio.AbstractEventLoop] = </span><span class="s2">None,</span>
+        <span class="s1">compression: Optional[str] = </span><span class="s3">&quot;deflate&quot;</span><span class="s2">,</span>
+        <span class="s1">origins: Optional[Sequence[Optional[Origin]]] = </span><span class="s2">None,</span>
+        <span class="s1">extensions: Optional[Sequence[ServerExtensionFactory]] = </span><span class="s2">None,</span>
+        <span class="s1">subprotocols: Optional[Sequence[Subprotocol]] = </span><span class="s2">None,</span>
+        <span class="s1">extra_headers: Optional[HeadersLikeOrCallable] = </span><span class="s2">None,</span>
+        <span class="s1">process_request: Optional[</span>
+            <span class="s1">Callable[[str</span><span class="s2">, </span><span class="s1">Headers]</span><span class="s2">, </span><span class="s1">Awaitable[Optional[HTTPResponse]]]</span>
+        <span class="s1">] = </span><span class="s2">None,</span>
+        <span class="s1">select_subprotocol: Optional[</span>
+            <span class="s1">Callable[[Sequence[Subprotocol]</span><span class="s2">, </span><span class="s1">Sequence[Subprotocol]]</span><span class="s2">, </span><span class="s1">Subprotocol]</span>
+        <span class="s1">] = </span><span class="s2">None,</span>
+        <span class="s1">**kwargs: Any</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s4"># Backwards compatibility: close_timeout used to be called timeout.</span>
+        <span class="s1">timeout: Optional[float] = kwargs.pop(</span><span class="s3">&quot;timeout&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">timeout </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">timeout = </span><span class="s6">10</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">warnings.warn(</span><span class="s3">&quot;rename timeout to close_timeout&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning)</span>
+        <span class="s4"># If both are specified, timeout is ignored.</span>
+        <span class="s2">if </span><span class="s1">close_timeout </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">close_timeout = timeout</span>
+
+        <span class="s4"># Backwards compatibility: create_protocol used to be called klass.</span>
+        <span class="s1">klass: Optional[Type[WebSocketServerProtocol]] = kwargs.pop(</span><span class="s3">&quot;klass&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">klass </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">klass = WebSocketServerProtocol</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">warnings.warn(</span><span class="s3">&quot;rename klass to create_protocol&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning)</span>
+        <span class="s4"># If both are specified, klass is ignored.</span>
+        <span class="s2">if </span><span class="s1">create_protocol </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">create_protocol = klass</span>
+
+        <span class="s4"># Backwards compatibility: recv() used to return None on closed connections</span>
+        <span class="s1">legacy_recv: bool = kwargs.pop(</span><span class="s3">&quot;legacy_recv&quot;</span><span class="s2">, False</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">loop </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">loop = asyncio.get_event_loop()</span>
+
+        <span class="s1">ws_server = WebSocketServer(loop)</span>
+
+        <span class="s1">secure = kwargs.get(</span><span class="s3">&quot;ssl&quot;</span><span class="s1">) </span><span class="s2">is not None</span>
+
+        <span class="s2">if </span><span class="s1">compression == </span><span class="s3">&quot;deflate&quot;</span><span class="s1">:</span>
+            <span class="s1">extensions = enable_server_permessage_deflate(extensions)</span>
+        <span class="s2">elif </span><span class="s1">compression </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">f&quot;unsupported compression: </span><span class="s2">{</span><span class="s1">compression</span><span class="s2">}</span><span class="s3">&quot;</span><span class="s1">)</span>
+
+        <span class="s1">factory = functools.partial(</span>
+            <span class="s1">create_protocol</span><span class="s2">,</span>
+            <span class="s1">ws_handler</span><span class="s2">,</span>
+            <span class="s1">ws_server</span><span class="s2">,</span>
+            <span class="s1">host=host</span><span class="s2">,</span>
+            <span class="s1">port=port</span><span class="s2">,</span>
+            <span class="s1">secure=secure</span><span class="s2">,</span>
+            <span class="s1">ping_interval=ping_interval</span><span class="s2">,</span>
+            <span class="s1">ping_timeout=ping_timeout</span><span class="s2">,</span>
+            <span class="s1">close_timeout=close_timeout</span><span class="s2">,</span>
+            <span class="s1">max_size=max_size</span><span class="s2">,</span>
+            <span class="s1">max_queue=max_queue</span><span class="s2">,</span>
+            <span class="s1">read_limit=read_limit</span><span class="s2">,</span>
+            <span class="s1">write_limit=write_limit</span><span class="s2">,</span>
+            <span class="s1">loop=loop</span><span class="s2">,</span>
+            <span class="s1">legacy_recv=legacy_recv</span><span class="s2">,</span>
+            <span class="s1">origins=origins</span><span class="s2">,</span>
+            <span class="s1">extensions=extensions</span><span class="s2">,</span>
+            <span class="s1">subprotocols=subprotocols</span><span class="s2">,</span>
+            <span class="s1">extra_headers=extra_headers</span><span class="s2">,</span>
+            <span class="s1">process_request=process_request</span><span class="s2">,</span>
+            <span class="s1">select_subprotocol=select_subprotocol</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">kwargs.pop(</span><span class="s3">&quot;unix&quot;</span><span class="s2">, False</span><span class="s1">):</span>
+            <span class="s1">path: Optional[str] = kwargs.pop(</span><span class="s3">&quot;path&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+            <span class="s4"># unix_serve(path) must not specify host and port parameters.</span>
+            <span class="s2">assert </span><span class="s1">host </span><span class="s2">is None and </span><span class="s1">port </span><span class="s2">is None</span>
+            <span class="s1">create_server = functools.partial(</span>
+                <span class="s1">loop.create_unix_server</span><span class="s2">, </span><span class="s1">factory</span><span class="s2">, </span><span class="s1">path</span><span class="s2">, </span><span class="s1">**kwargs</span>
+            <span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">create_server = functools.partial(</span>
+                <span class="s1">loop.create_server</span><span class="s2">, </span><span class="s1">factory</span><span class="s2">, </span><span class="s1">host</span><span class="s2">, </span><span class="s1">port</span><span class="s2">, </span><span class="s1">**kwargs</span>
+            <span class="s1">)</span>
+
+        <span class="s4"># This is a coroutine function.</span>
+        <span class="s1">self._create_server = create_server</span>
+        <span class="s1">self.ws_server = ws_server</span>
+
+    <span class="s4"># async with serve(...)</span>
+
+    <span class="s2">async def </span><span class="s1">__aenter__(self) -&gt; WebSocketServer:</span>
+        <span class="s2">return await </span><span class="s1">self</span>
+
+    <span class="s2">async def </span><span class="s1">__aexit__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">exc_type: Optional[Type[BaseException]]</span><span class="s2">,</span>
+        <span class="s1">exc_value: Optional[BaseException]</span><span class="s2">,</span>
+        <span class="s1">traceback: Optional[TracebackType]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.ws_server.close()</span>
+        <span class="s2">await </span><span class="s1">self.ws_server.wait_closed()</span>
+
+    <span class="s4"># await serve(...)</span>
+
+    <span class="s2">def </span><span class="s1">__await__(self) -&gt; Generator[Any</span><span class="s2">, None, </span><span class="s1">WebSocketServer]:</span>
+        <span class="s4"># Create a suitable iterator by calling __await__ on a coroutine.</span>
+        <span class="s2">return </span><span class="s1">self.__await_impl__().__await__()</span>
+
+    <span class="s2">async def </span><span class="s1">__await_impl__(self) -&gt; WebSocketServer:</span>
+        <span class="s1">server = </span><span class="s2">await </span><span class="s1">self._create_server()</span>
+        <span class="s1">self.ws_server.wrap(server)</span>
+        <span class="s2">return </span><span class="s1">self.ws_server</span>
+
+    <span class="s4"># yield from serve(...)</span>
+
+    <span class="s1">__iter__ = __await__</span>
+
+
+<span class="s1">serve = Serve</span>
+
+
+<span class="s2">def </span><span class="s1">unix_serve(</span>
+    <span class="s1">ws_handler: Callable[[WebSocketServerProtocol</span><span class="s2">, </span><span class="s1">str]</span><span class="s2">, </span><span class="s1">Awaitable[Any]]</span><span class="s2">,</span>
+    <span class="s1">path: Optional[str] = </span><span class="s2">None,</span>
+    <span class="s1">**kwargs: Any</span><span class="s2">,</span>
+<span class="s1">) -&gt; Serve:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Similar to :func:`serve`, but for listening on Unix sockets. 
+ 
+    This function calls the event loop's 
+    :meth:`~asyncio.loop.create_unix_server` method. 
+ 
+    It is only available on Unix. 
+ 
+    It's useful for deploying a server behind a reverse proxy such as nginx. 
+ 
+    :param path: file system path to the Unix socket 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">serve(ws_handler</span><span class="s2">, </span><span class="s1">path=path</span><span class="s2">, </span><span class="s1">unix=</span><span class="s2">True, </span><span class="s1">**kwargs)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,322 @@
+<html>
+<head>
+<title>writer.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #a9b7c6;}
+.s1 { color: #cc7832;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+writer.py</font>
+</center></td></tr></table>
+<pre>
+<span class="s1">import </span><span class="s0">os</span>
+<span class="s1">import </span><span class="s0">re</span>
+<span class="s1">from </span><span class="s0">importlib </span><span class="s1">import </span><span class="s0">import_module</span>
+
+<span class="s1">from </span><span class="s0">django </span><span class="s1">import </span><span class="s0">get_version</span>
+<span class="s1">from </span><span class="s0">django.apps </span><span class="s1">import </span><span class="s0">apps</span>
+<span class="s2"># SettingsReference imported for backwards compatibility in Django 2.2.</span>
+<span class="s1">from </span><span class="s0">django.conf </span><span class="s1">import </span><span class="s0">SettingsReference  </span><span class="s2"># NOQA</span>
+<span class="s1">from </span><span class="s0">django.db </span><span class="s1">import </span><span class="s0">migrations</span>
+<span class="s1">from </span><span class="s0">django.db.migrations.loader </span><span class="s1">import </span><span class="s0">MigrationLoader</span>
+<span class="s1">from </span><span class="s0">django.db.migrations.serializer </span><span class="s1">import </span><span class="s0">Serializer</span><span class="s1">, </span><span class="s0">serializer_factory</span>
+<span class="s1">from </span><span class="s0">django.utils.inspect </span><span class="s1">import </span><span class="s0">get_func_args</span>
+<span class="s1">from </span><span class="s0">django.utils.module_loading </span><span class="s1">import </span><span class="s0">module_dir</span>
+<span class="s1">from </span><span class="s0">django.utils.timezone </span><span class="s1">import </span><span class="s0">now</span>
+
+
+<span class="s1">class </span><span class="s0">OperationWriter:</span>
+    <span class="s1">def </span><span class="s0">__init__(self</span><span class="s1">, </span><span class="s0">operation</span><span class="s1">, </span><span class="s0">indentation=</span><span class="s3">2</span><span class="s0">):</span>
+        <span class="s0">self.operation = operation</span>
+        <span class="s0">self.buff = []</span>
+        <span class="s0">self.indentation = indentation</span>
+
+    <span class="s1">def </span><span class="s0">serialize(self):</span>
+
+        <span class="s1">def </span><span class="s0">_write(_arg_name</span><span class="s1">, </span><span class="s0">_arg_value):</span>
+            <span class="s1">if </span><span class="s0">(_arg_name </span><span class="s1">in </span><span class="s0">self.operation.serialization_expand_args </span><span class="s1">and</span>
+                    <span class="s0">isinstance(_arg_value</span><span class="s1">, </span><span class="s0">(list</span><span class="s1">, </span><span class="s0">tuple</span><span class="s1">, </span><span class="s0">dict))):</span>
+                <span class="s1">if </span><span class="s0">isinstance(_arg_value</span><span class="s1">, </span><span class="s0">dict):</span>
+                    <span class="s0">self.feed(</span><span class="s4">'%s={' </span><span class="s0">% _arg_name)</span>
+                    <span class="s0">self.indent()</span>
+                    <span class="s1">for </span><span class="s0">key</span><span class="s1">, </span><span class="s0">value </span><span class="s1">in </span><span class="s0">_arg_value.items():</span>
+                        <span class="s0">key_string</span><span class="s1">, </span><span class="s0">key_imports = MigrationWriter.serialize(key)</span>
+                        <span class="s0">arg_string</span><span class="s1">, </span><span class="s0">arg_imports = MigrationWriter.serialize(value)</span>
+                        <span class="s0">args = arg_string.splitlines()</span>
+                        <span class="s1">if </span><span class="s0">len(args) &gt; </span><span class="s3">1</span><span class="s0">:</span>
+                            <span class="s0">self.feed(</span><span class="s4">'%s: %s' </span><span class="s0">% (key_string</span><span class="s1">, </span><span class="s0">args[</span><span class="s3">0</span><span class="s0">]))</span>
+                            <span class="s1">for </span><span class="s0">arg </span><span class="s1">in </span><span class="s0">args[</span><span class="s3">1</span><span class="s0">:-</span><span class="s3">1</span><span class="s0">]:</span>
+                                <span class="s0">self.feed(arg)</span>
+                            <span class="s0">self.feed(</span><span class="s4">'%s,' </span><span class="s0">% args[-</span><span class="s3">1</span><span class="s0">])</span>
+                        <span class="s1">else</span><span class="s0">:</span>
+                            <span class="s0">self.feed(</span><span class="s4">'%s: %s,' </span><span class="s0">% (key_string</span><span class="s1">, </span><span class="s0">arg_string))</span>
+                        <span class="s0">imports.update(key_imports)</span>
+                        <span class="s0">imports.update(arg_imports)</span>
+                    <span class="s0">self.unindent()</span>
+                    <span class="s0">self.feed(</span><span class="s4">'},'</span><span class="s0">)</span>
+                <span class="s1">else</span><span class="s0">:</span>
+                    <span class="s0">self.feed(</span><span class="s4">'%s=[' </span><span class="s0">% _arg_name)</span>
+                    <span class="s0">self.indent()</span>
+                    <span class="s1">for </span><span class="s0">item </span><span class="s1">in </span><span class="s0">_arg_value:</span>
+                        <span class="s0">arg_string</span><span class="s1">, </span><span class="s0">arg_imports = MigrationWriter.serialize(item)</span>
+                        <span class="s0">args = arg_string.splitlines()</span>
+                        <span class="s1">if </span><span class="s0">len(args) &gt; </span><span class="s3">1</span><span class="s0">:</span>
+                            <span class="s1">for </span><span class="s0">arg </span><span class="s1">in </span><span class="s0">args[:-</span><span class="s3">1</span><span class="s0">]:</span>
+                                <span class="s0">self.feed(arg)</span>
+                            <span class="s0">self.feed(</span><span class="s4">'%s,' </span><span class="s0">% args[-</span><span class="s3">1</span><span class="s0">])</span>
+                        <span class="s1">else</span><span class="s0">:</span>
+                            <span class="s0">self.feed(</span><span class="s4">'%s,' </span><span class="s0">% arg_string)</span>
+                        <span class="s0">imports.update(arg_imports)</span>
+                    <span class="s0">self.unindent()</span>
+                    <span class="s0">self.feed(</span><span class="s4">'],'</span><span class="s0">)</span>
+            <span class="s1">else</span><span class="s0">:</span>
+                <span class="s0">arg_string</span><span class="s1">, </span><span class="s0">arg_imports = MigrationWriter.serialize(_arg_value)</span>
+                <span class="s0">args = arg_string.splitlines()</span>
+                <span class="s1">if </span><span class="s0">len(args) &gt; </span><span class="s3">1</span><span class="s0">:</span>
+                    <span class="s0">self.feed(</span><span class="s4">'%s=%s' </span><span class="s0">% (_arg_name</span><span class="s1">, </span><span class="s0">args[</span><span class="s3">0</span><span class="s0">]))</span>
+                    <span class="s1">for </span><span class="s0">arg </span><span class="s1">in </span><span class="s0">args[</span><span class="s3">1</span><span class="s0">:-</span><span class="s3">1</span><span class="s0">]:</span>
+                        <span class="s0">self.feed(arg)</span>
+                    <span class="s0">self.feed(</span><span class="s4">'%s,' </span><span class="s0">% args[-</span><span class="s3">1</span><span class="s0">])</span>
+                <span class="s1">else</span><span class="s0">:</span>
+                    <span class="s0">self.feed(</span><span class="s4">'%s=%s,' </span><span class="s0">% (_arg_name</span><span class="s1">, </span><span class="s0">arg_string))</span>
+                <span class="s0">imports.update(arg_imports)</span>
+
+        <span class="s0">imports = set()</span>
+        <span class="s0">name</span><span class="s1">, </span><span class="s0">args</span><span class="s1">, </span><span class="s0">kwargs = self.operation.deconstruct()</span>
+        <span class="s0">operation_args = get_func_args(self.operation.__init__)</span>
+
+        <span class="s2"># See if this operation is in django.db.migrations. If it is,</span>
+        <span class="s2"># We can just use the fact we already have that imported,</span>
+        <span class="s2"># otherwise, we need to add an import for the operation class.</span>
+        <span class="s1">if </span><span class="s0">getattr(migrations</span><span class="s1">, </span><span class="s0">name</span><span class="s1">, None</span><span class="s0">) == self.operation.__class__:</span>
+            <span class="s0">self.feed(</span><span class="s4">'migrations.%s(' </span><span class="s0">% name)</span>
+        <span class="s1">else</span><span class="s0">:</span>
+            <span class="s0">imports.add(</span><span class="s4">'import %s' </span><span class="s0">% (self.operation.__class__.__module__))</span>
+            <span class="s0">self.feed(</span><span class="s4">'%s.%s(' </span><span class="s0">% (self.operation.__class__.__module__</span><span class="s1">, </span><span class="s0">name))</span>
+
+        <span class="s0">self.indent()</span>
+
+        <span class="s1">for </span><span class="s0">i</span><span class="s1">, </span><span class="s0">arg </span><span class="s1">in </span><span class="s0">enumerate(args):</span>
+            <span class="s0">arg_value = arg</span>
+            <span class="s0">arg_name = operation_args[i]</span>
+            <span class="s0">_write(arg_name</span><span class="s1">, </span><span class="s0">arg_value)</span>
+
+        <span class="s0">i = len(args)</span>
+        <span class="s2"># Only iterate over remaining arguments</span>
+        <span class="s1">for </span><span class="s0">arg_name </span><span class="s1">in </span><span class="s0">operation_args[i:]:</span>
+            <span class="s1">if </span><span class="s0">arg_name </span><span class="s1">in </span><span class="s0">kwargs:  </span><span class="s2"># Don't sort to maintain signature order</span>
+                <span class="s0">arg_value = kwargs[arg_name]</span>
+                <span class="s0">_write(arg_name</span><span class="s1">, </span><span class="s0">arg_value)</span>
+
+        <span class="s0">self.unindent()</span>
+        <span class="s0">self.feed(</span><span class="s4">'),'</span><span class="s0">)</span>
+        <span class="s1">return </span><span class="s0">self.render()</span><span class="s1">, </span><span class="s0">imports</span>
+
+    <span class="s1">def </span><span class="s0">indent(self):</span>
+        <span class="s0">self.indentation += </span><span class="s3">1</span>
+
+    <span class="s1">def </span><span class="s0">unindent(self):</span>
+        <span class="s0">self.indentation -= </span><span class="s3">1</span>
+
+    <span class="s1">def </span><span class="s0">feed(self</span><span class="s1">, </span><span class="s0">line):</span>
+        <span class="s0">self.buff.append(</span><span class="s4">' ' </span><span class="s0">* (self.indentation * </span><span class="s3">4</span><span class="s0">) + line)</span>
+
+    <span class="s1">def </span><span class="s0">render(self):</span>
+        <span class="s1">return </span><span class="s4">'</span><span class="s1">\n</span><span class="s4">'</span><span class="s0">.join(self.buff)</span>
+
+
+<span class="s1">class </span><span class="s0">MigrationWriter:</span>
+    <span class="s5">&quot;&quot;&quot; 
+    Take a Migration instance and is able to produce the contents 
+    of the migration file from it. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">def </span><span class="s0">__init__(self</span><span class="s1">, </span><span class="s0">migration</span><span class="s1">, </span><span class="s0">include_header=</span><span class="s1">True</span><span class="s0">):</span>
+        <span class="s0">self.migration = migration</span>
+        <span class="s0">self.include_header = include_header</span>
+        <span class="s0">self.needs_manual_porting = </span><span class="s1">False</span>
+
+    <span class="s1">def </span><span class="s0">as_string(self):</span>
+        <span class="s5">&quot;&quot;&quot;Return a string of the file contents.&quot;&quot;&quot;</span>
+        <span class="s0">items = {</span>
+            <span class="s4">&quot;replaces_str&quot;</span><span class="s0">: </span><span class="s4">&quot;&quot;</span><span class="s1">,</span>
+            <span class="s4">&quot;initial_str&quot;</span><span class="s0">: </span><span class="s4">&quot;&quot;</span><span class="s1">,</span>
+        <span class="s0">}</span>
+
+        <span class="s0">imports = set()</span>
+
+        <span class="s2"># Deconstruct operations</span>
+        <span class="s0">operations = []</span>
+        <span class="s1">for </span><span class="s0">operation </span><span class="s1">in </span><span class="s0">self.migration.operations:</span>
+            <span class="s0">operation_string</span><span class="s1">, </span><span class="s0">operation_imports = OperationWriter(operation).serialize()</span>
+            <span class="s0">imports.update(operation_imports)</span>
+            <span class="s0">operations.append(operation_string)</span>
+        <span class="s0">items[</span><span class="s4">&quot;operations&quot;</span><span class="s0">] = </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4">&quot;</span><span class="s0">.join(operations) + </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4">&quot; </span><span class="s1">if </span><span class="s0">operations </span><span class="s1">else </span><span class="s4">&quot;&quot;</span>
+
+        <span class="s2"># Format dependencies and write out swappable dependencies right</span>
+        <span class="s0">dependencies = []</span>
+        <span class="s1">for </span><span class="s0">dependency </span><span class="s1">in </span><span class="s0">self.migration.dependencies:</span>
+            <span class="s1">if </span><span class="s0">dependency[</span><span class="s3">0</span><span class="s0">] == </span><span class="s4">&quot;__setting__&quot;</span><span class="s0">:</span>
+                <span class="s0">dependencies.append(</span><span class="s4">&quot;        migrations.swappable_dependency(settings.%s),&quot; </span><span class="s0">% dependency[</span><span class="s3">1</span><span class="s0">])</span>
+                <span class="s0">imports.add(</span><span class="s4">&quot;from django.conf import settings&quot;</span><span class="s0">)</span>
+            <span class="s1">else</span><span class="s0">:</span>
+                <span class="s0">dependencies.append(</span><span class="s4">&quot;        %s,&quot; </span><span class="s0">% self.serialize(dependency)[</span><span class="s3">0</span><span class="s0">])</span>
+        <span class="s0">items[</span><span class="s4">&quot;dependencies&quot;</span><span class="s0">] = </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4">&quot;</span><span class="s0">.join(dependencies) + </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4">&quot; </span><span class="s1">if </span><span class="s0">dependencies </span><span class="s1">else </span><span class="s4">&quot;&quot;</span>
+
+        <span class="s2"># Format imports nicely, swapping imports of functions from migration files</span>
+        <span class="s2"># for comments</span>
+        <span class="s0">migration_imports = set()</span>
+        <span class="s1">for </span><span class="s0">line </span><span class="s1">in </span><span class="s0">list(imports):</span>
+            <span class="s1">if </span><span class="s0">re.match(</span><span class="s4">r&quot;^import (.*)\.\d+[^\s]*$&quot;</span><span class="s1">, </span><span class="s0">line):</span>
+                <span class="s0">migration_imports.add(line.split(</span><span class="s4">&quot;import&quot;</span><span class="s0">)[</span><span class="s3">1</span><span class="s0">].strip())</span>
+                <span class="s0">imports.remove(line)</span>
+                <span class="s0">self.needs_manual_porting = </span><span class="s1">True</span>
+
+        <span class="s2"># django.db.migrations is always used, but models import may not be.</span>
+        <span class="s2"># If models import exists, merge it with migrations import.</span>
+        <span class="s1">if </span><span class="s4">&quot;from django.db import models&quot; </span><span class="s1">in </span><span class="s0">imports:</span>
+            <span class="s0">imports.discard(</span><span class="s4">&quot;from django.db import models&quot;</span><span class="s0">)</span>
+            <span class="s0">imports.add(</span><span class="s4">&quot;from django.db import migrations, models&quot;</span><span class="s0">)</span>
+        <span class="s1">else</span><span class="s0">:</span>
+            <span class="s0">imports.add(</span><span class="s4">&quot;from django.db import migrations&quot;</span><span class="s0">)</span>
+
+        <span class="s2"># Sort imports by the package / module to be imported (the part after</span>
+        <span class="s2"># &quot;from&quot; in &quot;from ... import ...&quot; or after &quot;import&quot; in &quot;import ...&quot;).</span>
+        <span class="s0">sorted_imports = sorted(imports</span><span class="s1">, </span><span class="s0">key=</span><span class="s1">lambda </span><span class="s0">i: i.split()[</span><span class="s3">1</span><span class="s0">])</span>
+        <span class="s0">items[</span><span class="s4">&quot;imports&quot;</span><span class="s0">] = </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4">&quot;</span><span class="s0">.join(sorted_imports) + </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4">&quot; </span><span class="s1">if </span><span class="s0">imports </span><span class="s1">else </span><span class="s4">&quot;&quot;</span>
+        <span class="s1">if </span><span class="s0">migration_imports:</span>
+            <span class="s0">items[</span><span class="s4">&quot;imports&quot;</span><span class="s0">] += (</span>
+                <span class="s4">&quot;</span><span class="s1">\n\n</span><span class="s4"># Functions from the following migrations need manual &quot;</span>
+                <span class="s4">&quot;copying.</span><span class="s1">\n</span><span class="s4"># Move them and any dependencies into this file, &quot;</span>
+                <span class="s4">&quot;then update the</span><span class="s1">\n</span><span class="s4"># RunPython operations to refer to the local &quot;</span>
+                <span class="s4">&quot;versions:</span><span class="s1">\n</span><span class="s4"># %s&quot;</span>
+            <span class="s0">) % </span><span class="s4">&quot;</span><span class="s1">\n</span><span class="s4"># &quot;</span><span class="s0">.join(sorted(migration_imports))</span>
+        <span class="s2"># If there's a replaces, make a string for it</span>
+        <span class="s1">if </span><span class="s0">self.migration.replaces:</span>
+            <span class="s0">items[</span><span class="s4">'replaces_str'</span><span class="s0">] = </span><span class="s4">&quot;</span><span class="s1">\n    </span><span class="s4">replaces = %s</span><span class="s1">\n</span><span class="s4">&quot; </span><span class="s0">% self.serialize(self.migration.replaces)[</span><span class="s3">0</span><span class="s0">]</span>
+        <span class="s2"># Hinting that goes into comment</span>
+        <span class="s1">if </span><span class="s0">self.include_header:</span>
+            <span class="s0">items[</span><span class="s4">'migration_header'</span><span class="s0">] = MIGRATION_HEADER_TEMPLATE % {</span>
+                <span class="s4">'version'</span><span class="s0">: get_version()</span><span class="s1">,</span>
+                <span class="s4">'timestamp'</span><span class="s0">: now().strftime(</span><span class="s4">&quot;%Y-%m-%d %H:%M&quot;</span><span class="s0">)</span><span class="s1">,</span>
+            <span class="s0">}</span>
+        <span class="s1">else</span><span class="s0">:</span>
+            <span class="s0">items[</span><span class="s4">'migration_header'</span><span class="s0">] = </span><span class="s4">&quot;&quot;</span>
+
+        <span class="s1">if </span><span class="s0">self.migration.initial:</span>
+            <span class="s0">items[</span><span class="s4">'initial_str'</span><span class="s0">] = </span><span class="s4">&quot;</span><span class="s1">\n    </span><span class="s4">initial = True</span><span class="s1">\n</span><span class="s4">&quot;</span>
+
+        <span class="s1">return </span><span class="s0">MIGRATION_TEMPLATE % items</span>
+
+    <span class="s0">@property</span>
+    <span class="s1">def </span><span class="s0">basedir(self):</span>
+        <span class="s0">migrations_package_name</span><span class="s1">, </span><span class="s0">_ = MigrationLoader.migrations_module(self.migration.app_label)</span>
+
+        <span class="s1">if </span><span class="s0">migrations_package_name </span><span class="s1">is None</span><span class="s0">:</span>
+            <span class="s1">raise </span><span class="s0">ValueError(</span>
+                <span class="s4">&quot;Django can't create migrations for app '%s' because &quot;</span>
+                <span class="s4">&quot;migrations have been disabled via the MIGRATION_MODULES &quot;</span>
+                <span class="s4">&quot;setting.&quot; </span><span class="s0">% self.migration.app_label</span>
+            <span class="s0">)</span>
+
+        <span class="s2"># See if we can import the migrations module directly</span>
+        <span class="s1">try</span><span class="s0">:</span>
+            <span class="s0">migrations_module = import_module(migrations_package_name)</span>
+        <span class="s1">except </span><span class="s0">ImportError:</span>
+            <span class="s1">pass</span>
+        <span class="s1">else</span><span class="s0">:</span>
+            <span class="s1">try</span><span class="s0">:</span>
+                <span class="s1">return </span><span class="s0">module_dir(migrations_module)</span>
+            <span class="s1">except </span><span class="s0">ValueError:</span>
+                <span class="s1">pass</span>
+
+        <span class="s2"># Alright, see if it's a direct submodule of the app</span>
+        <span class="s0">app_config = apps.get_app_config(self.migration.app_label)</span>
+        <span class="s0">maybe_app_name</span><span class="s1">, </span><span class="s0">_</span><span class="s1">, </span><span class="s0">migrations_package_basename = migrations_package_name.rpartition(</span><span class="s4">&quot;.&quot;</span><span class="s0">)</span>
+        <span class="s1">if </span><span class="s0">app_config.name == maybe_app_name:</span>
+            <span class="s1">return </span><span class="s0">os.path.join(app_config.path</span><span class="s1">, </span><span class="s0">migrations_package_basename)</span>
+
+        <span class="s2"># In case of using MIGRATION_MODULES setting and the custom package</span>
+        <span class="s2"># doesn't exist, create one, starting from an existing package</span>
+        <span class="s0">existing_dirs</span><span class="s1">, </span><span class="s0">missing_dirs = migrations_package_name.split(</span><span class="s4">&quot;.&quot;</span><span class="s0">)</span><span class="s1">, </span><span class="s0">[]</span>
+        <span class="s1">while </span><span class="s0">existing_dirs:</span>
+            <span class="s0">missing_dirs.insert(</span><span class="s3">0</span><span class="s1">, </span><span class="s0">existing_dirs.pop(-</span><span class="s3">1</span><span class="s0">))</span>
+            <span class="s1">try</span><span class="s0">:</span>
+                <span class="s0">base_module = import_module(</span><span class="s4">&quot;.&quot;</span><span class="s0">.join(existing_dirs))</span>
+            <span class="s1">except </span><span class="s0">(ImportError</span><span class="s1">, </span><span class="s0">ValueError):</span>
+                <span class="s1">continue</span>
+            <span class="s1">else</span><span class="s0">:</span>
+                <span class="s1">try</span><span class="s0">:</span>
+                    <span class="s0">base_dir = module_dir(base_module)</span>
+                <span class="s1">except </span><span class="s0">ValueError:</span>
+                    <span class="s1">continue</span>
+                <span class="s1">else</span><span class="s0">:</span>
+                    <span class="s1">break</span>
+        <span class="s1">else</span><span class="s0">:</span>
+            <span class="s1">raise </span><span class="s0">ValueError(</span>
+                <span class="s4">&quot;Could not locate an appropriate location to create &quot;</span>
+                <span class="s4">&quot;migrations package %s. Make sure the toplevel &quot;</span>
+                <span class="s4">&quot;package exists and can be imported.&quot; </span><span class="s0">%</span>
+                <span class="s0">migrations_package_name)</span>
+
+        <span class="s0">final_dir = os.path.join(base_dir</span><span class="s1">, </span><span class="s0">*missing_dirs)</span>
+        <span class="s0">os.makedirs(final_dir</span><span class="s1">, </span><span class="s0">exist_ok=</span><span class="s1">True</span><span class="s0">)</span>
+        <span class="s1">for </span><span class="s0">missing_dir </span><span class="s1">in </span><span class="s0">missing_dirs:</span>
+            <span class="s0">base_dir = os.path.join(base_dir</span><span class="s1">, </span><span class="s0">missing_dir)</span>
+            <span class="s1">with </span><span class="s0">open(os.path.join(base_dir</span><span class="s1">, </span><span class="s4">&quot;__init__.py&quot;</span><span class="s0">)</span><span class="s1">, </span><span class="s4">&quot;w&quot;</span><span class="s0">):</span>
+                <span class="s1">pass</span>
+
+        <span class="s1">return </span><span class="s0">final_dir</span>
+
+    <span class="s0">@property</span>
+    <span class="s1">def </span><span class="s0">filename(self):</span>
+        <span class="s1">return </span><span class="s4">&quot;%s.py&quot; </span><span class="s0">% self.migration.name</span>
+
+    <span class="s0">@property</span>
+    <span class="s1">def </span><span class="s0">path(self):</span>
+        <span class="s1">return </span><span class="s0">os.path.join(self.basedir</span><span class="s1">, </span><span class="s0">self.filename)</span>
+
+    <span class="s0">@classmethod</span>
+    <span class="s1">def </span><span class="s0">serialize(cls</span><span class="s1">, </span><span class="s0">value):</span>
+        <span class="s1">return </span><span class="s0">serializer_factory(value).serialize()</span>
+
+    <span class="s0">@classmethod</span>
+    <span class="s1">def </span><span class="s0">register_serializer(cls</span><span class="s1">, </span><span class="s0">type_</span><span class="s1">, </span><span class="s0">serializer):</span>
+        <span class="s0">Serializer.register(type_</span><span class="s1">, </span><span class="s0">serializer)</span>
+
+    <span class="s0">@classmethod</span>
+    <span class="s1">def </span><span class="s0">unregister_serializer(cls</span><span class="s1">, </span><span class="s0">type_):</span>
+        <span class="s0">Serializer.unregister(type_)</span>
+
+
+<span class="s0">MIGRATION_HEADER_TEMPLATE = </span><span class="s4">&quot;&quot;&quot;</span><span class="s1">\ 
+</span><span class="s4"># Generated by Django %(version)s on %(timestamp)s 
+ 
+&quot;&quot;&quot;</span>
+
+
+<span class="s0">MIGRATION_TEMPLATE = </span><span class="s4">&quot;&quot;&quot;</span><span class="s1">\ 
+</span><span class="s4">%(migration_header)s%(imports)s 
+ 
+class Migration(migrations.Migration): 
+%(replaces_str)s%(initial_str)s 
+    dependencies = [ 
+%(dependencies)s</span><span class="s1">\ 
+    </span><span class="s4">] 
+ 
+    operations = [ 
+%(operations)s</span><span class="s1">\ 
+    </span><span class="s4">] 
+&quot;&quot;&quot;</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,172 @@
+<html>
+<head>
+<title>defaults.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+defaults.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">urllib.parse </span><span class="s0">import </span><span class="s1">quote</span>
+
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">HttpResponseBadRequest</span><span class="s0">, </span><span class="s1">HttpResponseForbidden</span><span class="s0">, </span><span class="s1">HttpResponseNotFound</span><span class="s0">,</span>
+    <span class="s1">HttpResponseServerError</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">Context</span><span class="s0">, </span><span class="s1">Engine</span><span class="s0">, </span><span class="s1">TemplateDoesNotExist</span><span class="s0">, </span><span class="s1">loader</span>
+<span class="s0">from </span><span class="s1">django.views.decorators.csrf </span><span class="s0">import </span><span class="s1">requires_csrf_token</span>
+
+<span class="s1">ERROR_404_TEMPLATE_NAME = </span><span class="s2">'404.html'</span>
+<span class="s1">ERROR_403_TEMPLATE_NAME = </span><span class="s2">'403.html'</span>
+<span class="s1">ERROR_400_TEMPLATE_NAME = </span><span class="s2">'400.html'</span>
+<span class="s1">ERROR_500_TEMPLATE_NAME = </span><span class="s2">'500.html'</span>
+<span class="s1">ERROR_PAGE_TEMPLATE = </span><span class="s2">&quot;&quot;&quot; 
+&lt;!doctype html&gt; 
+&lt;html lang=&quot;en&quot;&gt; 
+&lt;head&gt; 
+  &lt;title&gt;%(title)s&lt;/title&gt; 
+&lt;/head&gt; 
+&lt;body&gt; 
+  &lt;h1&gt;%(title)s&lt;/h1&gt;&lt;p&gt;%(details)s&lt;/p&gt; 
+&lt;/body&gt; 
+&lt;/html&gt; 
+&quot;&quot;&quot;</span>
+
+
+<span class="s3"># These views can be called when CsrfViewMiddleware.process_view() not run,</span>
+<span class="s3"># therefore need @requires_csrf_token in case the template needs</span>
+<span class="s3"># {% csrf_token %}.</span>
+
+
+<span class="s1">@requires_csrf_token</span>
+<span class="s0">def </span><span class="s1">page_not_found(request</span><span class="s0">, </span><span class="s1">exception</span><span class="s0">, </span><span class="s1">template_name=ERROR_404_TEMPLATE_NAME):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Default 404 handler. 
+ 
+    Templates: :template:`404.html` 
+    Context: 
+        request_path 
+            The path of the requested URL (e.g., '/app/pages/bad_page/'). It's 
+            quoted to prevent a content injection attack. 
+        exception 
+            The message from the exception which triggered the 404 (if one was 
+            supplied), or the exception class name 
+    &quot;&quot;&quot;</span>
+    <span class="s1">exception_repr = exception.__class__.__name__</span>
+    <span class="s3"># Try to get an &quot;interesting&quot; exception message, if any (and not the ugly</span>
+    <span class="s3"># Resolver404 dictionary)</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">message = exception.args[</span><span class="s5">0</span><span class="s1">]</span>
+    <span class="s0">except </span><span class="s1">(AttributeError</span><span class="s0">, </span><span class="s1">IndexError):</span>
+        <span class="s0">pass</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">if </span><span class="s1">isinstance(message</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s1">exception_repr = message</span>
+    <span class="s1">context = {</span>
+        <span class="s2">'request_path'</span><span class="s1">: quote(request.path)</span><span class="s0">,</span>
+        <span class="s2">'exception'</span><span class="s1">: exception_repr</span><span class="s0">,</span>
+    <span class="s1">}</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">template = loader.get_template(template_name)</span>
+        <span class="s1">body = template.render(context</span><span class="s0">, </span><span class="s1">request)</span>
+        <span class="s1">content_type = </span><span class="s0">None             </span><span class="s3"># Django will use 'text/html'.</span>
+    <span class="s0">except </span><span class="s1">TemplateDoesNotExist:</span>
+        <span class="s0">if </span><span class="s1">template_name != ERROR_404_TEMPLATE_NAME:</span>
+            <span class="s3"># Reraise if it's a missing custom template.</span>
+            <span class="s0">raise</span>
+        <span class="s3"># Render template (even though there are no substitutions) to allow</span>
+        <span class="s3"># inspecting the context in tests.</span>
+        <span class="s1">template = Engine().from_string(</span>
+            <span class="s1">ERROR_PAGE_TEMPLATE % {</span>
+                <span class="s2">'title'</span><span class="s1">: </span><span class="s2">'Not Found'</span><span class="s0">,</span>
+                <span class="s2">'details'</span><span class="s1">: </span><span class="s2">'The requested resource was not found on this server.'</span><span class="s0">,</span>
+            <span class="s1">}</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">body = template.render(Context(context))</span>
+        <span class="s1">content_type = </span><span class="s2">'text/html'</span>
+    <span class="s0">return </span><span class="s1">HttpResponseNotFound(body</span><span class="s0">, </span><span class="s1">content_type=content_type)</span>
+
+
+<span class="s1">@requires_csrf_token</span>
+<span class="s0">def </span><span class="s1">server_error(request</span><span class="s0">, </span><span class="s1">template_name=ERROR_500_TEMPLATE_NAME):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    500 error handler. 
+ 
+    Templates: :template:`500.html` 
+    Context: None 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">template = loader.get_template(template_name)</span>
+    <span class="s0">except </span><span class="s1">TemplateDoesNotExist:</span>
+        <span class="s0">if </span><span class="s1">template_name != ERROR_500_TEMPLATE_NAME:</span>
+            <span class="s3"># Reraise if it's a missing custom template.</span>
+            <span class="s0">raise</span>
+        <span class="s0">return </span><span class="s1">HttpResponseServerError(</span>
+            <span class="s1">ERROR_PAGE_TEMPLATE % {</span><span class="s2">'title'</span><span class="s1">: </span><span class="s2">'Server Error (500)'</span><span class="s0">, </span><span class="s2">'details'</span><span class="s1">: </span><span class="s2">''</span><span class="s1">}</span><span class="s0">,</span>
+            <span class="s1">content_type=</span><span class="s2">'text/html'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">HttpResponseServerError(template.render())</span>
+
+
+<span class="s1">@requires_csrf_token</span>
+<span class="s0">def </span><span class="s1">bad_request(request</span><span class="s0">, </span><span class="s1">exception</span><span class="s0">, </span><span class="s1">template_name=ERROR_400_TEMPLATE_NAME):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    400 error handler. 
+ 
+    Templates: :template:`400.html` 
+    Context: None 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">template = loader.get_template(template_name)</span>
+    <span class="s0">except </span><span class="s1">TemplateDoesNotExist:</span>
+        <span class="s0">if </span><span class="s1">template_name != ERROR_400_TEMPLATE_NAME:</span>
+            <span class="s3"># Reraise if it's a missing custom template.</span>
+            <span class="s0">raise</span>
+        <span class="s0">return </span><span class="s1">HttpResponseBadRequest(</span>
+            <span class="s1">ERROR_PAGE_TEMPLATE % {</span><span class="s2">'title'</span><span class="s1">: </span><span class="s2">'Bad Request (400)'</span><span class="s0">, </span><span class="s2">'details'</span><span class="s1">: </span><span class="s2">''</span><span class="s1">}</span><span class="s0">,</span>
+            <span class="s1">content_type=</span><span class="s2">'text/html'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+    <span class="s3"># No exception content is passed to the template, to not disclose any sensitive information.</span>
+    <span class="s0">return </span><span class="s1">HttpResponseBadRequest(template.render())</span>
+
+
+<span class="s1">@requires_csrf_token</span>
+<span class="s0">def </span><span class="s1">permission_denied(request</span><span class="s0">, </span><span class="s1">exception</span><span class="s0">, </span><span class="s1">template_name=ERROR_403_TEMPLATE_NAME):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Permission denied (403) handler. 
+ 
+    Templates: :template:`403.html` 
+    Context: 
+        exception 
+            The message from the exception which triggered the 403 (if one was 
+            supplied). 
+ 
+    If the template does not exist, an Http403 response containing the text 
+    &quot;403 Forbidden&quot; (as per RFC 7231) will be returned. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">template = loader.get_template(template_name)</span>
+    <span class="s0">except </span><span class="s1">TemplateDoesNotExist:</span>
+        <span class="s0">if </span><span class="s1">template_name != ERROR_403_TEMPLATE_NAME:</span>
+            <span class="s3"># Reraise if it's a missing custom template.</span>
+            <span class="s0">raise</span>
+        <span class="s0">return </span><span class="s1">HttpResponseForbidden(</span>
+            <span class="s1">ERROR_PAGE_TEMPLATE % {</span><span class="s2">'title'</span><span class="s1">: </span><span class="s2">'403 Forbidden'</span><span class="s0">, </span><span class="s2">'details'</span><span class="s1">: </span><span class="s2">''</span><span class="s1">}</span><span class="s0">,</span>
+            <span class="s1">content_type=</span><span class="s2">'text/html'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">HttpResponseForbidden(</span>
+        <span class="s1">template.render(request=request</span><span class="s0">, </span><span class="s1">context={</span><span class="s2">'exception'</span><span class="s1">: str(exception)})</span>
+    <span class="s1">)</span>
+</pre>
+</body>
+</html>

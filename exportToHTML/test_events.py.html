@@ -1,0 +1,201 @@
+<html>
+<head>
+<title>test_events.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_events.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">http </span><span class="s0">import </span><span class="s1">HTTPStatus</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_events</span>
+<span class="s0">from </span><span class="s1">.._events </span><span class="s0">import </span><span class="s1">*</span>
+<span class="s0">from </span><span class="s1">.._util </span><span class="s0">import </span><span class="s1">LocalProtocolError</span>
+
+
+<span class="s0">def </span><span class="s1">test_event_bundle():</span>
+    <span class="s0">class </span><span class="s1">T(_events._EventBundle):</span>
+        <span class="s1">_fields = [</span><span class="s2">&quot;a&quot;</span><span class="s0">, </span><span class="s2">&quot;b&quot;</span><span class="s1">]</span>
+        <span class="s1">_defaults = {</span><span class="s2">&quot;b&quot;</span><span class="s1">: </span><span class="s3">1</span><span class="s1">}</span>
+
+        <span class="s0">def </span><span class="s1">_validate(self):</span>
+            <span class="s0">if </span><span class="s1">self.a == </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span>
+
+    <span class="s4"># basic construction and methods</span>
+    <span class="s1">t = T(a=</span><span class="s3">1</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">repr(t) == </span><span class="s2">&quot;T(a=1, b=0)&quot;</span>
+    <span class="s0">assert </span><span class="s1">t == T(a=</span><span class="s3">1</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s0">assert not </span><span class="s1">(t == T(a=</span><span class="s3">2</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">))</span>
+    <span class="s0">assert not </span><span class="s1">(t != T(a=</span><span class="s3">1</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">))</span>
+    <span class="s0">assert </span><span class="s1">t != T(a=</span><span class="s3">2</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">hash(t)</span>
+
+    <span class="s4"># check defaults</span>
+    <span class="s1">t = T(a=</span><span class="s3">10</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">t.a == </span><span class="s3">10</span>
+    <span class="s0">assert </span><span class="s1">t.b == </span><span class="s3">1</span>
+
+    <span class="s4"># no positional args</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">T(</span><span class="s3">1</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">T(</span><span class="s3">1</span><span class="s0">, </span><span class="s1">a=</span><span class="s3">1</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">)</span>
+
+    <span class="s4"># unknown field</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError):</span>
+        <span class="s1">T(a=</span><span class="s3">1</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s0">, </span><span class="s1">c=</span><span class="s3">10</span><span class="s1">)</span>
+
+    <span class="s4"># missing required field</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(TypeError) </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s1">T(b=</span><span class="s3">0</span><span class="s1">)</span>
+    <span class="s4"># make sure we error on the right missing kwarg</span>
+    <span class="s0">assert </span><span class="s2">&quot;kwarg a&quot; </span><span class="s0">in </span><span class="s1">str(exc.value)</span>
+
+    <span class="s4"># _validate is called</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ValueError):</span>
+        <span class="s1">T(a=</span><span class="s3">0</span><span class="s0">, </span><span class="s1">b=</span><span class="s3">0</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">test_events():</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s4"># Missing Host:</span>
+        <span class="s1">req = Request(</span>
+            <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">, </span><span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">, </span><span class="s1">headers=[(</span><span class="s2">&quot;a&quot;</span><span class="s0">, </span><span class="s2">&quot;b&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.1&quot;</span>
+        <span class="s1">)</span>
+    <span class="s4"># But this is okay (HTTP/1.0)</span>
+    <span class="s1">req = Request(method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">, </span><span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">, </span><span class="s1">headers=[(</span><span class="s2">&quot;a&quot;</span><span class="s0">, </span><span class="s2">&quot;b&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s1">)</span>
+    <span class="s4"># fields are normalized</span>
+    <span class="s0">assert </span><span class="s1">req.method == </span><span class="s5">b&quot;GET&quot;</span>
+    <span class="s0">assert </span><span class="s1">req.target == </span><span class="s5">b&quot;/&quot;</span>
+    <span class="s0">assert </span><span class="s1">req.headers == [(</span><span class="s5">b&quot;a&quot;</span><span class="s0">, </span><span class="s5">b&quot;b&quot;</span><span class="s1">)]</span>
+    <span class="s0">assert </span><span class="s1">req.http_version == </span><span class="s5">b&quot;1.0&quot;</span>
+
+    <span class="s4"># This is also okay -- has a Host (with weird capitalization, which is ok)</span>
+    <span class="s1">req = Request(</span>
+        <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">,</span>
+        <span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">,</span>
+        <span class="s1">headers=[(</span><span class="s2">&quot;a&quot;</span><span class="s0">, </span><span class="s2">&quot;b&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;hOSt&quot;</span><span class="s0">, </span><span class="s2">&quot;example.com&quot;</span><span class="s1">)]</span><span class="s0">,</span>
+        <span class="s1">http_version=</span><span class="s2">&quot;1.1&quot;</span><span class="s0">,</span>
+    <span class="s1">)</span>
+    <span class="s4"># we normalize header capitalization</span>
+    <span class="s0">assert </span><span class="s1">req.headers == [(</span><span class="s5">b&quot;a&quot;</span><span class="s0">, </span><span class="s5">b&quot;b&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s5">b&quot;host&quot;</span><span class="s0">, </span><span class="s5">b&quot;example.com&quot;</span><span class="s1">)]</span>
+
+    <span class="s4"># Multiple host is bad too</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">req = Request(</span>
+            <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">,</span>
+            <span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">,</span>
+            <span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)]</span><span class="s0">,</span>
+            <span class="s1">http_version=</span><span class="s2">&quot;1.1&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+    <span class="s4"># Even for HTTP/1.0</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">req = Request(</span>
+            <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">,</span>
+            <span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">,</span>
+            <span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)]</span><span class="s0">,</span>
+            <span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s4"># Header values are validated</span>
+    <span class="s0">for </span><span class="s1">bad_char </span><span class="s0">in </span><span class="s2">&quot;</span><span class="s0">\x00\r\n\f\v</span><span class="s2">&quot;</span><span class="s1">:</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+            <span class="s1">req = Request(</span>
+                <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">,</span>
+                <span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">,</span>
+                <span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;Foo&quot;</span><span class="s0">, </span><span class="s2">&quot;asd&quot; </span><span class="s1">+ bad_char)]</span><span class="s0">,</span>
+                <span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s0">,</span>
+            <span class="s1">)</span>
+
+    <span class="s4"># But for compatibility we allow non-whitespace control characters, even</span>
+    <span class="s4"># though they're forbidden by the spec.</span>
+    <span class="s1">Request(</span>
+        <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">,</span>
+        <span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">,</span>
+        <span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;Foo&quot;</span><span class="s0">, </span><span class="s2">&quot;asd</span><span class="s0">\x01\x02\x7f</span><span class="s2">&quot;</span><span class="s1">)]</span><span class="s0">,</span>
+        <span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s4"># Request target is validated</span>
+    <span class="s0">for </span><span class="s1">bad_char </span><span class="s0">in </span><span class="s5">b&quot;</span><span class="s0">\x00\x20\x7f\xee</span><span class="s5">&quot;</span><span class="s1">:</span>
+        <span class="s1">target = bytearray(</span><span class="s5">b&quot;/&quot;</span><span class="s1">)</span>
+        <span class="s1">target.append(bad_char)</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+            <span class="s1">Request(</span>
+                <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">, </span><span class="s1">target=target</span><span class="s0">, </span><span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.1&quot;</span>
+            <span class="s1">)</span>
+
+    <span class="s1">ir = InformationalResponse(status_code=</span><span class="s3">100</span><span class="s0">, </span><span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)])</span>
+    <span class="s0">assert </span><span class="s1">ir.status_code == </span><span class="s3">100</span>
+    <span class="s0">assert </span><span class="s1">ir.headers == [(</span><span class="s5">b&quot;host&quot;</span><span class="s0">, </span><span class="s5">b&quot;a&quot;</span><span class="s1">)]</span>
+    <span class="s0">assert </span><span class="s1">ir.http_version == </span><span class="s5">b&quot;1.1&quot;</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">InformationalResponse(status_code=</span><span class="s3">200</span><span class="s0">, </span><span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;a&quot;</span><span class="s1">)])</span>
+
+    <span class="s1">resp = Response(status_code=</span><span class="s3">204</span><span class="s0">, </span><span class="s1">headers=[]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">resp.status_code == </span><span class="s3">204</span>
+    <span class="s0">assert </span><span class="s1">resp.headers == []</span>
+    <span class="s0">assert </span><span class="s1">resp.http_version == </span><span class="s5">b&quot;1.0&quot;</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">resp = Response(status_code=</span><span class="s3">100</span><span class="s0">, </span><span class="s1">headers=[]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">Response(status_code=</span><span class="s2">&quot;100&quot;</span><span class="s0">, </span><span class="s1">headers=[]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">InformationalResponse(status_code=</span><span class="s5">b&quot;100&quot;</span><span class="s0">, </span><span class="s1">headers=[]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s1">)</span>
+
+    <span class="s1">d = Data(data=</span><span class="s5">b&quot;asdf&quot;</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">d.data == </span><span class="s5">b&quot;asdf&quot;</span>
+
+    <span class="s1">eom = EndOfMessage()</span>
+    <span class="s0">assert </span><span class="s1">eom.headers == []</span>
+
+    <span class="s1">cc = ConnectionClosed()</span>
+    <span class="s0">assert </span><span class="s1">repr(cc) == </span><span class="s2">&quot;ConnectionClosed()&quot;</span>
+
+
+<span class="s0">def </span><span class="s1">test_intenum_status_code():</span>
+    <span class="s4"># https://github.com/python-hyper/h11/issues/72</span>
+
+    <span class="s1">r = Response(status_code=HTTPStatus.OK</span><span class="s0">, </span><span class="s1">headers=[]</span><span class="s0">, </span><span class="s1">http_version=</span><span class="s2">&quot;1.0&quot;</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">r.status_code == HTTPStatus.OK</span>
+    <span class="s0">assert </span><span class="s1">type(r.status_code) </span><span class="s0">is not </span><span class="s1">type(HTTPStatus.OK)</span>
+    <span class="s0">assert </span><span class="s1">type(r.status_code) </span><span class="s0">is </span><span class="s1">int</span>
+
+
+<span class="s0">def </span><span class="s1">test_header_casing():</span>
+    <span class="s1">r = Request(</span>
+        <span class="s1">method=</span><span class="s2">&quot;GET&quot;</span><span class="s0">,</span>
+        <span class="s1">target=</span><span class="s2">&quot;/&quot;</span><span class="s0">,</span>
+        <span class="s1">headers=[(</span><span class="s2">&quot;Host&quot;</span><span class="s0">, </span><span class="s2">&quot;example.org&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s2">&quot;Connection&quot;</span><span class="s0">, </span><span class="s2">&quot;keep-alive&quot;</span><span class="s1">)]</span><span class="s0">,</span>
+        <span class="s1">http_version=</span><span class="s2">&quot;1.1&quot;</span><span class="s0">,</span>
+    <span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">len(r.headers) == </span><span class="s3">2</span>
+    <span class="s0">assert </span><span class="s1">r.headers[</span><span class="s3">0</span><span class="s1">] == (</span><span class="s5">b&quot;host&quot;</span><span class="s0">, </span><span class="s5">b&quot;example.org&quot;</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s1">r.headers == [(</span><span class="s5">b&quot;host&quot;</span><span class="s0">, </span><span class="s5">b&quot;example.org&quot;</span><span class="s1">)</span><span class="s0">, </span><span class="s1">(</span><span class="s5">b&quot;connection&quot;</span><span class="s0">, </span><span class="s5">b&quot;keep-alive&quot;</span><span class="s1">)]</span>
+    <span class="s0">assert </span><span class="s1">r.headers.raw_items() == [</span>
+        <span class="s1">(</span><span class="s5">b&quot;Host&quot;</span><span class="s0">, </span><span class="s5">b&quot;example.org&quot;</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s5">b&quot;Connection&quot;</span><span class="s0">, </span><span class="s5">b&quot;keep-alive&quot;</span><span class="s1">)</span><span class="s0">,</span>
+    <span class="s1">]</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,118 @@
+<html>
+<head>
+<title>plugin.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+plugin.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Pytest plugin configuration 
+&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">pytest_bdd </span><span class="s2">import </span><span class="s1">exceptions</span>
+
+<span class="s2">from </span><span class="s1">.steps </span><span class="s2">import </span><span class="s1">Step</span><span class="s2">, </span><span class="s1">StepMarkName</span>
+
+<span class="s1">__metaclass__ = type  </span><span class="s3"># pylint: disable=invalid-name,unused-argument</span>
+
+
+<span class="s2">def </span><span class="s1">parents_stack(parent):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    :type parent: _pytest.python.Instance 
+    :rtype: list[_pytest.python.Instance] 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">hasattr(parent</span><span class="s2">, </span><span class="s4">&quot;obj&quot;</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s1">[]</span>
+    <span class="s2">return </span><span class="s1">[parent] + parents_stack(parent.parent)</span>
+
+
+<span class="s2">class </span><span class="s1">BDDListener:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    pytest-bdd-wrappers hook listener 
+    &quot;&quot;&quot;</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">config):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type config: _pytest.config.Config 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.config = config</span>
+        <span class="s1">self.scenarios = {}</span>
+        <span class="s1">self.steps = []</span>
+
+    <span class="s2">def </span><span class="s1">pytest_pycollect_makeitem(self</span><span class="s2">, </span><span class="s1">collector</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">obj):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type collector: _pytest.python.PyCollector 
+        :type name: str 
+        :type obj: object 
+        &quot;&quot;&quot;</span>
+        <span class="s1">pytestmark = getattr(obj</span><span class="s2">, </span><span class="s4">&quot;pytestmark&quot;</span><span class="s2">, </span><span class="s1">[])</span>
+        <span class="s2">if not </span><span class="s1">isinstance(pytestmark</span><span class="s2">, </span><span class="s1">list):</span>
+            <span class="s2">return</span>
+        <span class="s1">markers = [m </span><span class="s2">for </span><span class="s1">m </span><span class="s2">in </span><span class="s1">pytestmark </span><span class="s2">if </span><span class="s1">StepMarkName.is_bdd_marker(m)]</span>
+        <span class="s2">for </span><span class="s1">mark </span><span class="s2">in </span><span class="s1">markers:</span>
+            <span class="s1">self.steps.append(</span>
+                <span class="s1">Step(mark.kwargs[</span><span class="s4">&quot;name&quot;</span><span class="s1">]</span><span class="s2">, </span><span class="s1">collector.obj</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">, </span><span class="s1">name)</span>
+            <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">pytest_pyfunc_call(self</span><span class="s2">, </span><span class="s1">pyfuncitem):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :type pyfuncitem: _pytest.python.Function 
+        &quot;&quot;&quot;</span>
+        <span class="s1">request = getattr(pyfuncitem</span><span class="s2">, </span><span class="s4">&quot;_request&quot;</span><span class="s1">)</span>
+        <span class="s1">scenario_markers = [</span>
+            <span class="s1">marker </span><span class="s2">for </span><span class="s1">marker </span><span class="s2">in </span><span class="s1">pyfuncitem.own_markers</span>
+            <span class="s2">if </span><span class="s1">marker.name == </span><span class="s4">&quot;scenario&quot;</span>
+        <span class="s1">]</span>
+        <span class="s2">if not </span><span class="s1">scenario_markers:</span>
+            <span class="s2">return</span>
+        <span class="s1">tested_scenario = scenario_markers[</span><span class="s5">0</span><span class="s1">].kwargs[</span><span class="s4">&quot;scenario&quot;</span><span class="s1">]</span>
+
+        <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">tested_scenario.steps:</span>
+            <span class="s1">step_func = self._find_step(step.name</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">pyfuncitem.parent)</span>
+            <span class="s2">if not </span><span class="s1">step_func:</span>
+                <span class="s2">raise </span><span class="s1">exceptions.StepDefinitionNotFoundError(</span>
+                    <span class="s4">&quot;{} {}&quot;</span><span class="s1">.format(step.type</span><span class="s2">, </span><span class="s1">step.name)</span>
+                <span class="s1">)</span>
+            <span class="s1">step_func()</span>
+
+    <span class="s2">def </span><span class="s1">_find_step(self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">scenario_parent):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        :param name: step from bdd feature file 
+        :type name: str 
+        :type request: _pytest.fixtures.FixtureRequest 
+        :type scenario_parent: _pytest.python.Instance 
+        :rtype: Callable | None 
+        &quot;&quot;&quot;</span>
+        <span class="s1">steps = [s </span><span class="s2">for </span><span class="s1">s </span><span class="s2">in </span><span class="s1">self.steps </span><span class="s2">if </span><span class="s1">s.is_matching(name)]</span>
+        <span class="s1">parents = parents_stack(scenario_parent)</span>
+        <span class="s1">mapped_distance = {</span>
+            <span class="s1">parents.index(parent): step.to_callable(name</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">parent)</span>
+            <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">steps</span>
+            <span class="s2">for </span><span class="s1">parent </span><span class="s2">in </span><span class="s1">parents</span>
+            <span class="s2">if </span><span class="s1">step.same_parent(parent.obj)  </span><span class="s3"># pylint: disable=no-member</span>
+        <span class="s1">}</span>
+        <span class="s1">_</span><span class="s2">, </span><span class="s1">func = min(</span>
+            <span class="s1">list(mapped_distance.items()) + [(</span><span class="s5">9999</span><span class="s2">, None</span><span class="s1">)]</span><span class="s2">,</span>
+            <span class="s1">key=</span><span class="s2">lambda </span><span class="s1">e: e[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">func</span>
+
+
+<span class="s2">def </span><span class="s1">pytest_configure(config):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    :type config: _pytest.config.Config 
+    &quot;&quot;&quot;</span>
+    <span class="s1">config.pluginmanager.register(BDDListener(config))</span>
+</pre>
+</body>
+</html>

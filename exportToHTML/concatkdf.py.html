@@ -1,0 +1,174 @@
+<html>
+<head>
+<title>concatkdf.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+concatkdf.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">struct</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AlreadyFinalized</span><span class="s2">,</span>
+    <span class="s1">InvalidKey</span><span class="s2">,</span>
+    <span class="s1">UnsupportedAlgorithm</span><span class="s2">,</span>
+    <span class="s1">_Reasons</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HMACBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">HashBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">constant_time</span><span class="s2">, </span><span class="s1">hashes</span><span class="s2">, </span><span class="s1">hmac</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.kdf </span><span class="s2">import </span><span class="s1">KeyDerivationFunction</span>
+
+
+<span class="s2">def </span><span class="s1">_int_to_u32be(n: int) -&gt; bytes:</span>
+    <span class="s2">return </span><span class="s1">struct.pack(</span><span class="s3">&quot;&gt;I&quot;</span><span class="s2">, </span><span class="s1">n)</span>
+
+
+<span class="s2">def </span><span class="s1">_common_args_checks(</span>
+    <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+    <span class="s1">length: int</span><span class="s2">,</span>
+    <span class="s1">otherinfo: typing.Optional[bytes]</span><span class="s2">,</span>
+<span class="s1">):</span>
+    <span class="s1">max_length = algorithm.digest_size * (</span><span class="s4">2 </span><span class="s1">** </span><span class="s4">32 </span><span class="s1">- </span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">length &gt; max_length:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s3">&quot;Can not derive keys larger than {} bits.&quot;</span><span class="s1">.format(max_length)</span>
+        <span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">otherinfo </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;otherinfo&quot;</span><span class="s2">, </span><span class="s1">otherinfo)</span>
+
+
+<span class="s2">def </span><span class="s1">_concatkdf_derive(</span>
+    <span class="s1">key_material: bytes</span><span class="s2">,</span>
+    <span class="s1">length: int</span><span class="s2">,</span>
+    <span class="s1">auxfn: typing.Callable[[]</span><span class="s2">, </span><span class="s1">hashes.HashContext]</span><span class="s2">,</span>
+    <span class="s1">otherinfo: bytes</span><span class="s2">,</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s1">utils._check_byteslike(</span><span class="s3">&quot;key_material&quot;</span><span class="s2">, </span><span class="s1">key_material)</span>
+    <span class="s1">output = [</span><span class="s5">b&quot;&quot;</span><span class="s1">]</span>
+    <span class="s1">outlen = </span><span class="s4">0</span>
+    <span class="s1">counter = </span><span class="s4">1</span>
+
+    <span class="s2">while </span><span class="s1">length &gt; outlen:</span>
+        <span class="s1">h = auxfn()</span>
+        <span class="s1">h.update(_int_to_u32be(counter))</span>
+        <span class="s1">h.update(key_material)</span>
+        <span class="s1">h.update(otherinfo)</span>
+        <span class="s1">output.append(h.finalize())</span>
+        <span class="s1">outlen += len(output[-</span><span class="s4">1</span><span class="s1">])</span>
+        <span class="s1">counter += </span><span class="s4">1</span>
+
+    <span class="s2">return </span><span class="s5">b&quot;&quot;</span><span class="s1">.join(output)[:length]</span>
+
+
+<span class="s2">class </span><span class="s1">ConcatKDFHash(KeyDerivationFunction):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+        <span class="s1">length: int</span><span class="s2">,</span>
+        <span class="s1">otherinfo: typing.Optional[bytes]</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+
+        <span class="s1">_common_args_checks(algorithm</span><span class="s2">, </span><span class="s1">length</span><span class="s2">, </span><span class="s1">otherinfo)</span>
+        <span class="s1">self._algorithm = algorithm</span>
+        <span class="s1">self._length = length</span>
+        <span class="s1">self._otherinfo: bytes = otherinfo </span><span class="s2">if </span><span class="s1">otherinfo </span><span class="s2">is not None else </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HashBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement HashBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._used = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">_hash(self) -&gt; hashes.Hash:</span>
+        <span class="s2">return </span><span class="s1">hashes.Hash(self._algorithm</span><span class="s2">, </span><span class="s1">self._backend)</span>
+
+    <span class="s2">def </span><span class="s1">derive(self</span><span class="s2">, </span><span class="s1">key_material: bytes) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._used:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized</span>
+        <span class="s1">self._used = </span><span class="s2">True</span>
+        <span class="s2">return </span><span class="s1">_concatkdf_derive(</span>
+            <span class="s1">key_material</span><span class="s2">, </span><span class="s1">self._length</span><span class="s2">, </span><span class="s1">self._hash</span><span class="s2">, </span><span class="s1">self._otherinfo</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">key_material: bytes</span><span class="s2">, </span><span class="s1">expected_key: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(self.derive(key_material)</span><span class="s2">, </span><span class="s1">expected_key):</span>
+            <span class="s2">raise </span><span class="s1">InvalidKey</span>
+
+
+<span class="s2">class </span><span class="s1">ConcatKDFHMAC(KeyDerivationFunction):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+        <span class="s1">length: int</span><span class="s2">,</span>
+        <span class="s1">salt: typing.Optional[bytes]</span><span class="s2">,</span>
+        <span class="s1">otherinfo: typing.Optional[bytes]</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+
+        <span class="s1">_common_args_checks(algorithm</span><span class="s2">, </span><span class="s1">length</span><span class="s2">, </span><span class="s1">otherinfo)</span>
+        <span class="s1">self._algorithm = algorithm</span>
+        <span class="s1">self._length = length</span>
+        <span class="s1">self._otherinfo: bytes = otherinfo </span><span class="s2">if </span><span class="s1">otherinfo </span><span class="s2">is not None else </span><span class="s5">b&quot;&quot;</span>
+
+        <span class="s2">if </span><span class="s1">algorithm.block_size </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s3">&quot;{} is unsupported for ConcatKDF&quot;</span><span class="s1">.format(algorithm.name)</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">salt </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">salt = </span><span class="s5">b&quot;</span><span class="s2">\x00</span><span class="s5">&quot; </span><span class="s1">* algorithm.block_size</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">utils._check_bytes(</span><span class="s3">&quot;salt&quot;</span><span class="s2">, </span><span class="s1">salt)</span>
+
+        <span class="s1">self._salt = salt</span>
+
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">HMACBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement HMACBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._used = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">_hmac(self) -&gt; hmac.HMAC:</span>
+        <span class="s2">return </span><span class="s1">hmac.HMAC(self._salt</span><span class="s2">, </span><span class="s1">self._algorithm</span><span class="s2">, </span><span class="s1">self._backend)</span>
+
+    <span class="s2">def </span><span class="s1">derive(self</span><span class="s2">, </span><span class="s1">key_material: bytes) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._used:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized</span>
+        <span class="s1">self._used = </span><span class="s2">True</span>
+        <span class="s2">return </span><span class="s1">_concatkdf_derive(</span>
+            <span class="s1">key_material</span><span class="s2">, </span><span class="s1">self._length</span><span class="s2">, </span><span class="s1">self._hmac</span><span class="s2">, </span><span class="s1">self._otherinfo</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">key_material: bytes</span><span class="s2">, </span><span class="s1">expected_key: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(self.derive(key_material)</span><span class="s2">, </span><span class="s1">expected_key):</span>
+            <span class="s2">raise </span><span class="s1">InvalidKey</span>
+</pre>
+</body>
+</html>

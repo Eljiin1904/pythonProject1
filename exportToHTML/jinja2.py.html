@@ -1,0 +1,146 @@
+<html>
+<head>
+<title>jinja2.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+jinja2.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">pathlib </span><span class="s0">import </span><span class="s1">Path</span>
+
+<span class="s0">import </span><span class="s1">jinja2</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">TemplateDoesNotExist</span><span class="s0">, </span><span class="s1">TemplateSyntaxError</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+<span class="s0">from </span><span class="s1">django.utils.module_loading </span><span class="s0">import </span><span class="s1">import_string</span>
+
+<span class="s0">from </span><span class="s1">.base </span><span class="s0">import </span><span class="s1">BaseEngine</span>
+
+
+<span class="s0">class </span><span class="s1">Jinja2(BaseEngine):</span>
+
+    <span class="s1">app_dirname = </span><span class="s2">'jinja2'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">params):</span>
+        <span class="s1">params = params.copy()</span>
+        <span class="s1">options = params.pop(</span><span class="s2">'OPTIONS'</span><span class="s1">).copy()</span>
+        <span class="s1">super().__init__(params)</span>
+
+        <span class="s1">self.context_processors = options.pop(</span><span class="s2">'context_processors'</span><span class="s0">, </span><span class="s1">[])</span>
+
+        <span class="s1">environment = options.pop(</span><span class="s2">'environment'</span><span class="s0">, </span><span class="s2">'jinja2.Environment'</span><span class="s1">)</span>
+        <span class="s1">environment_cls = import_string(environment)</span>
+
+        <span class="s0">if </span><span class="s2">'loader' </span><span class="s0">not in </span><span class="s1">options:</span>
+            <span class="s1">options[</span><span class="s2">'loader'</span><span class="s1">] = jinja2.FileSystemLoader(self.template_dirs)</span>
+        <span class="s1">options.setdefault(</span><span class="s2">'autoescape'</span><span class="s0">, True</span><span class="s1">)</span>
+        <span class="s1">options.setdefault(</span><span class="s2">'auto_reload'</span><span class="s0">, </span><span class="s1">settings.DEBUG)</span>
+        <span class="s1">options.setdefault(</span><span class="s2">'undefined'</span><span class="s0">,</span>
+                           <span class="s1">jinja2.DebugUndefined </span><span class="s0">if </span><span class="s1">settings.DEBUG </span><span class="s0">else </span><span class="s1">jinja2.Undefined)</span>
+
+        <span class="s1">self.env = environment_cls(**options)</span>
+
+    <span class="s0">def </span><span class="s1">from_string(self</span><span class="s0">, </span><span class="s1">template_code):</span>
+        <span class="s0">return </span><span class="s1">Template(self.env.from_string(template_code)</span><span class="s0">, </span><span class="s1">self)</span>
+
+    <span class="s0">def </span><span class="s1">get_template(self</span><span class="s0">, </span><span class="s1">template_name):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">Template(self.env.get_template(template_name)</span><span class="s0">, </span><span class="s1">self)</span>
+        <span class="s0">except </span><span class="s1">jinja2.TemplateNotFound </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s0">raise </span><span class="s1">TemplateDoesNotExist(exc.name</span><span class="s0">, </span><span class="s1">backend=self) </span><span class="s0">from </span><span class="s1">exc</span>
+        <span class="s0">except </span><span class="s1">jinja2.TemplateSyntaxError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">new = TemplateSyntaxError(exc.args)</span>
+            <span class="s1">new.template_debug = get_exception_info(exc)</span>
+            <span class="s0">raise </span><span class="s1">new </span><span class="s0">from </span><span class="s1">exc</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">template_context_processors(self):</span>
+        <span class="s0">return </span><span class="s1">[import_string(path) </span><span class="s0">for </span><span class="s1">path </span><span class="s0">in </span><span class="s1">self.context_processors]</span>
+
+
+<span class="s0">class </span><span class="s1">Template:</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">template</span><span class="s0">, </span><span class="s1">backend):</span>
+        <span class="s1">self.template = template</span>
+        <span class="s1">self.backend = backend</span>
+        <span class="s1">self.origin = Origin(</span>
+            <span class="s1">name=template.filename</span><span class="s0">, </span><span class="s1">template_name=template.name</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">context=</span><span class="s0">None, </span><span class="s1">request=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">csrf_input_lazy</span><span class="s0">, </span><span class="s1">csrf_token_lazy</span>
+        <span class="s0">if </span><span class="s1">context </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">context = {}</span>
+        <span class="s0">if </span><span class="s1">request </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">context[</span><span class="s2">'request'</span><span class="s1">] = request</span>
+            <span class="s1">context[</span><span class="s2">'csrf_input'</span><span class="s1">] = csrf_input_lazy(request)</span>
+            <span class="s1">context[</span><span class="s2">'csrf_token'</span><span class="s1">] = csrf_token_lazy(request)</span>
+            <span class="s0">for </span><span class="s1">context_processor </span><span class="s0">in </span><span class="s1">self.backend.template_context_processors:</span>
+                <span class="s1">context.update(context_processor(request))</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.template.render(context)</span>
+        <span class="s0">except </span><span class="s1">jinja2.TemplateSyntaxError </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">new = TemplateSyntaxError(exc.args)</span>
+            <span class="s1">new.template_debug = get_exception_info(exc)</span>
+            <span class="s0">raise </span><span class="s1">new </span><span class="s0">from </span><span class="s1">exc</span>
+
+
+<span class="s0">class </span><span class="s1">Origin:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    A container to hold debug information as described in the template API 
+    documentation. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">template_name):</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.template_name = template_name</span>
+
+
+<span class="s0">def </span><span class="s1">get_exception_info(exception):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Format exception information for display on the debug page using the 
+    structure described in the template API documentation. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">context_lines = </span><span class="s4">10</span>
+    <span class="s1">lineno = exception.lineno</span>
+    <span class="s1">source = exception.source</span>
+    <span class="s0">if </span><span class="s1">source </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">exception_file = Path(exception.filename)</span>
+        <span class="s0">if </span><span class="s1">exception_file.exists():</span>
+            <span class="s0">with </span><span class="s1">open(exception_file</span><span class="s0">, </span><span class="s2">'r'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">fp:</span>
+                <span class="s1">source = fp.read()</span>
+    <span class="s0">if </span><span class="s1">source </span><span class="s0">is not None</span><span class="s1">:</span>
+        <span class="s1">lines = list(enumerate(source.strip().split(</span><span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">)</span><span class="s0">, </span><span class="s1">start=</span><span class="s4">1</span><span class="s1">))</span>
+        <span class="s1">during = lines[lineno - </span><span class="s4">1</span><span class="s1">][</span><span class="s4">1</span><span class="s1">]</span>
+        <span class="s1">total = len(lines)</span>
+        <span class="s1">top = max(</span><span class="s4">0</span><span class="s0">, </span><span class="s1">lineno - context_lines - </span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s1">bottom = min(total</span><span class="s0">, </span><span class="s1">lineno + context_lines)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">during = </span><span class="s2">''</span>
+        <span class="s1">lines = []</span>
+        <span class="s1">total = top = bottom = </span><span class="s4">0</span>
+    <span class="s0">return </span><span class="s1">{</span>
+        <span class="s2">'name'</span><span class="s1">: exception.filename</span><span class="s0">,</span>
+        <span class="s2">'message'</span><span class="s1">: exception.message</span><span class="s0">,</span>
+        <span class="s2">'source_lines'</span><span class="s1">: lines[top:bottom]</span><span class="s0">,</span>
+        <span class="s2">'line'</span><span class="s1">: lineno</span><span class="s0">,</span>
+        <span class="s2">'before'</span><span class="s1">: </span><span class="s2">''</span><span class="s0">,</span>
+        <span class="s2">'during'</span><span class="s1">: during</span><span class="s0">,</span>
+        <span class="s2">'after'</span><span class="s1">: </span><span class="s2">''</span><span class="s0">,</span>
+        <span class="s2">'total'</span><span class="s1">: total</span><span class="s0">,</span>
+        <span class="s2">'top'</span><span class="s1">: top</span><span class="s0">,</span>
+        <span class="s2">'bottom'</span><span class="s1">: bottom</span><span class="s0">,</span>
+    <span class="s1">}</span>
+</pre>
+</body>
+</html>

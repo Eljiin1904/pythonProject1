@@ -1,0 +1,406 @@
+<html>
+<head>
+<title>loaddata.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+loaddata.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">glob</span>
+<span class="s0">import </span><span class="s1">gzip</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">import </span><span class="s1">zipfile</span>
+<span class="s0">from </span><span class="s1">itertools </span><span class="s0">import </span><span class="s1">product</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core </span><span class="s0">import </span><span class="s1">serializers</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.core.management.base </span><span class="s0">import </span><span class="s1">BaseCommand</span><span class="s0">, </span><span class="s1">CommandError</span>
+<span class="s0">from </span><span class="s1">django.core.management.color </span><span class="s0">import </span><span class="s1">no_style</span>
+<span class="s0">from </span><span class="s1">django.core.management.utils </span><span class="s0">import </span><span class="s1">parse_apps_and_model_labels</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">DatabaseError</span><span class="s0">, </span><span class="s1">IntegrityError</span><span class="s0">, </span><span class="s1">connections</span><span class="s0">, </span><span class="s1">router</span><span class="s0">,</span>
+    <span class="s1">transaction</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">bz2</span>
+    <span class="s1">has_bz2 = </span><span class="s0">True</span>
+<span class="s0">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_bz2 = </span><span class="s0">False</span>
+
+<span class="s0">try</span><span class="s1">:</span>
+    <span class="s0">import </span><span class="s1">lzma</span>
+    <span class="s1">has_lzma = </span><span class="s0">True</span>
+<span class="s0">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_lzma = </span><span class="s0">False</span>
+
+<span class="s1">READ_STDIN = </span><span class="s2">'-'</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+    <span class="s1">help = </span><span class="s2">'Installs the named fixture(s) in the database.'</span>
+    <span class="s1">missing_args_message = (</span>
+        <span class="s2">&quot;No database fixture specified. Please provide the path of at least &quot;</span>
+        <span class="s2">&quot;one fixture in the command line.&quot;</span>
+    <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span><span class="s2">'args'</span><span class="s0">, </span><span class="s1">metavar=</span><span class="s2">'fixture'</span><span class="s0">, </span><span class="s1">nargs=</span><span class="s2">'+'</span><span class="s0">, </span><span class="s1">help=</span><span class="s2">'Fixture labels.'</span><span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--database'</span><span class="s0">, </span><span class="s1">default=DEFAULT_DB_ALIAS</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Nominates a specific database to load fixtures into. Defaults to the &quot;default&quot; database.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--app'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'app_label'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Only look for fixtures in the specified app.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--ignorenonexistent'</span><span class="s0">, </span><span class="s2">'-i'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'ignore'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Ignores entries in the serialized data for fields that do not '</span>
+                 <span class="s2">'currently exist on the model.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'-e'</span><span class="s0">, </span><span class="s2">'--exclude'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'append'</span><span class="s0">, </span><span class="s1">default=[]</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'An app_label or app_label.ModelName to exclude. Can be used multiple times.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--format'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Format of serialized data when reading from stdin.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">*fixture_labels</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">self.ignore = options[</span><span class="s2">'ignore'</span><span class="s1">]</span>
+        <span class="s1">self.using = options[</span><span class="s2">'database'</span><span class="s1">]</span>
+        <span class="s1">self.app_label = options[</span><span class="s2">'app_label'</span><span class="s1">]</span>
+        <span class="s1">self.verbosity = options[</span><span class="s2">'verbosity'</span><span class="s1">]</span>
+        <span class="s1">self.excluded_models</span><span class="s0">, </span><span class="s1">self.excluded_apps = parse_apps_and_model_labels(options[</span><span class="s2">'exclude'</span><span class="s1">])</span>
+        <span class="s1">self.format = options[</span><span class="s2">'format'</span><span class="s1">]</span>
+
+        <span class="s0">with </span><span class="s1">transaction.atomic(using=self.using):</span>
+            <span class="s1">self.loaddata(fixture_labels)</span>
+
+        <span class="s3"># Close the DB connection -- unless we're still in a transaction. This</span>
+        <span class="s3"># is required as a workaround for an edge case in MySQL: if the same</span>
+        <span class="s3"># connection is used to create tables, load data, and query, the query</span>
+        <span class="s3"># can return incorrect results. See Django #7572, MySQL #37735.</span>
+        <span class="s0">if </span><span class="s1">transaction.get_autocommit(self.using):</span>
+            <span class="s1">connections[self.using].close()</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">compression_formats(self):</span>
+        <span class="s4">&quot;&quot;&quot;A dict mapping format names to (open function, mode arg) tuples.&quot;&quot;&quot;</span>
+        <span class="s3"># Forcing binary mode may be revisited after dropping Python 2 support (see #22399)</span>
+        <span class="s1">compression_formats = {</span>
+            <span class="s0">None</span><span class="s1">: (open</span><span class="s0">, </span><span class="s2">'rb'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s2">'gz'</span><span class="s1">: (gzip.GzipFile</span><span class="s0">, </span><span class="s2">'rb'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s2">'zip'</span><span class="s1">: (SingleZipReader</span><span class="s0">, </span><span class="s2">'r'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s2">'stdin'</span><span class="s1">: (</span><span class="s0">lambda </span><span class="s1">*args: sys.stdin</span><span class="s0">, None</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">if </span><span class="s1">has_bz2:</span>
+            <span class="s1">compression_formats[</span><span class="s2">'bz2'</span><span class="s1">] = (bz2.BZ2File</span><span class="s0">, </span><span class="s2">'r'</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">has_lzma:</span>
+            <span class="s1">compression_formats[</span><span class="s2">'lzma'</span><span class="s1">] = (lzma.LZMAFile</span><span class="s0">, </span><span class="s2">'r'</span><span class="s1">)</span>
+            <span class="s1">compression_formats[</span><span class="s2">'xz'</span><span class="s1">] = (lzma.LZMAFile</span><span class="s0">, </span><span class="s2">'r'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">compression_formats</span>
+
+    <span class="s0">def </span><span class="s1">reset_sequences(self</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">models):</span>
+        <span class="s4">&quot;&quot;&quot;Reset database sequences for the given connection and models.&quot;&quot;&quot;</span>
+        <span class="s1">sequence_sql = connection.ops.sequence_reset_sql(no_style()</span><span class="s0">, </span><span class="s1">models)</span>
+        <span class="s0">if </span><span class="s1">sequence_sql:</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span><span class="s2">'Resetting sequences'</span><span class="s1">)</span>
+            <span class="s0">with </span><span class="s1">connection.cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+                <span class="s0">for </span><span class="s1">line </span><span class="s0">in </span><span class="s1">sequence_sql:</span>
+                    <span class="s1">cursor.execute(line)</span>
+
+    <span class="s0">def </span><span class="s1">loaddata(self</span><span class="s0">, </span><span class="s1">fixture_labels):</span>
+        <span class="s1">connection = connections[self.using]</span>
+
+        <span class="s3"># Keep a count of the installed objects and fixtures</span>
+        <span class="s1">self.fixture_count = </span><span class="s5">0</span>
+        <span class="s1">self.loaded_object_count = </span><span class="s5">0</span>
+        <span class="s1">self.fixture_object_count = </span><span class="s5">0</span>
+        <span class="s1">self.models = set()</span>
+
+        <span class="s1">self.serialization_formats = serializers.get_public_serializer_formats()</span>
+
+        <span class="s3"># Django's test suite repeatedly tries to load initial_data fixtures</span>
+        <span class="s3"># from apps that don't have any fixtures. Because disabling constraint</span>
+        <span class="s3"># checks can be expensive on some database (especially MSSQL), bail</span>
+        <span class="s3"># out early if no fixtures are found.</span>
+        <span class="s0">for </span><span class="s1">fixture_label </span><span class="s0">in </span><span class="s1">fixture_labels:</span>
+            <span class="s0">if </span><span class="s1">self.find_fixtures(fixture_label):</span>
+                <span class="s0">break</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return</span>
+
+        <span class="s1">self.objs_with_deferred_fields = []</span>
+        <span class="s0">with </span><span class="s1">connection.constraint_checks_disabled():</span>
+            <span class="s0">for </span><span class="s1">fixture_label </span><span class="s0">in </span><span class="s1">fixture_labels:</span>
+                <span class="s1">self.load_label(fixture_label)</span>
+            <span class="s0">for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">self.objs_with_deferred_fields:</span>
+                <span class="s1">obj.save_deferred_fields(using=self.using)</span>
+
+        <span class="s3"># Since we disabled constraint checks, we must manually check for</span>
+        <span class="s3"># any invalid keys that might have been added</span>
+        <span class="s1">table_names = [model._meta.db_table </span><span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self.models]</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">connection.check_constraints(table_names=table_names)</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s1">e.args = (</span><span class="s2">&quot;Problem installing fixtures: %s&quot; </span><span class="s1">% e</span><span class="s0">,</span><span class="s1">)</span>
+            <span class="s0">raise</span>
+
+        <span class="s3"># If we found even one object in a fixture, we need to reset the</span>
+        <span class="s3"># database sequences.</span>
+        <span class="s0">if </span><span class="s1">self.loaded_object_count &gt; </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">self.reset_sequences(connection</span><span class="s0">, </span><span class="s1">self.models)</span>
+
+        <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">self.fixture_object_count == self.loaded_object_count:</span>
+                <span class="s1">self.stdout.write(</span>
+                    <span class="s2">&quot;Installed %d object(s) from %d fixture(s)&quot;</span>
+                    <span class="s1">% (self.loaded_object_count</span><span class="s0">, </span><span class="s1">self.fixture_count)</span>
+                <span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span>
+                    <span class="s2">&quot;Installed %d object(s) (of %d) from %d fixture(s)&quot;</span>
+                    <span class="s1">% (self.loaded_object_count</span><span class="s0">, </span><span class="s1">self.fixture_object_count</span><span class="s0">, </span><span class="s1">self.fixture_count)</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">save_obj(self</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s4">&quot;&quot;&quot;Save an object if permitted.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">(</span>
+            <span class="s1">obj.object._meta.app_config </span><span class="s0">in </span><span class="s1">self.excluded_apps </span><span class="s0">or</span>
+            <span class="s1">type(obj.object) </span><span class="s0">in </span><span class="s1">self.excluded_models</span>
+        <span class="s1">):</span>
+            <span class="s0">return False</span>
+        <span class="s1">saved = </span><span class="s0">False</span>
+        <span class="s0">if </span><span class="s1">router.allow_migrate_model(self.using</span><span class="s0">, </span><span class="s1">obj.object.__class__):</span>
+            <span class="s1">saved = </span><span class="s0">True</span>
+            <span class="s1">self.models.add(obj.object.__class__)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">obj.save(using=self.using)</span>
+            <span class="s3"># psycopg2 raises ValueError if data contains NUL chars.</span>
+            <span class="s0">except </span><span class="s1">(DatabaseError</span><span class="s0">, </span><span class="s1">IntegrityError</span><span class="s0">, </span><span class="s1">ValueError) </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s1">e.args = (</span><span class="s2">'Could not load %(object_label)s(pk=%(pk)s): %(error_msg)s' </span><span class="s1">% {</span>
+                    <span class="s2">'object_label'</span><span class="s1">: obj.object._meta.label</span><span class="s0">,</span>
+                    <span class="s2">'pk'</span><span class="s1">: obj.object.pk</span><span class="s0">,</span>
+                    <span class="s2">'error_msg'</span><span class="s1">: e</span><span class="s0">,</span>
+                <span class="s1">}</span><span class="s0">,</span><span class="s1">)</span>
+                <span class="s0">raise</span>
+        <span class="s0">if </span><span class="s1">obj.deferred_fields:</span>
+            <span class="s1">self.objs_with_deferred_fields.append(obj)</span>
+        <span class="s0">return </span><span class="s1">saved</span>
+
+    <span class="s0">def </span><span class="s1">load_label(self</span><span class="s0">, </span><span class="s1">fixture_label):</span>
+        <span class="s4">&quot;&quot;&quot;Load fixtures files for a given label.&quot;&quot;&quot;</span>
+        <span class="s1">show_progress = self.verbosity &gt;= </span><span class="s5">3</span>
+        <span class="s0">for </span><span class="s1">fixture_file</span><span class="s0">, </span><span class="s1">fixture_dir</span><span class="s0">, </span><span class="s1">fixture_name </span><span class="s0">in </span><span class="s1">self.find_fixtures(fixture_label):</span>
+            <span class="s1">_</span><span class="s0">, </span><span class="s1">ser_fmt</span><span class="s0">, </span><span class="s1">cmp_fmt = self.parse_name(os.path.basename(fixture_file))</span>
+            <span class="s1">open_method</span><span class="s0">, </span><span class="s1">mode = self.compression_formats[cmp_fmt]</span>
+            <span class="s1">fixture = open_method(fixture_file</span><span class="s0">, </span><span class="s1">mode)</span>
+            <span class="s1">self.fixture_count += </span><span class="s5">1</span>
+            <span class="s1">objects_in_fixture = </span><span class="s5">0</span>
+            <span class="s1">loaded_objects_in_fixture = </span><span class="s5">0</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span>
+                    <span class="s2">&quot;Installing %s fixture '%s' from %s.&quot;</span>
+                    <span class="s1">% (ser_fmt</span><span class="s0">, </span><span class="s1">fixture_name</span><span class="s0">, </span><span class="s1">humanize(fixture_dir))</span>
+                <span class="s1">)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">objects = serializers.deserialize(</span>
+                    <span class="s1">ser_fmt</span><span class="s0">, </span><span class="s1">fixture</span><span class="s0">, </span><span class="s1">using=self.using</span><span class="s0">, </span><span class="s1">ignorenonexistent=self.ignore</span><span class="s0">,</span>
+                    <span class="s1">handle_forward_references=</span><span class="s0">True,</span>
+                <span class="s1">)</span>
+
+                <span class="s0">for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">objects:</span>
+                    <span class="s1">objects_in_fixture += </span><span class="s5">1</span>
+                    <span class="s0">if </span><span class="s1">self.save_obj(obj):</span>
+                        <span class="s1">loaded_objects_in_fixture += </span><span class="s5">1</span>
+                        <span class="s0">if </span><span class="s1">show_progress:</span>
+                            <span class="s1">self.stdout.write(</span>
+                                <span class="s2">'</span><span class="s0">\r</span><span class="s2">Processed %i object(s).' </span><span class="s1">% loaded_objects_in_fixture</span><span class="s0">,</span>
+                                <span class="s1">ending=</span><span class="s2">''</span>
+                            <span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s0">if not </span><span class="s1">isinstance(e</span><span class="s0">, </span><span class="s1">CommandError):</span>
+                    <span class="s1">e.args = (</span><span class="s2">&quot;Problem installing fixture '%s': %s&quot; </span><span class="s1">% (fixture_file</span><span class="s0">, </span><span class="s1">e)</span><span class="s0">,</span><span class="s1">)</span>
+                <span class="s0">raise</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s1">fixture.close()</span>
+
+            <span class="s0">if </span><span class="s1">objects_in_fixture </span><span class="s0">and </span><span class="s1">show_progress:</span>
+                <span class="s1">self.stdout.write()  </span><span class="s3"># Add a newline after progress indicator.</span>
+            <span class="s1">self.loaded_object_count += loaded_objects_in_fixture</span>
+            <span class="s1">self.fixture_object_count += objects_in_fixture</span>
+            <span class="s3"># Warn if the fixture we loaded contains 0 objects.</span>
+            <span class="s0">if </span><span class="s1">objects_in_fixture == </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s1">warnings.warn(</span>
+                    <span class="s2">&quot;No fixture data found for '%s'. (File format may be &quot;</span>
+                    <span class="s2">&quot;invalid.)&quot; </span><span class="s1">% fixture_name</span><span class="s0">,</span>
+                    <span class="s1">RuntimeWarning</span>
+                <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">get_fixture_name_and_dirs(self</span><span class="s0">, </span><span class="s1">fixture_name):</span>
+        <span class="s1">dirname</span><span class="s0">, </span><span class="s1">basename = os.path.split(fixture_name)</span>
+        <span class="s0">if </span><span class="s1">os.path.isabs(fixture_name):</span>
+            <span class="s1">fixture_dirs = [dirname]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">fixture_dirs = self.fixture_dirs</span>
+            <span class="s0">if </span><span class="s1">os.path.sep </span><span class="s0">in </span><span class="s1">os.path.normpath(fixture_name):</span>
+                <span class="s1">fixture_dirs = [os.path.join(dir_</span><span class="s0">, </span><span class="s1">dirname) </span><span class="s0">for </span><span class="s1">dir_ </span><span class="s0">in </span><span class="s1">fixture_dirs]</span>
+        <span class="s0">return </span><span class="s1">basename</span><span class="s0">, </span><span class="s1">fixture_dirs</span>
+
+    <span class="s0">def </span><span class="s1">get_targets(self</span><span class="s0">, </span><span class="s1">fixture_name</span><span class="s0">, </span><span class="s1">ser_fmt</span><span class="s0">, </span><span class="s1">cmp_fmt):</span>
+        <span class="s1">databases = [self.using</span><span class="s0">, None</span><span class="s1">]</span>
+        <span class="s1">cmp_fmts = self.compression_formats </span><span class="s0">if </span><span class="s1">cmp_fmt </span><span class="s0">is None else </span><span class="s1">[cmp_fmt]</span>
+        <span class="s1">ser_fmts = self.serialization_formats </span><span class="s0">if </span><span class="s1">ser_fmt </span><span class="s0">is None else </span><span class="s1">[ser_fmt]</span>
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s2">'%s.%s' </span><span class="s1">% (</span>
+                <span class="s1">fixture_name</span><span class="s0">,</span>
+                <span class="s2">'.'</span><span class="s1">.join([ext </span><span class="s0">for </span><span class="s1">ext </span><span class="s0">in </span><span class="s1">combo </span><span class="s0">if </span><span class="s1">ext])</span><span class="s0">,</span>
+            <span class="s1">) </span><span class="s0">for </span><span class="s1">combo </span><span class="s0">in </span><span class="s1">product(databases</span><span class="s0">, </span><span class="s1">ser_fmts</span><span class="s0">, </span><span class="s1">cmp_fmts)</span>
+        <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">find_fixture_files_in_dir(self</span><span class="s0">, </span><span class="s1">fixture_dir</span><span class="s0">, </span><span class="s1">fixture_name</span><span class="s0">, </span><span class="s1">targets):</span>
+        <span class="s1">fixture_files_in_dir = []</span>
+        <span class="s1">path = os.path.join(fixture_dir</span><span class="s0">, </span><span class="s1">fixture_name)</span>
+        <span class="s0">for </span><span class="s1">candidate </span><span class="s0">in </span><span class="s1">glob.iglob(glob.escape(path) + </span><span class="s2">'*'</span><span class="s1">):</span>
+            <span class="s0">if </span><span class="s1">os.path.basename(candidate) </span><span class="s0">in </span><span class="s1">targets:</span>
+                <span class="s3"># Save the fixture_dir and fixture_name for future error</span>
+                <span class="s3"># messages.</span>
+                <span class="s1">fixture_files_in_dir.append((candidate</span><span class="s0">, </span><span class="s1">fixture_dir</span><span class="s0">, </span><span class="s1">fixture_name))</span>
+        <span class="s0">return </span><span class="s1">fixture_files_in_dir</span>
+
+    <span class="s1">@functools.lru_cache(maxsize=</span><span class="s0">None</span><span class="s1">)</span>
+    <span class="s0">def </span><span class="s1">find_fixtures(self</span><span class="s0">, </span><span class="s1">fixture_label):</span>
+        <span class="s4">&quot;&quot;&quot;Find fixture files for a given label.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">fixture_label == READ_STDIN:</span>
+            <span class="s0">return </span><span class="s1">[(READ_STDIN</span><span class="s0">, None, </span><span class="s1">READ_STDIN)]</span>
+
+        <span class="s1">fixture_name</span><span class="s0">, </span><span class="s1">ser_fmt</span><span class="s0">, </span><span class="s1">cmp_fmt = self.parse_name(fixture_label)</span>
+        <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">self.stdout.write(</span><span class="s2">&quot;Loading '%s' fixtures...&quot; </span><span class="s1">% fixture_name)</span>
+
+        <span class="s1">fixture_name</span><span class="s0">, </span><span class="s1">fixture_dirs = self.get_fixture_name_and_dirs(fixture_name)</span>
+        <span class="s1">targets = self.get_targets(fixture_name</span><span class="s0">, </span><span class="s1">ser_fmt</span><span class="s0">, </span><span class="s1">cmp_fmt)</span>
+        <span class="s1">fixture_files = []</span>
+        <span class="s0">for </span><span class="s1">fixture_dir </span><span class="s0">in </span><span class="s1">fixture_dirs:</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2</span><span class="s1">:</span>
+                <span class="s1">self.stdout.write(</span><span class="s2">&quot;Checking %s for fixtures...&quot; </span><span class="s1">% humanize(fixture_dir))</span>
+            <span class="s1">fixture_files_in_dir = self.find_fixture_files_in_dir(</span>
+                <span class="s1">fixture_dir</span><span class="s0">, </span><span class="s1">fixture_name</span><span class="s0">, </span><span class="s1">targets</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">self.verbosity &gt;= </span><span class="s5">2 </span><span class="s0">and not </span><span class="s1">fixture_files_in_dir:</span>
+                <span class="s1">self.stdout.write(</span><span class="s2">&quot;No fixture '%s' in %s.&quot; </span><span class="s1">%</span>
+                                  <span class="s1">(fixture_name</span><span class="s0">, </span><span class="s1">humanize(fixture_dir)))</span>
+
+            <span class="s3"># Check kept for backwards-compatibility; it isn't clear why</span>
+            <span class="s3"># duplicates are only allowed in different directories.</span>
+            <span class="s0">if </span><span class="s1">len(fixture_files_in_dir) &gt; </span><span class="s5">1</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span>
+                    <span class="s2">&quot;Multiple fixtures named '%s' in %s. Aborting.&quot; </span><span class="s1">%</span>
+                    <span class="s1">(fixture_name</span><span class="s0">, </span><span class="s1">humanize(fixture_dir)))</span>
+            <span class="s1">fixture_files.extend(fixture_files_in_dir)</span>
+
+        <span class="s0">if not </span><span class="s1">fixture_files:</span>
+            <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">&quot;No fixture named '%s' found.&quot; </span><span class="s1">% fixture_name)</span>
+
+        <span class="s0">return </span><span class="s1">fixture_files</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">fixture_dirs(self):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Return a list of fixture directories. 
+ 
+        The list contains the 'fixtures' subdirectory of each installed 
+        application, if it exists, the directories in FIXTURE_DIRS, and the 
+        current directory. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">dirs = []</span>
+        <span class="s1">fixture_dirs = settings.FIXTURE_DIRS</span>
+        <span class="s0">if </span><span class="s1">len(fixture_dirs) != len(set(fixture_dirs)):</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s2">&quot;settings.FIXTURE_DIRS contains duplicates.&quot;</span><span class="s1">)</span>
+        <span class="s0">for </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">apps.get_app_configs():</span>
+            <span class="s1">app_label = app_config.label</span>
+            <span class="s1">app_dir = os.path.join(app_config.path</span><span class="s0">, </span><span class="s2">'fixtures'</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">app_dir </span><span class="s0">in </span><span class="s1">fixture_dirs:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s2">&quot;'%s' is a default fixture directory for the '%s' app &quot;</span>
+                    <span class="s2">&quot;and cannot be listed in settings.FIXTURE_DIRS.&quot; </span><span class="s1">% (app_dir</span><span class="s0">, </span><span class="s1">app_label)</span>
+                <span class="s1">)</span>
+
+            <span class="s0">if </span><span class="s1">self.app_label </span><span class="s0">and </span><span class="s1">app_label != self.app_label:</span>
+                <span class="s0">continue</span>
+            <span class="s0">if </span><span class="s1">os.path.isdir(app_dir):</span>
+                <span class="s1">dirs.append(app_dir)</span>
+        <span class="s1">dirs.extend(fixture_dirs)</span>
+        <span class="s1">dirs.append(</span><span class="s2">''</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">[os.path.realpath(d) </span><span class="s0">for </span><span class="s1">d </span><span class="s0">in </span><span class="s1">dirs]</span>
+
+    <span class="s0">def </span><span class="s1">parse_name(self</span><span class="s0">, </span><span class="s1">fixture_name):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Split fixture name in name, serialization format, compression format. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">fixture_name == READ_STDIN:</span>
+            <span class="s0">if not </span><span class="s1">self.format:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span><span class="s2">'--format must be specified when reading from stdin.'</span><span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">READ_STDIN</span><span class="s0">, </span><span class="s1">self.format</span><span class="s0">, </span><span class="s2">'stdin'</span>
+
+        <span class="s1">parts = fixture_name.rsplit(</span><span class="s2">'.'</span><span class="s0">, </span><span class="s5">2</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">len(parts) &gt; </span><span class="s5">1 </span><span class="s0">and </span><span class="s1">parts[-</span><span class="s5">1</span><span class="s1">] </span><span class="s0">in </span><span class="s1">self.compression_formats:</span>
+            <span class="s1">cmp_fmt = parts[-</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s1">parts = parts[:-</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">cmp_fmt = </span><span class="s0">None</span>
+
+        <span class="s0">if </span><span class="s1">len(parts) &gt; </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">parts[-</span><span class="s5">1</span><span class="s1">] </span><span class="s0">in </span><span class="s1">self.serialization_formats:</span>
+                <span class="s1">ser_fmt = parts[-</span><span class="s5">1</span><span class="s1">]</span>
+                <span class="s1">parts = parts[:-</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">raise </span><span class="s1">CommandError(</span>
+                    <span class="s2">&quot;Problem installing fixture '%s': %s is not a known &quot;</span>
+                    <span class="s2">&quot;serialization format.&quot; </span><span class="s1">% (</span><span class="s2">'.'</span><span class="s1">.join(parts[:-</span><span class="s5">1</span><span class="s1">])</span><span class="s0">, </span><span class="s1">parts[-</span><span class="s5">1</span><span class="s1">]))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">ser_fmt = </span><span class="s0">None</span>
+
+        <span class="s1">name = </span><span class="s2">'.'</span><span class="s1">.join(parts)</span>
+
+        <span class="s0">return </span><span class="s1">name</span><span class="s0">, </span><span class="s1">ser_fmt</span><span class="s0">, </span><span class="s1">cmp_fmt</span>
+
+
+<span class="s0">class </span><span class="s1">SingleZipReader(zipfile.ZipFile):</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">if </span><span class="s1">len(self.namelist()) != </span><span class="s5">1</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;Zip-compressed fixtures must contain one file.&quot;</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">read(self):</span>
+        <span class="s0">return </span><span class="s1">zipfile.ZipFile.read(self</span><span class="s0">, </span><span class="s1">self.namelist()[</span><span class="s5">0</span><span class="s1">])</span>
+
+
+<span class="s0">def </span><span class="s1">humanize(dirname):</span>
+    <span class="s0">return </span><span class="s2">&quot;'%s'&quot; </span><span class="s1">% dirname </span><span class="s0">if </span><span class="s1">dirname </span><span class="s0">else </span><span class="s2">'absolute path'</span>
+</pre>
+</body>
+</html>

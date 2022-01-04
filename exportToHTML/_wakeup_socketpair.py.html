@@ -1,0 +1,120 @@
+<html>
+<head>
+<title>_wakeup_socketpair.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_wakeup_socketpair.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">socket</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">signal</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">.._util </span><span class="s0">import </span><span class="s1">is_main_thread</span>
+
+
+<span class="s0">def </span><span class="s1">_has_warn_on_full_buffer():</span>
+    <span class="s0">if </span><span class="s1">sys.version_info &lt; (</span><span class="s2">3</span><span class="s0">, </span><span class="s2">7</span><span class="s1">):</span>
+        <span class="s0">return False</span>
+
+    <span class="s0">if </span><span class="s3">&quot;__pypy__&quot; </span><span class="s0">not in </span><span class="s1">sys.builtin_module_names:</span>
+        <span class="s4"># CPython has warn_on_full_buffer. Don't need to inspect.</span>
+        <span class="s4"># Also, CPython doesn't support inspecting built-in functions.</span>
+        <span class="s0">return True</span>
+
+    <span class="s0">import </span><span class="s1">inspect</span>
+
+    <span class="s1">args_spec = inspect.getfullargspec(signal.set_wakeup_fd)</span>
+    <span class="s0">return </span><span class="s3">&quot;warn_on_full_buffer&quot; </span><span class="s0">in </span><span class="s1">args_spec.kwonlyargs</span>
+
+
+<span class="s1">HAVE_WARN_ON_FULL_BUFFER = _has_warn_on_full_buffer()</span>
+
+
+<span class="s0">class </span><span class="s1">WakeupSocketpair:</span>
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.wakeup_sock</span><span class="s0">, </span><span class="s1">self.write_sock = socket.socketpair()</span>
+        <span class="s1">self.wakeup_sock.setblocking(</span><span class="s0">False</span><span class="s1">)</span>
+        <span class="s1">self.write_sock.setblocking(</span><span class="s0">False</span><span class="s1">)</span>
+        <span class="s4"># This somewhat reduces the amount of memory wasted queueing up data</span>
+        <span class="s4"># for wakeups. With these settings, maximum number of 1-byte sends</span>
+        <span class="s4"># before getting BlockingIOError:</span>
+        <span class="s4">#   Linux 4.8: 6</span>
+        <span class="s4">#   macOS (darwin 15.5): 1</span>
+        <span class="s4">#   Windows 10: 525347</span>
+        <span class="s4"># Windows you're weird. (And on Windows setting SNDBUF to 0 makes send</span>
+        <span class="s4"># blocking, even on non-blocking sockets, so don't do that.)</span>
+        <span class="s4">#</span>
+        <span class="s4"># But, if we're on an old Python and can't control the signal module's</span>
+        <span class="s4"># warn-on-full-buffer behavior, then we need to leave things alone, so</span>
+        <span class="s4"># the signal module won't spam the console with spurious warnings.</span>
+        <span class="s0">if </span><span class="s1">HAVE_WARN_ON_FULL_BUFFER:</span>
+            <span class="s1">self.wakeup_sock.setsockopt(socket.SOL_SOCKET</span><span class="s0">, </span><span class="s1">socket.SO_RCVBUF</span><span class="s0">, </span><span class="s2">1</span><span class="s1">)</span>
+            <span class="s1">self.write_sock.setsockopt(socket.SOL_SOCKET</span><span class="s0">, </span><span class="s1">socket.SO_SNDBUF</span><span class="s0">, </span><span class="s2">1</span><span class="s1">)</span>
+        <span class="s4"># On Windows this is a TCP socket so this might matter. On other</span>
+        <span class="s4"># platforms this fails b/c AF_UNIX sockets aren't actually TCP.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self.write_sock.setsockopt(socket.IPPROTO_TCP</span><span class="s0">, </span><span class="s1">socket.TCP_NODELAY</span><span class="s0">, </span><span class="s2">1</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">OSError:</span>
+            <span class="s0">pass</span>
+        <span class="s1">self.old_wakeup_fd = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">wakeup_thread_and_signal_safe(self):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self.write_sock.send(</span><span class="s5">b&quot;</span><span class="s0">\x00</span><span class="s5">&quot;</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">BlockingIOError:</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">async def </span><span class="s1">wait_woken(self):</span>
+        <span class="s0">await </span><span class="s1">_core.wait_readable(self.wakeup_sock)</span>
+        <span class="s1">self.drain()</span>
+
+    <span class="s0">def </span><span class="s1">drain(self):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s1">self.wakeup_sock.recv(</span><span class="s2">2 </span><span class="s1">** </span><span class="s2">16</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">BlockingIOError:</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">wakeup_on_signals(self):</span>
+        <span class="s0">assert </span><span class="s1">self.old_wakeup_fd </span><span class="s0">is None</span>
+        <span class="s0">if not </span><span class="s1">is_main_thread():</span>
+            <span class="s0">return</span>
+        <span class="s1">fd = self.write_sock.fileno()</span>
+        <span class="s0">if </span><span class="s1">HAVE_WARN_ON_FULL_BUFFER:</span>
+            <span class="s1">self.old_wakeup_fd = signal.set_wakeup_fd(fd</span><span class="s0">, </span><span class="s1">warn_on_full_buffer=</span><span class="s0">False</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.old_wakeup_fd = signal.set_wakeup_fd(fd)</span>
+        <span class="s0">if </span><span class="s1">self.old_wakeup_fd != -</span><span class="s2">1</span><span class="s1">:</span>
+            <span class="s1">warnings.warn(</span>
+                <span class="s1">RuntimeWarning(</span>
+                    <span class="s3">&quot;It looks like Trio's signal handling code might have &quot;</span>
+                    <span class="s3">&quot;collided with another library you're using. If you're &quot;</span>
+                    <span class="s3">&quot;running Trio in guest mode, then this might mean you &quot;</span>
+                    <span class="s3">&quot;should set host_uses_signal_set_wakeup_fd=True. &quot;</span>
+                    <span class="s3">&quot;Otherwise, file a bug on Trio and we'll help you figure &quot;</span>
+                    <span class="s3">&quot;out what's going on.&quot;</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">close(self):</span>
+        <span class="s1">self.wakeup_sock.close()</span>
+        <span class="s1">self.write_sock.close()</span>
+        <span class="s0">if </span><span class="s1">self.old_wakeup_fd </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">signal.set_wakeup_fd(self.old_wakeup_fd)</span>
+</pre>
+</body>
+</html>

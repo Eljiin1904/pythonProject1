@@ -1,0 +1,113 @@
+<html>
+<head>
+<title>enums.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+enums.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">enum</span>
+<span class="s0">from </span><span class="s1">types </span><span class="s0">import </span><span class="s1">DynamicClassAttribute</span>
+
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">Promise</span>
+
+<span class="s1">__all__ = [</span><span class="s2">'Choices'</span><span class="s0">, </span><span class="s2">'IntegerChoices'</span><span class="s0">, </span><span class="s2">'TextChoices'</span><span class="s1">]</span>
+
+
+<span class="s0">class </span><span class="s1">ChoicesMeta(enum.EnumMeta):</span>
+    <span class="s3">&quot;&quot;&quot;A metaclass for creating a enum choices.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__new__(metacls</span><span class="s0">, </span><span class="s1">classname</span><span class="s0">, </span><span class="s1">bases</span><span class="s0">, </span><span class="s1">classdict</span><span class="s0">, </span><span class="s1">**kwds):</span>
+        <span class="s1">labels = []</span>
+        <span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">classdict._member_names:</span>
+            <span class="s1">value = classdict[key]</span>
+            <span class="s0">if </span><span class="s1">(</span>
+                <span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)) </span><span class="s0">and</span>
+                <span class="s1">len(value) &gt; </span><span class="s4">1 </span><span class="s0">and</span>
+                <span class="s1">isinstance(value[-</span><span class="s4">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">(Promise</span><span class="s0">, </span><span class="s1">str))</span>
+            <span class="s1">):</span>
+                <span class="s1">*value</span><span class="s0">, </span><span class="s1">label = value</span>
+                <span class="s1">value = tuple(value)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">label = key.replace(</span><span class="s2">'_'</span><span class="s0">, </span><span class="s2">' '</span><span class="s1">).title()</span>
+            <span class="s1">labels.append(label)</span>
+            <span class="s5"># Use dict.__setitem__() to suppress defenses against double</span>
+            <span class="s5"># assignment in enum's classdict.</span>
+            <span class="s1">dict.__setitem__(classdict</span><span class="s0">, </span><span class="s1">key</span><span class="s0">, </span><span class="s1">value)</span>
+        <span class="s1">cls = super().__new__(metacls</span><span class="s0">, </span><span class="s1">classname</span><span class="s0">, </span><span class="s1">bases</span><span class="s0">, </span><span class="s1">classdict</span><span class="s0">, </span><span class="s1">**kwds)</span>
+        <span class="s0">for </span><span class="s1">member</span><span class="s0">, </span><span class="s1">label </span><span class="s0">in </span><span class="s1">zip(cls.__members__.values()</span><span class="s0">, </span><span class="s1">labels):</span>
+            <span class="s1">member._label_ = label</span>
+        <span class="s0">return </span><span class="s1">enum.unique(cls)</span>
+
+    <span class="s0">def </span><span class="s1">__contains__(cls</span><span class="s0">, </span><span class="s1">member):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(member</span><span class="s0">, </span><span class="s1">enum.Enum):</span>
+            <span class="s5"># Allow non-enums to match against member values.</span>
+            <span class="s0">return </span><span class="s1">any(x.value == member </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">cls)</span>
+        <span class="s0">return </span><span class="s1">super().__contains__(member)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">names(cls):</span>
+        <span class="s1">empty = [</span><span class="s2">'__empty__'</span><span class="s1">] </span><span class="s0">if </span><span class="s1">hasattr(cls</span><span class="s0">, </span><span class="s2">'__empty__'</span><span class="s1">) </span><span class="s0">else </span><span class="s1">[]</span>
+        <span class="s0">return </span><span class="s1">empty + [member.name </span><span class="s0">for </span><span class="s1">member </span><span class="s0">in </span><span class="s1">cls]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">choices(cls):</span>
+        <span class="s1">empty = [(</span><span class="s0">None, </span><span class="s1">cls.__empty__)] </span><span class="s0">if </span><span class="s1">hasattr(cls</span><span class="s0">, </span><span class="s2">'__empty__'</span><span class="s1">) </span><span class="s0">else </span><span class="s1">[]</span>
+        <span class="s0">return </span><span class="s1">empty + [(member.value</span><span class="s0">, </span><span class="s1">member.label) </span><span class="s0">for </span><span class="s1">member </span><span class="s0">in </span><span class="s1">cls]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">labels(cls):</span>
+        <span class="s0">return </span><span class="s1">[label </span><span class="s0">for </span><span class="s1">_</span><span class="s0">, </span><span class="s1">label </span><span class="s0">in </span><span class="s1">cls.choices]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">values(cls):</span>
+        <span class="s0">return </span><span class="s1">[value </span><span class="s0">for </span><span class="s1">value</span><span class="s0">, </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">cls.choices]</span>
+
+
+<span class="s0">class </span><span class="s1">Choices(enum.Enum</span><span class="s0">, </span><span class="s1">metaclass=ChoicesMeta):</span>
+    <span class="s3">&quot;&quot;&quot;Class for creating enumerated choices.&quot;&quot;&quot;</span>
+
+    <span class="s1">@DynamicClassAttribute</span>
+    <span class="s0">def </span><span class="s1">label(self):</span>
+        <span class="s0">return </span><span class="s1">self._label_</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">do_not_call_in_templates(self):</span>
+        <span class="s0">return True</span>
+
+    <span class="s0">def </span><span class="s1">__str__(self):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Use value when cast to str, so that Choices set as model instance 
+        attributes are rendered as expected in templates and similar contexts. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">str(self.value)</span>
+
+    <span class="s5"># A similar format was proposed for Python 3.10.</span>
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s2">f'</span><span class="s0">{</span><span class="s1">self.__class__.__qualname__</span><span class="s0">}</span><span class="s2">.</span><span class="s0">{</span><span class="s1">self._name_</span><span class="s0">}</span><span class="s2">'</span>
+
+
+<span class="s0">class </span><span class="s1">IntegerChoices(int</span><span class="s0">, </span><span class="s1">Choices):</span>
+    <span class="s3">&quot;&quot;&quot;Class for creating enumerated integer choices.&quot;&quot;&quot;</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">TextChoices(str</span><span class="s0">, </span><span class="s1">Choices):</span>
+    <span class="s3">&quot;&quot;&quot;Class for creating enumerated string choices.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">_generate_next_value_(name</span><span class="s0">, </span><span class="s1">start</span><span class="s0">, </span><span class="s1">count</span><span class="s0">, </span><span class="s1">last_values):</span>
+        <span class="s0">return </span><span class="s1">name</span>
+</pre>
+</body>
+</html>

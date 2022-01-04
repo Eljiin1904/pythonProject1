@@ -1,0 +1,87 @@
+<html>
+<head>
+<title>pbkdf2.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+pbkdf2.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AlreadyFinalized</span><span class="s2">,</span>
+    <span class="s1">InvalidKey</span><span class="s2">,</span>
+    <span class="s1">UnsupportedAlgorithm</span><span class="s2">,</span>
+    <span class="s1">_Reasons</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">PBKDF2HMACBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">constant_time</span><span class="s2">, </span><span class="s1">hashes</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.kdf </span><span class="s2">import </span><span class="s1">KeyDerivationFunction</span>
+
+
+<span class="s2">class </span><span class="s1">PBKDF2HMAC(KeyDerivationFunction):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">algorithm: hashes.HashAlgorithm</span><span class="s2">,</span>
+        <span class="s1">length: int</span><span class="s2">,</span>
+        <span class="s1">salt: bytes</span><span class="s2">,</span>
+        <span class="s1">iterations: int</span><span class="s2">,</span>
+        <span class="s1">backend=</span><span class="s2">None,</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">PBKDF2HMACBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;Backend object does not implement PBKDF2HMACBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if not </span><span class="s1">backend.pbkdf2_hmac_supported(algorithm):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s3">&quot;{} is not supported for PBKDF2 by this backend.&quot;</span><span class="s1">.format(</span>
+                    <span class="s1">algorithm.name</span>
+                <span class="s1">)</span><span class="s2">,</span>
+                <span class="s1">_Reasons.UNSUPPORTED_HASH</span><span class="s2">,</span>
+            <span class="s1">)</span>
+        <span class="s1">self._used = </span><span class="s2">False</span>
+        <span class="s1">self._algorithm = algorithm</span>
+        <span class="s1">self._length = length</span>
+        <span class="s1">utils._check_bytes(</span><span class="s3">&quot;salt&quot;</span><span class="s2">, </span><span class="s1">salt)</span>
+        <span class="s1">self._salt = salt</span>
+        <span class="s1">self._iterations = iterations</span>
+        <span class="s1">self._backend = backend</span>
+
+    <span class="s2">def </span><span class="s1">derive(self</span><span class="s2">, </span><span class="s1">key_material: bytes) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._used:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s3">&quot;PBKDF2 instances can only be used once.&quot;</span><span class="s1">)</span>
+        <span class="s1">self._used = </span><span class="s2">True</span>
+
+        <span class="s1">utils._check_byteslike(</span><span class="s3">&quot;key_material&quot;</span><span class="s2">, </span><span class="s1">key_material)</span>
+        <span class="s2">return </span><span class="s1">self._backend.derive_pbkdf2_hmac(</span>
+            <span class="s1">self._algorithm</span><span class="s2">,</span>
+            <span class="s1">self._length</span><span class="s2">,</span>
+            <span class="s1">self._salt</span><span class="s2">,</span>
+            <span class="s1">self._iterations</span><span class="s2">,</span>
+            <span class="s1">key_material</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">key_material: bytes</span><span class="s2">, </span><span class="s1">expected_key: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">derived_key = self.derive(key_material)</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(derived_key</span><span class="s2">, </span><span class="s1">expected_key):</span>
+            <span class="s2">raise </span><span class="s1">InvalidKey(</span><span class="s3">&quot;Keys do not match.&quot;</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

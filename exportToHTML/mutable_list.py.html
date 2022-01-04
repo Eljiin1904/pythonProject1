@@ -1,0 +1,332 @@
+<html>
+<head>
+<title>mutable_list.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+mutable_list.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright (c) 2008-2009 Aryeh Leib Taurog, all rights reserved.</span>
+<span class="s0"># Released under the New BSD license.</span>
+<span class="s2">&quot;&quot;&quot; 
+This module contains a base type which provides list-style mutations 
+without specific data storage methods. 
+ 
+See also http://static.aryehleib.com/oldsite/MutableLists.html 
+ 
+Author: Aryeh Leib Taurog. 
+&quot;&quot;&quot;</span>
+<span class="s3">from </span><span class="s1">functools </span><span class="s3">import </span><span class="s1">total_ordering</span>
+
+
+<span class="s1">@total_ordering</span>
+<span class="s3">class </span><span class="s1">ListMixin:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    A base class which provides complete list interface. 
+    Derived classes must call ListMixin's __init__() function 
+    and implement the following: 
+ 
+    function _get_single_external(self, i): 
+        Return single item with index i for general use. 
+        The index i will always satisfy 0 &lt;= i &lt; len(self). 
+ 
+    function _get_single_internal(self, i): 
+        Same as above, but for use within the class [Optional] 
+        Note that if _get_single_internal and _get_single_internal return 
+        different types of objects, _set_list must distinguish 
+        between the two and handle each appropriately. 
+ 
+    function _set_list(self, length, items): 
+        Recreate the entire object. 
+ 
+        NOTE: items may be a generator which calls _get_single_internal. 
+        Therefore, it is necessary to cache the values in a temporary: 
+            temp = list(items) 
+        before clobbering the original storage. 
+ 
+    function _set_single(self, i, value): 
+        Set the single item at index i to value [Optional] 
+        If left undefined, all mutations will result in rebuilding 
+        the object using _set_list. 
+ 
+    function __len__(self): 
+        Return the length 
+ 
+    int _minlength: 
+        The minimum legal length [Optional] 
+ 
+    int _maxlength: 
+        The maximum legal length [Optional] 
+ 
+    type or tuple _allowed: 
+        A type or tuple of allowed item types [Optional] 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">_minlength = </span><span class="s4">0</span>
+    <span class="s1">_maxlength = </span><span class="s3">None</span>
+
+    <span class="s0"># ### Python initialization and special list interface methods ###</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">*args</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">if not </span><span class="s1">hasattr(self</span><span class="s3">, </span><span class="s5">'_get_single_internal'</span><span class="s1">):</span>
+            <span class="s1">self._get_single_internal = self._get_single_external</span>
+
+        <span class="s3">if not </span><span class="s1">hasattr(self</span><span class="s3">, </span><span class="s5">'_set_single'</span><span class="s1">):</span>
+            <span class="s1">self._set_single = self._set_single_rebuild</span>
+            <span class="s1">self._assign_extended_slice = self._assign_extended_slice_rebuild</span>
+
+        <span class="s1">super().__init__(*args</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__(self</span><span class="s3">, </span><span class="s1">index):</span>
+        <span class="s2">&quot;Get the item(s) at the specified index/slice.&quot;</span>
+        <span class="s3">if </span><span class="s1">isinstance(index</span><span class="s3">, </span><span class="s1">slice):</span>
+            <span class="s3">return </span><span class="s1">[self._get_single_external(i) </span><span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(*index.indices(len(self)))]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">index = self._checkindex(index)</span>
+            <span class="s3">return </span><span class="s1">self._get_single_external(index)</span>
+
+    <span class="s3">def </span><span class="s1">__delitem__(self</span><span class="s3">, </span><span class="s1">index):</span>
+        <span class="s2">&quot;Delete the item(s) at the specified index/slice.&quot;</span>
+        <span class="s3">if not </span><span class="s1">isinstance(index</span><span class="s3">, </span><span class="s1">(int</span><span class="s3">, </span><span class="s1">slice)):</span>
+            <span class="s3">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;%s is not a legal index&quot; </span><span class="s1">% index)</span>
+
+        <span class="s0"># calculate new length and dimensions</span>
+        <span class="s1">origLen = len(self)</span>
+        <span class="s3">if </span><span class="s1">isinstance(index</span><span class="s3">, </span><span class="s1">int):</span>
+            <span class="s1">index = self._checkindex(index)</span>
+            <span class="s1">indexRange = [index]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">indexRange = range(*index.indices(origLen))</span>
+
+        <span class="s1">newLen = origLen - len(indexRange)</span>
+        <span class="s1">newItems = (self._get_single_internal(i)</span>
+                    <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(origLen)</span>
+                    <span class="s3">if </span><span class="s1">i </span><span class="s3">not in </span><span class="s1">indexRange)</span>
+
+        <span class="s1">self._rebuild(newLen</span><span class="s3">, </span><span class="s1">newItems)</span>
+
+    <span class="s3">def </span><span class="s1">__setitem__(self</span><span class="s3">, </span><span class="s1">index</span><span class="s3">, </span><span class="s1">val):</span>
+        <span class="s2">&quot;Set the item(s) at the specified index/slice.&quot;</span>
+        <span class="s3">if </span><span class="s1">isinstance(index</span><span class="s3">, </span><span class="s1">slice):</span>
+            <span class="s1">self._set_slice(index</span><span class="s3">, </span><span class="s1">val)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">index = self._checkindex(index)</span>
+            <span class="s1">self._check_allowed((val</span><span class="s3">,</span><span class="s1">))</span>
+            <span class="s1">self._set_single(index</span><span class="s3">, </span><span class="s1">val)</span>
+
+    <span class="s0"># ### Special methods for arithmetic operations ###</span>
+    <span class="s3">def </span><span class="s1">__add__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s2">'add another list-like object'</span>
+        <span class="s3">return </span><span class="s1">self.__class__([*self</span><span class="s3">, </span><span class="s1">*other])</span>
+
+    <span class="s3">def </span><span class="s1">__radd__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s2">'add to another list-like object'</span>
+        <span class="s3">return </span><span class="s1">other.__class__([*other</span><span class="s3">, </span><span class="s1">*self])</span>
+
+    <span class="s3">def </span><span class="s1">__iadd__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s2">'add another list-like object to self'</span>
+        <span class="s1">self.extend(other)</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">__mul__(self</span><span class="s3">, </span><span class="s1">n):</span>
+        <span class="s2">'multiply'</span>
+        <span class="s3">return </span><span class="s1">self.__class__(list(self) * n)</span>
+
+    <span class="s3">def </span><span class="s1">__rmul__(self</span><span class="s3">, </span><span class="s1">n):</span>
+        <span class="s2">'multiply'</span>
+        <span class="s3">return </span><span class="s1">self.__class__(list(self) * n)</span>
+
+    <span class="s3">def </span><span class="s1">__imul__(self</span><span class="s3">, </span><span class="s1">n):</span>
+        <span class="s2">'multiply'</span>
+        <span class="s3">if </span><span class="s1">n &lt;= </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s3">del </span><span class="s1">self[:]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">cache = list(self)</span>
+            <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(n - </span><span class="s4">1</span><span class="s1">):</span>
+                <span class="s1">self.extend(cache)</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s1">olen = len(other)</span>
+        <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(olen):</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">c = self[i] == other[i]</span>
+            <span class="s3">except </span><span class="s1">IndexError:</span>
+                <span class="s0"># self must be shorter</span>
+                <span class="s3">return False</span>
+            <span class="s3">if not </span><span class="s1">c:</span>
+                <span class="s3">return False</span>
+        <span class="s3">return </span><span class="s1">len(self) == olen</span>
+
+    <span class="s3">def </span><span class="s1">__lt__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s1">olen = len(other)</span>
+        <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(olen):</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">c = self[i] &lt; other[i]</span>
+            <span class="s3">except </span><span class="s1">IndexError:</span>
+                <span class="s0"># self must be shorter</span>
+                <span class="s3">return True</span>
+            <span class="s3">if </span><span class="s1">c:</span>
+                <span class="s3">return </span><span class="s1">c</span>
+            <span class="s3">elif </span><span class="s1">other[i] &lt; self[i]:</span>
+                <span class="s3">return False</span>
+        <span class="s3">return </span><span class="s1">len(self) &lt; olen</span>
+
+    <span class="s0"># ### Public list interface Methods ###</span>
+    <span class="s0"># ## Non-mutating ##</span>
+    <span class="s3">def </span><span class="s1">count(self</span><span class="s3">, </span><span class="s1">val):</span>
+        <span class="s2">&quot;Standard list count method&quot;</span>
+        <span class="s1">count = </span><span class="s4">0</span>
+        <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">self:</span>
+            <span class="s3">if </span><span class="s1">val == i:</span>
+                <span class="s1">count += </span><span class="s4">1</span>
+        <span class="s3">return </span><span class="s1">count</span>
+
+    <span class="s3">def </span><span class="s1">index(self</span><span class="s3">, </span><span class="s1">val):</span>
+        <span class="s2">&quot;Standard list index method&quot;</span>
+        <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(</span><span class="s4">0</span><span class="s3">, </span><span class="s1">len(self)):</span>
+            <span class="s3">if </span><span class="s1">self[i] == val:</span>
+                <span class="s3">return </span><span class="s1">i</span>
+        <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s5">'%s not found in object' </span><span class="s1">% val)</span>
+
+    <span class="s0"># ## Mutating ##</span>
+    <span class="s3">def </span><span class="s1">append(self</span><span class="s3">, </span><span class="s1">val):</span>
+        <span class="s2">&quot;Standard list append method&quot;</span>
+        <span class="s1">self[len(self):] = [val]</span>
+
+    <span class="s3">def </span><span class="s1">extend(self</span><span class="s3">, </span><span class="s1">vals):</span>
+        <span class="s2">&quot;Standard list extend method&quot;</span>
+        <span class="s1">self[len(self):] = vals</span>
+
+    <span class="s3">def </span><span class="s1">insert(self</span><span class="s3">, </span><span class="s1">index</span><span class="s3">, </span><span class="s1">val):</span>
+        <span class="s2">&quot;Standard list insert method&quot;</span>
+        <span class="s3">if not </span><span class="s1">isinstance(index</span><span class="s3">, </span><span class="s1">int):</span>
+            <span class="s3">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;%s is not a legal index&quot; </span><span class="s1">% index)</span>
+        <span class="s1">self[index:index] = [val]</span>
+
+    <span class="s3">def </span><span class="s1">pop(self</span><span class="s3">, </span><span class="s1">index=-</span><span class="s4">1</span><span class="s1">):</span>
+        <span class="s2">&quot;Standard list pop method&quot;</span>
+        <span class="s1">result = self[index]</span>
+        <span class="s3">del </span><span class="s1">self[index]</span>
+        <span class="s3">return </span><span class="s1">result</span>
+
+    <span class="s3">def </span><span class="s1">remove(self</span><span class="s3">, </span><span class="s1">val):</span>
+        <span class="s2">&quot;Standard list remove method&quot;</span>
+        <span class="s3">del </span><span class="s1">self[self.index(val)]</span>
+
+    <span class="s3">def </span><span class="s1">reverse(self):</span>
+        <span class="s2">&quot;Standard list reverse method&quot;</span>
+        <span class="s1">self[:] = self[-</span><span class="s4">1</span><span class="s1">::-</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">sort(self</span><span class="s3">, </span><span class="s1">key=</span><span class="s3">None, </span><span class="s1">reverse=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;Standard list sort method&quot;</span>
+        <span class="s1">self[:] = sorted(self</span><span class="s3">, </span><span class="s1">key=key</span><span class="s3">, </span><span class="s1">reverse=reverse)</span>
+
+    <span class="s0"># ### Private routines ###</span>
+    <span class="s3">def </span><span class="s1">_rebuild(self</span><span class="s3">, </span><span class="s1">newLen</span><span class="s3">, </span><span class="s1">newItems):</span>
+        <span class="s3">if </span><span class="s1">newLen </span><span class="s3">and </span><span class="s1">newLen &lt; self._minlength:</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s5">'Must have at least %d items' </span><span class="s1">% self._minlength)</span>
+        <span class="s3">if </span><span class="s1">self._maxlength </span><span class="s3">is not None and </span><span class="s1">newLen &gt; self._maxlength:</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s5">'Cannot have more than %d items' </span><span class="s1">% self._maxlength)</span>
+
+        <span class="s1">self._set_list(newLen</span><span class="s3">, </span><span class="s1">newItems)</span>
+
+    <span class="s3">def </span><span class="s1">_set_single_rebuild(self</span><span class="s3">, </span><span class="s1">index</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s1">self._set_slice(slice(index</span><span class="s3">, </span><span class="s1">index + </span><span class="s4">1</span><span class="s3">, </span><span class="s4">1</span><span class="s1">)</span><span class="s3">, </span><span class="s1">[value])</span>
+
+    <span class="s3">def </span><span class="s1">_checkindex(self</span><span class="s3">, </span><span class="s1">index):</span>
+        <span class="s1">length = len(self)</span>
+        <span class="s3">if </span><span class="s4">0 </span><span class="s1">&lt;= index &lt; length:</span>
+            <span class="s3">return </span><span class="s1">index</span>
+        <span class="s3">if </span><span class="s1">-length &lt;= index &lt; </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">index + length</span>
+        <span class="s3">raise </span><span class="s1">IndexError(</span><span class="s5">'invalid index: %s' </span><span class="s1">% index)</span>
+
+    <span class="s3">def </span><span class="s1">_check_allowed(self</span><span class="s3">, </span><span class="s1">items):</span>
+        <span class="s3">if </span><span class="s1">hasattr(self</span><span class="s3">, </span><span class="s5">'_allowed'</span><span class="s1">):</span>
+            <span class="s3">if False in </span><span class="s1">[isinstance(val</span><span class="s3">, </span><span class="s1">self._allowed) </span><span class="s3">for </span><span class="s1">val </span><span class="s3">in </span><span class="s1">items]:</span>
+                <span class="s3">raise </span><span class="s1">TypeError(</span><span class="s5">'Invalid type encountered in the arguments.'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_set_slice(self</span><span class="s3">, </span><span class="s1">index</span><span class="s3">, </span><span class="s1">values):</span>
+        <span class="s2">&quot;Assign values to a slice of the object&quot;</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">valueList = list(values)</span>
+        <span class="s3">except </span><span class="s1">TypeError:</span>
+            <span class="s3">raise </span><span class="s1">TypeError(</span><span class="s5">'can only assign an iterable to a slice'</span><span class="s1">)</span>
+
+        <span class="s1">self._check_allowed(valueList)</span>
+
+        <span class="s1">origLen = len(self)</span>
+        <span class="s1">start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">step = index.indices(origLen)</span>
+
+        <span class="s0"># CAREFUL: index.step and step are not the same!</span>
+        <span class="s0"># step will never be None</span>
+        <span class="s3">if </span><span class="s1">index.step </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">self._assign_simple_slice(start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">valueList)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._assign_extended_slice(start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">step</span><span class="s3">, </span><span class="s1">valueList)</span>
+
+    <span class="s3">def </span><span class="s1">_assign_extended_slice_rebuild(self</span><span class="s3">, </span><span class="s1">start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">step</span><span class="s3">, </span><span class="s1">valueList):</span>
+        <span class="s2">'Assign an extended slice by rebuilding entire list'</span>
+        <span class="s1">indexList = range(start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">step)</span>
+        <span class="s0"># extended slice, only allow assigning slice of same size</span>
+        <span class="s3">if </span><span class="s1">len(valueList) != len(indexList):</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s5">'attempt to assign sequence of size %d '</span>
+                             <span class="s5">'to extended slice of size %d'</span>
+                             <span class="s1">% (len(valueList)</span><span class="s3">, </span><span class="s1">len(indexList)))</span>
+
+        <span class="s0"># we're not changing the length of the sequence</span>
+        <span class="s1">newLen = len(self)</span>
+        <span class="s1">newVals = dict(zip(indexList</span><span class="s3">, </span><span class="s1">valueList))</span>
+
+        <span class="s3">def </span><span class="s1">newItems():</span>
+            <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(newLen):</span>
+                <span class="s3">if </span><span class="s1">i </span><span class="s3">in </span><span class="s1">newVals:</span>
+                    <span class="s3">yield </span><span class="s1">newVals[i]</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s3">yield </span><span class="s1">self._get_single_internal(i)</span>
+
+        <span class="s1">self._rebuild(newLen</span><span class="s3">, </span><span class="s1">newItems())</span>
+
+    <span class="s3">def </span><span class="s1">_assign_extended_slice(self</span><span class="s3">, </span><span class="s1">start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">step</span><span class="s3">, </span><span class="s1">valueList):</span>
+        <span class="s2">'Assign an extended slice by re-assigning individual items'</span>
+        <span class="s1">indexList = range(start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">step)</span>
+        <span class="s0"># extended slice, only allow assigning slice of same size</span>
+        <span class="s3">if </span><span class="s1">len(valueList) != len(indexList):</span>
+            <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s5">'attempt to assign sequence of size %d '</span>
+                             <span class="s5">'to extended slice of size %d'</span>
+                             <span class="s1">% (len(valueList)</span><span class="s3">, </span><span class="s1">len(indexList)))</span>
+
+        <span class="s3">for </span><span class="s1">i</span><span class="s3">, </span><span class="s1">val </span><span class="s3">in </span><span class="s1">zip(indexList</span><span class="s3">, </span><span class="s1">valueList):</span>
+            <span class="s1">self._set_single(i</span><span class="s3">, </span><span class="s1">val)</span>
+
+    <span class="s3">def </span><span class="s1">_assign_simple_slice(self</span><span class="s3">, </span><span class="s1">start</span><span class="s3">, </span><span class="s1">stop</span><span class="s3">, </span><span class="s1">valueList):</span>
+        <span class="s2">'Assign a simple slice; Can assign slice of any length'</span>
+        <span class="s1">origLen = len(self)</span>
+        <span class="s1">stop = max(start</span><span class="s3">, </span><span class="s1">stop)</span>
+        <span class="s1">newLen = origLen - stop + start + len(valueList)</span>
+
+        <span class="s3">def </span><span class="s1">newItems():</span>
+            <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range(origLen + </span><span class="s4">1</span><span class="s1">):</span>
+                <span class="s3">if </span><span class="s1">i == start:</span>
+                    <span class="s3">yield from </span><span class="s1">valueList</span>
+
+                <span class="s3">if </span><span class="s1">i &lt; origLen:</span>
+                    <span class="s3">if </span><span class="s1">i &lt; start </span><span class="s3">or </span><span class="s1">i &gt;= stop:</span>
+                        <span class="s3">yield </span><span class="s1">self._get_single_internal(i)</span>
+
+        <span class="s1">self._rebuild(newLen</span><span class="s3">, </span><span class="s1">newItems())</span>
+</pre>
+</body>
+</html>

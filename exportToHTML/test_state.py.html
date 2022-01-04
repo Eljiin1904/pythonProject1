@@ -1,0 +1,269 @@
+<html>
+<head>
+<title>test_state.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_state.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">.._events </span><span class="s0">import </span><span class="s1">*</span>
+<span class="s0">from </span><span class="s1">.._state </span><span class="s0">import </span><span class="s1">*</span>
+<span class="s0">from </span><span class="s1">.._state </span><span class="s0">import </span><span class="s1">_SWITCH_CONNECT</span><span class="s0">, </span><span class="s1">_SWITCH_UPGRADE</span><span class="s0">, </span><span class="s1">ConnectionState</span>
+<span class="s0">from </span><span class="s1">.._util </span><span class="s0">import </span><span class="s1">LocalProtocolError</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState():</span>
+    <span class="s1">cs = ConnectionState()</span>
+
+    <span class="s2"># Basic event-triggered transitions</span>
+
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: IDLE</span><span class="s0">, </span><span class="s1">SERVER: IDLE}</span>
+
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s2"># The SERVER-Request special case:</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+    <span class="s2"># Illegal transitions raise an error and nothing happens</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">InformationalResponse)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_BODY}</span>
+
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: DONE</span><span class="s0">, </span><span class="s1">SERVER: DONE}</span>
+
+    <span class="s2"># State-triggered transition</span>
+
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">ConnectionClosed)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MUST_CLOSE</span><span class="s0">, </span><span class="s1">SERVER: CLOSED}</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_keep_alive():</span>
+    <span class="s2"># keep_alive = False</span>
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_keep_alive_disabled()</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MUST_CLOSE</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MUST_CLOSE</span><span class="s0">, </span><span class="s1">SERVER: MUST_CLOSE}</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_keep_alive_in_DONE():</span>
+    <span class="s2"># Check that if keep_alive is disabled when the CLIENT is already in DONE,</span>
+    <span class="s2"># then this is sufficient to immediately trigger the DONE -&gt; MUST_CLOSE</span>
+    <span class="s2"># transition</span>
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s0">assert </span><span class="s1">cs.states[CLIENT] </span><span class="s0">is </span><span class="s1">DONE</span>
+    <span class="s1">cs.process_keep_alive_disabled()</span>
+    <span class="s0">assert </span><span class="s1">cs.states[CLIENT] </span><span class="s0">is </span><span class="s1">MUST_CLOSE</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_switch_denied():</span>
+    <span class="s0">for </span><span class="s1">switch_type </span><span class="s0">in </span><span class="s1">(_SWITCH_CONNECT</span><span class="s0">, </span><span class="s1">_SWITCH_UPGRADE):</span>
+        <span class="s0">for </span><span class="s1">deny_early </span><span class="s0">in </span><span class="s1">(</span><span class="s0">True, False</span><span class="s1">):</span>
+            <span class="s1">cs = ConnectionState()</span>
+            <span class="s1">cs.process_client_switch_proposal(switch_type)</span>
+            <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+            <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Data)</span>
+            <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+            <span class="s0">assert </span><span class="s1">switch_type </span><span class="s0">in </span><span class="s1">cs.pending_switch_proposals</span>
+
+            <span class="s0">if </span><span class="s1">deny_early:</span>
+                <span class="s2"># before client reaches DONE</span>
+                <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+                <span class="s0">assert not </span><span class="s1">cs.pending_switch_proposals</span>
+
+            <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+
+            <span class="s0">if </span><span class="s1">deny_early:</span>
+                <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: DONE</span><span class="s0">, </span><span class="s1">SERVER: SEND_BODY}</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">assert </span><span class="s1">cs.states == {</span>
+                    <span class="s1">CLIENT: MIGHT_SWITCH_PROTOCOL</span><span class="s0">,</span>
+                    <span class="s1">SERVER: SEND_RESPONSE</span><span class="s0">,</span>
+                <span class="s1">}</span>
+
+                <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">InformationalResponse)</span>
+                <span class="s0">assert </span><span class="s1">cs.states == {</span>
+                    <span class="s1">CLIENT: MIGHT_SWITCH_PROTOCOL</span><span class="s0">,</span>
+                    <span class="s1">SERVER: SEND_RESPONSE</span><span class="s0">,</span>
+                <span class="s1">}</span>
+
+                <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+                <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: DONE</span><span class="s0">, </span><span class="s1">SERVER: SEND_BODY}</span>
+                <span class="s0">assert not </span><span class="s1">cs.pending_switch_proposals</span>
+
+
+<span class="s1">_response_type_for_switch = {</span>
+    <span class="s1">_SWITCH_UPGRADE: InformationalResponse</span><span class="s0">,</span>
+    <span class="s1">_SWITCH_CONNECT: Response</span><span class="s0">,</span>
+    <span class="s0">None</span><span class="s1">: Response</span><span class="s0">,</span>
+<span class="s1">}</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_protocol_switch_accepted():</span>
+    <span class="s0">for </span><span class="s1">switch_event </span><span class="s0">in </span><span class="s1">[_SWITCH_UPGRADE</span><span class="s0">, </span><span class="s1">_SWITCH_CONNECT]:</span>
+        <span class="s1">cs = ConnectionState()</span>
+        <span class="s1">cs.process_client_switch_proposal(switch_event)</span>
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Data)</span>
+        <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+        <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MIGHT_SWITCH_PROTOCOL</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+        <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">InformationalResponse)</span>
+        <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MIGHT_SWITCH_PROTOCOL</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+        <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">_response_type_for_switch[switch_event]</span><span class="s0">, </span><span class="s1">switch_event)</span>
+        <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SWITCHED_PROTOCOL</span><span class="s0">, </span><span class="s1">SERVER: SWITCHED_PROTOCOL}</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_double_protocol_switch():</span>
+    <span class="s2"># CONNECT + Upgrade is legal! Very silly, but legal. So we support</span>
+    <span class="s2"># it. Because sometimes doing the silly thing is easier than not.</span>
+    <span class="s0">for </span><span class="s1">server_switch </span><span class="s0">in </span><span class="s1">[</span><span class="s0">None, </span><span class="s1">_SWITCH_UPGRADE</span><span class="s0">, </span><span class="s1">_SWITCH_CONNECT]:</span>
+        <span class="s1">cs = ConnectionState()</span>
+        <span class="s1">cs.process_client_switch_proposal(_SWITCH_UPGRADE)</span>
+        <span class="s1">cs.process_client_switch_proposal(_SWITCH_CONNECT)</span>
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+        <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MIGHT_SWITCH_PROTOCOL</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+        <span class="s1">cs.process_event(</span>
+            <span class="s1">SERVER</span><span class="s0">, </span><span class="s1">_response_type_for_switch[server_switch]</span><span class="s0">, </span><span class="s1">server_switch</span>
+        <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">server_switch </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: DONE</span><span class="s0">, </span><span class="s1">SERVER: SEND_BODY}</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SWITCHED_PROTOCOL</span><span class="s0">, </span><span class="s1">SERVER: SWITCHED_PROTOCOL}</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_inconsistent_protocol_switch():</span>
+    <span class="s0">for </span><span class="s1">client_switches</span><span class="s0">, </span><span class="s1">server_switch </span><span class="s0">in </span><span class="s1">[</span>
+        <span class="s1">([]</span><span class="s0">, </span><span class="s1">_SWITCH_CONNECT)</span><span class="s0">,</span>
+        <span class="s1">([]</span><span class="s0">, </span><span class="s1">_SWITCH_UPGRADE)</span><span class="s0">,</span>
+        <span class="s1">([_SWITCH_UPGRADE]</span><span class="s0">, </span><span class="s1">_SWITCH_CONNECT)</span><span class="s0">,</span>
+        <span class="s1">([_SWITCH_CONNECT]</span><span class="s0">, </span><span class="s1">_SWITCH_UPGRADE)</span><span class="s0">,</span>
+    <span class="s1">]:</span>
+        <span class="s1">cs = ConnectionState()</span>
+        <span class="s0">for </span><span class="s1">client_switch </span><span class="s0">in </span><span class="s1">client_switches:</span>
+            <span class="s1">cs.process_client_switch_proposal(client_switch)</span>
+        <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+            <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response</span><span class="s0">, </span><span class="s1">server_switch)</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_keepalive_protocol_switch_interaction():</span>
+    <span class="s2"># keep_alive=False + pending_switch_proposals</span>
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s1">cs.process_client_switch_proposal(_SWITCH_UPGRADE)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_keep_alive_disabled()</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Data)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: SEND_BODY</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+    <span class="s2"># the protocol switch &quot;wins&quot;</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MIGHT_SWITCH_PROTOCOL</span><span class="s0">, </span><span class="s1">SERVER: SEND_RESPONSE}</span>
+
+    <span class="s2"># but when the server denies the request, keep_alive comes back into play</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: MUST_CLOSE</span><span class="s0">, </span><span class="s1">SERVER: SEND_BODY}</span>
+
+
+<span class="s0">def </span><span class="s1">test_ConnectionState_reuse():</span>
+    <span class="s1">cs = ConnectionState()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.start_next_cycle()</span>
+
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.start_next_cycle()</span>
+
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+
+    <span class="s1">cs.start_next_cycle()</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: IDLE</span><span class="s0">, </span><span class="s1">SERVER: IDLE}</span>
+
+    <span class="s2"># No keepalive</span>
+
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_keep_alive_disabled()</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.start_next_cycle()</span>
+
+    <span class="s2"># One side closed</span>
+
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">ConnectionClosed)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.start_next_cycle()</span>
+
+    <span class="s2"># Succesful protocol switch</span>
+
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s1">cs.process_client_switch_proposal(_SWITCH_UPGRADE)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">InformationalResponse</span><span class="s0">, </span><span class="s1">_SWITCH_UPGRADE)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.start_next_cycle()</span>
+
+    <span class="s2"># Failed protocol switch</span>
+
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s1">cs.process_client_switch_proposal(_SWITCH_UPGRADE)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">Request)</span>
+    <span class="s1">cs.process_event(CLIENT</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Response)</span>
+    <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">EndOfMessage)</span>
+
+    <span class="s1">cs.start_next_cycle()</span>
+    <span class="s0">assert </span><span class="s1">cs.states == {CLIENT: IDLE</span><span class="s0">, </span><span class="s1">SERVER: IDLE}</span>
+
+
+<span class="s0">def </span><span class="s1">test_server_request_is_illegal():</span>
+    <span class="s2"># There used to be a bug in how we handled the Request special case that</span>
+    <span class="s2"># made this allowed...</span>
+    <span class="s1">cs = ConnectionState()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(LocalProtocolError):</span>
+        <span class="s1">cs.process_event(SERVER</span><span class="s0">, </span><span class="s1">Request)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,622 @@
+<html>
+<head>
+<title>x509.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+x509.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">datetime</span>
+<span class="s2">import </span><span class="s1">operator</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span><span class="s2">, </span><span class="s1">x509</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">UnsupportedAlgorithm</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl </span><span class="s2">import </span><span class="s1">dsa</span><span class="s2">, </span><span class="s1">ec</span><span class="s2">, </span><span class="s1">rsa</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl.decode_asn1 </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">_asn1_integer_to_int</span><span class="s2">,</span>
+    <span class="s1">_asn1_string_to_bytes</span><span class="s2">,</span>
+    <span class="s1">_decode_x509_name</span><span class="s2">,</span>
+    <span class="s1">_obj2txt</span><span class="s2">,</span>
+    <span class="s1">_parse_asn1_time</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.openssl.encode_asn1 </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">_encode_asn1_int_gc</span><span class="s2">,</span>
+    <span class="s1">_txt2obj_gc</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">hashes</span><span class="s2">, </span><span class="s1">serialization</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.base </span><span class="s2">import </span><span class="s1">_PUBLIC_KEY_TYPES</span>
+<span class="s2">from </span><span class="s1">cryptography.x509.name </span><span class="s2">import </span><span class="s1">_ASN1Type</span>
+
+
+<span class="s2">class </span><span class="s1">_Certificate(x509.Certificate):</span>
+    <span class="s0"># Keep-alive reference used by OCSP</span>
+    <span class="s1">_ocsp_resp_ref: typing.Any</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">x509_cert):</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._x509 = x509_cert</span>
+
+        <span class="s1">version = self._backend._lib.X509_get_version(self._x509)</span>
+        <span class="s2">if </span><span class="s1">version == </span><span class="s3">0</span><span class="s1">:</span>
+            <span class="s1">self._version = x509.Version.v1</span>
+        <span class="s2">elif </span><span class="s1">version == </span><span class="s3">2</span><span class="s1">:</span>
+            <span class="s1">self._version = x509.Version.v3</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">x509.InvalidVersion(</span>
+                <span class="s4">&quot;{} is not a valid X509 version&quot;</span><span class="s1">.format(version)</span><span class="s2">, </span><span class="s1">version</span>
+            <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">__repr__(self):</span>
+        <span class="s2">return </span><span class="s4">&quot;&lt;Certificate(subject={}, ...)&gt;&quot;</span><span class="s1">.format(self.subject)</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">_Certificate):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s1">res = self._backend._lib.X509_cmp(self._x509</span><span class="s2">, </span><span class="s1">other._x509)</span>
+        <span class="s2">return </span><span class="s1">res == </span><span class="s3">0</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">hash(self.public_bytes(serialization.Encoding.DER))</span>
+
+    <span class="s2">def </span><span class="s1">__deepcopy__(self</span><span class="s2">, </span><span class="s1">memo):</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">fingerprint(self</span><span class="s2">, </span><span class="s1">algorithm: hashes.HashAlgorithm) -&gt; bytes:</span>
+        <span class="s1">h = hashes.Hash(algorithm</span><span class="s2">, </span><span class="s1">self._backend)</span>
+        <span class="s1">h.update(self.public_bytes(serialization.Encoding.DER))</span>
+        <span class="s2">return </span><span class="s1">h.finalize()</span>
+
+    <span class="s1">version = utils.read_only_property(</span><span class="s4">&quot;_version&quot;</span><span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">serial_number(self) -&gt; int:</span>
+        <span class="s1">asn1_int = self._backend._lib.X509_get_serialNumber(self._x509)</span>
+        <span class="s1">self._backend.openssl_assert(asn1_int != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_asn1_integer_to_int(self._backend</span><span class="s2">, </span><span class="s1">asn1_int)</span>
+
+    <span class="s2">def </span><span class="s1">public_key(self) -&gt; _PUBLIC_KEY_TYPES:</span>
+        <span class="s1">pkey = self._backend._lib.X509_get_pubkey(self._x509)</span>
+        <span class="s2">if </span><span class="s1">pkey == self._backend._ffi.NULL:</span>
+            <span class="s0"># Remove errors from the stack.</span>
+            <span class="s1">self._backend._consume_errors()</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Certificate public key is of an unknown type&quot;</span><span class="s1">)</span>
+
+        <span class="s1">pkey = self._backend._ffi.gc(pkey</span><span class="s2">, </span><span class="s1">self._backend._lib.EVP_PKEY_free)</span>
+
+        <span class="s2">return </span><span class="s1">self._backend._evp_pkey_to_public_key(pkey)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">not_valid_before(self) -&gt; datetime.datetime:</span>
+        <span class="s1">asn1_time = self._backend._lib.X509_get0_notBefore(self._x509)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_time(self._backend</span><span class="s2">, </span><span class="s1">asn1_time)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">not_valid_after(self) -&gt; datetime.datetime:</span>
+        <span class="s1">asn1_time = self._backend._lib.X509_get0_notAfter(self._x509)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_time(self._backend</span><span class="s2">, </span><span class="s1">asn1_time)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">issuer(self) -&gt; x509.Name:</span>
+        <span class="s1">issuer = self._backend._lib.X509_get_issuer_name(self._x509)</span>
+        <span class="s1">self._backend.openssl_assert(issuer != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_decode_x509_name(self._backend</span><span class="s2">, </span><span class="s1">issuer)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">subject(self) -&gt; x509.Name:</span>
+        <span class="s1">subject = self._backend._lib.X509_get_subject_name(self._x509)</span>
+        <span class="s1">self._backend.openssl_assert(subject != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_decode_x509_name(self._backend</span><span class="s2">, </span><span class="s1">subject)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_hash_algorithm(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+    <span class="s1">) -&gt; typing.Optional[hashes.HashAlgorithm]:</span>
+        <span class="s1">oid = self.signature_algorithm_oid</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">x509._SIG_OIDS_TO_HASH[oid]</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s4">&quot;Signature algorithm OID:{} not recognized&quot;</span><span class="s1">.format(oid)</span>
+            <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_algorithm_oid(self) -&gt; x509.ObjectIdentifier:</span>
+        <span class="s1">alg = self._backend._ffi.new(</span><span class="s4">&quot;X509_ALGOR **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.X509_get0_signature(</span>
+            <span class="s1">self._backend._ffi.NULL</span><span class="s2">, </span><span class="s1">alg</span><span class="s2">, </span><span class="s1">self._x509</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(alg[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s1">oid = _obj2txt(self._backend</span><span class="s2">, </span><span class="s1">alg[</span><span class="s3">0</span><span class="s1">].algorithm)</span>
+        <span class="s2">return </span><span class="s1">x509.ObjectIdentifier(oid)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s2">return </span><span class="s1">self._backend._certificate_extension_parser.parse(self._x509)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature(self) -&gt; bytes:</span>
+        <span class="s1">sig = self._backend._ffi.new(</span><span class="s4">&quot;ASN1_BIT_STRING **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.X509_get0_signature(</span>
+            <span class="s1">sig</span><span class="s2">, </span><span class="s1">self._backend._ffi.NULL</span><span class="s2">, </span><span class="s1">self._x509</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(sig[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">sig[</span><span class="s3">0</span><span class="s1">])</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">tbs_certificate_bytes(self) -&gt; bytes:</span>
+        <span class="s1">pp = self._backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.i2d_re_X509_tbs(self._x509</span><span class="s2">, </span><span class="s1">pp)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s1">pp = self._backend._ffi.gc(</span>
+            <span class="s1">pp</span><span class="s2">, lambda </span><span class="s1">pointer: self._backend._lib.OPENSSL_free(pointer[</span><span class="s3">0</span><span class="s1">])</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._ffi.buffer(pp[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:]</span>
+
+    <span class="s2">def </span><span class="s1">public_bytes(self</span><span class="s2">, </span><span class="s1">encoding: serialization.Encoding) -&gt; bytes:</span>
+        <span class="s1">bio = self._backend._create_mem_bio_gc()</span>
+        <span class="s2">if </span><span class="s1">encoding </span><span class="s2">is </span><span class="s1">serialization.Encoding.PEM:</span>
+            <span class="s1">res = self._backend._lib.PEM_write_bio_X509(bio</span><span class="s2">, </span><span class="s1">self._x509)</span>
+        <span class="s2">elif </span><span class="s1">encoding </span><span class="s2">is </span><span class="s1">serialization.Encoding.DER:</span>
+            <span class="s1">res = self._backend._lib.i2d_X509_bio(bio</span><span class="s2">, </span><span class="s1">self._x509)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;encoding must be an item from the Encoding enum&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._backend.openssl_assert(res == </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._read_mem_bio(bio)</span>
+
+
+<span class="s2">class </span><span class="s1">_RevokedCertificate(x509.RevokedCertificate):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">crl</span><span class="s2">, </span><span class="s1">x509_revoked):</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s0"># The X509_REVOKED_value is a X509_REVOKED * that has</span>
+        <span class="s0"># no reference counting. This means when X509_CRL_free is</span>
+        <span class="s0"># called then the CRL and all X509_REVOKED * are freed. Since</span>
+        <span class="s0"># you can retain a reference to a single revoked certificate</span>
+        <span class="s0"># and let the CRL fall out of scope we need to retain a</span>
+        <span class="s0"># private reference to the CRL inside the RevokedCertificate</span>
+        <span class="s0"># object to prevent the gc from being called inappropriately.</span>
+        <span class="s1">self._crl = crl</span>
+        <span class="s1">self._x509_revoked = x509_revoked</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">serial_number(self) -&gt; int:</span>
+        <span class="s1">asn1_int = self._backend._lib.X509_REVOKED_get0_serialNumber(</span>
+            <span class="s1">self._x509_revoked</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(asn1_int != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_asn1_integer_to_int(self._backend</span><span class="s2">, </span><span class="s1">asn1_int)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">revocation_date(self) -&gt; datetime.datetime:</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_time(</span>
+            <span class="s1">self._backend</span><span class="s2">,</span>
+            <span class="s1">self._backend._lib.X509_REVOKED_get0_revocationDate(</span>
+                <span class="s1">self._x509_revoked</span>
+            <span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s2">return </span><span class="s1">self._backend._revoked_cert_extension_parser.parse(</span>
+            <span class="s1">self._x509_revoked</span>
+        <span class="s1">)</span>
+
+
+<span class="s1">@utils.register_interface(x509.CertificateRevocationList)</span>
+<span class="s2">class </span><span class="s1">_CertificateRevocationList(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">x509_crl):</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._x509_crl = x509_crl</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">_CertificateRevocationList):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s1">res = self._backend._lib.X509_CRL_cmp(self._x509_crl</span><span class="s2">, </span><span class="s1">other._x509_crl)</span>
+        <span class="s2">return </span><span class="s1">res == </span><span class="s3">0</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">fingerprint(self</span><span class="s2">, </span><span class="s1">algorithm: hashes.HashAlgorithm) -&gt; bytes:</span>
+        <span class="s1">h = hashes.Hash(algorithm</span><span class="s2">, </span><span class="s1">self._backend)</span>
+        <span class="s1">bio = self._backend._create_mem_bio_gc()</span>
+        <span class="s1">res = self._backend._lib.i2d_X509_CRL_bio(bio</span><span class="s2">, </span><span class="s1">self._x509_crl)</span>
+        <span class="s1">self._backend.openssl_assert(res == </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">der = self._backend._read_mem_bio(bio)</span>
+        <span class="s1">h.update(der)</span>
+        <span class="s2">return </span><span class="s1">h.finalize()</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">_sorted_crl(self):</span>
+        <span class="s0"># X509_CRL_get0_by_serial sorts in place, which breaks a variety of</span>
+        <span class="s0"># things we don't want to break (like iteration and the signature).</span>
+        <span class="s0"># Let's dupe it and sort that instead.</span>
+        <span class="s1">dup = self._backend._lib.X509_CRL_dup(self._x509_crl)</span>
+        <span class="s1">self._backend.openssl_assert(dup != self._backend._ffi.NULL)</span>
+        <span class="s1">dup = self._backend._ffi.gc(dup</span><span class="s2">, </span><span class="s1">self._backend._lib.X509_CRL_free)</span>
+        <span class="s2">return </span><span class="s1">dup</span>
+
+    <span class="s2">def </span><span class="s1">get_revoked_certificate_by_serial_number(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">serial_number: int</span>
+    <span class="s1">) -&gt; typing.Optional[x509.RevokedCertificate]:</span>
+        <span class="s1">revoked = self._backend._ffi.new(</span><span class="s4">&quot;X509_REVOKED **&quot;</span><span class="s1">)</span>
+        <span class="s1">asn1_int = _encode_asn1_int_gc(self._backend</span><span class="s2">, </span><span class="s1">serial_number)</span>
+        <span class="s1">res = self._backend._lib.X509_CRL_get0_by_serial(</span>
+            <span class="s1">self._sorted_crl</span><span class="s2">, </span><span class="s1">revoked</span><span class="s2">, </span><span class="s1">asn1_int</span>
+        <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">res == </span><span class="s3">0</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self._backend.openssl_assert(revoked[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+            <span class="s2">return </span><span class="s1">_RevokedCertificate(</span>
+                <span class="s1">self._backend</span><span class="s2">, </span><span class="s1">self._sorted_crl</span><span class="s2">, </span><span class="s1">revoked[</span><span class="s3">0</span><span class="s1">]</span>
+            <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_hash_algorithm(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+    <span class="s1">) -&gt; typing.Optional[hashes.HashAlgorithm]:</span>
+        <span class="s1">oid = self.signature_algorithm_oid</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">x509._SIG_OIDS_TO_HASH[oid]</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s4">&quot;Signature algorithm OID:{} not recognized&quot;</span><span class="s1">.format(oid)</span>
+            <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_algorithm_oid(self) -&gt; x509.ObjectIdentifier:</span>
+        <span class="s1">alg = self._backend._ffi.new(</span><span class="s4">&quot;X509_ALGOR **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.X509_CRL_get0_signature(</span>
+            <span class="s1">self._x509_crl</span><span class="s2">, </span><span class="s1">self._backend._ffi.NULL</span><span class="s2">, </span><span class="s1">alg</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(alg[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s1">oid = _obj2txt(self._backend</span><span class="s2">, </span><span class="s1">alg[</span><span class="s3">0</span><span class="s1">].algorithm)</span>
+        <span class="s2">return </span><span class="s1">x509.ObjectIdentifier(oid)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">issuer(self) -&gt; x509.Name:</span>
+        <span class="s1">issuer = self._backend._lib.X509_CRL_get_issuer(self._x509_crl)</span>
+        <span class="s1">self._backend.openssl_assert(issuer != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_decode_x509_name(self._backend</span><span class="s2">, </span><span class="s1">issuer)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">next_update(self) -&gt; datetime.datetime:</span>
+        <span class="s1">nu = self._backend._lib.X509_CRL_get0_nextUpdate(self._x509_crl)</span>
+        <span class="s1">self._backend.openssl_assert(nu != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_time(self._backend</span><span class="s2">, </span><span class="s1">nu)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">last_update(self) -&gt; datetime.datetime:</span>
+        <span class="s1">lu = self._backend._lib.X509_CRL_get0_lastUpdate(self._x509_crl)</span>
+        <span class="s1">self._backend.openssl_assert(lu != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_parse_asn1_time(self._backend</span><span class="s2">, </span><span class="s1">lu)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature(self) -&gt; bytes:</span>
+        <span class="s1">sig = self._backend._ffi.new(</span><span class="s4">&quot;ASN1_BIT_STRING **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.X509_CRL_get0_signature(</span>
+            <span class="s1">self._x509_crl</span><span class="s2">, </span><span class="s1">sig</span><span class="s2">, </span><span class="s1">self._backend._ffi.NULL</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(sig[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">sig[</span><span class="s3">0</span><span class="s1">])</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">tbs_certlist_bytes(self) -&gt; bytes:</span>
+        <span class="s1">pp = self._backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.i2d_re_X509_CRL_tbs(self._x509_crl</span><span class="s2">, </span><span class="s1">pp)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s1">pp = self._backend._ffi.gc(</span>
+            <span class="s1">pp</span><span class="s2">, lambda </span><span class="s1">pointer: self._backend._lib.OPENSSL_free(pointer[</span><span class="s3">0</span><span class="s1">])</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._ffi.buffer(pp[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:]</span>
+
+    <span class="s2">def </span><span class="s1">public_bytes(self</span><span class="s2">, </span><span class="s1">encoding: serialization.Encoding) -&gt; bytes:</span>
+        <span class="s1">bio = self._backend._create_mem_bio_gc()</span>
+        <span class="s2">if </span><span class="s1">encoding </span><span class="s2">is </span><span class="s1">serialization.Encoding.PEM:</span>
+            <span class="s1">res = self._backend._lib.PEM_write_bio_X509_CRL(</span>
+                <span class="s1">bio</span><span class="s2">, </span><span class="s1">self._x509_crl</span>
+            <span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">encoding </span><span class="s2">is </span><span class="s1">serialization.Encoding.DER:</span>
+            <span class="s1">res = self._backend._lib.i2d_X509_CRL_bio(bio</span><span class="s2">, </span><span class="s1">self._x509_crl)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;encoding must be an item from the Encoding enum&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._backend.openssl_assert(res == </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._read_mem_bio(bio)</span>
+
+    <span class="s2">def </span><span class="s1">_revoked_cert(self</span><span class="s2">, </span><span class="s1">idx):</span>
+        <span class="s1">revoked = self._backend._lib.X509_CRL_get_REVOKED(self._x509_crl)</span>
+        <span class="s1">r = self._backend._lib.sk_X509_REVOKED_value(revoked</span><span class="s2">, </span><span class="s1">idx)</span>
+        <span class="s1">self._backend.openssl_assert(r != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_RevokedCertificate(self._backend</span><span class="s2">, </span><span class="s1">self</span><span class="s2">, </span><span class="s1">r)</span>
+
+    <span class="s2">def </span><span class="s1">__iter__(self):</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(len(self)):</span>
+            <span class="s2">yield </span><span class="s1">self._revoked_cert(i)</span>
+
+    <span class="s2">def </span><span class="s1">__getitem__(self</span><span class="s2">, </span><span class="s1">idx):</span>
+        <span class="s2">if </span><span class="s1">isinstance(idx</span><span class="s2">, </span><span class="s1">slice):</span>
+            <span class="s1">start</span><span class="s2">, </span><span class="s1">stop</span><span class="s2">, </span><span class="s1">step = idx.indices(len(self))</span>
+            <span class="s2">return </span><span class="s1">[self._revoked_cert(i) </span><span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(start</span><span class="s2">, </span><span class="s1">stop</span><span class="s2">, </span><span class="s1">step)]</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">idx = operator.index(idx)</span>
+            <span class="s2">if </span><span class="s1">idx &lt; </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s1">idx += len(self)</span>
+            <span class="s2">if not </span><span class="s3">0 </span><span class="s1">&lt;= idx &lt; len(self):</span>
+                <span class="s2">raise </span><span class="s1">IndexError</span>
+            <span class="s2">return </span><span class="s1">self._revoked_cert(idx)</span>
+
+    <span class="s2">def </span><span class="s1">__len__(self) -&gt; int:</span>
+        <span class="s1">revoked = self._backend._lib.X509_CRL_get_REVOKED(self._x509_crl)</span>
+        <span class="s2">if </span><span class="s1">revoked == self._backend._ffi.NULL:</span>
+            <span class="s2">return </span><span class="s3">0</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self._backend._lib.sk_X509_REVOKED_num(revoked)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s2">return </span><span class="s1">self._backend._crl_extension_parser.parse(self._x509_crl)</span>
+
+    <span class="s2">def </span><span class="s1">is_signature_valid(self</span><span class="s2">, </span><span class="s1">public_key: _PUBLIC_KEY_TYPES) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(</span>
+            <span class="s1">public_key</span><span class="s2">,</span>
+            <span class="s1">(</span>
+                <span class="s1">dsa._DSAPublicKey</span><span class="s2">,</span>
+                <span class="s1">rsa._RSAPublicKey</span><span class="s2">,</span>
+                <span class="s1">ec._EllipticCurvePublicKey</span><span class="s2">,</span>
+            <span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s4">&quot;Expecting one of DSAPublicKey, RSAPublicKey,&quot;</span>
+                <span class="s4">&quot; or EllipticCurvePublicKey.&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.X509_CRL_verify(</span>
+            <span class="s1">self._x509_crl</span><span class="s2">, </span><span class="s1">public_key._evp_pkey</span>
+        <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">res != </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s1">self._backend._consume_errors()</span>
+            <span class="s2">return False</span>
+
+        <span class="s2">return True</span>
+
+
+<span class="s1">@utils.register_interface(x509.CertificateSigningRequest)</span>
+<span class="s2">class </span><span class="s1">_CertificateSigningRequest(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">x509_req):</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s1">self._x509_req = x509_req</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">_CertificateSigningRequest):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s1">self_bytes = self.public_bytes(serialization.Encoding.DER)</span>
+        <span class="s1">other_bytes = other.public_bytes(serialization.Encoding.DER)</span>
+        <span class="s2">return </span><span class="s1">self_bytes == other_bytes</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">hash(self.public_bytes(serialization.Encoding.DER))</span>
+
+    <span class="s2">def </span><span class="s1">public_key(self) -&gt; _PUBLIC_KEY_TYPES:</span>
+        <span class="s1">pkey = self._backend._lib.X509_REQ_get_pubkey(self._x509_req)</span>
+        <span class="s1">self._backend.openssl_assert(pkey != self._backend._ffi.NULL)</span>
+        <span class="s1">pkey = self._backend._ffi.gc(pkey</span><span class="s2">, </span><span class="s1">self._backend._lib.EVP_PKEY_free)</span>
+        <span class="s2">return </span><span class="s1">self._backend._evp_pkey_to_public_key(pkey)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">subject(self) -&gt; x509.Name:</span>
+        <span class="s1">subject = self._backend._lib.X509_REQ_get_subject_name(self._x509_req)</span>
+        <span class="s1">self._backend.openssl_assert(subject != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_decode_x509_name(self._backend</span><span class="s2">, </span><span class="s1">subject)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_hash_algorithm(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+    <span class="s1">) -&gt; typing.Optional[hashes.HashAlgorithm]:</span>
+        <span class="s1">oid = self.signature_algorithm_oid</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">x509._SIG_OIDS_TO_HASH[oid]</span>
+        <span class="s2">except </span><span class="s1">KeyError:</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s4">&quot;Signature algorithm OID:{} not recognized&quot;</span><span class="s1">.format(oid)</span>
+            <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature_algorithm_oid(self) -&gt; x509.ObjectIdentifier:</span>
+        <span class="s1">alg = self._backend._ffi.new(</span><span class="s4">&quot;X509_ALGOR **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.X509_REQ_get0_signature(</span>
+            <span class="s1">self._x509_req</span><span class="s2">, </span><span class="s1">self._backend._ffi.NULL</span><span class="s2">, </span><span class="s1">alg</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(alg[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s1">oid = _obj2txt(self._backend</span><span class="s2">, </span><span class="s1">alg[</span><span class="s3">0</span><span class="s1">].algorithm)</span>
+        <span class="s2">return </span><span class="s1">x509.ObjectIdentifier(oid)</span>
+
+    <span class="s1">@utils.cached_property</span>
+    <span class="s2">def </span><span class="s1">extensions(self) -&gt; x509.Extensions:</span>
+        <span class="s1">x509_exts = self._backend._lib.X509_REQ_get_extensions(self._x509_req)</span>
+        <span class="s1">x509_exts = self._backend._ffi.gc(</span>
+            <span class="s1">x509_exts</span><span class="s2">,</span>
+            <span class="s2">lambda </span><span class="s1">x: self._backend._lib.sk_X509_EXTENSION_pop_free(</span>
+                <span class="s1">x</span><span class="s2">,</span>
+                <span class="s1">self._backend._ffi.addressof(</span>
+                    <span class="s1">self._backend._lib._original_lib</span><span class="s2">, </span><span class="s4">&quot;X509_EXTENSION_free&quot;</span>
+                <span class="s1">)</span><span class="s2">,</span>
+            <span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._csr_extension_parser.parse(x509_exts)</span>
+
+    <span class="s2">def </span><span class="s1">public_bytes(self</span><span class="s2">, </span><span class="s1">encoding: serialization.Encoding) -&gt; bytes:</span>
+        <span class="s1">bio = self._backend._create_mem_bio_gc()</span>
+        <span class="s2">if </span><span class="s1">encoding </span><span class="s2">is </span><span class="s1">serialization.Encoding.PEM:</span>
+            <span class="s1">res = self._backend._lib.PEM_write_bio_X509_REQ(</span>
+                <span class="s1">bio</span><span class="s2">, </span><span class="s1">self._x509_req</span>
+            <span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">encoding </span><span class="s2">is </span><span class="s1">serialization.Encoding.DER:</span>
+            <span class="s1">res = self._backend._lib.i2d_X509_REQ_bio(bio</span><span class="s2">, </span><span class="s1">self._x509_req)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s4">&quot;encoding must be an item from the Encoding enum&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._backend.openssl_assert(res == </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._read_mem_bio(bio)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">tbs_certrequest_bytes(self) -&gt; bytes:</span>
+        <span class="s1">pp = self._backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.i2d_re_X509_REQ_tbs(self._x509_req</span><span class="s2">, </span><span class="s1">pp)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s1">pp = self._backend._ffi.gc(</span>
+            <span class="s1">pp</span><span class="s2">, lambda </span><span class="s1">pointer: self._backend._lib.OPENSSL_free(pointer[</span><span class="s3">0</span><span class="s1">])</span>
+        <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">self._backend._ffi.buffer(pp[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">signature(self) -&gt; bytes:</span>
+        <span class="s1">sig = self._backend._ffi.new(</span><span class="s4">&quot;ASN1_BIT_STRING **&quot;</span><span class="s1">)</span>
+        <span class="s1">self._backend._lib.X509_REQ_get0_signature(</span>
+            <span class="s1">self._x509_req</span><span class="s2">, </span><span class="s1">sig</span><span class="s2">, </span><span class="s1">self._backend._ffi.NULL</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(sig[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">sig[</span><span class="s3">0</span><span class="s1">])</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">is_signature_valid(self) -&gt; bool:</span>
+        <span class="s1">pkey = self._backend._lib.X509_REQ_get_pubkey(self._x509_req)</span>
+        <span class="s1">self._backend.openssl_assert(pkey != self._backend._ffi.NULL)</span>
+        <span class="s1">pkey = self._backend._ffi.gc(pkey</span><span class="s2">, </span><span class="s1">self._backend._lib.EVP_PKEY_free)</span>
+        <span class="s1">res = self._backend._lib.X509_REQ_verify(self._x509_req</span><span class="s2">, </span><span class="s1">pkey)</span>
+
+        <span class="s2">if </span><span class="s1">res != </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s1">self._backend._consume_errors()</span>
+            <span class="s2">return False</span>
+
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">get_attribute_for_oid(self</span><span class="s2">, </span><span class="s1">oid: x509.ObjectIdentifier) -&gt; bytes:</span>
+        <span class="s1">obj = _txt2obj_gc(self._backend</span><span class="s2">, </span><span class="s1">oid.dotted_string)</span>
+        <span class="s1">pos = self._backend._lib.X509_REQ_get_attr_by_OBJ(</span>
+            <span class="s1">self._x509_req</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">, </span><span class="s1">-</span><span class="s3">1</span>
+        <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">pos == -</span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">x509.AttributeNotFound(</span>
+                <span class="s4">&quot;No {} attribute was found&quot;</span><span class="s1">.format(oid)</span><span class="s2">, </span><span class="s1">oid</span>
+            <span class="s1">)</span>
+
+        <span class="s1">attr = self._backend._lib.X509_REQ_get_attr(self._x509_req</span><span class="s2">, </span><span class="s1">pos)</span>
+        <span class="s1">self._backend.openssl_assert(attr != self._backend._ffi.NULL)</span>
+        <span class="s0"># We don't support multiple valued attributes for now.</span>
+        <span class="s1">self._backend.openssl_assert(</span>
+            <span class="s1">self._backend._lib.X509_ATTRIBUTE_count(attr) == </span><span class="s3">1</span>
+        <span class="s1">)</span>
+        <span class="s1">asn1_type = self._backend._lib.X509_ATTRIBUTE_get0_type(attr</span><span class="s2">, </span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(asn1_type != self._backend._ffi.NULL)</span>
+        <span class="s0"># We need this to ensure that our C type cast is safe.</span>
+        <span class="s0"># Also this should always be a sane string type, but we'll see if</span>
+        <span class="s0"># that is true in the real world...</span>
+        <span class="s2">if </span><span class="s1">asn1_type.type </span><span class="s2">not in </span><span class="s1">(</span>
+            <span class="s1">_ASN1Type.UTF8String.value</span><span class="s2">,</span>
+            <span class="s1">_ASN1Type.PrintableString.value</span><span class="s2">,</span>
+            <span class="s1">_ASN1Type.IA5String.value</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s4">&quot;OID {} has a disallowed ASN.1 type: {}&quot;</span><span class="s1">.format(</span>
+                    <span class="s1">oid</span><span class="s2">, </span><span class="s1">asn1_type.type</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+
+        <span class="s1">data = self._backend._lib.X509_ATTRIBUTE_get0_data(</span>
+            <span class="s1">attr</span><span class="s2">, </span><span class="s3">0</span><span class="s2">, </span><span class="s1">asn1_type.type</span><span class="s2">, </span><span class="s1">self._backend._ffi.NULL</span>
+        <span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(data != self._backend._ffi.NULL)</span>
+        <span class="s0"># This cast is safe iff we assert on the type above to ensure</span>
+        <span class="s0"># that it is always a type of ASN1_STRING</span>
+        <span class="s1">data = self._backend._ffi.cast(</span><span class="s4">&quot;ASN1_STRING *&quot;</span><span class="s2">, </span><span class="s1">data)</span>
+        <span class="s2">return </span><span class="s1">_asn1_string_to_bytes(self._backend</span><span class="s2">, </span><span class="s1">data)</span>
+
+
+<span class="s1">@utils.register_interface(</span>
+    <span class="s1">x509.certificate_transparency.SignedCertificateTimestamp</span>
+<span class="s1">)</span>
+<span class="s2">class </span><span class="s1">_SignedCertificateTimestamp(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">, </span><span class="s1">sct_list</span><span class="s2">, </span><span class="s1">sct):</span>
+        <span class="s1">self._backend = backend</span>
+        <span class="s0"># Keep the SCT_LIST that this SCT came from alive.</span>
+        <span class="s1">self._sct_list = sct_list</span>
+        <span class="s1">self._sct = sct</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">version(self) -&gt; x509.certificate_transparency.Version:</span>
+        <span class="s1">version = self._backend._lib.SCT_get_version(self._sct)</span>
+        <span class="s2">assert </span><span class="s1">version == self._backend._lib.SCT_VERSION_V1</span>
+        <span class="s2">return </span><span class="s1">x509.certificate_transparency.Version.v1</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">log_id(self) -&gt; bytes:</span>
+        <span class="s1">out = self._backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+        <span class="s1">log_id_length = self._backend._lib.SCT_get0_log_id(self._sct</span><span class="s2">, </span><span class="s1">out)</span>
+        <span class="s2">assert </span><span class="s1">log_id_length &gt;= </span><span class="s3">0</span>
+        <span class="s2">return </span><span class="s1">self._backend._ffi.buffer(out[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">log_id_length)[:]</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">timestamp(self) -&gt; datetime.datetime:</span>
+        <span class="s1">timestamp = self._backend._lib.SCT_get_timestamp(self._sct)</span>
+        <span class="s1">milliseconds = timestamp % </span><span class="s3">1000</span>
+        <span class="s2">return </span><span class="s1">datetime.datetime.utcfromtimestamp(timestamp // </span><span class="s3">1000</span><span class="s1">).replace(</span>
+            <span class="s1">microsecond=milliseconds * </span><span class="s3">1000</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">entry_type(self) -&gt; x509.certificate_transparency.LogEntryType:</span>
+        <span class="s1">entry_type = self._backend._lib.SCT_get_log_entry_type(self._sct)</span>
+        <span class="s0"># We currently only support loading SCTs from the X.509 extension, so</span>
+        <span class="s0"># we only have precerts.</span>
+        <span class="s2">assert </span><span class="s1">entry_type == self._backend._lib.CT_LOG_ENTRY_TYPE_PRECERT</span>
+        <span class="s2">return </span><span class="s1">x509.certificate_transparency.LogEntryType.PRE_CERTIFICATE</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">_signature(self):</span>
+        <span class="s1">ptrptr = self._backend._ffi.new(</span><span class="s4">&quot;unsigned char **&quot;</span><span class="s1">)</span>
+        <span class="s1">res = self._backend._lib.SCT_get0_signature(self._sct</span><span class="s2">, </span><span class="s1">ptrptr)</span>
+        <span class="s1">self._backend.openssl_assert(res &gt; </span><span class="s3">0</span><span class="s1">)</span>
+        <span class="s1">self._backend.openssl_assert(ptrptr[</span><span class="s3">0</span><span class="s1">] != self._backend._ffi.NULL)</span>
+        <span class="s2">return </span><span class="s1">self._backend._ffi.buffer(ptrptr[</span><span class="s3">0</span><span class="s1">]</span><span class="s2">, </span><span class="s1">res)[:]</span>
+
+    <span class="s2">def </span><span class="s1">__hash__(self) -&gt; int:</span>
+        <span class="s2">return </span><span class="s1">hash(self._signature)</span>
+
+    <span class="s2">def </span><span class="s1">__eq__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">if not </span><span class="s1">isinstance(other</span><span class="s2">, </span><span class="s1">_SignedCertificateTimestamp):</span>
+            <span class="s2">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s2">return </span><span class="s1">self._signature == other._signature</span>
+
+    <span class="s2">def </span><span class="s1">__ne__(self</span><span class="s2">, </span><span class="s1">other: object) -&gt; bool:</span>
+        <span class="s2">return not </span><span class="s1">self == other</span>
+</pre>
+</body>
+</html>

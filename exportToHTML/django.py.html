@@ -1,0 +1,151 @@
+<html>
+<head>
+<title>django.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+django.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">importlib </span><span class="s0">import </span><span class="s1">import_module</span>
+<span class="s0">from </span><span class="s1">pkgutil </span><span class="s0">import </span><span class="s1">walk_packages</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">TemplateDoesNotExist</span>
+<span class="s0">from </span><span class="s1">django.template.context </span><span class="s0">import </span><span class="s1">make_context</span>
+<span class="s0">from </span><span class="s1">django.template.engine </span><span class="s0">import </span><span class="s1">Engine</span>
+<span class="s0">from </span><span class="s1">django.template.library </span><span class="s0">import </span><span class="s1">InvalidTemplateLibrary</span>
+
+<span class="s0">from </span><span class="s1">.base </span><span class="s0">import </span><span class="s1">BaseEngine</span>
+
+
+<span class="s0">class </span><span class="s1">DjangoTemplates(BaseEngine):</span>
+
+    <span class="s1">app_dirname = </span><span class="s2">'templates'</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">params):</span>
+        <span class="s1">params = params.copy()</span>
+        <span class="s1">options = params.pop(</span><span class="s2">'OPTIONS'</span><span class="s1">).copy()</span>
+        <span class="s1">options.setdefault(</span><span class="s2">'autoescape'</span><span class="s0">, True</span><span class="s1">)</span>
+        <span class="s1">options.setdefault(</span><span class="s2">'debug'</span><span class="s0">, </span><span class="s1">settings.DEBUG)</span>
+        <span class="s1">options.setdefault(</span><span class="s2">'file_charset'</span><span class="s0">, </span><span class="s2">'utf-8'</span><span class="s1">)</span>
+        <span class="s1">libraries = options.get(</span><span class="s2">'libraries'</span><span class="s0">, </span><span class="s1">{})</span>
+        <span class="s1">options[</span><span class="s2">'libraries'</span><span class="s1">] = self.get_templatetag_libraries(libraries)</span>
+        <span class="s1">super().__init__(params)</span>
+        <span class="s1">self.engine = Engine(self.dirs</span><span class="s0">, </span><span class="s1">self.app_dirs</span><span class="s0">, </span><span class="s1">**options)</span>
+
+    <span class="s0">def </span><span class="s1">from_string(self</span><span class="s0">, </span><span class="s1">template_code):</span>
+        <span class="s0">return </span><span class="s1">Template(self.engine.from_string(template_code)</span><span class="s0">, </span><span class="s1">self)</span>
+
+    <span class="s0">def </span><span class="s1">get_template(self</span><span class="s0">, </span><span class="s1">template_name):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">Template(self.engine.get_template(template_name)</span><span class="s0">, </span><span class="s1">self)</span>
+        <span class="s0">except </span><span class="s1">TemplateDoesNotExist </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">reraise(exc</span><span class="s0">, </span><span class="s1">self)</span>
+
+    <span class="s0">def </span><span class="s1">get_templatetag_libraries(self</span><span class="s0">, </span><span class="s1">custom_libraries):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Return a collation of template tag libraries from installed 
+        applications and the supplied custom_libraries argument. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">libraries = get_installed_libraries()</span>
+        <span class="s1">libraries.update(custom_libraries)</span>
+        <span class="s0">return </span><span class="s1">libraries</span>
+
+
+<span class="s0">class </span><span class="s1">Template:</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">template</span><span class="s0">, </span><span class="s1">backend):</span>
+        <span class="s1">self.template = template</span>
+        <span class="s1">self.backend = backend</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">origin(self):</span>
+        <span class="s0">return </span><span class="s1">self.template.origin</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">context=</span><span class="s0">None, </span><span class="s1">request=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">context = make_context(context</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">autoescape=self.backend.engine.autoescape)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.template.render(context)</span>
+        <span class="s0">except </span><span class="s1">TemplateDoesNotExist </span><span class="s0">as </span><span class="s1">exc:</span>
+            <span class="s1">reraise(exc</span><span class="s0">, </span><span class="s1">self.backend)</span>
+
+
+<span class="s0">def </span><span class="s1">copy_exception(exc</span><span class="s0">, </span><span class="s1">backend=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Create a new TemplateDoesNotExist. Preserve its declared attributes and 
+    template debug data but discard __traceback__, __context__, and __cause__ 
+    to make this object suitable for keeping around (in a cache, for example). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">backend = backend </span><span class="s0">or </span><span class="s1">exc.backend</span>
+    <span class="s1">new = exc.__class__(*exc.args</span><span class="s0">, </span><span class="s1">tried=exc.tried</span><span class="s0">, </span><span class="s1">backend=backend</span><span class="s0">, </span><span class="s1">chain=exc.chain)</span>
+    <span class="s0">if </span><span class="s1">hasattr(exc</span><span class="s0">, </span><span class="s2">'template_debug'</span><span class="s1">):</span>
+        <span class="s1">new.template_debug = exc.template_debug</span>
+    <span class="s0">return </span><span class="s1">new</span>
+
+
+<span class="s0">def </span><span class="s1">reraise(exc</span><span class="s0">, </span><span class="s1">backend):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Reraise TemplateDoesNotExist while maintaining template debug information. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">new = copy_exception(exc</span><span class="s0">, </span><span class="s1">backend)</span>
+    <span class="s0">raise </span><span class="s1">new </span><span class="s0">from </span><span class="s1">exc</span>
+
+
+<span class="s0">def </span><span class="s1">get_installed_libraries():</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Return the built-in template tag libraries and those from installed 
+    applications. Libraries are stored in a dictionary where keys are the 
+    individual module names, not the full module paths. Example: 
+    django.templatetags.i18n is stored as i18n. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">libraries = {}</span>
+    <span class="s1">candidates = [</span><span class="s2">'django.templatetags'</span><span class="s1">]</span>
+    <span class="s1">candidates.extend(</span>
+        <span class="s2">'%s.templatetags' </span><span class="s1">% app_config.name</span>
+        <span class="s0">for </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">apps.get_app_configs())</span>
+
+    <span class="s0">for </span><span class="s1">candidate </span><span class="s0">in </span><span class="s1">candidates:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">pkg = import_module(candidate)</span>
+        <span class="s0">except </span><span class="s1">ImportError:</span>
+            <span class="s4"># No templatetags package defined. This is safe to ignore.</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">if </span><span class="s1">hasattr(pkg</span><span class="s0">, </span><span class="s2">'__path__'</span><span class="s1">):</span>
+            <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">get_package_libraries(pkg):</span>
+                <span class="s1">libraries[name[len(candidate) + </span><span class="s5">1</span><span class="s1">:]] = name</span>
+
+    <span class="s0">return </span><span class="s1">libraries</span>
+
+
+<span class="s0">def </span><span class="s1">get_package_libraries(pkg):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Recursively yield template tag libraries defined in submodules of a 
+    package. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">for </span><span class="s1">entry </span><span class="s0">in </span><span class="s1">walk_packages(pkg.__path__</span><span class="s0">, </span><span class="s1">pkg.__name__ + </span><span class="s2">'.'</span><span class="s1">):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">module = import_module(entry[</span><span class="s5">1</span><span class="s1">])</span>
+        <span class="s0">except </span><span class="s1">ImportError </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">raise </span><span class="s1">InvalidTemplateLibrary(</span>
+                <span class="s2">&quot;Invalid template library specified. ImportError raised when &quot;</span>
+                <span class="s2">&quot;trying to load '%s': %s&quot; </span><span class="s1">% (entry[</span><span class="s5">1</span><span class="s1">]</span><span class="s0">, </span><span class="s1">e)</span>
+            <span class="s1">) </span><span class="s0">from </span><span class="s1">e</span>
+
+        <span class="s0">if </span><span class="s1">hasattr(module</span><span class="s0">, </span><span class="s2">'register'</span><span class="s1">):</span>
+            <span class="s0">yield </span><span class="s1">entry[</span><span class="s5">1</span><span class="s1">]</span>
+</pre>
+</body>
+</html>

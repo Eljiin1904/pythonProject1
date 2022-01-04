@@ -1,0 +1,178 @@
+<html>
+<head>
+<title>_der.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_der.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography.utils </span><span class="s2">import </span><span class="s1">int_to_bytes</span>
+
+
+<span class="s0"># This module contains a lightweight DER encoder and decoder. See X.690 for the</span>
+<span class="s0"># specification. This module intentionally does not implement the more complex</span>
+<span class="s0"># BER encoding, only DER.</span>
+<span class="s0">#</span>
+<span class="s0"># Note this implementation treats an element's constructed bit as part of the</span>
+<span class="s0"># tag. This is fine for DER, where the bit is always computable from the type.</span>
+
+
+<span class="s1">CONSTRUCTED = </span><span class="s3">0x20</span>
+<span class="s1">CONTEXT_SPECIFIC = </span><span class="s3">0x80</span>
+
+<span class="s1">INTEGER = </span><span class="s3">0x02</span>
+<span class="s1">BIT_STRING = </span><span class="s3">0x03</span>
+<span class="s1">OCTET_STRING = </span><span class="s3">0x04</span>
+<span class="s1">NULL = </span><span class="s3">0x05</span>
+<span class="s1">OBJECT_IDENTIFIER = </span><span class="s3">0x06</span>
+<span class="s1">SEQUENCE = </span><span class="s3">0x10 </span><span class="s1">| CONSTRUCTED</span>
+<span class="s1">SET = </span><span class="s3">0x11 </span><span class="s1">| CONSTRUCTED</span>
+<span class="s1">PRINTABLE_STRING = </span><span class="s3">0x13</span>
+<span class="s1">UTC_TIME = </span><span class="s3">0x17</span>
+<span class="s1">GENERALIZED_TIME = </span><span class="s3">0x18</span>
+
+
+<span class="s2">class </span><span class="s1">DERReader(object):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">data):</span>
+        <span class="s1">self.data = memoryview(data)</span>
+
+    <span class="s2">def </span><span class="s1">__enter__(self):</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">__exit__(self</span><span class="s2">, </span><span class="s1">exc_type</span><span class="s2">, </span><span class="s1">exc_value</span><span class="s2">, </span><span class="s1">tb):</span>
+        <span class="s2">if </span><span class="s1">exc_value </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">self.check_empty()</span>
+
+    <span class="s2">def </span><span class="s1">is_empty(self):</span>
+        <span class="s2">return </span><span class="s1">len(self.data) == </span><span class="s3">0</span>
+
+    <span class="s2">def </span><span class="s1">check_empty(self):</span>
+        <span class="s2">if not </span><span class="s1">self.is_empty():</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid DER input: trailing data&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">read_byte(self) -&gt; int:</span>
+        <span class="s2">if </span><span class="s1">len(self.data) &lt; </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid DER input: insufficient data&quot;</span><span class="s1">)</span>
+        <span class="s1">ret = self.data[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s1">self.data = self.data[</span><span class="s3">1</span><span class="s1">:]</span>
+        <span class="s2">return </span><span class="s1">ret</span>
+
+    <span class="s2">def </span><span class="s1">read_bytes(self</span><span class="s2">, </span><span class="s1">n) -&gt; memoryview:</span>
+        <span class="s2">if </span><span class="s1">len(self.data) &lt; n:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid DER input: insufficient data&quot;</span><span class="s1">)</span>
+        <span class="s1">ret = self.data[:n]</span>
+        <span class="s1">self.data = self.data[n:]</span>
+        <span class="s2">return </span><span class="s1">ret</span>
+
+    <span class="s2">def </span><span class="s1">read_any_element(self) -&gt; typing.Tuple[int</span><span class="s2">, </span><span class="s4">&quot;DERReader&quot;</span><span class="s1">]:</span>
+        <span class="s1">tag = self.read_byte()</span>
+        <span class="s0"># Tag numbers 31 or higher are stored in multiple bytes. No supported</span>
+        <span class="s0"># ASN.1 types use such tags, so reject these.</span>
+        <span class="s2">if </span><span class="s1">tag &amp; </span><span class="s3">0x1F </span><span class="s1">== </span><span class="s3">0x1F</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid DER input: unexpected high tag number&quot;</span><span class="s1">)</span>
+        <span class="s1">length_byte = self.read_byte()</span>
+        <span class="s2">if </span><span class="s1">length_byte &amp; </span><span class="s3">0x80 </span><span class="s1">== </span><span class="s3">0</span><span class="s1">:</span>
+            <span class="s0"># If the high bit is clear, the first length byte is the length.</span>
+            <span class="s1">length = length_byte</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s0"># If the high bit is set, the first length byte encodes the length</span>
+            <span class="s0"># of the length.</span>
+            <span class="s1">length_byte &amp;= </span><span class="s3">0x7F</span>
+            <span class="s2">if </span><span class="s1">length_byte == </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s4">&quot;Invalid DER input: indefinite length form is not allowed &quot;</span>
+                    <span class="s4">&quot;in DER&quot;</span>
+                <span class="s1">)</span>
+            <span class="s1">length = </span><span class="s3">0</span>
+            <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(length_byte):</span>
+                <span class="s1">length &lt;&lt;= </span><span class="s3">8</span>
+                <span class="s1">length |= self.read_byte()</span>
+                <span class="s2">if </span><span class="s1">length == </span><span class="s3">0</span><span class="s1">:</span>
+                    <span class="s2">raise </span><span class="s1">ValueError(</span>
+                        <span class="s4">&quot;Invalid DER input: length was not minimally-encoded&quot;</span>
+                    <span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">length &lt; </span><span class="s3">0x80</span><span class="s1">:</span>
+                <span class="s0"># If the length could have been encoded in short form, it must</span>
+                <span class="s0"># not use long form.</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s4">&quot;Invalid DER input: length was not minimally-encoded&quot;</span>
+                <span class="s1">)</span>
+        <span class="s1">body = self.read_bytes(length)</span>
+        <span class="s2">return </span><span class="s1">tag</span><span class="s2">, </span><span class="s1">DERReader(body)</span>
+
+    <span class="s2">def </span><span class="s1">read_element(self</span><span class="s2">, </span><span class="s1">expected_tag: int) -&gt; </span><span class="s4">&quot;DERReader&quot;</span><span class="s1">:</span>
+        <span class="s1">tag</span><span class="s2">, </span><span class="s1">body = self.read_any_element()</span>
+        <span class="s2">if </span><span class="s1">tag != expected_tag:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid DER input: unexpected tag&quot;</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">body</span>
+
+    <span class="s2">def </span><span class="s1">read_single_element(self</span><span class="s2">, </span><span class="s1">expected_tag: int) -&gt; </span><span class="s4">&quot;DERReader&quot;</span><span class="s1">:</span>
+        <span class="s2">with </span><span class="s1">self:</span>
+            <span class="s2">return </span><span class="s1">self.read_element(expected_tag)</span>
+
+    <span class="s2">def </span><span class="s1">read_optional_element(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">expected_tag: int</span>
+    <span class="s1">) -&gt; typing.Optional[</span><span class="s4">&quot;DERReader&quot;</span><span class="s1">]:</span>
+        <span class="s2">if </span><span class="s1">len(self.data) &gt; </span><span class="s3">0 </span><span class="s2">and </span><span class="s1">self.data[</span><span class="s3">0</span><span class="s1">] == expected_tag:</span>
+            <span class="s2">return </span><span class="s1">self.read_element(expected_tag)</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">def </span><span class="s1">as_integer(self) -&gt; int:</span>
+        <span class="s2">if </span><span class="s1">len(self.data) == </span><span class="s3">0</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Invalid DER input: empty integer contents&quot;</span><span class="s1">)</span>
+        <span class="s1">first = self.data[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s2">if </span><span class="s1">first &amp; </span><span class="s3">0x80 </span><span class="s1">== </span><span class="s3">0x80</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Negative DER integers are not supported&quot;</span><span class="s1">)</span>
+        <span class="s0"># The first 9 bits must not all be zero or all be ones. Otherwise, the</span>
+        <span class="s0"># encoding should have been one byte shorter.</span>
+        <span class="s2">if </span><span class="s1">len(self.data) &gt; </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s1">second = self.data[</span><span class="s3">1</span><span class="s1">]</span>
+            <span class="s2">if </span><span class="s1">first == </span><span class="s3">0 </span><span class="s2">and </span><span class="s1">second &amp; </span><span class="s3">0x80 </span><span class="s1">== </span><span class="s3">0</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s4">&quot;Invalid DER input: integer not minimally-encoded&quot;</span>
+                <span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">int.from_bytes(self.data</span><span class="s2">, </span><span class="s4">&quot;big&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">encode_der_integer(x: int) -&gt; bytes:</span>
+    <span class="s2">if not </span><span class="s1">isinstance(x</span><span class="s2">, </span><span class="s1">int):</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Value must be an integer&quot;</span><span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">x &lt; </span><span class="s3">0</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;Negative integers are not supported&quot;</span><span class="s1">)</span>
+    <span class="s1">n = x.bit_length() // </span><span class="s3">8 </span><span class="s1">+ </span><span class="s3">1</span>
+    <span class="s2">return </span><span class="s1">int_to_bytes(x</span><span class="s2">, </span><span class="s1">n)</span>
+
+
+<span class="s2">def </span><span class="s1">encode_der(tag: int</span><span class="s2">, </span><span class="s1">*children: bytes) -&gt; bytes:</span>
+    <span class="s1">length = </span><span class="s3">0</span>
+    <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">children:</span>
+        <span class="s1">length += len(child)</span>
+    <span class="s1">chunks = [bytes([tag])]</span>
+    <span class="s2">if </span><span class="s1">length &lt; </span><span class="s3">0x80</span><span class="s1">:</span>
+        <span class="s1">chunks.append(bytes([length]))</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s1">length_bytes = int_to_bytes(length)</span>
+        <span class="s1">chunks.append(bytes([</span><span class="s3">0x80 </span><span class="s1">| len(length_bytes)]))</span>
+        <span class="s1">chunks.append(length_bytes)</span>
+    <span class="s1">chunks.extend(children)</span>
+    <span class="s2">return </span><span class="s5">b&quot;&quot;</span><span class="s1">.join(chunks)</span>
+</pre>
+</body>
+</html>

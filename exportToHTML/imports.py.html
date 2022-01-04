@@ -1,0 +1,133 @@
+<html>
+<head>
+<title>imports.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+imports.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Any</span><span class="s0">, </span><span class="s1">Dict</span><span class="s0">, </span><span class="s1">Iterable</span><span class="s0">, </span><span class="s1">Optional</span>
+
+
+<span class="s1">__all__ = [</span><span class="s2">&quot;lazy_import&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">def </span><span class="s1">import_name(name: str</span><span class="s0">, </span><span class="s1">source: str</span><span class="s0">, </span><span class="s1">namespace: Dict[str</span><span class="s0">, </span><span class="s1">Any]) -&gt; Any:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Import &lt;name&gt; from &lt;source&gt; in &lt;namespace&gt;. 
+ 
+    There are two cases: 
+ 
+    - &lt;name&gt; is an object defined in &lt;source&gt; 
+    - &lt;name&gt; is a submodule of source 
+ 
+    Neither __import__ nor importlib.import_module does exactly this. 
+    __import__ is closer to the intended behavior. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">level = </span><span class="s4">0</span>
+    <span class="s0">while </span><span class="s1">source[level] == </span><span class="s2">&quot;.&quot;</span><span class="s1">:</span>
+        <span class="s1">level += </span><span class="s4">1</span>
+        <span class="s0">assert </span><span class="s1">level &lt; len(source)</span><span class="s0">, </span><span class="s2">&quot;importing from parent isn't supported&quot;</span>
+    <span class="s1">module = __import__(source[level:]</span><span class="s0">, </span><span class="s1">namespace</span><span class="s0">, None, </span><span class="s1">[name]</span><span class="s0">, </span><span class="s1">level)</span>
+    <span class="s0">return </span><span class="s1">getattr(module</span><span class="s0">, </span><span class="s1">name)</span>
+
+
+<span class="s0">def </span><span class="s1">lazy_import(</span>
+    <span class="s1">namespace: Dict[str</span><span class="s0">, </span><span class="s1">Any]</span><span class="s0">,</span>
+    <span class="s1">aliases: Optional[Dict[str</span><span class="s0">, </span><span class="s1">str]] = </span><span class="s0">None,</span>
+    <span class="s1">deprecated_aliases: Optional[Dict[str</span><span class="s0">, </span><span class="s1">str]] = </span><span class="s0">None,</span>
+<span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Provide lazy, module-level imports. 
+ 
+    Typical use:: 
+ 
+        __getattr__, __dir__ = lazy_import( 
+            globals(), 
+            aliases={ 
+                &quot;&lt;name&gt;&quot;: &quot;&lt;source module&gt;&quot;, 
+                ... 
+            }, 
+            deprecated_aliases={ 
+                ..., 
+            } 
+        ) 
+ 
+    This function defines __getattr__ and __dir__ per PEP 562. 
+ 
+    On Python 3.6 and earlier, it falls back to non-lazy imports and doesn't 
+    raise deprecation warnings. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">aliases </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">aliases = {}</span>
+    <span class="s0">if </span><span class="s1">deprecated_aliases </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">deprecated_aliases = {}</span>
+
+    <span class="s1">namespace_set = set(namespace)</span>
+    <span class="s1">aliases_set = set(aliases)</span>
+    <span class="s1">deprecated_aliases_set = set(deprecated_aliases)</span>
+
+    <span class="s0">assert not </span><span class="s1">namespace_set &amp; aliases_set</span><span class="s0">, </span><span class="s2">&quot;namespace conflict&quot;</span>
+    <span class="s0">assert not </span><span class="s1">namespace_set &amp; deprecated_aliases_set</span><span class="s0">, </span><span class="s2">&quot;namespace conflict&quot;</span>
+    <span class="s0">assert not </span><span class="s1">aliases_set &amp; deprecated_aliases_set</span><span class="s0">, </span><span class="s2">&quot;namespace conflict&quot;</span>
+
+    <span class="s1">package = namespace[</span><span class="s2">&quot;__name__&quot;</span><span class="s1">]</span>
+
+    <span class="s0">if </span><span class="s1">sys.version_info[:</span><span class="s4">2</span><span class="s1">] &gt;= (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">7</span><span class="s1">):</span>
+
+        <span class="s0">def </span><span class="s1">__getattr__(name: str) -&gt; Any:</span>
+            <span class="s0">assert </span><span class="s1">aliases </span><span class="s0">is not None  </span><span class="s5"># mypy cannot figure this out</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">source = aliases[name]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">import_name(name</span><span class="s0">, </span><span class="s1">source</span><span class="s0">, </span><span class="s1">namespace)</span>
+
+            <span class="s0">assert </span><span class="s1">deprecated_aliases </span><span class="s0">is not None  </span><span class="s5"># mypy cannot figure this out</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">source = deprecated_aliases[name]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">warnings.warn(</span>
+                    <span class="s2">f&quot;</span><span class="s0">{</span><span class="s1">package</span><span class="s0">}</span><span class="s2">.</span><span class="s0">{</span><span class="s1">name</span><span class="s0">} </span><span class="s2">is deprecated&quot;</span><span class="s0">,</span>
+                    <span class="s1">DeprecationWarning</span><span class="s0">,</span>
+                    <span class="s1">stacklevel=</span><span class="s4">2</span><span class="s0">,</span>
+                <span class="s1">)</span>
+                <span class="s0">return </span><span class="s1">import_name(name</span><span class="s0">, </span><span class="s1">source</span><span class="s0">, </span><span class="s1">namespace)</span>
+
+            <span class="s0">raise </span><span class="s1">AttributeError(</span><span class="s2">f&quot;module </span><span class="s0">{</span><span class="s1">package</span><span class="s0">!r} </span><span class="s2">has no attribute </span><span class="s0">{</span><span class="s1">name</span><span class="s0">!r}</span><span class="s2">&quot;</span><span class="s1">)</span>
+
+        <span class="s1">namespace[</span><span class="s2">&quot;__getattr__&quot;</span><span class="s1">] = __getattr__</span>
+
+        <span class="s0">def </span><span class="s1">__dir__() -&gt; Iterable[str]:</span>
+            <span class="s0">return </span><span class="s1">sorted(namespace_set | aliases_set | deprecated_aliases_set)</span>
+
+        <span class="s1">namespace[</span><span class="s2">&quot;__dir__&quot;</span><span class="s1">] = __dir__</span>
+
+    <span class="s0">else</span><span class="s1">:  </span><span class="s5"># pragma: no cover</span>
+
+        <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">source </span><span class="s0">in </span><span class="s1">aliases.items():</span>
+            <span class="s1">namespace[name] = import_name(name</span><span class="s0">, </span><span class="s1">source</span><span class="s0">, </span><span class="s1">namespace)</span>
+
+        <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">source </span><span class="s0">in </span><span class="s1">deprecated_aliases.items():</span>
+            <span class="s1">namespace[name] = import_name(name</span><span class="s0">, </span><span class="s1">source</span><span class="s0">, </span><span class="s1">namespace)</span>
+</pre>
+</body>
+</html>

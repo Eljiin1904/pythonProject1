@@ -1,0 +1,596 @@
+<html>
+<head>
+<title>sites.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sites.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">re</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">update_wrapper</span>
+<span class="s0">from </span><span class="s1">weakref </span><span class="s0">import </span><span class="s1">WeakSet</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.contrib.admin </span><span class="s0">import </span><span class="s1">ModelAdmin</span><span class="s0">, </span><span class="s1">actions</span>
+<span class="s0">from </span><span class="s1">django.contrib.admin.views.autocomplete </span><span class="s0">import </span><span class="s1">AutocompleteJsonView</span>
+<span class="s0">from </span><span class="s1">django.contrib.auth </span><span class="s0">import </span><span class="s1">REDIRECT_FIELD_NAME</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.db.models.base </span><span class="s0">import </span><span class="s1">ModelBase</span>
+<span class="s0">from </span><span class="s1">django.http </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">Http404</span><span class="s0">, </span><span class="s1">HttpResponsePermanentRedirect</span><span class="s0">, </span><span class="s1">HttpResponseRedirect</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.template.response </span><span class="s0">import </span><span class="s1">TemplateResponse</span>
+<span class="s0">from </span><span class="s1">django.urls </span><span class="s0">import </span><span class="s1">NoReverseMatch</span><span class="s0">, </span><span class="s1">Resolver404</span><span class="s0">, </span><span class="s1">resolve</span><span class="s0">, </span><span class="s1">reverse</span>
+<span class="s0">from </span><span class="s1">django.utils.decorators </span><span class="s0">import </span><span class="s1">method_decorator</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">LazyObject</span>
+<span class="s0">from </span><span class="s1">django.utils.module_loading </span><span class="s0">import </span><span class="s1">import_string</span>
+<span class="s0">from </span><span class="s1">django.utils.text </span><span class="s0">import </span><span class="s1">capfirst</span>
+<span class="s0">from </span><span class="s1">django.utils.translation </span><span class="s0">import </span><span class="s1">gettext </span><span class="s0">as </span><span class="s1">_</span><span class="s0">, </span><span class="s1">gettext_lazy</span>
+<span class="s0">from </span><span class="s1">django.views.decorators.cache </span><span class="s0">import </span><span class="s1">never_cache</span>
+<span class="s0">from </span><span class="s1">django.views.decorators.common </span><span class="s0">import </span><span class="s1">no_append_slash</span>
+<span class="s0">from </span><span class="s1">django.views.decorators.csrf </span><span class="s0">import </span><span class="s1">csrf_protect</span>
+<span class="s0">from </span><span class="s1">django.views.i18n </span><span class="s0">import </span><span class="s1">JavaScriptCatalog</span>
+
+<span class="s1">all_sites = WeakSet()</span>
+
+
+<span class="s0">class </span><span class="s1">AlreadyRegistered(Exception):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">NotRegistered(Exception):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">AdminSite:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    An AdminSite object encapsulates an instance of the Django admin application, ready 
+    to be hooked in to your URLconf. Models are registered with the AdminSite using the 
+    register() method, and the get_urls() method can then be used to access Django view 
+    functions that present a full admin interface for the collection of registered 
+    models. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3"># Text to put at the end of each page's &lt;title&gt;.</span>
+    <span class="s1">site_title = gettext_lazy(</span><span class="s4">'Django site admin'</span><span class="s1">)</span>
+
+    <span class="s3"># Text to put in each page's &lt;h1&gt;.</span>
+    <span class="s1">site_header = gettext_lazy(</span><span class="s4">'Django administration'</span><span class="s1">)</span>
+
+    <span class="s3"># Text to put at the top of the admin index page.</span>
+    <span class="s1">index_title = gettext_lazy(</span><span class="s4">'Site administration'</span><span class="s1">)</span>
+
+    <span class="s3"># URL for the &quot;View site&quot; link at the top of each admin page.</span>
+    <span class="s1">site_url = </span><span class="s4">'/'</span>
+
+    <span class="s1">enable_nav_sidebar = </span><span class="s0">True</span>
+
+    <span class="s1">empty_value_display = </span><span class="s4">'-'</span>
+
+    <span class="s1">login_form = </span><span class="s0">None</span>
+    <span class="s1">index_template = </span><span class="s0">None</span>
+    <span class="s1">app_index_template = </span><span class="s0">None</span>
+    <span class="s1">login_template = </span><span class="s0">None</span>
+    <span class="s1">logout_template = </span><span class="s0">None</span>
+    <span class="s1">password_change_template = </span><span class="s0">None</span>
+    <span class="s1">password_change_done_template = </span><span class="s0">None</span>
+
+    <span class="s1">final_catch_all_view = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'admin'</span><span class="s1">):</span>
+        <span class="s1">self._registry = {}  </span><span class="s3"># model_class class -&gt; admin_class instance</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self._actions = {</span><span class="s4">'delete_selected'</span><span class="s1">: actions.delete_selected}</span>
+        <span class="s1">self._global_actions = self._actions.copy()</span>
+        <span class="s1">all_sites.add(self)</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s4">f'</span><span class="s0">{</span><span class="s1">self.__class__.__name__</span><span class="s0">}</span><span class="s4">(name=</span><span class="s0">{</span><span class="s1">self.name</span><span class="s0">!r}</span><span class="s4">)'</span>
+
+    <span class="s0">def </span><span class="s1">check(self</span><span class="s0">, </span><span class="s1">app_configs):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Run the system checks on all ModelAdmins, except if they aren't 
+        customized at all. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">app_configs </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">app_configs = apps.get_app_configs()</span>
+        <span class="s1">app_configs = set(app_configs)  </span><span class="s3"># Speed up lookups below</span>
+
+        <span class="s1">errors = []</span>
+        <span class="s1">modeladmins = (o </span><span class="s0">for </span><span class="s1">o </span><span class="s0">in </span><span class="s1">self._registry.values() </span><span class="s0">if </span><span class="s1">o.__class__ </span><span class="s0">is not </span><span class="s1">ModelAdmin)</span>
+        <span class="s0">for </span><span class="s1">modeladmin </span><span class="s0">in </span><span class="s1">modeladmins:</span>
+            <span class="s0">if </span><span class="s1">modeladmin.model._meta.app_config </span><span class="s0">in </span><span class="s1">app_configs:</span>
+                <span class="s1">errors.extend(modeladmin.check())</span>
+        <span class="s0">return </span><span class="s1">errors</span>
+
+    <span class="s0">def </span><span class="s1">register(self</span><span class="s0">, </span><span class="s1">model_or_iterable</span><span class="s0">, </span><span class="s1">admin_class=</span><span class="s0">None, </span><span class="s1">**options):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Register the given model(s) with the given admin class. 
+ 
+        The model(s) should be Model classes, not instances. 
+ 
+        If an admin class isn't given, use ModelAdmin (the default admin 
+        options). If keyword arguments are given -- e.g., list_display -- 
+        apply them as options to the admin class. 
+ 
+        If a model is already registered, raise AlreadyRegistered. 
+ 
+        If a model is abstract, raise ImproperlyConfigured. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">admin_class = admin_class </span><span class="s0">or </span><span class="s1">ModelAdmin</span>
+        <span class="s0">if </span><span class="s1">isinstance(model_or_iterable</span><span class="s0">, </span><span class="s1">ModelBase):</span>
+            <span class="s1">model_or_iterable = [model_or_iterable]</span>
+        <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">model_or_iterable:</span>
+            <span class="s0">if </span><span class="s1">model._meta.abstract:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s4">'The model %s is abstract, so it cannot be registered with admin.' </span><span class="s1">% model.__name__</span>
+                <span class="s1">)</span>
+
+            <span class="s0">if </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self._registry:</span>
+                <span class="s1">registered_admin = str(self._registry[model])</span>
+                <span class="s1">msg = </span><span class="s4">'The model %s is already registered ' </span><span class="s1">% model.__name__</span>
+                <span class="s0">if </span><span class="s1">registered_admin.endswith(</span><span class="s4">'.ModelAdmin'</span><span class="s1">):</span>
+                    <span class="s3"># Most likely registered without a ModelAdmin subclass.</span>
+                    <span class="s1">msg += </span><span class="s4">'in app %r.' </span><span class="s1">% re.sub(</span><span class="s4">r'\.ModelAdmin$'</span><span class="s0">, </span><span class="s4">''</span><span class="s0">, </span><span class="s1">registered_admin)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">msg += </span><span class="s4">'with %r.' </span><span class="s1">% registered_admin</span>
+                <span class="s0">raise </span><span class="s1">AlreadyRegistered(msg)</span>
+
+            <span class="s3"># Ignore the registration if the model has been</span>
+            <span class="s3"># swapped out.</span>
+            <span class="s0">if not </span><span class="s1">model._meta.swapped:</span>
+                <span class="s3"># If we got **options then dynamically construct a subclass of</span>
+                <span class="s3"># admin_class with those **options.</span>
+                <span class="s0">if </span><span class="s1">options:</span>
+                    <span class="s3"># For reasons I don't quite understand, without a __module__</span>
+                    <span class="s3"># the created class appears to &quot;live&quot; in the wrong place,</span>
+                    <span class="s3"># which causes issues later on.</span>
+                    <span class="s1">options[</span><span class="s4">'__module__'</span><span class="s1">] = __name__</span>
+                    <span class="s1">admin_class = type(</span><span class="s4">&quot;%sAdmin&quot; </span><span class="s1">% model.__name__</span><span class="s0">, </span><span class="s1">(admin_class</span><span class="s0">,</span><span class="s1">)</span><span class="s0">, </span><span class="s1">options)</span>
+
+                <span class="s3"># Instantiate the admin class to save in the registry</span>
+                <span class="s1">self._registry[model] = admin_class(model</span><span class="s0">, </span><span class="s1">self)</span>
+
+    <span class="s0">def </span><span class="s1">unregister(self</span><span class="s0">, </span><span class="s1">model_or_iterable):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Unregister the given model(s). 
+ 
+        If a model isn't already registered, raise NotRegistered. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">isinstance(model_or_iterable</span><span class="s0">, </span><span class="s1">ModelBase):</span>
+            <span class="s1">model_or_iterable = [model_or_iterable]</span>
+        <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">model_or_iterable:</span>
+            <span class="s0">if </span><span class="s1">model </span><span class="s0">not in </span><span class="s1">self._registry:</span>
+                <span class="s0">raise </span><span class="s1">NotRegistered(</span><span class="s4">'The model %s is not registered' </span><span class="s1">% model.__name__)</span>
+            <span class="s0">del </span><span class="s1">self._registry[model]</span>
+
+    <span class="s0">def </span><span class="s1">is_registered(self</span><span class="s0">, </span><span class="s1">model):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Check if a model class is registered with this `AdminSite`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self._registry</span>
+
+    <span class="s0">def </span><span class="s1">add_action(self</span><span class="s0">, </span><span class="s1">action</span><span class="s0">, </span><span class="s1">name=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Register an action to be available globally. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">name = name </span><span class="s0">or </span><span class="s1">action.__name__</span>
+        <span class="s1">self._actions[name] = action</span>
+        <span class="s1">self._global_actions[name] = action</span>
+
+    <span class="s0">def </span><span class="s1">disable_action(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Disable a globally-registered action. Raise KeyError for invalid names. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">del </span><span class="s1">self._actions[name]</span>
+
+    <span class="s0">def </span><span class="s1">get_action(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Explicitly get a registered global action whether it's enabled or 
+        not. Raise KeyError for invalid names. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self._global_actions[name]</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">actions(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get all the enabled actions as an iterable of (name, func). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self._actions.items()</span>
+
+    <span class="s0">def </span><span class="s1">has_permission(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return True if the given HttpRequest has permission to view 
+        *at least one* page in the admin site. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">request.user.is_active </span><span class="s0">and </span><span class="s1">request.user.is_staff</span>
+
+    <span class="s0">def </span><span class="s1">admin_view(self</span><span class="s0">, </span><span class="s1">view</span><span class="s0">, </span><span class="s1">cacheable=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Decorator to create an admin view attached to this ``AdminSite``. This 
+        wraps the view and provides permission checking by calling 
+        ``self.has_permission``. 
+ 
+        You'll want to use this from within ``AdminSite.get_urls()``: 
+ 
+            class MyAdminSite(AdminSite): 
+ 
+                def get_urls(self): 
+                    from django.urls import path 
+ 
+                    urls = super().get_urls() 
+                    urls += [ 
+                        path('my_view/', self.admin_view(some_view)) 
+                    ] 
+                    return urls 
+ 
+        By default, admin_views are marked non-cacheable using the 
+        ``never_cache`` decorator. If the view can be safely cached, set 
+        cacheable=True. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">def </span><span class="s1">inner(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+            <span class="s0">if not </span><span class="s1">self.has_permission(request):</span>
+                <span class="s0">if </span><span class="s1">request.path == reverse(</span><span class="s4">'admin:logout'</span><span class="s0">, </span><span class="s1">current_app=self.name):</span>
+                    <span class="s1">index_path = reverse(</span><span class="s4">'admin:index'</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+                    <span class="s0">return </span><span class="s1">HttpResponseRedirect(index_path)</span>
+                <span class="s3"># Inner import to prevent django.contrib.admin (app) from</span>
+                <span class="s3"># importing django.contrib.auth.models.User (unrelated model).</span>
+                <span class="s0">from </span><span class="s1">django.contrib.auth.views </span><span class="s0">import </span><span class="s1">redirect_to_login</span>
+                <span class="s0">return </span><span class="s1">redirect_to_login(</span>
+                    <span class="s1">request.get_full_path()</span><span class="s0">,</span>
+                    <span class="s1">reverse(</span><span class="s4">'admin:login'</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+                <span class="s1">)</span>
+            <span class="s0">return </span><span class="s1">view(request</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">if not </span><span class="s1">cacheable:</span>
+            <span class="s1">inner = never_cache(inner)</span>
+        <span class="s3"># We add csrf_protect here so this function can be used as a utility</span>
+        <span class="s3"># function for any view, without having to repeat 'csrf_protect'.</span>
+        <span class="s0">if not </span><span class="s1">getattr(view</span><span class="s0">, </span><span class="s4">'csrf_exempt'</span><span class="s0">, False</span><span class="s1">):</span>
+            <span class="s1">inner = csrf_protect(inner)</span>
+        <span class="s0">return </span><span class="s1">update_wrapper(inner</span><span class="s0">, </span><span class="s1">view)</span>
+
+    <span class="s0">def </span><span class="s1">get_urls(self):</span>
+        <span class="s3"># Since this module gets imported in the application's root package,</span>
+        <span class="s3"># it cannot import models from other applications at the module level,</span>
+        <span class="s3"># and django.contrib.contenttypes.views imports ContentType.</span>
+        <span class="s0">from </span><span class="s1">django.contrib.contenttypes </span><span class="s0">import </span><span class="s1">views </span><span class="s0">as </span><span class="s1">contenttype_views</span>
+        <span class="s0">from </span><span class="s1">django.urls </span><span class="s0">import </span><span class="s1">include</span><span class="s0">, </span><span class="s1">path</span><span class="s0">, </span><span class="s1">re_path</span>
+
+        <span class="s0">def </span><span class="s1">wrap(view</span><span class="s0">, </span><span class="s1">cacheable=</span><span class="s0">False</span><span class="s1">):</span>
+            <span class="s0">def </span><span class="s1">wrapper(*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+                <span class="s0">return </span><span class="s1">self.admin_view(view</span><span class="s0">, </span><span class="s1">cacheable)(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">wrapper.admin_site = self</span>
+            <span class="s0">return </span><span class="s1">update_wrapper(wrapper</span><span class="s0">, </span><span class="s1">view)</span>
+
+        <span class="s3"># Admin-site-wide views.</span>
+        <span class="s1">urlpatterns = [</span>
+            <span class="s1">path(</span><span class="s4">''</span><span class="s0">, </span><span class="s1">wrap(self.index)</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'index'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span><span class="s4">'login/'</span><span class="s0">, </span><span class="s1">self.login</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'login'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span><span class="s4">'logout/'</span><span class="s0">, </span><span class="s1">wrap(self.logout)</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'logout'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span><span class="s4">'password_change/'</span><span class="s0">, </span><span class="s1">wrap(self.password_change</span><span class="s0">, </span><span class="s1">cacheable=</span><span class="s0">True</span><span class="s1">)</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'password_change'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span>
+                <span class="s4">'password_change/done/'</span><span class="s0">,</span>
+                <span class="s1">wrap(self.password_change_done</span><span class="s0">, </span><span class="s1">cacheable=</span><span class="s0">True</span><span class="s1">)</span><span class="s0">,</span>
+                <span class="s1">name=</span><span class="s4">'password_change_done'</span><span class="s0">,</span>
+            <span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span><span class="s4">'autocomplete/'</span><span class="s0">, </span><span class="s1">wrap(self.autocomplete_view)</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'autocomplete'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span><span class="s4">'jsi18n/'</span><span class="s0">, </span><span class="s1">wrap(self.i18n_javascript</span><span class="s0">, </span><span class="s1">cacheable=</span><span class="s0">True</span><span class="s1">)</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'jsi18n'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">path(</span>
+                <span class="s4">'r/&lt;int:content_type_id&gt;/&lt;path:object_id&gt;/'</span><span class="s0">,</span>
+                <span class="s1">wrap(contenttype_views.shortcut)</span><span class="s0">,</span>
+                <span class="s1">name=</span><span class="s4">'view_on_site'</span><span class="s0">,</span>
+            <span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">]</span>
+
+        <span class="s3"># Add in each model's views, and create a list of valid URLS for the</span>
+        <span class="s3"># app_index</span>
+        <span class="s1">valid_app_labels = []</span>
+        <span class="s0">for </span><span class="s1">model</span><span class="s0">, </span><span class="s1">model_admin </span><span class="s0">in </span><span class="s1">self._registry.items():</span>
+            <span class="s1">urlpatterns += [</span>
+                <span class="s1">path(</span><span class="s4">'%s/%s/' </span><span class="s1">% (model._meta.app_label</span><span class="s0">, </span><span class="s1">model._meta.model_name)</span><span class="s0">, </span><span class="s1">include(model_admin.urls))</span><span class="s0">,</span>
+            <span class="s1">]</span>
+            <span class="s0">if </span><span class="s1">model._meta.app_label </span><span class="s0">not in </span><span class="s1">valid_app_labels:</span>
+                <span class="s1">valid_app_labels.append(model._meta.app_label)</span>
+
+        <span class="s3"># If there were ModelAdmins registered, we should have a list of app</span>
+        <span class="s3"># labels for which we need to allow access to the app_index view,</span>
+        <span class="s0">if </span><span class="s1">valid_app_labels:</span>
+            <span class="s1">regex = </span><span class="s4">r'^(?P&lt;app_label&gt;' </span><span class="s1">+ </span><span class="s4">'|'</span><span class="s1">.join(valid_app_labels) + </span><span class="s4">')/$'</span>
+            <span class="s1">urlpatterns += [</span>
+                <span class="s1">re_path(regex</span><span class="s0">, </span><span class="s1">wrap(self.app_index)</span><span class="s0">, </span><span class="s1">name=</span><span class="s4">'app_list'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">]</span>
+
+        <span class="s0">if </span><span class="s1">self.final_catch_all_view:</span>
+            <span class="s1">urlpatterns.append(re_path(</span><span class="s4">r'(?P&lt;url&gt;.*)$'</span><span class="s0">, </span><span class="s1">wrap(self.catch_all_view)))</span>
+
+        <span class="s0">return </span><span class="s1">urlpatterns</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">urls(self):</span>
+        <span class="s0">return </span><span class="s1">self.get_urls()</span><span class="s0">, </span><span class="s4">'admin'</span><span class="s0">, </span><span class="s1">self.name</span>
+
+    <span class="s0">def </span><span class="s1">each_context(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return a dictionary of variables to put in the template context for 
+        *every* page in the admin site. 
+ 
+        For sites running on a subpath, use the SCRIPT_NAME value if site_url 
+        hasn't been customized. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">script_name = request.META[</span><span class="s4">'SCRIPT_NAME'</span><span class="s1">]</span>
+        <span class="s1">site_url = script_name </span><span class="s0">if </span><span class="s1">self.site_url == </span><span class="s4">'/' </span><span class="s0">and </span><span class="s1">script_name </span><span class="s0">else </span><span class="s1">self.site_url</span>
+        <span class="s0">return </span><span class="s1">{</span>
+            <span class="s4">'site_title'</span><span class="s1">: self.site_title</span><span class="s0">,</span>
+            <span class="s4">'site_header'</span><span class="s1">: self.site_header</span><span class="s0">,</span>
+            <span class="s4">'site_url'</span><span class="s1">: site_url</span><span class="s0">,</span>
+            <span class="s4">'has_permission'</span><span class="s1">: self.has_permission(request)</span><span class="s0">,</span>
+            <span class="s4">'available_apps'</span><span class="s1">: self.get_app_list(request)</span><span class="s0">,</span>
+            <span class="s4">'is_popup'</span><span class="s1">: </span><span class="s0">False,</span>
+            <span class="s4">'is_nav_sidebar_enabled'</span><span class="s1">: self.enable_nav_sidebar</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">password_change(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Handle the &quot;change password&quot; task -- both form display and validation. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">from </span><span class="s1">django.contrib.admin.forms </span><span class="s0">import </span><span class="s1">AdminPasswordChangeForm</span>
+        <span class="s0">from </span><span class="s1">django.contrib.auth.views </span><span class="s0">import </span><span class="s1">PasswordChangeView</span>
+        <span class="s1">url = reverse(</span><span class="s4">'admin:password_change_done'</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+        <span class="s1">defaults = {</span>
+            <span class="s4">'form_class'</span><span class="s1">: AdminPasswordChangeForm</span><span class="s0">,</span>
+            <span class="s4">'success_url'</span><span class="s1">: url</span><span class="s0">,</span>
+            <span class="s4">'extra_context'</span><span class="s1">: {**self.each_context(request)</span><span class="s0">, </span><span class="s1">**(extra_context </span><span class="s0">or </span><span class="s1">{})}</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">if </span><span class="s1">self.password_change_template </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">defaults[</span><span class="s4">'template_name'</span><span class="s1">] = self.password_change_template</span>
+        <span class="s1">request.current_app = self.name</span>
+        <span class="s0">return </span><span class="s1">PasswordChangeView.as_view(**defaults)(request)</span>
+
+    <span class="s0">def </span><span class="s1">password_change_done(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Display the &quot;success&quot; page after a password change. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">from </span><span class="s1">django.contrib.auth.views </span><span class="s0">import </span><span class="s1">PasswordChangeDoneView</span>
+        <span class="s1">defaults = {</span>
+            <span class="s4">'extra_context'</span><span class="s1">: {**self.each_context(request)</span><span class="s0">, </span><span class="s1">**(extra_context </span><span class="s0">or </span><span class="s1">{})}</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">if </span><span class="s1">self.password_change_done_template </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">defaults[</span><span class="s4">'template_name'</span><span class="s1">] = self.password_change_done_template</span>
+        <span class="s1">request.current_app = self.name</span>
+        <span class="s0">return </span><span class="s1">PasswordChangeDoneView.as_view(**defaults)(request)</span>
+
+    <span class="s0">def </span><span class="s1">i18n_javascript(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Display the i18n JavaScript that the Django admin requires. 
+ 
+        `extra_context` is unused but present for consistency with the other 
+        admin views. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">JavaScriptCatalog.as_view(packages=[</span><span class="s4">'django.contrib.admin'</span><span class="s1">])(request)</span>
+
+    <span class="s0">def </span><span class="s1">logout(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Log out the user for the given HttpRequest. 
+ 
+        This should *not* assume the user is already logged in. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">from </span><span class="s1">django.contrib.auth.views </span><span class="s0">import </span><span class="s1">LogoutView</span>
+        <span class="s1">defaults = {</span>
+            <span class="s4">'extra_context'</span><span class="s1">: {</span>
+                <span class="s1">**self.each_context(request)</span><span class="s0">,</span>
+                <span class="s3"># Since the user isn't logged out at this point, the value of</span>
+                <span class="s3"># has_permission must be overridden.</span>
+                <span class="s4">'has_permission'</span><span class="s1">: </span><span class="s0">False,</span>
+                <span class="s1">**(extra_context </span><span class="s0">or </span><span class="s1">{})</span>
+            <span class="s1">}</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">if </span><span class="s1">self.logout_template </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">defaults[</span><span class="s4">'template_name'</span><span class="s1">] = self.logout_template</span>
+        <span class="s1">request.current_app = self.name</span>
+        <span class="s0">return </span><span class="s1">LogoutView.as_view(**defaults)(request)</span>
+
+    <span class="s1">@method_decorator(never_cache)</span>
+    <span class="s0">def </span><span class="s1">login(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Display the login form for the given HttpRequest. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">request.method == </span><span class="s4">'GET' </span><span class="s0">and </span><span class="s1">self.has_permission(request):</span>
+            <span class="s3"># Already logged-in, redirect to admin index</span>
+            <span class="s1">index_path = reverse(</span><span class="s4">'admin:index'</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+            <span class="s0">return </span><span class="s1">HttpResponseRedirect(index_path)</span>
+
+        <span class="s3"># Since this module gets imported in the application's root package,</span>
+        <span class="s3"># it cannot import models from other applications at the module level,</span>
+        <span class="s3"># and django.contrib.admin.forms eventually imports User.</span>
+        <span class="s0">from </span><span class="s1">django.contrib.admin.forms </span><span class="s0">import </span><span class="s1">AdminAuthenticationForm</span>
+        <span class="s0">from </span><span class="s1">django.contrib.auth.views </span><span class="s0">import </span><span class="s1">LoginView</span>
+        <span class="s1">context = {</span>
+            <span class="s1">**self.each_context(request)</span><span class="s0">,</span>
+            <span class="s4">'title'</span><span class="s1">: _(</span><span class="s4">'Log in'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s4">'app_path'</span><span class="s1">: request.get_full_path()</span><span class="s0">,</span>
+            <span class="s4">'username'</span><span class="s1">: request.user.get_username()</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">if </span><span class="s1">(REDIRECT_FIELD_NAME </span><span class="s0">not in </span><span class="s1">request.GET </span><span class="s0">and</span>
+                <span class="s1">REDIRECT_FIELD_NAME </span><span class="s0">not in </span><span class="s1">request.POST):</span>
+            <span class="s1">context[REDIRECT_FIELD_NAME] = reverse(</span><span class="s4">'admin:index'</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+        <span class="s1">context.update(extra_context </span><span class="s0">or </span><span class="s1">{})</span>
+
+        <span class="s1">defaults = {</span>
+            <span class="s4">'extra_context'</span><span class="s1">: context</span><span class="s0">,</span>
+            <span class="s4">'authentication_form'</span><span class="s1">: self.login_form </span><span class="s0">or </span><span class="s1">AdminAuthenticationForm</span><span class="s0">,</span>
+            <span class="s4">'template_name'</span><span class="s1">: self.login_template </span><span class="s0">or </span><span class="s4">'admin/login.html'</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s1">request.current_app = self.name</span>
+        <span class="s0">return </span><span class="s1">LoginView.as_view(**defaults)(request)</span>
+
+    <span class="s0">def </span><span class="s1">autocomplete_view(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s0">return </span><span class="s1">AutocompleteJsonView.as_view(admin_site=self)(request)</span>
+
+    <span class="s1">@no_append_slash</span>
+    <span class="s0">def </span><span class="s1">catch_all_view(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">url):</span>
+        <span class="s0">if </span><span class="s1">settings.APPEND_SLASH </span><span class="s0">and not </span><span class="s1">url.endswith(</span><span class="s4">'/'</span><span class="s1">):</span>
+            <span class="s1">urlconf = getattr(request</span><span class="s0">, </span><span class="s4">'urlconf'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">match = resolve(</span><span class="s4">'%s/' </span><span class="s1">% request.path_info</span><span class="s0">, </span><span class="s1">urlconf)</span>
+            <span class="s0">except </span><span class="s1">Resolver404:</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">getattr(match.func</span><span class="s0">, </span><span class="s4">'should_append_slash'</span><span class="s0">, True</span><span class="s1">):</span>
+                    <span class="s0">return </span><span class="s1">HttpResponsePermanentRedirect(</span><span class="s4">'%s/' </span><span class="s1">% request.path)</span>
+        <span class="s0">raise </span><span class="s1">Http404</span>
+
+    <span class="s0">def </span><span class="s1">_build_app_dict(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">label=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Build the app dictionary. The optional `label` parameter filters models 
+        of a specific app. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">app_dict = {}</span>
+
+        <span class="s0">if </span><span class="s1">label:</span>
+            <span class="s1">models = {</span>
+                <span class="s1">m: m_a </span><span class="s0">for </span><span class="s1">m</span><span class="s0">, </span><span class="s1">m_a </span><span class="s0">in </span><span class="s1">self._registry.items()</span>
+                <span class="s0">if </span><span class="s1">m._meta.app_label == label</span>
+            <span class="s1">}</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">models = self._registry</span>
+
+        <span class="s0">for </span><span class="s1">model</span><span class="s0">, </span><span class="s1">model_admin </span><span class="s0">in </span><span class="s1">models.items():</span>
+            <span class="s1">app_label = model._meta.app_label</span>
+
+            <span class="s1">has_module_perms = model_admin.has_module_permission(request)</span>
+            <span class="s0">if not </span><span class="s1">has_module_perms:</span>
+                <span class="s0">continue</span>
+
+            <span class="s1">perms = model_admin.get_model_perms(request)</span>
+
+            <span class="s3"># Check whether user has any perm for this module.</span>
+            <span class="s3"># If so, add the module to the model_list.</span>
+            <span class="s0">if True not in </span><span class="s1">perms.values():</span>
+                <span class="s0">continue</span>
+
+            <span class="s1">info = (app_label</span><span class="s0">, </span><span class="s1">model._meta.model_name)</span>
+            <span class="s1">model_dict = {</span>
+                <span class="s4">'model'</span><span class="s1">: model</span><span class="s0">,</span>
+                <span class="s4">'name'</span><span class="s1">: capfirst(model._meta.verbose_name_plural)</span><span class="s0">,</span>
+                <span class="s4">'object_name'</span><span class="s1">: model._meta.object_name</span><span class="s0">,</span>
+                <span class="s4">'perms'</span><span class="s1">: perms</span><span class="s0">,</span>
+                <span class="s4">'admin_url'</span><span class="s1">: </span><span class="s0">None,</span>
+                <span class="s4">'add_url'</span><span class="s1">: </span><span class="s0">None,</span>
+            <span class="s1">}</span>
+            <span class="s0">if </span><span class="s1">perms.get(</span><span class="s4">'change'</span><span class="s1">) </span><span class="s0">or </span><span class="s1">perms.get(</span><span class="s4">'view'</span><span class="s1">):</span>
+                <span class="s1">model_dict[</span><span class="s4">'view_only'</span><span class="s1">] = </span><span class="s0">not </span><span class="s1">perms.get(</span><span class="s4">'change'</span><span class="s1">)</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">model_dict[</span><span class="s4">'admin_url'</span><span class="s1">] = reverse(</span><span class="s4">'admin:%s_%s_changelist' </span><span class="s1">% info</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+                <span class="s0">except </span><span class="s1">NoReverseMatch:</span>
+                    <span class="s0">pass</span>
+            <span class="s0">if </span><span class="s1">perms.get(</span><span class="s4">'add'</span><span class="s1">):</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">model_dict[</span><span class="s4">'add_url'</span><span class="s1">] = reverse(</span><span class="s4">'admin:%s_%s_add' </span><span class="s1">% info</span><span class="s0">, </span><span class="s1">current_app=self.name)</span>
+                <span class="s0">except </span><span class="s1">NoReverseMatch:</span>
+                    <span class="s0">pass</span>
+
+            <span class="s0">if </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">app_dict:</span>
+                <span class="s1">app_dict[app_label][</span><span class="s4">'models'</span><span class="s1">].append(model_dict)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">app_dict[app_label] = {</span>
+                    <span class="s4">'name'</span><span class="s1">: apps.get_app_config(app_label).verbose_name</span><span class="s0">,</span>
+                    <span class="s4">'app_label'</span><span class="s1">: app_label</span><span class="s0">,</span>
+                    <span class="s4">'app_url'</span><span class="s1">: reverse(</span>
+                        <span class="s4">'admin:app_list'</span><span class="s0">,</span>
+                        <span class="s1">kwargs={</span><span class="s4">'app_label'</span><span class="s1">: app_label}</span><span class="s0">,</span>
+                        <span class="s1">current_app=self.name</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s4">'has_module_perms'</span><span class="s1">: has_module_perms</span><span class="s0">,</span>
+                    <span class="s4">'models'</span><span class="s1">: [model_dict]</span><span class="s0">,</span>
+                <span class="s1">}</span>
+
+        <span class="s0">if </span><span class="s1">label:</span>
+            <span class="s0">return </span><span class="s1">app_dict.get(label)</span>
+        <span class="s0">return </span><span class="s1">app_dict</span>
+
+    <span class="s0">def </span><span class="s1">get_app_list(self</span><span class="s0">, </span><span class="s1">request):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return a sorted list of all the installed apps that have been 
+        registered in this site. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">app_dict = self._build_app_dict(request)</span>
+
+        <span class="s3"># Sort the apps alphabetically.</span>
+        <span class="s1">app_list = sorted(app_dict.values()</span><span class="s0">, </span><span class="s1">key=</span><span class="s0">lambda </span><span class="s1">x: x[</span><span class="s4">'name'</span><span class="s1">].lower())</span>
+
+        <span class="s3"># Sort the models alphabetically within each app.</span>
+        <span class="s0">for </span><span class="s1">app </span><span class="s0">in </span><span class="s1">app_list:</span>
+            <span class="s1">app[</span><span class="s4">'models'</span><span class="s1">].sort(key=</span><span class="s0">lambda </span><span class="s1">x: x[</span><span class="s4">'name'</span><span class="s1">])</span>
+
+        <span class="s0">return </span><span class="s1">app_list</span>
+
+    <span class="s0">def </span><span class="s1">index(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Display the main admin index page, which lists all of the installed 
+        apps that have been registered in this site. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">app_list = self.get_app_list(request)</span>
+
+        <span class="s1">context = {</span>
+            <span class="s1">**self.each_context(request)</span><span class="s0">,</span>
+            <span class="s4">'title'</span><span class="s1">: self.index_title</span><span class="s0">,</span>
+            <span class="s4">'subtitle'</span><span class="s1">: </span><span class="s0">None,</span>
+            <span class="s4">'app_list'</span><span class="s1">: app_list</span><span class="s0">,</span>
+            <span class="s1">**(extra_context </span><span class="s0">or </span><span class="s1">{})</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+        <span class="s1">request.current_app = self.name</span>
+
+        <span class="s0">return </span><span class="s1">TemplateResponse(request</span><span class="s0">, </span><span class="s1">self.index_template </span><span class="s0">or </span><span class="s4">'admin/index.html'</span><span class="s0">, </span><span class="s1">context)</span>
+
+    <span class="s0">def </span><span class="s1">app_index(self</span><span class="s0">, </span><span class="s1">request</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">extra_context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">app_dict = self._build_app_dict(request</span><span class="s0">, </span><span class="s1">app_label)</span>
+        <span class="s0">if not </span><span class="s1">app_dict:</span>
+            <span class="s0">raise </span><span class="s1">Http404(</span><span class="s4">'The requested admin page does not exist.'</span><span class="s1">)</span>
+        <span class="s3"># Sort the models alphabetically within each app.</span>
+        <span class="s1">app_dict[</span><span class="s4">'models'</span><span class="s1">].sort(key=</span><span class="s0">lambda </span><span class="s1">x: x[</span><span class="s4">'name'</span><span class="s1">])</span>
+        <span class="s1">context = {</span>
+            <span class="s1">**self.each_context(request)</span><span class="s0">,</span>
+            <span class="s4">'title'</span><span class="s1">: _(</span><span class="s4">'%(app)s administration'</span><span class="s1">) % {</span><span class="s4">'app'</span><span class="s1">: app_dict[</span><span class="s4">'name'</span><span class="s1">]}</span><span class="s0">,</span>
+            <span class="s4">'subtitle'</span><span class="s1">: </span><span class="s0">None,</span>
+            <span class="s4">'app_list'</span><span class="s1">: [app_dict]</span><span class="s0">,</span>
+            <span class="s4">'app_label'</span><span class="s1">: app_label</span><span class="s0">,</span>
+            <span class="s1">**(extra_context </span><span class="s0">or </span><span class="s1">{})</span><span class="s0">,</span>
+        <span class="s1">}</span>
+
+        <span class="s1">request.current_app = self.name</span>
+
+        <span class="s0">return </span><span class="s1">TemplateResponse(request</span><span class="s0">, </span><span class="s1">self.app_index_template </span><span class="s0">or </span><span class="s1">[</span>
+            <span class="s4">'admin/%s/app_index.html' </span><span class="s1">% app_label</span><span class="s0">,</span>
+            <span class="s4">'admin/app_index.html'</span>
+        <span class="s1">]</span><span class="s0">, </span><span class="s1">context)</span>
+
+
+<span class="s0">class </span><span class="s1">DefaultAdminSite(LazyObject):</span>
+    <span class="s0">def </span><span class="s1">_setup(self):</span>
+        <span class="s1">AdminSiteClass = import_string(apps.get_app_config(</span><span class="s4">'admin'</span><span class="s1">).default_site)</span>
+        <span class="s1">self._wrapped = AdminSiteClass()</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s1">repr(self._wrapped)</span>
+
+
+<span class="s3"># This global object represents the default admin site, for the common case.</span>
+<span class="s3"># You can provide your own AdminSite using the (Simple)AdminConfig.default_site</span>
+<span class="s3"># attribute. You can also instantiate AdminSite in your own code to create a</span>
+<span class="s3"># custom admin site.</span>
+<span class="s1">site = DefaultAdminSite()</span>
+</pre>
+</body>
+</html>

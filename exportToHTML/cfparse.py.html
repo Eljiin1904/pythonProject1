@@ -1,0 +1,108 @@
+<html>
+<head>
+<title>cfparse.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cfparse.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides an extended :class:`parse.Parser` class that supports the 
+cardinality fields in (user-defined) types. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">import </span><span class="s1">parse</span>
+<span class="s3">from </span><span class="s1">.cardinality_field </span><span class="s3">import </span><span class="s1">CardinalityField</span><span class="s3">, </span><span class="s1">CardinalityFieldTypeBuilder</span>
+<span class="s3">from </span><span class="s1">.parse_util </span><span class="s3">import </span><span class="s1">FieldParser</span>
+
+
+<span class="s1">log = logging.getLogger(__name__)   </span><span class="s0"># pylint: disable=invalid-name</span>
+
+
+<span class="s3">class </span><span class="s1">Parser(parse.Parser):</span>
+    <span class="s2">&quot;&quot;&quot;Provides an extended :class:`parse.Parser` with cardinality field support. 
+    A cardinality field is a type suffix for parse format expression, ala: 
+ 
+        &quot;... {person:Person?} ...&quot;   -- OPTIONAL: Cardinality zero or one, 0..1 
+        &quot;... {persons:Person*} ...&quot;  -- MANY0: Cardinality zero or more, 0.. 
+        &quot;... {persons:Person+} ...&quot;  -- MANY:  Cardinality one  or more, 1.. 
+ 
+    When the primary type converter for cardinality=1 is provided, 
+    the type variants for the other cardinality cases can be derived from it. 
+ 
+    This parser class automatically creates missing type variants for types 
+    with a cardinality field and passes the extended type dictionary 
+    to its base class. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># -- TYPE-BUILDER: For missing types in Fields with CardinalityField part.</span>
+    <span class="s1">type_builder = CardinalityFieldTypeBuilder</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">schema</span><span class="s3">, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">case_sensitive=</span><span class="s3">False,</span>
+                 <span class="s1">type_builder=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Creates a parser with CardinalityField part support. 
+ 
+        :param schema:  Parse schema (or format) for parser (as string). 
+        :param extra_types:  Type dictionary with type converters (or None). 
+        :param case_sensitive: Indicates if case-sensitive regexp are used. 
+        :param type_builder: Type builder to use for missing types. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">extra_types </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">extra_types = {}</span>
+        <span class="s1">missing = self.create_missing_types(schema</span><span class="s3">, </span><span class="s1">extra_types</span><span class="s3">, </span><span class="s1">type_builder)</span>
+        <span class="s3">if </span><span class="s1">missing:</span>
+            <span class="s0"># pylint: disable=logging-not-lazy</span>
+            <span class="s1">log.debug(</span><span class="s4">&quot;MISSING TYPES: %s&quot; </span><span class="s1">% </span><span class="s4">&quot;,&quot;</span><span class="s1">.join(missing.keys()))</span>
+            <span class="s1">extra_types.update(missing)</span>
+
+        <span class="s0"># -- FINALLY: Delegate to base class.</span>
+        <span class="s1">super(Parser</span><span class="s3">, </span><span class="s1">self).__init__(schema</span><span class="s3">, </span><span class="s1">extra_types</span><span class="s3">,</span>
+                                     <span class="s1">case_sensitive=case_sensitive)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">create_missing_types(cls</span><span class="s3">, </span><span class="s1">schema</span><span class="s3">, </span><span class="s1">type_dict</span><span class="s3">, </span><span class="s1">type_builder=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Creates missing types for fields with a CardinalityField part. 
+        It is assumed that the primary type converter for cardinality=1 
+        is registered in the type dictionary. 
+ 
+        :param schema:  Parse schema (or format) for parser (as string). 
+        :param type_dict:  Type dictionary with type converters. 
+        :param type_builder: Type builder to use for missing types. 
+        :return: Type dictionary with missing types. Empty, if none. 
+        :raises: MissingTypeError, 
+                if a primary type converter with cardinality=1 is missing. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">type_builder:</span>
+            <span class="s1">type_builder = cls.type_builder</span>
+
+        <span class="s1">missing = cls.extract_missing_special_type_names(schema</span><span class="s3">, </span><span class="s1">type_dict)</span>
+        <span class="s3">return </span><span class="s1">type_builder.create_type_variants(missing</span><span class="s3">, </span><span class="s1">type_dict)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">extract_missing_special_type_names(schema</span><span class="s3">, </span><span class="s1">type_dict):</span>
+        <span class="s0"># pylint: disable=invalid-name</span>
+        <span class="s2">&quot;&quot;&quot;Extract the type names for fields with CardinalityField part. 
+        Selects only the missing type names that are not in the type dictionary. 
+ 
+        :param schema:     Parse schema to use (as string). 
+        :param type_dict:  Type dictionary with type converters. 
+        :return: Generator with missing type names (as string). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">FieldParser.extract_types(schema):</span>
+            <span class="s3">if </span><span class="s1">CardinalityField.matches_type(name) </span><span class="s3">and </span><span class="s1">(name </span><span class="s3">not in </span><span class="s1">type_dict):</span>
+                <span class="s3">yield </span><span class="s1">name</span>
+</pre>
+</body>
+</html>

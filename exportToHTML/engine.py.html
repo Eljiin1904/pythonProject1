@@ -1,0 +1,222 @@
+<html>
+<head>
+<title>engine.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+engine.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+<span class="s0">from </span><span class="s1">django.utils.module_loading </span><span class="s0">import </span><span class="s1">import_string</span>
+
+<span class="s0">from </span><span class="s1">.base </span><span class="s0">import </span><span class="s1">Template</span>
+<span class="s0">from </span><span class="s1">.context </span><span class="s0">import </span><span class="s1">Context</span><span class="s0">, </span><span class="s1">_builtin_context_processors</span>
+<span class="s0">from </span><span class="s1">.exceptions </span><span class="s0">import </span><span class="s1">TemplateDoesNotExist</span>
+<span class="s0">from </span><span class="s1">.library </span><span class="s0">import </span><span class="s1">import_library</span>
+
+
+<span class="s0">class </span><span class="s1">Engine:</span>
+    <span class="s1">default_builtins = [</span>
+        <span class="s2">'django.template.defaulttags'</span><span class="s0">,</span>
+        <span class="s2">'django.template.defaultfilters'</span><span class="s0">,</span>
+        <span class="s2">'django.template.loader_tags'</span><span class="s0">,</span>
+    <span class="s1">]</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">dirs=</span><span class="s0">None, </span><span class="s1">app_dirs=</span><span class="s0">False, </span><span class="s1">context_processors=</span><span class="s0">None,</span>
+                 <span class="s1">debug=</span><span class="s0">False, </span><span class="s1">loaders=</span><span class="s0">None, </span><span class="s1">string_if_invalid=</span><span class="s2">''</span><span class="s0">,</span>
+                 <span class="s1">file_charset=</span><span class="s2">'utf-8'</span><span class="s0">, </span><span class="s1">libraries=</span><span class="s0">None, </span><span class="s1">builtins=</span><span class="s0">None, </span><span class="s1">autoescape=</span><span class="s0">True</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">dirs </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">dirs = []</span>
+        <span class="s0">if </span><span class="s1">context_processors </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">context_processors = []</span>
+        <span class="s0">if </span><span class="s1">loaders </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">loaders = [</span><span class="s2">'django.template.loaders.filesystem.Loader'</span><span class="s1">]</span>
+            <span class="s0">if </span><span class="s1">app_dirs:</span>
+                <span class="s1">loaders += [</span><span class="s2">'django.template.loaders.app_directories.Loader'</span><span class="s1">]</span>
+            <span class="s0">if not </span><span class="s1">debug:</span>
+                <span class="s1">loaders = [(</span><span class="s2">'django.template.loaders.cached.Loader'</span><span class="s0">, </span><span class="s1">loaders)]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">app_dirs:</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s2">&quot;app_dirs must not be set when loaders is defined.&quot;</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">libraries </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">libraries = {}</span>
+        <span class="s0">if </span><span class="s1">builtins </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">builtins = []</span>
+
+        <span class="s1">self.dirs = dirs</span>
+        <span class="s1">self.app_dirs = app_dirs</span>
+        <span class="s1">self.autoescape = autoescape</span>
+        <span class="s1">self.context_processors = context_processors</span>
+        <span class="s1">self.debug = debug</span>
+        <span class="s1">self.loaders = loaders</span>
+        <span class="s1">self.string_if_invalid = string_if_invalid</span>
+        <span class="s1">self.file_charset = file_charset</span>
+        <span class="s1">self.libraries = libraries</span>
+        <span class="s1">self.template_libraries = self.get_template_libraries(libraries)</span>
+        <span class="s1">self.builtins = self.default_builtins + builtins</span>
+        <span class="s1">self.template_builtins = self.get_template_builtins(self.builtins)</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s1">(</span>
+            <span class="s2">'&lt;%s:%s app_dirs=%s%s debug=%s loaders=%s string_if_invalid=%s '</span>
+            <span class="s2">'file_charset=%s%s%s autoescape=%s&gt;'</span>
+        <span class="s1">) % (</span>
+            <span class="s1">self.__class__.__qualname__</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if not </span><span class="s1">self.dirs </span><span class="s0">else </span><span class="s2">' dirs=%s' </span><span class="s1">% repr(self.dirs)</span><span class="s0">,</span>
+            <span class="s1">self.app_dirs</span><span class="s0">,</span>
+            <span class="s2">''</span>
+            <span class="s0">if not </span><span class="s1">self.context_processors</span>
+            <span class="s0">else </span><span class="s2">' context_processors=%s' </span><span class="s1">% repr(self.context_processors)</span><span class="s0">,</span>
+            <span class="s1">self.debug</span><span class="s0">,</span>
+            <span class="s1">repr(self.loaders)</span><span class="s0">,</span>
+            <span class="s1">repr(self.string_if_invalid)</span><span class="s0">,</span>
+            <span class="s1">repr(self.file_charset)</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if not </span><span class="s1">self.libraries </span><span class="s0">else </span><span class="s2">' libraries=%s' </span><span class="s1">% repr(self.libraries)</span><span class="s0">,</span>
+            <span class="s2">'' </span><span class="s0">if not </span><span class="s1">self.builtins </span><span class="s0">else </span><span class="s2">' builtins=%s' </span><span class="s1">% repr(self.builtins)</span><span class="s0">,</span>
+            <span class="s1">repr(self.autoescape)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s1">@functools.lru_cache()</span>
+    <span class="s0">def </span><span class="s1">get_default():</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Return the first DjangoTemplates backend that's configured, or raise 
+        ImproperlyConfigured if none are configured. 
+ 
+        This is required for preserving historical APIs that rely on a 
+        globally available, implicitly configured engine such as: 
+ 
+        &gt;&gt;&gt; from django.template import Context, Template 
+        &gt;&gt;&gt; template = Template(&quot;Hello {{ name }}!&quot;) 
+        &gt;&gt;&gt; context = Context({'name': &quot;world&quot;}) 
+        &gt;&gt;&gt; template.render(context) 
+        'Hello world!' 
+        &quot;&quot;&quot;</span>
+        <span class="s4"># Since Engine is imported in django.template and since</span>
+        <span class="s4"># DjangoTemplates is a wrapper around this Engine class,</span>
+        <span class="s4"># local imports are required to avoid import loops.</span>
+        <span class="s0">from </span><span class="s1">django.template </span><span class="s0">import </span><span class="s1">engines</span>
+        <span class="s0">from </span><span class="s1">django.template.backends.django </span><span class="s0">import </span><span class="s1">DjangoTemplates</span>
+        <span class="s0">for </span><span class="s1">engine </span><span class="s0">in </span><span class="s1">engines.all():</span>
+            <span class="s0">if </span><span class="s1">isinstance(engine</span><span class="s0">, </span><span class="s1">DjangoTemplates):</span>
+                <span class="s0">return </span><span class="s1">engine.engine</span>
+        <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span><span class="s2">'No DjangoTemplates backend is configured.'</span><span class="s1">)</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">template_context_processors(self):</span>
+        <span class="s1">context_processors = _builtin_context_processors</span>
+        <span class="s1">context_processors += tuple(self.context_processors)</span>
+        <span class="s0">return </span><span class="s1">tuple(import_string(path) </span><span class="s0">for </span><span class="s1">path </span><span class="s0">in </span><span class="s1">context_processors)</span>
+
+    <span class="s0">def </span><span class="s1">get_template_builtins(self</span><span class="s0">, </span><span class="s1">builtins):</span>
+        <span class="s0">return </span><span class="s1">[import_library(x) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">builtins]</span>
+
+    <span class="s0">def </span><span class="s1">get_template_libraries(self</span><span class="s0">, </span><span class="s1">libraries):</span>
+        <span class="s1">loaded = {}</span>
+        <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">path </span><span class="s0">in </span><span class="s1">libraries.items():</span>
+            <span class="s1">loaded[name] = import_library(path)</span>
+        <span class="s0">return </span><span class="s1">loaded</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">template_loaders(self):</span>
+        <span class="s0">return </span><span class="s1">self.get_template_loaders(self.loaders)</span>
+
+    <span class="s0">def </span><span class="s1">get_template_loaders(self</span><span class="s0">, </span><span class="s1">template_loaders):</span>
+        <span class="s1">loaders = []</span>
+        <span class="s0">for </span><span class="s1">template_loader </span><span class="s0">in </span><span class="s1">template_loaders:</span>
+            <span class="s1">loader = self.find_template_loader(template_loader)</span>
+            <span class="s0">if </span><span class="s1">loader </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">loaders.append(loader)</span>
+        <span class="s0">return </span><span class="s1">loaders</span>
+
+    <span class="s0">def </span><span class="s1">find_template_loader(self</span><span class="s0">, </span><span class="s1">loader):</span>
+        <span class="s0">if </span><span class="s1">isinstance(loader</span><span class="s0">, </span><span class="s1">(tuple</span><span class="s0">, </span><span class="s1">list)):</span>
+            <span class="s1">loader</span><span class="s0">, </span><span class="s1">*args = loader</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">args = []</span>
+
+        <span class="s0">if </span><span class="s1">isinstance(loader</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s1">loader_class = import_string(loader)</span>
+            <span class="s0">return </span><span class="s1">loader_class(self</span><span class="s0">, </span><span class="s1">*args)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s2">&quot;Invalid value in template loaders configuration: %r&quot; </span><span class="s1">% loader)</span>
+
+    <span class="s0">def </span><span class="s1">find_template(self</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">dirs=</span><span class="s0">None, </span><span class="s1">skip=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">tried = []</span>
+        <span class="s0">for </span><span class="s1">loader </span><span class="s0">in </span><span class="s1">self.template_loaders:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">template = loader.get_template(name</span><span class="s0">, </span><span class="s1">skip=skip)</span>
+                <span class="s0">return </span><span class="s1">template</span><span class="s0">, </span><span class="s1">template.origin</span>
+            <span class="s0">except </span><span class="s1">TemplateDoesNotExist </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s1">tried.extend(e.tried)</span>
+        <span class="s0">raise </span><span class="s1">TemplateDoesNotExist(name</span><span class="s0">, </span><span class="s1">tried=tried)</span>
+
+    <span class="s0">def </span><span class="s1">from_string(self</span><span class="s0">, </span><span class="s1">template_code):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Return a compiled Template object for the given template code, 
+        handling template inheritance recursively. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">Template(template_code</span><span class="s0">, </span><span class="s1">engine=self)</span>
+
+    <span class="s0">def </span><span class="s1">get_template(self</span><span class="s0">, </span><span class="s1">template_name):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Return a compiled Template object for the given template name, 
+        handling template inheritance recursively. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">template</span><span class="s0">, </span><span class="s1">origin = self.find_template(template_name)</span>
+        <span class="s0">if not </span><span class="s1">hasattr(template</span><span class="s0">, </span><span class="s2">'render'</span><span class="s1">):</span>
+            <span class="s4"># template needs to be compiled</span>
+            <span class="s1">template = Template(template</span><span class="s0">, </span><span class="s1">origin</span><span class="s0">, </span><span class="s1">template_name</span><span class="s0">, </span><span class="s1">engine=self)</span>
+        <span class="s0">return </span><span class="s1">template</span>
+
+    <span class="s0">def </span><span class="s1">render_to_string(self</span><span class="s0">, </span><span class="s1">template_name</span><span class="s0">, </span><span class="s1">context=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Render the template specified by template_name with the given context. 
+        For use in Django's test suite. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">isinstance(template_name</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s1">t = self.select_template(template_name)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">t = self.get_template(template_name)</span>
+        <span class="s4"># Django &lt; 1.8 accepted a Context in `context` even though that's</span>
+        <span class="s4"># unintended. Preserve this ability but don't rewrap `context`.</span>
+        <span class="s0">if </span><span class="s1">isinstance(context</span><span class="s0">, </span><span class="s1">Context):</span>
+            <span class="s0">return </span><span class="s1">t.render(context)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">t.render(Context(context</span><span class="s0">, </span><span class="s1">autoescape=self.autoescape))</span>
+
+    <span class="s0">def </span><span class="s1">select_template(self</span><span class="s0">, </span><span class="s1">template_name_list):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Given a list of template names, return the first that can be loaded. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">template_name_list:</span>
+            <span class="s0">raise </span><span class="s1">TemplateDoesNotExist(</span><span class="s2">&quot;No template names provided&quot;</span><span class="s1">)</span>
+        <span class="s1">not_found = []</span>
+        <span class="s0">for </span><span class="s1">template_name </span><span class="s0">in </span><span class="s1">template_name_list:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">self.get_template(template_name)</span>
+            <span class="s0">except </span><span class="s1">TemplateDoesNotExist </span><span class="s0">as </span><span class="s1">exc:</span>
+                <span class="s0">if </span><span class="s1">exc.args[</span><span class="s5">0</span><span class="s1">] </span><span class="s0">not in </span><span class="s1">not_found:</span>
+                    <span class="s1">not_found.append(exc.args[</span><span class="s5">0</span><span class="s1">])</span>
+                <span class="s0">continue</span>
+        <span class="s4"># If we get here, none of the templates could be loaded</span>
+        <span class="s0">raise </span><span class="s1">TemplateDoesNotExist(</span><span class="s2">', '</span><span class="s1">.join(not_found))</span>
+</pre>
+</body>
+</html>

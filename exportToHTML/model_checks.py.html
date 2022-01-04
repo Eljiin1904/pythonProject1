@@ -1,0 +1,232 @@
+<html>
+<head>
+<title>model_checks.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+model_checks.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">import </span><span class="s1">types</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">defaultdict</span>
+<span class="s0">from </span><span class="s1">itertools </span><span class="s0">import </span><span class="s1">chain</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core.checks </span><span class="s0">import </span><span class="s1">Error</span><span class="s0">, </span><span class="s1">Tags</span><span class="s0">, </span><span class="s1">Warning</span><span class="s0">, </span><span class="s1">register</span>
+
+
+<span class="s1">@register(Tags.models)</span>
+<span class="s0">def </span><span class="s1">check_all_models(app_configs=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+    <span class="s1">db_table_models = defaultdict(list)</span>
+    <span class="s1">indexes = defaultdict(list)</span>
+    <span class="s1">constraints = defaultdict(list)</span>
+    <span class="s1">errors = []</span>
+    <span class="s0">if </span><span class="s1">app_configs </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">models = apps.get_models()</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">models = chain.from_iterable(app_config.get_models() </span><span class="s0">for </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">app_configs)</span>
+    <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">models:</span>
+        <span class="s0">if </span><span class="s1">model._meta.managed </span><span class="s0">and not </span><span class="s1">model._meta.proxy:</span>
+            <span class="s1">db_table_models[model._meta.db_table].append(model._meta.label)</span>
+        <span class="s0">if not </span><span class="s1">inspect.ismethod(model.check):</span>
+            <span class="s1">errors.append(</span>
+                <span class="s1">Error(</span>
+                    <span class="s2">&quot;The '%s.check()' class method is currently overridden by %r.&quot;</span>
+                    <span class="s1">% (model.__name__</span><span class="s0">, </span><span class="s1">model.check)</span><span class="s0">,</span>
+                    <span class="s1">obj=model</span><span class="s0">,</span>
+                    <span class="s1">id=</span><span class="s2">'models.E020'</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">errors.extend(model.check(**kwargs))</span>
+        <span class="s0">for </span><span class="s1">model_index </span><span class="s0">in </span><span class="s1">model._meta.indexes:</span>
+            <span class="s1">indexes[model_index.name].append(model._meta.label)</span>
+        <span class="s0">for </span><span class="s1">model_constraint </span><span class="s0">in </span><span class="s1">model._meta.constraints:</span>
+            <span class="s1">constraints[model_constraint.name].append(model._meta.label)</span>
+    <span class="s0">if </span><span class="s1">settings.DATABASE_ROUTERS:</span>
+        <span class="s1">error_class</span><span class="s0">, </span><span class="s1">error_id = Warning</span><span class="s0">, </span><span class="s2">'models.W035'</span>
+        <span class="s1">error_hint = (</span>
+            <span class="s2">'You have configured settings.DATABASE_ROUTERS. Verify that %s '</span>
+            <span class="s2">'are correctly routed to separate databases.'</span>
+        <span class="s1">)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">error_class</span><span class="s0">, </span><span class="s1">error_id = Error</span><span class="s0">, </span><span class="s2">'models.E028'</span>
+        <span class="s1">error_hint = </span><span class="s0">None</span>
+    <span class="s0">for </span><span class="s1">db_table</span><span class="s0">, </span><span class="s1">model_labels </span><span class="s0">in </span><span class="s1">db_table_models.items():</span>
+        <span class="s0">if </span><span class="s1">len(model_labels) != </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s1">model_labels_str = </span><span class="s2">', '</span><span class="s1">.join(model_labels)</span>
+            <span class="s1">errors.append(</span>
+                <span class="s1">error_class(</span>
+                    <span class="s2">&quot;db_table '%s' is used by multiple models: %s.&quot;</span>
+                    <span class="s1">% (db_table</span><span class="s0">, </span><span class="s1">model_labels_str)</span><span class="s0">,</span>
+                    <span class="s1">obj=db_table</span><span class="s0">,</span>
+                    <span class="s1">hint=(error_hint % model_labels_str) </span><span class="s0">if </span><span class="s1">error_hint </span><span class="s0">else None,</span>
+                    <span class="s1">id=error_id</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+    <span class="s0">for </span><span class="s1">index_name</span><span class="s0">, </span><span class="s1">model_labels </span><span class="s0">in </span><span class="s1">indexes.items():</span>
+        <span class="s0">if </span><span class="s1">len(model_labels) &gt; </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s1">model_labels = set(model_labels)</span>
+            <span class="s1">errors.append(</span>
+                <span class="s1">Error(</span>
+                    <span class="s2">&quot;index name '%s' is not unique %s %s.&quot; </span><span class="s1">% (</span>
+                        <span class="s1">index_name</span><span class="s0">,</span>
+                        <span class="s2">'for model' </span><span class="s0">if </span><span class="s1">len(model_labels) == </span><span class="s3">1 </span><span class="s0">else </span><span class="s2">'among models:'</span><span class="s0">,</span>
+                        <span class="s2">', '</span><span class="s1">.join(sorted(model_labels))</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">id=</span><span class="s2">'models.E029' </span><span class="s0">if </span><span class="s1">len(model_labels) == </span><span class="s3">1 </span><span class="s0">else </span><span class="s2">'models.E030'</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">)</span>
+    <span class="s0">for </span><span class="s1">constraint_name</span><span class="s0">, </span><span class="s1">model_labels </span><span class="s0">in </span><span class="s1">constraints.items():</span>
+        <span class="s0">if </span><span class="s1">len(model_labels) &gt; </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s1">model_labels = set(model_labels)</span>
+            <span class="s1">errors.append(</span>
+                <span class="s1">Error(</span>
+                    <span class="s2">&quot;constraint name '%s' is not unique %s %s.&quot; </span><span class="s1">% (</span>
+                        <span class="s1">constraint_name</span><span class="s0">,</span>
+                        <span class="s2">'for model' </span><span class="s0">if </span><span class="s1">len(model_labels) == </span><span class="s3">1 </span><span class="s0">else </span><span class="s2">'among models:'</span><span class="s0">,</span>
+                        <span class="s2">', '</span><span class="s1">.join(sorted(model_labels))</span><span class="s0">,</span>
+                    <span class="s1">)</span><span class="s0">,</span>
+                    <span class="s1">id=</span><span class="s2">'models.E031' </span><span class="s0">if </span><span class="s1">len(model_labels) == </span><span class="s3">1 </span><span class="s0">else </span><span class="s2">'models.E032'</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">errors</span>
+
+
+<span class="s0">def </span><span class="s1">_check_lazy_references(apps</span><span class="s0">, </span><span class="s1">ignore=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Ensure all lazy (i.e. string) model references have been resolved. 
+ 
+    Lazy references are used in various places throughout Django, primarily in 
+    related fields and model signals. Identify those common cases and provide 
+    more helpful error messages for them. 
+ 
+    The ignore parameter is used by StateApps to exclude swappable models from 
+    this check. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">pending_models = set(apps._pending_operations) - (ignore </span><span class="s0">or </span><span class="s1">set())</span>
+
+    <span class="s5"># Short circuit if there aren't any errors.</span>
+    <span class="s0">if not </span><span class="s1">pending_models:</span>
+        <span class="s0">return </span><span class="s1">[]</span>
+
+    <span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">signals</span>
+    <span class="s1">model_signals = {</span>
+        <span class="s1">signal: name </span><span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">signal </span><span class="s0">in </span><span class="s1">vars(signals).items()</span>
+        <span class="s0">if </span><span class="s1">isinstance(signal</span><span class="s0">, </span><span class="s1">signals.ModelSignal)</span>
+    <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">extract_operation(obj):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Take a callable found in Apps._pending_operations and identify the 
+        original callable passed to Apps.lazy_model_operation(). If that 
+        callable was a partial, return the inner, non-partial function and 
+        any arguments and keyword arguments that were supplied with it. 
+ 
+        obj is a callback defined locally in Apps.lazy_model_operation() and 
+        annotated there with a `func` attribute so as to imitate a partial. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">operation</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords = obj</span><span class="s0">, </span><span class="s1">[]</span><span class="s0">, </span><span class="s1">{}</span>
+        <span class="s0">while </span><span class="s1">hasattr(operation</span><span class="s0">, </span><span class="s2">'func'</span><span class="s1">):</span>
+            <span class="s1">args.extend(getattr(operation</span><span class="s0">, </span><span class="s2">'args'</span><span class="s0">, </span><span class="s1">[]))</span>
+            <span class="s1">keywords.update(getattr(operation</span><span class="s0">, </span><span class="s2">'keywords'</span><span class="s0">, </span><span class="s1">{}))</span>
+            <span class="s1">operation = operation.func</span>
+        <span class="s0">return </span><span class="s1">operation</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords</span>
+
+    <span class="s0">def </span><span class="s1">app_model_error(model_key):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">apps.get_app_config(model_key[</span><span class="s3">0</span><span class="s1">])</span>
+            <span class="s1">model_error = </span><span class="s2">&quot;app '%s' doesn't provide model '%s'&quot; </span><span class="s1">% model_key</span>
+        <span class="s0">except </span><span class="s1">LookupError:</span>
+            <span class="s1">model_error = </span><span class="s2">&quot;app '%s' isn't installed&quot; </span><span class="s1">% model_key[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s0">return </span><span class="s1">model_error</span>
+
+    <span class="s5"># Here are several functions which return CheckMessage instances for the</span>
+    <span class="s5"># most common usages of lazy operations throughout Django. These functions</span>
+    <span class="s5"># take the model that was being waited on as an (app_label, modelname)</span>
+    <span class="s5"># pair, the original lazy function, and its positional and keyword args as</span>
+    <span class="s5"># determined by extract_operation().</span>
+
+    <span class="s0">def </span><span class="s1">field_error(model_key</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords):</span>
+        <span class="s1">error_msg = (</span>
+            <span class="s2">&quot;The field %(field)s was declared with a lazy reference &quot;</span>
+            <span class="s2">&quot;to '%(model)s', but %(model_error)s.&quot;</span>
+        <span class="s1">)</span>
+        <span class="s1">params = {</span>
+            <span class="s2">'model'</span><span class="s1">: </span><span class="s2">'.'</span><span class="s1">.join(model_key)</span><span class="s0">,</span>
+            <span class="s2">'field'</span><span class="s1">: keywords[</span><span class="s2">'field'</span><span class="s1">]</span><span class="s0">,</span>
+            <span class="s2">'model_error'</span><span class="s1">: app_model_error(model_key)</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">return </span><span class="s1">Error(error_msg % params</span><span class="s0">, </span><span class="s1">obj=keywords[</span><span class="s2">'field'</span><span class="s1">]</span><span class="s0">, </span><span class="s1">id=</span><span class="s2">'fields.E307'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">signal_connect_error(model_key</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords):</span>
+        <span class="s1">error_msg = (</span>
+            <span class="s2">&quot;%(receiver)s was connected to the '%(signal)s' signal with a &quot;</span>
+            <span class="s2">&quot;lazy reference to the sender '%(model)s', but %(model_error)s.&quot;</span>
+        <span class="s1">)</span>
+        <span class="s1">receiver = args[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s5"># The receiver is either a function or an instance of class</span>
+        <span class="s5"># defining a `__call__` method.</span>
+        <span class="s0">if </span><span class="s1">isinstance(receiver</span><span class="s0">, </span><span class="s1">types.FunctionType):</span>
+            <span class="s1">description = </span><span class="s2">&quot;The function '%s'&quot; </span><span class="s1">% receiver.__name__</span>
+        <span class="s0">elif </span><span class="s1">isinstance(receiver</span><span class="s0">, </span><span class="s1">types.MethodType):</span>
+            <span class="s1">description = </span><span class="s2">&quot;Bound method '%s.%s'&quot; </span><span class="s1">% (receiver.__self__.__class__.__name__</span><span class="s0">, </span><span class="s1">receiver.__name__)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">description = </span><span class="s2">&quot;An instance of class '%s'&quot; </span><span class="s1">% receiver.__class__.__name__</span>
+        <span class="s1">signal_name = model_signals.get(func.__self__</span><span class="s0">, </span><span class="s2">'unknown'</span><span class="s1">)</span>
+        <span class="s1">params = {</span>
+            <span class="s2">'model'</span><span class="s1">: </span><span class="s2">'.'</span><span class="s1">.join(model_key)</span><span class="s0">,</span>
+            <span class="s2">'receiver'</span><span class="s1">: description</span><span class="s0">,</span>
+            <span class="s2">'signal'</span><span class="s1">: signal_name</span><span class="s0">,</span>
+            <span class="s2">'model_error'</span><span class="s1">: app_model_error(model_key)</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">return </span><span class="s1">Error(error_msg % params</span><span class="s0">, </span><span class="s1">obj=receiver.__module__</span><span class="s0">, </span><span class="s1">id=</span><span class="s2">'signals.E001'</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">default_error(model_key</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords):</span>
+        <span class="s1">error_msg = </span><span class="s2">&quot;%(op)s contains a lazy reference to %(model)s, but %(model_error)s.&quot;</span>
+        <span class="s1">params = {</span>
+            <span class="s2">'op'</span><span class="s1">: func</span><span class="s0">,</span>
+            <span class="s2">'model'</span><span class="s1">: </span><span class="s2">'.'</span><span class="s1">.join(model_key)</span><span class="s0">,</span>
+            <span class="s2">'model_error'</span><span class="s1">: app_model_error(model_key)</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">return </span><span class="s1">Error(error_msg % params</span><span class="s0">, </span><span class="s1">obj=func</span><span class="s0">, </span><span class="s1">id=</span><span class="s2">'models.E022'</span><span class="s1">)</span>
+
+    <span class="s5"># Maps common uses of lazy operations to corresponding error functions</span>
+    <span class="s5"># defined above. If a key maps to None, no error will be produced.</span>
+    <span class="s5"># default_error() will be used for usages that don't appear in this dict.</span>
+    <span class="s1">known_lazy = {</span>
+        <span class="s1">(</span><span class="s2">'django.db.models.fields.related'</span><span class="s0">, </span><span class="s2">'resolve_related_class'</span><span class="s1">): field_error</span><span class="s0">,</span>
+        <span class="s1">(</span><span class="s2">'django.db.models.fields.related'</span><span class="s0">, </span><span class="s2">'set_managed'</span><span class="s1">): </span><span class="s0">None,</span>
+        <span class="s1">(</span><span class="s2">'django.dispatch.dispatcher'</span><span class="s0">, </span><span class="s2">'connect'</span><span class="s1">): signal_connect_error</span><span class="s0">,</span>
+    <span class="s1">}</span>
+
+    <span class="s0">def </span><span class="s1">build_error(model_key</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords):</span>
+        <span class="s1">key = (func.__module__</span><span class="s0">, </span><span class="s1">func.__name__)</span>
+        <span class="s1">error_fn = known_lazy.get(key</span><span class="s0">, </span><span class="s1">default_error)</span>
+        <span class="s0">return </span><span class="s1">error_fn(model_key</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">keywords) </span><span class="s0">if </span><span class="s1">error_fn </span><span class="s0">else None</span>
+
+    <span class="s0">return </span><span class="s1">sorted(filter(</span><span class="s0">None, </span><span class="s1">(</span>
+        <span class="s1">build_error(model_key</span><span class="s0">, </span><span class="s1">*extract_operation(func))</span>
+        <span class="s0">for </span><span class="s1">model_key </span><span class="s0">in </span><span class="s1">pending_models</span>
+        <span class="s0">for </span><span class="s1">func </span><span class="s0">in </span><span class="s1">apps._pending_operations[model_key]</span>
+    <span class="s1">))</span><span class="s0">, </span><span class="s1">key=</span><span class="s0">lambda </span><span class="s1">error: error.msg)</span>
+
+
+<span class="s1">@register(Tags.models)</span>
+<span class="s0">def </span><span class="s1">check_lazy_references(app_configs=</span><span class="s0">None, </span><span class="s1">**kwargs):</span>
+    <span class="s0">return </span><span class="s1">_check_lazy_references(apps)</span>
+</pre>
+</body>
+</html>

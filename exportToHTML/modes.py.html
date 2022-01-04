@@ -1,0 +1,232 @@
+<html>
+<head>
+<title>modes.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+modes.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">abc</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives._cipheralgorithm </span><span class="s2">import </span><span class="s1">CipherAlgorithm</span>
+
+
+<span class="s2">class </span><span class="s1">Mode(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">name(self) -&gt; str:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        A string naming this mode (e.g. &quot;ECB&quot;, &quot;CBC&quot;). 
+        &quot;&quot;&quot;</span>
+
+    <span class="s1">@abc.abstractmethod</span>
+    <span class="s2">def </span><span class="s1">validate_for_algorithm(self</span><span class="s2">, </span><span class="s1">algorithm: CipherAlgorithm) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Checks that all the necessary invariants of this (mode, algorithm) 
+        combination are met. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">ModeWithInitializationVector(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">initialization_vector(self) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The value of the initialization vector for this mode as bytes. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">ModeWithTweak(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">tweak(self) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The value of the tweak for this mode as bytes. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">ModeWithNonce(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">nonce(self) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The value of the nonce for this mode as bytes. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">class </span><span class="s1">ModeWithAuthenticationTag(metaclass=abc.ABCMeta):</span>
+    <span class="s1">@abc.abstractproperty</span>
+    <span class="s2">def </span><span class="s1">tag(self) -&gt; bytes:</span>
+        <span class="s3">&quot;&quot;&quot; 
+        The value of the tag supplied to the constructor of this mode. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s2">def </span><span class="s1">_check_aes_key_length(self</span><span class="s2">, </span><span class="s1">algorithm):</span>
+    <span class="s2">if </span><span class="s1">algorithm.key_size &gt; </span><span class="s4">256 </span><span class="s2">and </span><span class="s1">algorithm.name == </span><span class="s5">&quot;AES&quot;</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s5">&quot;Only 128, 192, and 256 bit keys are allowed for this AES mode&quot;</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_check_iv_length(self</span><span class="s2">, </span><span class="s1">algorithm):</span>
+    <span class="s2">if </span><span class="s1">len(self.initialization_vector) * </span><span class="s4">8 </span><span class="s1">!= algorithm.block_size:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s5">&quot;Invalid IV size ({}) for {}.&quot;</span><span class="s1">.format(</span>
+                <span class="s1">len(self.initialization_vector)</span><span class="s2">, </span><span class="s1">self.name</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_check_nonce_length(nonce: bytes</span><span class="s2">, </span><span class="s1">name: str</span><span class="s2">, </span><span class="s1">algorithm):</span>
+    <span class="s2">if </span><span class="s1">len(nonce) * </span><span class="s4">8 </span><span class="s1">!= algorithm.block_size:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span>
+            <span class="s5">&quot;Invalid nonce size ({}) for {}.&quot;</span><span class="s1">.format(len(nonce)</span><span class="s2">, </span><span class="s1">name)</span>
+        <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_check_iv_and_key_length(self</span><span class="s2">, </span><span class="s1">algorithm):</span>
+    <span class="s1">_check_aes_key_length(self</span><span class="s2">, </span><span class="s1">algorithm)</span>
+    <span class="s1">_check_iv_length(self</span><span class="s2">, </span><span class="s1">algorithm)</span>
+
+
+<span class="s2">class </span><span class="s1">CBC(Mode</span><span class="s2">, </span><span class="s1">ModeWithInitializationVector):</span>
+    <span class="s1">name = </span><span class="s5">&quot;CBC&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">initialization_vector: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;initialization_vector&quot;</span><span class="s2">, </span><span class="s1">initialization_vector)</span>
+        <span class="s1">self._initialization_vector = initialization_vector</span>
+
+    <span class="s1">initialization_vector = utils.read_only_property(</span><span class="s5">&quot;_initialization_vector&quot;</span><span class="s1">)</span>
+    <span class="s1">validate_for_algorithm = _check_iv_and_key_length</span>
+
+
+<span class="s2">class </span><span class="s1">XTS(Mode</span><span class="s2">, </span><span class="s1">ModeWithTweak):</span>
+    <span class="s1">name = </span><span class="s5">&quot;XTS&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">tweak: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;tweak&quot;</span><span class="s2">, </span><span class="s1">tweak)</span>
+
+        <span class="s2">if </span><span class="s1">len(tweak) != </span><span class="s4">16</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s5">&quot;tweak must be 128-bits (16 bytes)&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._tweak = tweak</span>
+
+    <span class="s1">tweak = utils.read_only_property(</span><span class="s5">&quot;_tweak&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">validate_for_algorithm(self</span><span class="s2">, </span><span class="s1">algorithm: CipherAlgorithm):</span>
+        <span class="s2">if </span><span class="s1">algorithm.key_size </span><span class="s2">not in </span><span class="s1">(</span><span class="s4">256</span><span class="s2">, </span><span class="s4">512</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s5">&quot;The XTS specification requires a 256-bit key for AES-128-XTS&quot;</span>
+                <span class="s5">&quot; and 512-bit key for AES-256-XTS&quot;</span>
+            <span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">ECB(Mode):</span>
+    <span class="s1">name = </span><span class="s5">&quot;ECB&quot;</span>
+
+    <span class="s1">validate_for_algorithm = _check_aes_key_length</span>
+
+
+<span class="s2">class </span><span class="s1">OFB(Mode</span><span class="s2">, </span><span class="s1">ModeWithInitializationVector):</span>
+    <span class="s1">name = </span><span class="s5">&quot;OFB&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">initialization_vector: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;initialization_vector&quot;</span><span class="s2">, </span><span class="s1">initialization_vector)</span>
+        <span class="s1">self._initialization_vector = initialization_vector</span>
+
+    <span class="s1">initialization_vector = utils.read_only_property(</span><span class="s5">&quot;_initialization_vector&quot;</span><span class="s1">)</span>
+    <span class="s1">validate_for_algorithm = _check_iv_and_key_length</span>
+
+
+<span class="s2">class </span><span class="s1">CFB(Mode</span><span class="s2">, </span><span class="s1">ModeWithInitializationVector):</span>
+    <span class="s1">name = </span><span class="s5">&quot;CFB&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">initialization_vector: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;initialization_vector&quot;</span><span class="s2">, </span><span class="s1">initialization_vector)</span>
+        <span class="s1">self._initialization_vector = initialization_vector</span>
+
+    <span class="s1">initialization_vector = utils.read_only_property(</span><span class="s5">&quot;_initialization_vector&quot;</span><span class="s1">)</span>
+    <span class="s1">validate_for_algorithm = _check_iv_and_key_length</span>
+
+
+<span class="s2">class </span><span class="s1">CFB8(Mode</span><span class="s2">, </span><span class="s1">ModeWithInitializationVector):</span>
+    <span class="s1">name = </span><span class="s5">&quot;CFB8&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">initialization_vector: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;initialization_vector&quot;</span><span class="s2">, </span><span class="s1">initialization_vector)</span>
+        <span class="s1">self._initialization_vector = initialization_vector</span>
+
+    <span class="s1">initialization_vector = utils.read_only_property(</span><span class="s5">&quot;_initialization_vector&quot;</span><span class="s1">)</span>
+    <span class="s1">validate_for_algorithm = _check_iv_and_key_length</span>
+
+
+<span class="s2">class </span><span class="s1">CTR(Mode</span><span class="s2">, </span><span class="s1">ModeWithNonce):</span>
+    <span class="s1">name = </span><span class="s5">&quot;CTR&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">nonce: bytes):</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;nonce&quot;</span><span class="s2">, </span><span class="s1">nonce)</span>
+        <span class="s1">self._nonce = nonce</span>
+
+    <span class="s1">nonce = utils.read_only_property(</span><span class="s5">&quot;_nonce&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">validate_for_algorithm(self</span><span class="s2">, </span><span class="s1">algorithm: CipherAlgorithm):</span>
+        <span class="s1">_check_aes_key_length(self</span><span class="s2">, </span><span class="s1">algorithm)</span>
+        <span class="s1">_check_nonce_length(self.nonce</span><span class="s2">, </span><span class="s1">self.name</span><span class="s2">, </span><span class="s1">algorithm)</span>
+
+
+<span class="s2">class </span><span class="s1">GCM(Mode</span><span class="s2">, </span><span class="s1">ModeWithInitializationVector</span><span class="s2">, </span><span class="s1">ModeWithAuthenticationTag):</span>
+    <span class="s1">name = </span><span class="s5">&quot;GCM&quot;</span>
+    <span class="s1">_MAX_ENCRYPTED_BYTES = (</span><span class="s4">2 </span><span class="s1">** </span><span class="s4">39 </span><span class="s1">- </span><span class="s4">256</span><span class="s1">) // </span><span class="s4">8</span>
+    <span class="s1">_MAX_AAD_BYTES = (</span><span class="s4">2 </span><span class="s1">** </span><span class="s4">64</span><span class="s1">) // </span><span class="s4">8</span>
+
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">initialization_vector: bytes</span><span class="s2">,</span>
+        <span class="s1">tag: typing.Optional[bytes] = </span><span class="s2">None,</span>
+        <span class="s1">min_tag_length: int = </span><span class="s4">16</span><span class="s2">,</span>
+    <span class="s1">):</span>
+        <span class="s0"># OpenSSL 3.0.0 constrains GCM IVs to [64, 1024] bits inclusive</span>
+        <span class="s0"># This is a sane limit anyway so we'll enforce it here.</span>
+        <span class="s1">utils._check_byteslike(</span><span class="s5">&quot;initialization_vector&quot;</span><span class="s2">, </span><span class="s1">initialization_vector)</span>
+        <span class="s2">if </span><span class="s1">len(initialization_vector) &lt; </span><span class="s4">8 </span><span class="s2">or </span><span class="s1">len(initialization_vector) &gt; </span><span class="s4">128</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s5">&quot;initialization_vector must be between 8 and 128 bytes (64 &quot;</span>
+                <span class="s5">&quot;and 1024 bits).&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">self._initialization_vector = initialization_vector</span>
+        <span class="s2">if </span><span class="s1">tag </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">utils._check_bytes(</span><span class="s5">&quot;tag&quot;</span><span class="s2">, </span><span class="s1">tag)</span>
+            <span class="s2">if </span><span class="s1">min_tag_length &lt; </span><span class="s4">4</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s5">&quot;min_tag_length must be &gt;= 4&quot;</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">len(tag) &lt; min_tag_length:</span>
+                <span class="s2">raise </span><span class="s1">ValueError(</span>
+                    <span class="s5">&quot;Authentication tag must be {} bytes or longer.&quot;</span><span class="s1">.format(</span>
+                        <span class="s1">min_tag_length</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+        <span class="s1">self._tag = tag</span>
+        <span class="s1">self._min_tag_length = min_tag_length</span>
+
+    <span class="s1">tag = utils.read_only_property(</span><span class="s5">&quot;_tag&quot;</span><span class="s1">)</span>
+    <span class="s1">initialization_vector = utils.read_only_property(</span><span class="s5">&quot;_initialization_vector&quot;</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">validate_for_algorithm(self</span><span class="s2">, </span><span class="s1">algorithm: CipherAlgorithm):</span>
+        <span class="s1">_check_aes_key_length(self</span><span class="s2">, </span><span class="s1">algorithm)</span>
+</pre>
+</body>
+</html>

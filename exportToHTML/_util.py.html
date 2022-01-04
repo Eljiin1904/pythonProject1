@@ -1,0 +1,132 @@
+<html>
+<head>
+<title>_util.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_util.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">wraps</span>
+<span class="s0">from </span><span class="s1">._impl </span><span class="s0">import </span><span class="s1">isasyncgenfunction</span>
+
+
+<span class="s0">class </span><span class="s1">aclosing:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">aiter):</span>
+        <span class="s1">self._aiter = aiter</span>
+
+    <span class="s0">async def </span><span class="s1">__aenter__(self):</span>
+        <span class="s0">return </span><span class="s1">self._aiter</span>
+
+    <span class="s0">async def </span><span class="s1">__aexit__(self</span><span class="s0">, </span><span class="s1">*args):</span>
+        <span class="s0">await </span><span class="s1">self._aiter.aclose()</span>
+
+
+<span class="s2"># Very much derived from the one in contextlib, by copy/pasting and then</span>
+<span class="s2"># asyncifying everything. (Also I dropped the obscure support for using</span>
+<span class="s2"># context managers as function decorators. It could be re-added; I just</span>
+<span class="s2"># couldn't be bothered.)</span>
+<span class="s2"># So this is a derivative work licensed under the PSF License, which requires</span>
+<span class="s2"># the following notice:</span>
+<span class="s2">#</span>
+<span class="s2"># Copyright © 2001-2017 Python Software Foundation; All Rights Reserved</span>
+<span class="s0">class </span><span class="s1">_AsyncGeneratorContextManager:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwds):</span>
+        <span class="s1">self._func_name = func.__name__</span>
+        <span class="s1">self._agen = func(*args</span><span class="s0">, </span><span class="s1">**kwds).__aiter__()</span>
+
+    <span class="s0">async def </span><span class="s1">__aenter__(self):</span>
+        <span class="s0">if </span><span class="s1">sys.version_info &lt; (</span><span class="s3">3</span><span class="s0">, </span><span class="s3">5</span><span class="s0">, </span><span class="s3">2</span><span class="s1">):</span>
+            <span class="s1">self._agen = </span><span class="s0">await </span><span class="s1">self._agen</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return await </span><span class="s1">self._agen.asend(</span><span class="s0">None</span><span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">StopAsyncIteration:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;async generator didn't yield&quot;</span><span class="s1">) </span><span class="s0">from None</span>
+
+    <span class="s0">async def </span><span class="s1">__aexit__(self</span><span class="s0">, </span><span class="s1">type</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">traceback):</span>
+        <span class="s0">async with </span><span class="s1">aclosing(self._agen):</span>
+            <span class="s0">if </span><span class="s1">type </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s0">await </span><span class="s1">self._agen.asend(</span><span class="s0">None</span><span class="s1">)</span>
+                <span class="s0">except </span><span class="s1">StopAsyncIteration:</span>
+                    <span class="s0">return False</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s4">&quot;async generator didn't stop&quot;</span><span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s2"># It used to be possible to have type != None, value == None:</span>
+                <span class="s2">#    https://bugs.python.org/issue1705170</span>
+                <span class="s2"># but AFAICT this can't happen anymore.</span>
+                <span class="s0">assert </span><span class="s1">value </span><span class="s0">is not None</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s0">await </span><span class="s1">self._agen.athrow(type</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">traceback)</span>
+                    <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                        <span class="s4">&quot;async generator didn't stop after athrow()&quot;</span>
+                    <span class="s1">)</span>
+                <span class="s0">except </span><span class="s1">StopAsyncIteration </span><span class="s0">as </span><span class="s1">exc:</span>
+                    <span class="s2"># Suppress StopIteration *unless* it's the same exception</span>
+                    <span class="s2"># that was passed to throw(). This prevents a</span>
+                    <span class="s2"># StopIteration raised inside the &quot;with&quot; statement from</span>
+                    <span class="s2"># being suppressed.</span>
+                    <span class="s0">return </span><span class="s1">(exc </span><span class="s0">is not </span><span class="s1">value)</span>
+                <span class="s0">except </span><span class="s1">RuntimeError </span><span class="s0">as </span><span class="s1">exc:</span>
+                    <span class="s2"># Don't re-raise the passed in exception. (issue27112)</span>
+                    <span class="s0">if </span><span class="s1">exc </span><span class="s0">is </span><span class="s1">value:</span>
+                        <span class="s0">return False</span>
+                    <span class="s2"># Likewise, avoid suppressing if a StopIteration exception</span>
+                    <span class="s2"># was passed to throw() and later wrapped into a</span>
+                    <span class="s2"># RuntimeError (see PEP 479).</span>
+                    <span class="s0">if </span><span class="s1">(isinstance(value</span><span class="s0">, </span><span class="s1">(StopIteration</span><span class="s0">, </span><span class="s1">StopAsyncIteration))</span>
+                            <span class="s0">and </span><span class="s1">exc.__cause__ </span><span class="s0">is </span><span class="s1">value):</span>
+                        <span class="s0">return False</span>
+                    <span class="s0">raise</span>
+                <span class="s0">except</span><span class="s1">:</span>
+                    <span class="s2"># only re-raise if it's *not* the exception that was</span>
+                    <span class="s2"># passed to throw(), because __exit__() must not raise an</span>
+                    <span class="s2"># exception unless __exit__() itself failed. But throw()</span>
+                    <span class="s2"># has to raise the exception to signal propagation, so</span>
+                    <span class="s2"># this fixes the impedance mismatch between the throw()</span>
+                    <span class="s2"># protocol and the __exit__() protocol.</span>
+                    <span class="s2">#</span>
+                    <span class="s0">if </span><span class="s1">sys.exc_info()[</span><span class="s3">1</span><span class="s1">] </span><span class="s0">is </span><span class="s1">value:</span>
+                        <span class="s0">return False</span>
+                    <span class="s0">raise</span>
+
+    <span class="s0">def </span><span class="s1">__enter__(self):</span>
+        <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+            <span class="s4">&quot;use 'async with {func_name}(...)', not 'with {func_name}(...)'&quot;</span><span class="s1">.</span>
+            <span class="s1">format(func_name=self._func_name)</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__exit__(self):  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">assert False, </span><span class="s4">&quot;&quot;&quot;Never called, but should be defined&quot;&quot;&quot;</span>
+
+
+<span class="s0">def </span><span class="s1">asynccontextmanager(func):</span>
+    <span class="s5">&quot;&quot;&quot;Like @contextmanager, but async.&quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">isasyncgenfunction(func):</span>
+        <span class="s0">raise </span><span class="s1">TypeError(</span>
+            <span class="s4">&quot;must be an async generator (native or from async_generator; &quot;</span>
+            <span class="s4">&quot;if using @async_generator then @acontextmanager must be on top.&quot;</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@wraps(func)</span>
+    <span class="s0">def </span><span class="s1">helper(*args</span><span class="s0">, </span><span class="s1">**kwds):</span>
+        <span class="s0">return </span><span class="s1">_AsyncGeneratorContextManager(func</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwds)</span>
+
+    <span class="s2"># A hint for sphinxcontrib-trio:</span>
+    <span class="s1">helper.__returns_acontextmanager__ = </span><span class="s0">True</span>
+    <span class="s0">return </span><span class="s1">helper</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,687 @@
+<html>
+<head>
+<title>parsetree.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parsetree.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># mako/parsetree.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">&quot;&quot;&quot;defines the parse tree components for Mako templates.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">re</span>
+
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">ast</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">compat</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">exceptions</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">filters</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">util</span>
+
+
+<span class="s3">class </span><span class="s1">Node(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;base class for a Node in the parse tree.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">source</span><span class="s3">, </span><span class="s1">lineno</span><span class="s3">, </span><span class="s1">pos</span><span class="s3">, </span><span class="s1">filename):</span>
+        <span class="s1">self.source = source</span>
+        <span class="s1">self.lineno = lineno</span>
+        <span class="s1">self.pos = pos</span>
+        <span class="s1">self.filename = filename</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">exception_kwargs(self):</span>
+        <span class="s3">return </span><span class="s1">{</span>
+            <span class="s4">&quot;source&quot;</span><span class="s1">: self.source</span><span class="s3">,</span>
+            <span class="s4">&quot;lineno&quot;</span><span class="s1">: self.lineno</span><span class="s3">,</span>
+            <span class="s4">&quot;pos&quot;</span><span class="s1">: self.pos</span><span class="s3">,</span>
+            <span class="s4">&quot;filename&quot;</span><span class="s1">: self.filename</span><span class="s3">,</span>
+        <span class="s1">}</span>
+
+    <span class="s3">def </span><span class="s1">get_children(self):</span>
+        <span class="s3">return </span><span class="s1">[]</span>
+
+    <span class="s3">def </span><span class="s1">accept_visitor(self</span><span class="s3">, </span><span class="s1">visitor):</span>
+        <span class="s3">def </span><span class="s1">traverse(node):</span>
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.get_children():</span>
+                <span class="s1">n.accept_visitor(visitor)</span>
+
+        <span class="s1">method = getattr(visitor</span><span class="s3">, </span><span class="s4">&quot;visit&quot; </span><span class="s1">+ self.__class__.__name__</span><span class="s3">, </span><span class="s1">traverse)</span>
+        <span class="s1">method(self)</span>
+
+
+<span class="s3">class </span><span class="s1">TemplateNode(Node):</span>
+
+    <span class="s2">&quot;&quot;&quot;a 'container' node that stores the overall collection of nodes.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">filename):</span>
+        <span class="s1">super(TemplateNode</span><span class="s3">, </span><span class="s1">self).__init__(</span><span class="s4">&quot;&quot;</span><span class="s3">, </span><span class="s5">0</span><span class="s3">, </span><span class="s5">0</span><span class="s3">, </span><span class="s1">filename)</span>
+        <span class="s1">self.nodes = []</span>
+        <span class="s1">self.page_attributes = {}</span>
+
+    <span class="s3">def </span><span class="s1">get_children(self):</span>
+        <span class="s3">return </span><span class="s1">self.nodes</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;TemplateNode(%s, %r)&quot; </span><span class="s1">% (</span>
+            <span class="s1">util.sorted_dict_repr(self.page_attributes)</span><span class="s3">,</span>
+            <span class="s1">self.nodes</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">ControlLine(Node):</span>
+
+    <span class="s2">&quot;&quot;&quot;defines a control line, a line-oriented python line or end tag. 
+ 
+    e.g.:: 
+ 
+        % if foo: 
+            (markup) 
+        % endif 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">has_loop_context = </span><span class="s3">False</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">isend</span><span class="s3">, </span><span class="s1">text</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(ControlLine</span><span class="s3">, </span><span class="s1">self).__init__(**kwargs)</span>
+        <span class="s1">self.text = text</span>
+        <span class="s1">self.keyword = keyword</span>
+        <span class="s1">self.isend = isend</span>
+        <span class="s1">self.is_primary = keyword </span><span class="s3">in </span><span class="s1">[</span><span class="s4">&quot;for&quot;</span><span class="s3">, </span><span class="s4">&quot;if&quot;</span><span class="s3">, </span><span class="s4">&quot;while&quot;</span><span class="s3">, </span><span class="s4">&quot;try&quot;</span><span class="s3">, </span><span class="s4">&quot;with&quot;</span><span class="s1">]</span>
+        <span class="s1">self.nodes = []</span>
+        <span class="s3">if </span><span class="s1">self.isend:</span>
+            <span class="s1">self._declared_identifiers = []</span>
+            <span class="s1">self._undeclared_identifiers = []</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">code = ast.PythonFragment(text</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+            <span class="s1">self._declared_identifiers = code.declared_identifiers</span>
+            <span class="s1">self._undeclared_identifiers = code.undeclared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">get_children(self):</span>
+        <span class="s3">return </span><span class="s1">self.nodes</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self._declared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self._undeclared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">is_ternary(self</span><span class="s3">, </span><span class="s1">keyword):</span>
+        <span class="s2">&quot;&quot;&quot;return true if the given keyword is a ternary keyword 
+        for this ControlLine&quot;&quot;&quot;</span>
+
+        <span class="s3">return </span><span class="s1">keyword </span><span class="s3">in </span><span class="s1">{</span>
+            <span class="s4">&quot;if&quot;</span><span class="s1">: set([</span><span class="s4">&quot;else&quot;</span><span class="s3">, </span><span class="s4">&quot;elif&quot;</span><span class="s1">])</span><span class="s3">,</span>
+            <span class="s4">&quot;try&quot;</span><span class="s1">: set([</span><span class="s4">&quot;except&quot;</span><span class="s3">, </span><span class="s4">&quot;finally&quot;</span><span class="s1">])</span><span class="s3">,</span>
+            <span class="s4">&quot;for&quot;</span><span class="s1">: set([</span><span class="s4">&quot;else&quot;</span><span class="s1">])</span><span class="s3">,</span>
+        <span class="s1">}.get(self.keyword</span><span class="s3">, </span><span class="s1">[])</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;ControlLine(%r, %r, %r, %r)&quot; </span><span class="s1">% (</span>
+            <span class="s1">self.keyword</span><span class="s3">,</span>
+            <span class="s1">self.text</span><span class="s3">,</span>
+            <span class="s1">self.isend</span><span class="s3">,</span>
+            <span class="s1">(self.lineno</span><span class="s3">, </span><span class="s1">self.pos)</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Text(Node):</span>
+
+    <span class="s2">&quot;&quot;&quot;defines plain text in the template.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">content</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(Text</span><span class="s3">, </span><span class="s1">self).__init__(**kwargs)</span>
+        <span class="s1">self.content = content</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;Text(%r, %r)&quot; </span><span class="s1">% (self.content</span><span class="s3">, </span><span class="s1">(self.lineno</span><span class="s3">, </span><span class="s1">self.pos))</span>
+
+
+<span class="s3">class </span><span class="s1">Code(Node):</span>
+
+    <span class="s2">&quot;&quot;&quot;defines a Python code block, either inline or module level. 
+ 
+    e.g.:: 
+ 
+        inline: 
+        &lt;% 
+            x = 12 
+        %&gt; 
+ 
+        module level: 
+        &lt;%! 
+            import logger 
+        %&gt; 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">text</span><span class="s3">, </span><span class="s1">ismodule</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(Code</span><span class="s3">, </span><span class="s1">self).__init__(**kwargs)</span>
+        <span class="s1">self.text = text</span>
+        <span class="s1">self.ismodule = ismodule</span>
+        <span class="s1">self.code = ast.PythonCode(text</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.code.declared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.code.undeclared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;Code(%r, %r, %r)&quot; </span><span class="s1">% (</span>
+            <span class="s1">self.text</span><span class="s3">,</span>
+            <span class="s1">self.ismodule</span><span class="s3">,</span>
+            <span class="s1">(self.lineno</span><span class="s3">, </span><span class="s1">self.pos)</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Comment(Node):</span>
+
+    <span class="s2">&quot;&quot;&quot;defines a comment line. 
+ 
+    # this is a comment 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">text</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(Comment</span><span class="s3">, </span><span class="s1">self).__init__(**kwargs)</span>
+        <span class="s1">self.text = text</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;Comment(%r, %r)&quot; </span><span class="s1">% (self.text</span><span class="s3">, </span><span class="s1">(self.lineno</span><span class="s3">, </span><span class="s1">self.pos))</span>
+
+
+<span class="s3">class </span><span class="s1">Expression(Node):</span>
+
+    <span class="s2">&quot;&quot;&quot;defines an inline expression. 
+ 
+    ${x+y} 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">text</span><span class="s3">, </span><span class="s1">escapes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(Expression</span><span class="s3">, </span><span class="s1">self).__init__(**kwargs)</span>
+        <span class="s1">self.text = text</span>
+        <span class="s1">self.escapes = escapes</span>
+        <span class="s1">self.escapes_code = ast.ArgumentList(escapes</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+        <span class="s1">self.code = ast.PythonCode(text</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">[]</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s0"># TODO: make the &quot;filter&quot; shortcut list configurable at parse/gen time</span>
+        <span class="s3">return </span><span class="s1">self.code.undeclared_identifiers.union(</span>
+            <span class="s1">self.escapes_code.undeclared_identifiers.difference(</span>
+                <span class="s1">set(filters.DEFAULT_ESCAPES.keys())</span>
+            <span class="s1">)</span>
+        <span class="s1">).difference(self.code.declared_identifiers)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;Expression(%r, %r, %r)&quot; </span><span class="s1">% (</span>
+            <span class="s1">self.text</span><span class="s3">,</span>
+            <span class="s1">self.escapes_code.args</span><span class="s3">,</span>
+            <span class="s1">(self.lineno</span><span class="s3">, </span><span class="s1">self.pos)</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">_TagMeta(type):</span>
+
+    <span class="s2">&quot;&quot;&quot;metaclass to allow Tag to produce a subclass according to 
+    its keyword&quot;&quot;&quot;</span>
+
+    <span class="s1">_classmap = {}</span>
+
+    <span class="s3">def </span><span class="s1">__init__(cls</span><span class="s3">, </span><span class="s1">clsname</span><span class="s3">, </span><span class="s1">bases</span><span class="s3">, </span><span class="s1">dict_):</span>
+        <span class="s3">if </span><span class="s1">getattr(cls</span><span class="s3">, </span><span class="s4">&quot;__keyword__&quot;</span><span class="s3">, None</span><span class="s1">) </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s1">cls._classmap[cls.__keyword__] = cls</span>
+        <span class="s1">super(_TagMeta</span><span class="s3">, </span><span class="s1">cls).__init__(clsname</span><span class="s3">, </span><span class="s1">bases</span><span class="s3">, </span><span class="s1">dict_)</span>
+
+    <span class="s3">def </span><span class="s1">__call__(cls</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s3">if </span><span class="s4">&quot;:&quot; </span><span class="s3">in </span><span class="s1">keyword:</span>
+            <span class="s1">ns</span><span class="s3">, </span><span class="s1">defname = keyword.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+            <span class="s3">return </span><span class="s1">type.__call__(</span>
+                <span class="s1">CallNamespaceTag</span><span class="s3">, </span><span class="s1">ns</span><span class="s3">, </span><span class="s1">defname</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs</span>
+            <span class="s1">)</span>
+
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">cls = _TagMeta._classmap[keyword]</span>
+        <span class="s3">except </span><span class="s1">KeyError:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;No such tag: '%s'&quot; </span><span class="s1">% keyword</span><span class="s3">,</span>
+                <span class="s1">source=kwargs[</span><span class="s4">&quot;source&quot;</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">lineno=kwargs[</span><span class="s4">&quot;lineno&quot;</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">pos=kwargs[</span><span class="s4">&quot;pos&quot;</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">filename=kwargs[</span><span class="s4">&quot;filename&quot;</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">type.__call__(cls</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s3">class </span><span class="s1">Tag(compat.with_metaclass(_TagMeta</span><span class="s3">, </span><span class="s1">Node)):</span>
+    <span class="s2">&quot;&quot;&quot;abstract base class for tags. 
+ 
+    e.g.:: 
+ 
+        &lt;%sometag/&gt; 
+ 
+        &lt;%someothertag&gt; 
+            stuff 
+        &lt;/%someothertag&gt; 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">__keyword__ = </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">keyword</span><span class="s3">,</span>
+        <span class="s1">attributes</span><span class="s3">,</span>
+        <span class="s1">expressions</span><span class="s3">,</span>
+        <span class="s1">nonexpressions</span><span class="s3">,</span>
+        <span class="s1">required</span><span class="s3">,</span>
+        <span class="s1">**kwargs</span>
+    <span class="s1">):</span>
+        <span class="s2">r&quot;&quot;&quot;construct a new Tag instance. 
+ 
+        this constructor not called directly, and is only called 
+        by subclasses. 
+ 
+        :param keyword: the tag keyword 
+ 
+        :param attributes: raw dictionary of attribute key/value pairs 
+ 
+        :param expressions: a set of identifiers that are legal attributes, 
+         which can also contain embedded expressions 
+ 
+        :param nonexpressions: a set of identifiers that are legal 
+         attributes, which cannot contain embedded expressions 
+ 
+        :param \**kwargs: 
+         other arguments passed to the Node superclass (lineno, pos) 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">super(Tag</span><span class="s3">, </span><span class="s1">self).__init__(**kwargs)</span>
+        <span class="s1">self.keyword = keyword</span>
+        <span class="s1">self.attributes = attributes</span>
+        <span class="s1">self._parse_attributes(expressions</span><span class="s3">, </span><span class="s1">nonexpressions)</span>
+        <span class="s1">missing = [r </span><span class="s3">for </span><span class="s1">r </span><span class="s3">in </span><span class="s1">required </span><span class="s3">if </span><span class="s1">r </span><span class="s3">not in </span><span class="s1">self.parsed_attributes]</span>
+        <span class="s3">if </span><span class="s1">len(missing):</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;Missing attribute(s): %s&quot;</span>
+                <span class="s1">% </span><span class="s4">&quot;,&quot;</span><span class="s1">.join([repr(m) </span><span class="s3">for </span><span class="s1">m </span><span class="s3">in </span><span class="s1">missing])</span><span class="s3">,</span>
+                <span class="s1">**self.exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s1">self.parent = </span><span class="s3">None</span>
+        <span class="s1">self.nodes = []</span>
+
+    <span class="s3">def </span><span class="s1">is_root(self):</span>
+        <span class="s3">return </span><span class="s1">self.parent </span><span class="s3">is None</span>
+
+    <span class="s3">def </span><span class="s1">get_children(self):</span>
+        <span class="s3">return </span><span class="s1">self.nodes</span>
+
+    <span class="s3">def </span><span class="s1">_parse_attributes(self</span><span class="s3">, </span><span class="s1">expressions</span><span class="s3">, </span><span class="s1">nonexpressions):</span>
+        <span class="s1">undeclared_identifiers = set()</span>
+        <span class="s1">self.parsed_attributes = {}</span>
+        <span class="s3">for </span><span class="s1">key </span><span class="s3">in </span><span class="s1">self.attributes:</span>
+            <span class="s3">if </span><span class="s1">key </span><span class="s3">in </span><span class="s1">expressions:</span>
+                <span class="s1">expr = []</span>
+                <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">re.compile(</span><span class="s4">r&quot;(\${.+?})&quot;</span><span class="s3">, </span><span class="s1">re.S).split(</span>
+                    <span class="s1">self.attributes[key]</span>
+                <span class="s1">):</span>
+                    <span class="s1">m = re.compile(</span><span class="s4">r&quot;^\${(.+?)}$&quot;</span><span class="s3">, </span><span class="s1">re.S).match(x)</span>
+                    <span class="s3">if </span><span class="s1">m:</span>
+                        <span class="s1">code = ast.PythonCode(</span>
+                            <span class="s1">m.group(</span><span class="s5">1</span><span class="s1">).rstrip()</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+                        <span class="s1">)</span>
+                        <span class="s0"># we aren't discarding &quot;declared_identifiers&quot; here,</span>
+                        <span class="s0"># which we do so that list comprehension-declared</span>
+                        <span class="s0"># variables aren't counted.   As yet can't find a</span>
+                        <span class="s0"># condition that requires it here.</span>
+                        <span class="s1">undeclared_identifiers = undeclared_identifiers.union(</span>
+                            <span class="s1">code.undeclared_identifiers</span>
+                        <span class="s1">)</span>
+                        <span class="s1">expr.append(</span><span class="s4">&quot;(%s)&quot; </span><span class="s1">% m.group(</span><span class="s5">1</span><span class="s1">))</span>
+                    <span class="s3">else</span><span class="s1">:</span>
+                        <span class="s3">if </span><span class="s1">x:</span>
+                            <span class="s1">expr.append(repr(x))</span>
+                <span class="s1">self.parsed_attributes[key] = </span><span class="s4">&quot; + &quot;</span><span class="s1">.join(expr) </span><span class="s3">or </span><span class="s1">repr(</span><span class="s4">&quot;&quot;</span><span class="s1">)</span>
+            <span class="s3">elif </span><span class="s1">key </span><span class="s3">in </span><span class="s1">nonexpressions:</span>
+                <span class="s3">if </span><span class="s1">re.search(</span><span class="s4">r&quot;\${.+?}&quot;</span><span class="s3">, </span><span class="s1">self.attributes[key]):</span>
+                    <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                        <span class="s4">&quot;Attibute '%s' in tag '%s' does not allow embedded &quot;</span>
+                        <span class="s4">&quot;expressions&quot; </span><span class="s1">% (key</span><span class="s3">, </span><span class="s1">self.keyword)</span><span class="s3">,</span>
+                        <span class="s1">**self.exception_kwargs</span>
+                    <span class="s1">)</span>
+                <span class="s1">self.parsed_attributes[key] = repr(self.attributes[key])</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                    <span class="s4">&quot;Invalid attribute for tag '%s': '%s'&quot;</span>
+                    <span class="s1">% (self.keyword</span><span class="s3">, </span><span class="s1">key)</span><span class="s3">,</span>
+                    <span class="s1">**self.exception_kwargs</span>
+                <span class="s1">)</span>
+        <span class="s1">self.expression_undeclared_identifiers = undeclared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">[]</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.expression_undeclared_identifiers</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">&quot;%s(%r, %s, %r, %r)&quot; </span><span class="s1">% (</span>
+            <span class="s1">self.__class__.__name__</span><span class="s3">,</span>
+            <span class="s1">self.keyword</span><span class="s3">,</span>
+            <span class="s1">util.sorted_dict_repr(self.attributes)</span><span class="s3">,</span>
+            <span class="s1">(self.lineno</span><span class="s3">, </span><span class="s1">self.pos)</span><span class="s3">,</span>
+            <span class="s1">self.nodes</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">IncludeTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;include&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(IncludeTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">,</span>
+            <span class="s1">attributes</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;file&quot;</span><span class="s3">, </span><span class="s4">&quot;import&quot;</span><span class="s3">, </span><span class="s4">&quot;args&quot;</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">()</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;file&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">self.page_args = ast.PythonCode(</span>
+            <span class="s4">&quot;__DUMMY(%s)&quot; </span><span class="s1">% attributes.get(</span><span class="s4">&quot;args&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">[]</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s1">identifiers = self.page_args.undeclared_identifiers.difference(</span>
+            <span class="s1">set([</span><span class="s4">&quot;__DUMMY&quot;</span><span class="s1">])</span>
+        <span class="s1">).difference(self.page_args.declared_identifiers)</span>
+        <span class="s3">return </span><span class="s1">identifiers.union(</span>
+            <span class="s1">super(IncludeTag</span><span class="s3">, </span><span class="s1">self).undeclared_identifiers()</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">NamespaceTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;namespace&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(NamespaceTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">,</span>
+            <span class="s1">attributes</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;file&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">&quot;inheritable&quot;</span><span class="s3">, </span><span class="s4">&quot;import&quot;</span><span class="s3">, </span><span class="s4">&quot;module&quot;</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">()</span><span class="s3">,</span>
+            <span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+
+        <span class="s1">self.name = attributes.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">&quot;__anon_%s&quot; </span><span class="s1">% hex(abs(id(self))))</span>
+        <span class="s3">if </span><span class="s4">&quot;name&quot; </span><span class="s3">not in </span><span class="s1">attributes </span><span class="s3">and </span><span class="s4">&quot;import&quot; </span><span class="s3">not in </span><span class="s1">attributes:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;'name' and/or 'import' attributes are required &quot;</span>
+                <span class="s4">&quot;for &lt;%namespace&gt;&quot;</span><span class="s3">,</span>
+                <span class="s1">**self.exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s3">if </span><span class="s4">&quot;file&quot; </span><span class="s3">in </span><span class="s1">attributes </span><span class="s3">and </span><span class="s4">&quot;module&quot; </span><span class="s3">in </span><span class="s1">attributes:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;&lt;%namespace&gt; may only have one of 'file' or 'module'&quot;</span><span class="s3">,</span>
+                <span class="s1">**self.exception_kwargs</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">[]</span>
+
+
+<span class="s3">class </span><span class="s1">TextTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;text&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(TextTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">()</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;filter&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">()</span><span class="s3">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">self.filter_args = ast.ArgumentList(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;filter&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.filter_args.undeclared_identifiers.difference(</span>
+            <span class="s1">filters.DEFAULT_ESCAPES.keys()</span>
+        <span class="s1">).union(self.expression_undeclared_identifiers)</span>
+
+
+<span class="s3">class </span><span class="s1">DefTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;def&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">expressions = [</span><span class="s4">&quot;buffered&quot;</span><span class="s3">, </span><span class="s4">&quot;cached&quot;</span><span class="s1">] + [</span>
+            <span class="s1">c </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">attributes </span><span class="s3">if </span><span class="s1">c.startswith(</span><span class="s4">&quot;cache_&quot;</span><span class="s1">)</span>
+        <span class="s1">]</span>
+
+        <span class="s1">super(DefTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">,</span>
+            <span class="s1">attributes</span><span class="s3">,</span>
+            <span class="s1">expressions</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">&quot;filter&quot;</span><span class="s3">, </span><span class="s4">&quot;decorator&quot;</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;name&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">name = attributes[</span><span class="s4">&quot;name&quot;</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">re.match(</span><span class="s4">r&quot;^[\w_]+$&quot;</span><span class="s3">, </span><span class="s1">name):</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;Missing parenthesis in %def&quot;</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s1">self.function_decl = ast.FunctionDecl(</span>
+            <span class="s4">&quot;def &quot; </span><span class="s1">+ name + </span><span class="s4">&quot;:pass&quot;</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">self.name = self.function_decl.funcname</span>
+        <span class="s1">self.decorator = attributes.get(</span><span class="s4">&quot;decorator&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">self.filter_args = ast.ArgumentList(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;filter&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s1">is_anonymous = </span><span class="s3">False</span>
+    <span class="s1">is_block = </span><span class="s3">False</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">funcname(self):</span>
+        <span class="s3">return </span><span class="s1">self.function_decl.funcname</span>
+
+    <span class="s3">def </span><span class="s1">get_argument_expressions(self</span><span class="s3">, </span><span class="s1">**kw):</span>
+        <span class="s3">return </span><span class="s1">self.function_decl.get_argument_expressions(**kw)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.function_decl.allargnames</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s1">res = []</span>
+        <span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">self.function_decl.defaults:</span>
+            <span class="s1">res += list(</span>
+                <span class="s1">ast.PythonCode(</span>
+                    <span class="s1">c</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+                <span class="s1">).undeclared_identifiers</span>
+            <span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">(</span>
+            <span class="s1">set(res)</span>
+            <span class="s1">.union(</span>
+                <span class="s1">self.filter_args.undeclared_identifiers.difference(</span>
+                    <span class="s1">filters.DEFAULT_ESCAPES.keys()</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+            <span class="s1">.union(self.expression_undeclared_identifiers)</span>
+            <span class="s1">.difference(self.function_decl.allargnames)</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">BlockTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;block&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">expressions = [</span><span class="s4">&quot;buffered&quot;</span><span class="s3">, </span><span class="s4">&quot;cached&quot;</span><span class="s3">, </span><span class="s4">&quot;args&quot;</span><span class="s1">] + [</span>
+            <span class="s1">c </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">attributes </span><span class="s3">if </span><span class="s1">c.startswith(</span><span class="s4">&quot;cache_&quot;</span><span class="s1">)</span>
+        <span class="s1">]</span>
+
+        <span class="s1">super(BlockTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">,</span>
+            <span class="s1">attributes</span><span class="s3">,</span>
+            <span class="s1">expressions</span><span class="s3">,</span>
+            <span class="s1">(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">&quot;filter&quot;</span><span class="s3">, </span><span class="s4">&quot;decorator&quot;</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">()</span><span class="s3">,</span>
+            <span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">name = attributes.get(</span><span class="s4">&quot;name&quot;</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">name </span><span class="s3">and not </span><span class="s1">re.match(</span><span class="s4">r&quot;^[\w_]+$&quot;</span><span class="s3">, </span><span class="s1">name):</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;%block may not specify an argument signature&quot;</span><span class="s3">,</span>
+                <span class="s1">**self.exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">name </span><span class="s3">and </span><span class="s1">attributes.get(</span><span class="s4">&quot;args&quot;</span><span class="s3">, None</span><span class="s1">):</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;Only named %blocks may specify args&quot;</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s1">self.body_decl = ast.FunctionArgs(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;args&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.decorator = attributes.get(</span><span class="s4">&quot;decorator&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">self.filter_args = ast.ArgumentList(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;filter&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s1">is_block = </span><span class="s3">True</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">is_anonymous(self):</span>
+        <span class="s3">return </span><span class="s1">self.name </span><span class="s3">is None</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">funcname(self):</span>
+        <span class="s3">return </span><span class="s1">self.name </span><span class="s3">or </span><span class="s4">&quot;__M_anon_%d&quot; </span><span class="s1">% (self.lineno</span><span class="s3">,</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">get_argument_expressions(self</span><span class="s3">, </span><span class="s1">**kw):</span>
+        <span class="s3">return </span><span class="s1">self.body_decl.get_argument_expressions(**kw)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.body_decl.allargnames</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">(</span>
+            <span class="s1">self.filter_args.undeclared_identifiers.difference(</span>
+                <span class="s1">filters.DEFAULT_ESCAPES.keys()</span>
+            <span class="s1">)</span>
+        <span class="s1">).union(self.expression_undeclared_identifiers)</span>
+
+
+<span class="s3">class </span><span class="s1">CallTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;call&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(CallTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;args&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;expr&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;expr&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">self.expression = attributes[</span><span class="s4">&quot;expr&quot;</span><span class="s1">]</span>
+        <span class="s1">self.code = ast.PythonCode(self.expression</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+        <span class="s1">self.body_decl = ast.FunctionArgs(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;args&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.code.declared_identifiers.union(self.body_decl.allargnames)</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.code.undeclared_identifiers.difference(</span>
+            <span class="s1">self.code.declared_identifiers</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">CallNamespaceTag(Tag):</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">namespace</span><span class="s3">, </span><span class="s1">defname</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(CallNamespaceTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">namespace + </span><span class="s4">&quot;:&quot; </span><span class="s1">+ defname</span><span class="s3">,</span>
+            <span class="s1">attributes</span><span class="s3">,</span>
+            <span class="s1">tuple(attributes.keys()) + (</span><span class="s4">&quot;args&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s1">()</span><span class="s3">,</span>
+            <span class="s1">()</span><span class="s3">,</span>
+            <span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+
+        <span class="s1">self.expression = </span><span class="s4">&quot;%s.%s(%s)&quot; </span><span class="s1">% (</span>
+            <span class="s1">namespace</span><span class="s3">,</span>
+            <span class="s1">defname</span><span class="s3">,</span>
+            <span class="s4">&quot;,&quot;</span><span class="s1">.join(</span>
+                <span class="s1">[</span>
+                    <span class="s4">&quot;%s=%s&quot; </span><span class="s1">% (k</span><span class="s3">, </span><span class="s1">v)</span>
+                    <span class="s3">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">self.parsed_attributes.items()</span>
+                    <span class="s3">if </span><span class="s1">k != </span><span class="s4">&quot;args&quot;</span>
+                <span class="s1">]</span>
+            <span class="s1">)</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self.code = ast.PythonCode(self.expression</span><span class="s3">, </span><span class="s1">**self.exception_kwargs)</span>
+        <span class="s1">self.body_decl = ast.FunctionArgs(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;args&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.code.declared_identifiers.union(self.body_decl.allargnames)</span>
+
+    <span class="s3">def </span><span class="s1">undeclared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.code.undeclared_identifiers.difference(</span>
+            <span class="s1">self.code.declared_identifiers</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">InheritTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;inherit&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(InheritTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;file&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">, </span><span class="s1">()</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;file&quot;</span><span class="s3">,</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">PageTag(Tag):</span>
+    <span class="s1">__keyword__ = </span><span class="s4">&quot;page&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">expressions = [</span>
+            <span class="s4">&quot;cached&quot;</span><span class="s3">,</span>
+            <span class="s4">&quot;args&quot;</span><span class="s3">,</span>
+            <span class="s4">&quot;expression_filter&quot;</span><span class="s3">,</span>
+            <span class="s4">&quot;enable_loop&quot;</span><span class="s3">,</span>
+        <span class="s1">] + [c </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">attributes </span><span class="s3">if </span><span class="s1">c.startswith(</span><span class="s4">&quot;cache_&quot;</span><span class="s1">)]</span>
+
+        <span class="s1">super(PageTag</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s1">keyword</span><span class="s3">, </span><span class="s1">attributes</span><span class="s3">, </span><span class="s1">expressions</span><span class="s3">, </span><span class="s1">()</span><span class="s3">, </span><span class="s1">()</span><span class="s3">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">self.body_decl = ast.FunctionArgs(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;args&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+        <span class="s1">self.filter_args = ast.ArgumentList(</span>
+            <span class="s1">attributes.get(</span><span class="s4">&quot;expression_filter&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s1">)</span><span class="s3">, </span><span class="s1">**self.exception_kwargs</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">declared_identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.body_decl.allargnames</span>
+</pre>
+</body>
+</html>

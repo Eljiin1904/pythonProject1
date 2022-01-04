@@ -1,0 +1,249 @@
+<html>
+<head>
+<title>OLMapWidget.js</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+OLMapWidget.js</font>
+</center></td></tr></table>
+<pre><span class="s0">/* global ol */</span>
+<span class="s2">'use strict'</span><span class="s1">;</span>
+<span class="s3">function </span><span class="s1">GeometryTypeControl(opt_options) {</span>
+    <span class="s0">// Map control to switch type when geometry type is unknown</span>
+    <span class="s1">const options = opt_options || {};</span>
+
+    <span class="s1">const element = document.createElement(</span><span class="s2">'div'</span><span class="s1">);</span>
+    <span class="s1">element.className = </span><span class="s2">'switch-type type-' </span><span class="s1">+ options.type + </span><span class="s2">' ol-control ol-unselectable'</span><span class="s1">;</span>
+    <span class="s3">if </span><span class="s1">(options.active) {</span>
+        <span class="s1">element.classList.add(</span><span class="s2">&quot;type-active&quot;</span><span class="s1">);</span>
+    <span class="s1">}</span>
+
+    <span class="s1">const self = </span><span class="s3">this</span><span class="s1">;</span>
+    <span class="s1">const switchType = </span><span class="s3">function</span><span class="s1">(e) {</span>
+        <span class="s1">e.preventDefault();</span>
+        <span class="s3">if </span><span class="s1">(options.widget.currentGeometryType !== self) {</span>
+            <span class="s1">options.widget.map.removeInteraction(options.widget.interactions.draw);</span>
+            <span class="s1">options.widget.interactions.draw = </span><span class="s3">new </span><span class="s1">ol.interaction.Draw({</span>
+                <span class="s1">features: options.widget.featureCollection,</span>
+                <span class="s1">type: options.type</span>
+            <span class="s1">});</span>
+            <span class="s1">options.widget.map.addInteraction(options.widget.interactions.draw);</span>
+            <span class="s1">options.widget.currentGeometryType.element.classList.remove(</span><span class="s2">'type-active'</span><span class="s1">);</span>
+            <span class="s1">options.widget.currentGeometryType = self;</span>
+            <span class="s1">element.classList.add(</span><span class="s2">&quot;type-active&quot;</span><span class="s1">);</span>
+        <span class="s1">}</span>
+    <span class="s1">};</span>
+
+    <span class="s1">element.addEventListener(</span><span class="s2">'click'</span><span class="s1">, switchType, </span><span class="s3">false</span><span class="s1">);</span>
+    <span class="s1">element.addEventListener(</span><span class="s2">'touchstart'</span><span class="s1">, switchType, </span><span class="s3">false</span><span class="s1">);</span>
+
+    <span class="s1">ol.control.Control.call(</span><span class="s3">this</span><span class="s1">, {</span>
+        <span class="s1">element: element</span>
+    <span class="s1">});</span>
+<span class="s1">};</span>
+<span class="s1">ol.inherits(GeometryTypeControl, ol.control.Control);</span>
+
+<span class="s0">// TODO: allow deleting individual features (#8972)</span>
+<span class="s1">{</span>
+    <span class="s1">const jsonFormat = </span><span class="s3">new </span><span class="s1">ol.format.GeoJSON();</span>
+
+    <span class="s3">function </span><span class="s1">MapWidget(options) {</span>
+        <span class="s3">this</span><span class="s1">.map = </span><span class="s3">null</span><span class="s1">;</span>
+        <span class="s3">this</span><span class="s1">.interactions = {draw: </span><span class="s3">null</span><span class="s1">, modify: </span><span class="s3">null</span><span class="s1">};</span>
+        <span class="s3">this</span><span class="s1">.typeChoices = </span><span class="s3">false</span><span class="s1">;</span>
+        <span class="s3">this</span><span class="s1">.ready = </span><span class="s3">false</span><span class="s1">;</span>
+
+        <span class="s0">// Default options</span>
+        <span class="s3">this</span><span class="s1">.options = {</span>
+            <span class="s1">default_lat: </span><span class="s4">0</span><span class="s1">,</span>
+            <span class="s1">default_lon: </span><span class="s4">0</span><span class="s1">,</span>
+            <span class="s1">default_zoom: </span><span class="s4">12</span><span class="s1">,</span>
+            <span class="s1">is_collection: options.geom_name.includes(</span><span class="s2">'Multi'</span><span class="s1">) || options.geom_name.includes(</span><span class="s2">'Collection'</span><span class="s1">)</span>
+        <span class="s1">};</span>
+
+        <span class="s0">// Altering using user-provided options</span>
+        <span class="s3">for </span><span class="s1">(const property </span><span class="s3">in </span><span class="s1">options) {</span>
+            <span class="s3">if </span><span class="s1">(options.hasOwnProperty(property)) {</span>
+                <span class="s3">this</span><span class="s1">.options[property] = options[property];</span>
+            <span class="s1">}</span>
+        <span class="s1">}</span>
+        <span class="s3">if </span><span class="s1">(!options.base_layer) {</span>
+            <span class="s3">this</span><span class="s1">.options.base_layer = </span><span class="s3">new </span><span class="s1">ol.layer.Tile({source: </span><span class="s3">new </span><span class="s1">ol.source.OSM()});</span>
+        <span class="s1">}</span>
+
+        <span class="s3">this</span><span class="s1">.map = </span><span class="s3">this</span><span class="s1">.createMap();</span>
+        <span class="s3">this</span><span class="s1">.featureCollection = </span><span class="s3">new </span><span class="s1">ol.Collection();</span>
+        <span class="s3">this</span><span class="s1">.featureOverlay = </span><span class="s3">new </span><span class="s1">ol.layer.Vector({</span>
+            <span class="s1">map: </span><span class="s3">this</span><span class="s1">.map,</span>
+            <span class="s1">source: </span><span class="s3">new </span><span class="s1">ol.source.Vector({</span>
+                <span class="s1">features: </span><span class="s3">this</span><span class="s1">.featureCollection,</span>
+                <span class="s1">useSpatialIndex: </span><span class="s3">false </span><span class="s0">// improve performance</span>
+            <span class="s1">}),</span>
+            <span class="s1">updateWhileAnimating: </span><span class="s3">true</span><span class="s1">, </span><span class="s0">// optional, for instant visual feedback</span>
+            <span class="s1">updateWhileInteracting: </span><span class="s3">true </span><span class="s0">// optional, for instant visual feedback</span>
+        <span class="s1">});</span>
+
+        <span class="s0">// Populate and set handlers for the feature container</span>
+        <span class="s1">const self = </span><span class="s3">this</span><span class="s1">;</span>
+        <span class="s3">this</span><span class="s1">.featureCollection.on(</span><span class="s2">'add'</span><span class="s1">, </span><span class="s3">function</span><span class="s1">(event) {</span>
+            <span class="s1">const feature = event.element;</span>
+            <span class="s1">feature.on(</span><span class="s2">'change'</span><span class="s1">, </span><span class="s3">function</span><span class="s1">() {</span>
+                <span class="s1">self.serializeFeatures();</span>
+            <span class="s1">});</span>
+            <span class="s3">if </span><span class="s1">(self.ready) {</span>
+                <span class="s1">self.serializeFeatures();</span>
+                <span class="s3">if </span><span class="s1">(!self.options.is_collection) {</span>
+                    <span class="s1">self.disableDrawing(); </span><span class="s0">// Only allow one feature at a time</span>
+                <span class="s1">}</span>
+            <span class="s1">}</span>
+        <span class="s1">});</span>
+
+        <span class="s1">const initial_value = document.getElementById(</span><span class="s3">this</span><span class="s1">.options.id).value;</span>
+        <span class="s3">if </span><span class="s1">(initial_value) {</span>
+            <span class="s1">const features = jsonFormat.readFeatures(</span><span class="s2">'{&quot;type&quot;: &quot;Feature&quot;, &quot;geometry&quot;: ' </span><span class="s1">+ initial_value + </span><span class="s2">'}'</span><span class="s1">);</span>
+            <span class="s1">const extent = ol.extent.createEmpty();</span>
+            <span class="s1">features.forEach(</span><span class="s3">function</span><span class="s1">(feature) {</span>
+                <span class="s3">this</span><span class="s1">.featureOverlay.getSource().addFeature(feature);</span>
+                <span class="s1">ol.extent.extend(extent, feature.getGeometry().getExtent());</span>
+            <span class="s1">}, </span><span class="s3">this</span><span class="s1">);</span>
+            <span class="s0">// Center/zoom the map</span>
+            <span class="s3">this</span><span class="s1">.map.getView().fit(extent, {maxZoom: </span><span class="s3">this</span><span class="s1">.options.default_zoom});</span>
+        <span class="s1">} </span><span class="s3">else </span><span class="s1">{</span>
+            <span class="s3">this</span><span class="s1">.map.getView().setCenter(</span><span class="s3">this</span><span class="s1">.defaultCenter());</span>
+        <span class="s1">}</span>
+        <span class="s3">this</span><span class="s1">.createInteractions();</span>
+        <span class="s3">if </span><span class="s1">(initial_value &amp;&amp; !</span><span class="s3">this</span><span class="s1">.options.is_collection) {</span>
+            <span class="s3">this</span><span class="s1">.disableDrawing();</span>
+        <span class="s1">}</span>
+        <span class="s3">this</span><span class="s1">.ready = </span><span class="s3">true</span><span class="s1">;</span>
+    <span class="s1">}</span>
+
+    <span class="s1">MapWidget.prototype.createMap = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s1">const map = </span><span class="s3">new </span><span class="s1">ol.Map({</span>
+            <span class="s1">target: </span><span class="s3">this</span><span class="s1">.options.map_id,</span>
+            <span class="s1">layers: [</span><span class="s3">this</span><span class="s1">.options.base_layer],</span>
+            <span class="s1">view: </span><span class="s3">new </span><span class="s1">ol.View({</span>
+                <span class="s1">zoom: </span><span class="s3">this</span><span class="s1">.options.default_zoom</span>
+            <span class="s1">})</span>
+        <span class="s1">});</span>
+        <span class="s3">return </span><span class="s1">map;</span>
+    <span class="s1">};</span>
+
+    <span class="s1">MapWidget.prototype.createInteractions = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s0">// Initialize the modify interaction</span>
+        <span class="s3">this</span><span class="s1">.interactions.modify = </span><span class="s3">new </span><span class="s1">ol.interaction.Modify({</span>
+            <span class="s1">features: </span><span class="s3">this</span><span class="s1">.featureCollection,</span>
+            <span class="s1">deleteCondition: </span><span class="s3">function</span><span class="s1">(event) {</span>
+                <span class="s3">return </span><span class="s1">ol.events.condition.shiftKeyOnly(event) &amp;&amp;</span>
+                    <span class="s1">ol.events.condition.singleClick(event);</span>
+            <span class="s1">}</span>
+        <span class="s1">});</span>
+
+        <span class="s0">// Initialize the draw interaction</span>
+        <span class="s1">let geomType = </span><span class="s3">this</span><span class="s1">.options.geom_name;</span>
+        <span class="s3">if </span><span class="s1">(geomType === </span><span class="s2">&quot;Geometry&quot; </span><span class="s1">|| geomType === </span><span class="s2">&quot;GeometryCollection&quot;</span><span class="s1">) {</span>
+            <span class="s0">// Default to Point, but create icons to switch type</span>
+            <span class="s1">geomType = </span><span class="s2">&quot;Point&quot;</span><span class="s1">;</span>
+            <span class="s3">this</span><span class="s1">.currentGeometryType = </span><span class="s3">new </span><span class="s1">GeometryTypeControl({widget: </span><span class="s3">this</span><span class="s1">, type: </span><span class="s2">&quot;Point&quot;</span><span class="s1">, active: </span><span class="s3">true</span><span class="s1">});</span>
+            <span class="s3">this</span><span class="s1">.map.addControl(</span><span class="s3">this</span><span class="s1">.currentGeometryType);</span>
+            <span class="s3">this</span><span class="s1">.map.addControl(</span><span class="s3">new </span><span class="s1">GeometryTypeControl({widget: </span><span class="s3">this</span><span class="s1">, type: </span><span class="s2">&quot;LineString&quot;</span><span class="s1">, active: </span><span class="s3">false</span><span class="s1">}));</span>
+            <span class="s3">this</span><span class="s1">.map.addControl(</span><span class="s3">new </span><span class="s1">GeometryTypeControl({widget: </span><span class="s3">this</span><span class="s1">, type: </span><span class="s2">&quot;Polygon&quot;</span><span class="s1">, active: </span><span class="s3">false</span><span class="s1">}));</span>
+            <span class="s3">this</span><span class="s1">.typeChoices = </span><span class="s3">true</span><span class="s1">;</span>
+        <span class="s1">}</span>
+        <span class="s3">this</span><span class="s1">.interactions.draw = </span><span class="s3">new </span><span class="s1">ol.interaction.Draw({</span>
+            <span class="s1">features: </span><span class="s3">this</span><span class="s1">.featureCollection,</span>
+            <span class="s1">type: geomType</span>
+        <span class="s1">});</span>
+
+        <span class="s3">this</span><span class="s1">.map.addInteraction(</span><span class="s3">this</span><span class="s1">.interactions.draw);</span>
+        <span class="s3">this</span><span class="s1">.map.addInteraction(</span><span class="s3">this</span><span class="s1">.interactions.modify);</span>
+    <span class="s1">};</span>
+
+    <span class="s1">MapWidget.prototype.defaultCenter = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s1">const center = [</span><span class="s3">this</span><span class="s1">.options.default_lon, </span><span class="s3">this</span><span class="s1">.options.default_lat];</span>
+        <span class="s3">if </span><span class="s1">(</span><span class="s3">this</span><span class="s1">.options.map_srid) {</span>
+            <span class="s3">return </span><span class="s1">ol.proj.transform(center, </span><span class="s2">'EPSG:4326'</span><span class="s1">, </span><span class="s3">this</span><span class="s1">.map.getView().getProjection());</span>
+        <span class="s1">}</span>
+        <span class="s3">return </span><span class="s1">center;</span>
+    <span class="s1">};</span>
+
+    <span class="s1">MapWidget.prototype.enableDrawing = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s3">this</span><span class="s1">.interactions.draw.setActive(</span><span class="s3">true</span><span class="s1">);</span>
+        <span class="s3">if </span><span class="s1">(</span><span class="s3">this</span><span class="s1">.typeChoices) {</span>
+            <span class="s0">// Show geometry type icons</span>
+            <span class="s1">const divs = document.getElementsByClassName(</span><span class="s2">&quot;switch-type&quot;</span><span class="s1">);</span>
+            <span class="s3">for </span><span class="s1">(let i = </span><span class="s4">0</span><span class="s1">; i !== divs.length; i++) {</span>
+                <span class="s1">divs[i].style.visibility = </span><span class="s2">&quot;visible&quot;</span><span class="s1">;</span>
+            <span class="s1">}</span>
+        <span class="s1">}</span>
+    <span class="s1">};</span>
+
+    <span class="s1">MapWidget.prototype.disableDrawing = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s3">if </span><span class="s1">(</span><span class="s3">this</span><span class="s1">.interactions.draw) {</span>
+            <span class="s3">this</span><span class="s1">.interactions.draw.setActive(</span><span class="s3">false</span><span class="s1">);</span>
+            <span class="s3">if </span><span class="s1">(</span><span class="s3">this</span><span class="s1">.typeChoices) {</span>
+                <span class="s0">// Hide geometry type icons</span>
+                <span class="s1">const divs = document.getElementsByClassName(</span><span class="s2">&quot;switch-type&quot;</span><span class="s1">);</span>
+                <span class="s3">for </span><span class="s1">(let i = </span><span class="s4">0</span><span class="s1">; i !== divs.length; i++) {</span>
+                    <span class="s1">divs[i].style.visibility = </span><span class="s2">&quot;hidden&quot;</span><span class="s1">;</span>
+                <span class="s1">}</span>
+            <span class="s1">}</span>
+        <span class="s1">}</span>
+    <span class="s1">};</span>
+
+    <span class="s1">MapWidget.prototype.clearFeatures = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s3">this</span><span class="s1">.featureCollection.clear();</span>
+        <span class="s0">// Empty textarea widget</span>
+        <span class="s1">document.getElementById(</span><span class="s3">this</span><span class="s1">.options.id).value = </span><span class="s2">''</span><span class="s1">;</span>
+        <span class="s3">this</span><span class="s1">.enableDrawing();</span>
+    <span class="s1">};</span>
+
+    <span class="s1">MapWidget.prototype.serializeFeatures = </span><span class="s3">function</span><span class="s1">() {</span>
+        <span class="s0">// Three use cases: GeometryCollection, multigeometries, and single geometry</span>
+        <span class="s1">let geometry = </span><span class="s3">null</span><span class="s1">;</span>
+        <span class="s1">const features = </span><span class="s3">this</span><span class="s1">.featureOverlay.getSource().getFeatures();</span>
+        <span class="s3">if </span><span class="s1">(</span><span class="s3">this</span><span class="s1">.options.is_collection) {</span>
+            <span class="s3">if </span><span class="s1">(</span><span class="s3">this</span><span class="s1">.options.geom_name === </span><span class="s2">&quot;GeometryCollection&quot;</span><span class="s1">) {</span>
+                <span class="s1">const geometries = [];</span>
+                <span class="s3">for </span><span class="s1">(let i = </span><span class="s4">0</span><span class="s1">; i &lt; features.length; i++) {</span>
+                    <span class="s1">geometries.push(features[i].getGeometry());</span>
+                <span class="s1">}</span>
+                <span class="s1">geometry = </span><span class="s3">new </span><span class="s1">ol.geom.GeometryCollection(geometries);</span>
+            <span class="s1">} </span><span class="s3">else </span><span class="s1">{</span>
+                <span class="s1">geometry = features[</span><span class="s4">0</span><span class="s1">].getGeometry().clone();</span>
+                <span class="s3">for </span><span class="s1">(let j = </span><span class="s4">1</span><span class="s1">; j &lt; features.length; j++) {</span>
+                    <span class="s3">switch </span><span class="s1">(geometry.getType()) {</span>
+                    <span class="s3">case </span><span class="s2">&quot;MultiPoint&quot;</span><span class="s1">:</span>
+                        <span class="s1">geometry.appendPoint(features[j].getGeometry().getPoint(</span><span class="s4">0</span><span class="s1">));</span>
+                        <span class="s3">break</span><span class="s1">;</span>
+                    <span class="s3">case </span><span class="s2">&quot;MultiLineString&quot;</span><span class="s1">:</span>
+                        <span class="s1">geometry.appendLineString(features[j].getGeometry().getLineString(</span><span class="s4">0</span><span class="s1">));</span>
+                        <span class="s3">break</span><span class="s1">;</span>
+                    <span class="s3">case </span><span class="s2">&quot;MultiPolygon&quot;</span><span class="s1">:</span>
+                        <span class="s1">geometry.appendPolygon(features[j].getGeometry().getPolygon(</span><span class="s4">0</span><span class="s1">));</span>
+                    <span class="s1">}</span>
+                <span class="s1">}</span>
+            <span class="s1">}</span>
+        <span class="s1">} </span><span class="s3">else </span><span class="s1">{</span>
+            <span class="s3">if </span><span class="s1">(features[</span><span class="s4">0</span><span class="s1">]) {</span>
+                <span class="s1">geometry = features[</span><span class="s4">0</span><span class="s1">].getGeometry();</span>
+            <span class="s1">}</span>
+        <span class="s1">}</span>
+        <span class="s1">document.getElementById(</span><span class="s3">this</span><span class="s1">.options.id).value = jsonFormat.writeGeometry(geometry);</span>
+    <span class="s1">};</span>
+
+    <span class="s1">window.MapWidget = MapWidget;</span>
+<span class="s1">}</span>
+</pre>
+</body>
+</html>

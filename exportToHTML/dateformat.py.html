@@ -1,0 +1,349 @@
+<html>
+<head>
+<title>dateformat.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dateformat.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+PHP date() style date formatting 
+See http://www.php.net/date for format strings 
+ 
+Usage: 
+&gt;&gt;&gt; import datetime 
+&gt;&gt;&gt; d = datetime.datetime.now() 
+&gt;&gt;&gt; df = DateFormat(d) 
+&gt;&gt;&gt; print(df.format('jS F Y H:i')) 
+7th October 2003 11:39 
+&gt;&gt;&gt; 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">calendar</span>
+<span class="s2">import </span><span class="s1">datetime</span>
+<span class="s2">from </span><span class="s1">email.utils </span><span class="s2">import </span><span class="s1">format_datetime </span><span class="s2">as </span><span class="s1">format_datetime_rfc5322</span>
+
+<span class="s2">from </span><span class="s1">django.utils.dates </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">MONTHS</span><span class="s2">, </span><span class="s1">MONTHS_3</span><span class="s2">, </span><span class="s1">MONTHS_ALT</span><span class="s2">, </span><span class="s1">MONTHS_AP</span><span class="s2">, </span><span class="s1">WEEKDAYS</span><span class="s2">, </span><span class="s1">WEEKDAYS_ABBR</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">django.utils.regex_helper </span><span class="s2">import </span><span class="s1">_lazy_re_compile</span>
+<span class="s2">from </span><span class="s1">django.utils.timezone </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">_datetime_ambiguous_or_imaginary</span><span class="s2">, </span><span class="s1">get_default_timezone</span><span class="s2">, </span><span class="s1">is_naive</span><span class="s2">,</span>
+    <span class="s1">make_aware</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">django.utils.translation </span><span class="s2">import </span><span class="s1">gettext </span><span class="s2">as </span><span class="s1">_</span>
+
+<span class="s1">re_formatchars = _lazy_re_compile(</span><span class="s3">r'(?&lt;!\\)([aAbcdDeEfFgGhHiIjlLmMnNoOPrsStTUuwWyYzZ])'</span><span class="s1">)</span>
+<span class="s1">re_escaped = _lazy_re_compile(</span><span class="s3">r'\\(.)'</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">Formatter:</span>
+    <span class="s2">def </span><span class="s1">format(self</span><span class="s2">, </span><span class="s1">formatstr):</span>
+        <span class="s1">pieces = []</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">piece </span><span class="s2">in </span><span class="s1">enumerate(re_formatchars.split(str(formatstr))):</span>
+            <span class="s2">if </span><span class="s1">i % </span><span class="s4">2</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s1">type(self.data) </span><span class="s2">is </span><span class="s1">datetime.date </span><span class="s2">and </span><span class="s1">hasattr(TimeFormat</span><span class="s2">, </span><span class="s1">piece):</span>
+                    <span class="s2">raise </span><span class="s1">TypeError(</span>
+                        <span class="s3">&quot;The format for date objects may not contain &quot;</span>
+                        <span class="s3">&quot;time-related format specifiers (found '%s').&quot; </span><span class="s1">% piece</span>
+                    <span class="s1">)</span>
+                <span class="s1">pieces.append(str(getattr(self</span><span class="s2">, </span><span class="s1">piece)()))</span>
+            <span class="s2">elif </span><span class="s1">piece:</span>
+                <span class="s1">pieces.append(re_escaped.sub(</span><span class="s3">r'\1'</span><span class="s2">, </span><span class="s1">piece))</span>
+        <span class="s2">return </span><span class="s3">''</span><span class="s1">.join(pieces)</span>
+
+
+<span class="s2">class </span><span class="s1">TimeFormat(Formatter):</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">obj):</span>
+        <span class="s1">self.data = obj</span>
+        <span class="s1">self.timezone = </span><span class="s2">None</span>
+
+        <span class="s5"># We only support timezone when formatting datetime objects,</span>
+        <span class="s5"># not date objects (timezone information not appropriate),</span>
+        <span class="s5"># or time objects (against established django policy).</span>
+        <span class="s2">if </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">datetime.datetime):</span>
+            <span class="s2">if </span><span class="s1">is_naive(obj):</span>
+                <span class="s1">self.timezone = get_default_timezone()</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">self.timezone = obj.tzinfo</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">_no_timezone_or_datetime_is_ambiguous_or_imaginary(self):</span>
+        <span class="s2">return </span><span class="s1">(</span>
+            <span class="s2">not </span><span class="s1">self.timezone </span><span class="s2">or</span>
+            <span class="s1">_datetime_ambiguous_or_imaginary(self.data</span><span class="s2">, </span><span class="s1">self.timezone)</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">a(self):</span>
+        <span class="s0">&quot;'a.m.' or 'p.m.'&quot;</span>
+        <span class="s2">if </span><span class="s1">self.data.hour &gt; </span><span class="s4">11</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_(</span><span class="s3">'p.m.'</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">_(</span><span class="s3">'a.m.'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">A(self):</span>
+        <span class="s0">&quot;'AM' or 'PM'&quot;</span>
+        <span class="s2">if </span><span class="s1">self.data.hour &gt; </span><span class="s4">11</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_(</span><span class="s3">'PM'</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">_(</span><span class="s3">'AM'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">e(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Timezone name. 
+ 
+        If timezone information is not available, return an empty string. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self.timezone:</span>
+            <span class="s2">return </span><span class="s3">&quot;&quot;</span>
+
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">hasattr(self.data</span><span class="s2">, </span><span class="s3">'tzinfo'</span><span class="s1">) </span><span class="s2">and </span><span class="s1">self.data.tzinfo:</span>
+                <span class="s2">return </span><span class="s1">self.data.tzname() </span><span class="s2">or </span><span class="s3">''</span>
+        <span class="s2">except </span><span class="s1">NotImplementedError:</span>
+            <span class="s2">pass</span>
+        <span class="s2">return </span><span class="s3">&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">f(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Time, in 12-hour hours and minutes, with minutes left off if they're 
+        zero. 
+        Examples: '1', '1:30', '2:05', '2' 
+        Proprietary extension. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">hour = self.data.hour % </span><span class="s4">12 </span><span class="s2">or </span><span class="s4">12</span>
+        <span class="s1">minute = self.data.minute</span>
+        <span class="s2">return </span><span class="s3">'%d:%02d' </span><span class="s1">% (hour</span><span class="s2">, </span><span class="s1">minute) </span><span class="s2">if </span><span class="s1">minute </span><span class="s2">else </span><span class="s1">hour</span>
+
+    <span class="s2">def </span><span class="s1">g(self):</span>
+        <span class="s0">&quot;Hour, 12-hour format without leading zeros; i.e. '1' to '12'&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.hour % </span><span class="s4">12 </span><span class="s2">or </span><span class="s4">12</span>
+
+    <span class="s2">def </span><span class="s1">G(self):</span>
+        <span class="s0">&quot;Hour, 24-hour format without leading zeros; i.e. '0' to '23'&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.hour</span>
+
+    <span class="s2">def </span><span class="s1">h(self):</span>
+        <span class="s0">&quot;Hour, 12-hour format; i.e. '01' to '12'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% (self.data.hour % </span><span class="s4">12 </span><span class="s2">or </span><span class="s4">12</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">H(self):</span>
+        <span class="s0">&quot;Hour, 24-hour format; i.e. '00' to '23'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% self.data.hour</span>
+
+    <span class="s2">def </span><span class="s1">i(self):</span>
+        <span class="s0">&quot;Minutes; i.e. '00' to '59'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% self.data.minute</span>
+
+    <span class="s2">def </span><span class="s1">O(self):  </span><span class="s5"># NOQA: E743, E741</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Difference to Greenwich time in hours; e.g. '+0200', '-0430'. 
+ 
+        If timezone information is not available, return an empty string. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._no_timezone_or_datetime_is_ambiguous_or_imaginary:</span>
+            <span class="s2">return </span><span class="s3">&quot;&quot;</span>
+
+        <span class="s1">seconds = self.Z()</span>
+        <span class="s1">sign = </span><span class="s3">'-' </span><span class="s2">if </span><span class="s1">seconds &lt; </span><span class="s4">0 </span><span class="s2">else </span><span class="s3">'+'</span>
+        <span class="s1">seconds = abs(seconds)</span>
+        <span class="s2">return </span><span class="s3">&quot;%s%02d%02d&quot; </span><span class="s1">% (sign</span><span class="s2">, </span><span class="s1">seconds // </span><span class="s4">3600</span><span class="s2">, </span><span class="s1">(seconds // </span><span class="s4">60</span><span class="s1">) % </span><span class="s4">60</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">P(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Time, in 12-hour hours, minutes and 'a.m.'/'p.m.', with minutes left off 
+        if they're zero and the strings 'midnight' and 'noon' if appropriate. 
+        Examples: '1 a.m.', '1:30 p.m.', 'midnight', 'noon', '12:30 p.m.' 
+        Proprietary extension. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self.data.minute == </span><span class="s4">0 </span><span class="s2">and </span><span class="s1">self.data.hour == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_(</span><span class="s3">'midnight'</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">self.data.minute == </span><span class="s4">0 </span><span class="s2">and </span><span class="s1">self.data.hour == </span><span class="s4">12</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">_(</span><span class="s3">'noon'</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s3">'%s %s' </span><span class="s1">% (self.f()</span><span class="s2">, </span><span class="s1">self.a())</span>
+
+    <span class="s2">def </span><span class="s1">s(self):</span>
+        <span class="s0">&quot;Seconds; i.e. '00' to '59'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% self.data.second</span>
+
+    <span class="s2">def </span><span class="s1">T(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Time zone of this machine; e.g. 'EST' or 'MDT'. 
+ 
+        If timezone information is not available, return an empty string. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._no_timezone_or_datetime_is_ambiguous_or_imaginary:</span>
+            <span class="s2">return </span><span class="s3">&quot;&quot;</span>
+
+        <span class="s2">return </span><span class="s1">str(self.timezone.tzname(self.data))</span>
+
+    <span class="s2">def </span><span class="s1">u(self):</span>
+        <span class="s0">&quot;Microseconds; i.e. '000000' to '999999'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%06d' </span><span class="s1">% self.data.microsecond</span>
+
+    <span class="s2">def </span><span class="s1">Z(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Time zone offset in seconds (i.e. '-43200' to '43200'). The offset for 
+        timezones west of UTC is always negative, and for those east of UTC is 
+        always positive. 
+ 
+        If timezone information is not available, return an empty string. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">self._no_timezone_or_datetime_is_ambiguous_or_imaginary:</span>
+            <span class="s2">return </span><span class="s3">&quot;&quot;</span>
+
+        <span class="s1">offset = self.timezone.utcoffset(self.data)</span>
+
+        <span class="s5"># `offset` is a datetime.timedelta. For negative values (to the west of</span>
+        <span class="s5"># UTC) only days can be negative (days=-1) and seconds are always</span>
+        <span class="s5"># positive. e.g. UTC-1 -&gt; timedelta(days=-1, seconds=82800, microseconds=0)</span>
+        <span class="s5"># Positive offsets have days=0</span>
+        <span class="s2">return </span><span class="s1">offset.days * </span><span class="s4">86400 </span><span class="s1">+ offset.seconds</span>
+
+
+<span class="s2">class </span><span class="s1">DateFormat(TimeFormat):</span>
+    <span class="s2">def </span><span class="s1">b(self):</span>
+        <span class="s0">&quot;Month, textual, 3 letters, lowercase; e.g. 'jan'&quot;</span>
+        <span class="s2">return </span><span class="s1">MONTHS_3[self.data.month]</span>
+
+    <span class="s2">def </span><span class="s1">c(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        ISO 8601 Format 
+        Example : '2008-01-02T10:30:00.000123' 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.isoformat()</span>
+
+    <span class="s2">def </span><span class="s1">d(self):</span>
+        <span class="s0">&quot;Day of the month, 2 digits with leading zeros; i.e. '01' to '31'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% self.data.day</span>
+
+    <span class="s2">def </span><span class="s1">D(self):</span>
+        <span class="s0">&quot;Day of the week, textual, 3 letters; e.g. 'Fri'&quot;</span>
+        <span class="s2">return </span><span class="s1">WEEKDAYS_ABBR[self.data.weekday()]</span>
+
+    <span class="s2">def </span><span class="s1">E(self):</span>
+        <span class="s0">&quot;Alternative month names as required by some locales. Proprietary extension.&quot;</span>
+        <span class="s2">return </span><span class="s1">MONTHS_ALT[self.data.month]</span>
+
+    <span class="s2">def </span><span class="s1">F(self):</span>
+        <span class="s0">&quot;Month, textual, long; e.g. 'January'&quot;</span>
+        <span class="s2">return </span><span class="s1">MONTHS[self.data.month]</span>
+
+    <span class="s2">def </span><span class="s1">I(self):  </span><span class="s5"># NOQA: E743, E741</span>
+        <span class="s0">&quot;'1' if daylight saving time, '0' otherwise.&quot;</span>
+        <span class="s2">if </span><span class="s1">self._no_timezone_or_datetime_is_ambiguous_or_imaginary:</span>
+            <span class="s2">return </span><span class="s3">''</span>
+        <span class="s2">return </span><span class="s3">'1' </span><span class="s2">if </span><span class="s1">self.timezone.dst(self.data) </span><span class="s2">else </span><span class="s3">'0'</span>
+
+    <span class="s2">def </span><span class="s1">j(self):</span>
+        <span class="s0">&quot;Day of the month without leading zeros; i.e. '1' to '31'&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.day</span>
+
+    <span class="s2">def </span><span class="s1">l(self):  </span><span class="s5"># NOQA: E743, E741</span>
+        <span class="s0">&quot;Day of the week, textual, long; e.g. 'Friday'&quot;</span>
+        <span class="s2">return </span><span class="s1">WEEKDAYS[self.data.weekday()]</span>
+
+    <span class="s2">def </span><span class="s1">L(self):</span>
+        <span class="s0">&quot;Boolean for whether it is a leap year; i.e. True or False&quot;</span>
+        <span class="s2">return </span><span class="s1">calendar.isleap(self.data.year)</span>
+
+    <span class="s2">def </span><span class="s1">m(self):</span>
+        <span class="s0">&quot;Month; i.e. '01' to '12'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% self.data.month</span>
+
+    <span class="s2">def </span><span class="s1">M(self):</span>
+        <span class="s0">&quot;Month, textual, 3 letters; e.g. 'Jan'&quot;</span>
+        <span class="s2">return </span><span class="s1">MONTHS_3[self.data.month].title()</span>
+
+    <span class="s2">def </span><span class="s1">n(self):</span>
+        <span class="s0">&quot;Month without leading zeros; i.e. '1' to '12'&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.month</span>
+
+    <span class="s2">def </span><span class="s1">N(self):</span>
+        <span class="s0">&quot;Month abbreviation in Associated Press style. Proprietary extension.&quot;</span>
+        <span class="s2">return </span><span class="s1">MONTHS_AP[self.data.month]</span>
+
+    <span class="s2">def </span><span class="s1">o(self):</span>
+        <span class="s0">&quot;ISO 8601 year number matching the ISO week number (W)&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.isocalendar()[</span><span class="s4">0</span><span class="s1">]</span>
+
+    <span class="s2">def </span><span class="s1">r(self):</span>
+        <span class="s0">&quot;RFC 5322 formatted date; e.g. 'Thu, 21 Dec 2000 16:01:07 +0200'&quot;</span>
+        <span class="s2">if </span><span class="s1">type(self.data) </span><span class="s2">is </span><span class="s1">datetime.date:</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span>
+                <span class="s3">&quot;The format for date objects may not contain time-related &quot;</span>
+                <span class="s3">&quot;format specifiers (found 'r').&quot;</span>
+            <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">is_naive(self.data):</span>
+            <span class="s1">dt = make_aware(self.data</span><span class="s2">, </span><span class="s1">timezone=self.timezone)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">dt = self.data</span>
+        <span class="s2">return </span><span class="s1">format_datetime_rfc5322(dt)</span>
+
+    <span class="s2">def </span><span class="s1">S(self):</span>
+        <span class="s0">&quot;English ordinal suffix for the day of the month, 2 characters; i.e. 'st', 'nd', 'rd' or 'th'&quot;</span>
+        <span class="s2">if </span><span class="s1">self.data.day </span><span class="s2">in </span><span class="s1">(</span><span class="s4">11</span><span class="s2">, </span><span class="s4">12</span><span class="s2">, </span><span class="s4">13</span><span class="s1">):  </span><span class="s5"># Special case</span>
+            <span class="s2">return </span><span class="s3">'th'</span>
+        <span class="s1">last = self.data.day % </span><span class="s4">10</span>
+        <span class="s2">if </span><span class="s1">last == </span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s3">'st'</span>
+        <span class="s2">if </span><span class="s1">last == </span><span class="s4">2</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s3">'nd'</span>
+        <span class="s2">if </span><span class="s1">last == </span><span class="s4">3</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s3">'rd'</span>
+        <span class="s2">return </span><span class="s3">'th'</span>
+
+    <span class="s2">def </span><span class="s1">t(self):</span>
+        <span class="s0">&quot;Number of days in the given month; i.e. '28' to '31'&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% calendar.monthrange(self.data.year</span><span class="s2">, </span><span class="s1">self.data.month)[</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s2">def </span><span class="s1">U(self):</span>
+        <span class="s0">&quot;Seconds since the Unix epoch (January 1 1970 00:00:00 GMT)&quot;</span>
+        <span class="s1">value = self.data</span>
+        <span class="s2">if not </span><span class="s1">isinstance(value</span><span class="s2">, </span><span class="s1">datetime.datetime):</span>
+            <span class="s1">value = datetime.datetime.combine(value</span><span class="s2">, </span><span class="s1">datetime.time.min)</span>
+        <span class="s2">return </span><span class="s1">int(value.timestamp())</span>
+
+    <span class="s2">def </span><span class="s1">w(self):</span>
+        <span class="s0">&quot;Day of the week, numeric, i.e. '0' (Sunday) to '6' (Saturday)&quot;</span>
+        <span class="s2">return </span><span class="s1">(self.data.weekday() + </span><span class="s4">1</span><span class="s1">) % </span><span class="s4">7</span>
+
+    <span class="s2">def </span><span class="s1">W(self):</span>
+        <span class="s0">&quot;ISO-8601 week number of year, weeks starting on Monday&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.isocalendar()[</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s2">def </span><span class="s1">y(self):</span>
+        <span class="s0">&quot;&quot;&quot;Year, 2 digits with leading zeros; e.g. '99'.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s3">'%02d' </span><span class="s1">% (self.data.year % </span><span class="s4">100</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">Y(self):</span>
+        <span class="s0">&quot;&quot;&quot;Year, 4 digits with leading zeros; e.g. '1999'.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s3">'%04d' </span><span class="s1">% self.data.year</span>
+
+    <span class="s2">def </span><span class="s1">z(self):</span>
+        <span class="s0">&quot;&quot;&quot;Day of the year, i.e. 1 to 366.&quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.data.timetuple().tm_yday</span>
+
+
+<span class="s2">def </span><span class="s1">format(value</span><span class="s2">, </span><span class="s1">format_string):</span>
+    <span class="s0">&quot;Convenience function&quot;</span>
+    <span class="s1">df = DateFormat(value)</span>
+    <span class="s2">return </span><span class="s1">df.format(format_string)</span>
+
+
+<span class="s2">def </span><span class="s1">time_format(value</span><span class="s2">, </span><span class="s1">format_string):</span>
+    <span class="s0">&quot;Convenience function&quot;</span>
+    <span class="s1">tf = TimeFormat(value)</span>
+    <span class="s2">return </span><span class="s1">tf.format(format_string)</span>
+</pre>
+</body>
+</html>

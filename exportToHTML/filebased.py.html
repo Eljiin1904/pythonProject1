@@ -1,0 +1,185 @@
+<html>
+<head>
+<title>filebased.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+filebased.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;File-based cache backend&quot;</span>
+<span class="s2">import </span><span class="s1">glob</span>
+<span class="s2">import </span><span class="s1">hashlib</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">pickle</span>
+<span class="s2">import </span><span class="s1">random</span>
+<span class="s2">import </span><span class="s1">tempfile</span>
+<span class="s2">import </span><span class="s1">time</span>
+<span class="s2">import </span><span class="s1">zlib</span>
+
+<span class="s2">from </span><span class="s1">django.core.cache.backends.base </span><span class="s2">import </span><span class="s1">DEFAULT_TIMEOUT</span><span class="s2">, </span><span class="s1">BaseCache</span>
+<span class="s2">from </span><span class="s1">django.core.files </span><span class="s2">import </span><span class="s1">locks</span>
+<span class="s2">from </span><span class="s1">django.core.files.move </span><span class="s2">import </span><span class="s1">file_move_safe</span>
+
+
+<span class="s2">class </span><span class="s1">FileBasedCache(BaseCache):</span>
+    <span class="s1">cache_suffix = </span><span class="s3">'.djcache'</span>
+    <span class="s1">pickle_protocol = pickle.HIGHEST_PROTOCOL</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">dir</span><span class="s2">, </span><span class="s1">params):</span>
+        <span class="s1">super().__init__(params)</span>
+        <span class="s1">self._dir = os.path.abspath(dir)</span>
+        <span class="s1">self._createdir()</span>
+
+    <span class="s2">def </span><span class="s1">add(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">timeout=DEFAULT_TIMEOUT</span><span class="s2">, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">self.has_key(key</span><span class="s2">, </span><span class="s1">version):</span>
+            <span class="s2">return False</span>
+        <span class="s1">self.set(key</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">, </span><span class="s1">version)</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">get(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">default=</span><span class="s2">None, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">fname = self._key_to_file(key</span><span class="s2">, </span><span class="s1">version)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">with </span><span class="s1">open(fname</span><span class="s2">, </span><span class="s3">'rb'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">f:</span>
+                <span class="s2">if not </span><span class="s1">self._is_expired(f):</span>
+                    <span class="s2">return </span><span class="s1">pickle.loads(zlib.decompress(f.read()))</span>
+        <span class="s2">except </span><span class="s1">FileNotFoundError:</span>
+            <span class="s2">pass</span>
+        <span class="s2">return </span><span class="s1">default</span>
+
+    <span class="s2">def </span><span class="s1">_write_content(self</span><span class="s2">, </span><span class="s1">file</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s1">expiry = self.get_backend_timeout(timeout)</span>
+        <span class="s1">file.write(pickle.dumps(expiry</span><span class="s2">, </span><span class="s1">self.pickle_protocol))</span>
+        <span class="s1">file.write(zlib.compress(pickle.dumps(value</span><span class="s2">, </span><span class="s1">self.pickle_protocol)))</span>
+
+    <span class="s2">def </span><span class="s1">set(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">timeout=DEFAULT_TIMEOUT</span><span class="s2">, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">self._createdir()  </span><span class="s4"># Cache dir can be deleted at any time.</span>
+        <span class="s1">fname = self._key_to_file(key</span><span class="s2">, </span><span class="s1">version)</span>
+        <span class="s1">self._cull()  </span><span class="s4"># make some room if necessary</span>
+        <span class="s1">fd</span><span class="s2">, </span><span class="s1">tmp_path = tempfile.mkstemp(dir=self._dir)</span>
+        <span class="s1">renamed = </span><span class="s2">False</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">with </span><span class="s1">open(fd</span><span class="s2">, </span><span class="s3">'wb'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">f:</span>
+                <span class="s1">self._write_content(f</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">, </span><span class="s1">value)</span>
+            <span class="s1">file_move_safe(tmp_path</span><span class="s2">, </span><span class="s1">fname</span><span class="s2">, </span><span class="s1">allow_overwrite=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">renamed = </span><span class="s2">True</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s2">if not </span><span class="s1">renamed:</span>
+                <span class="s1">os.remove(tmp_path)</span>
+
+    <span class="s2">def </span><span class="s1">touch(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">timeout=DEFAULT_TIMEOUT</span><span class="s2">, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">with </span><span class="s1">open(self._key_to_file(key</span><span class="s2">, </span><span class="s1">version)</span><span class="s2">, </span><span class="s3">'r+b'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">f:</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">locks.lock(f</span><span class="s2">, </span><span class="s1">locks.LOCK_EX)</span>
+                    <span class="s2">if </span><span class="s1">self._is_expired(f):</span>
+                        <span class="s2">return False</span>
+                    <span class="s2">else</span><span class="s1">:</span>
+                        <span class="s1">previous_value = pickle.loads(zlib.decompress(f.read()))</span>
+                        <span class="s1">f.seek(</span><span class="s5">0</span><span class="s1">)</span>
+                        <span class="s1">self._write_content(f</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">, </span><span class="s1">previous_value)</span>
+                        <span class="s2">return True</span>
+                <span class="s2">finally</span><span class="s1">:</span>
+                    <span class="s1">locks.unlock(f)</span>
+        <span class="s2">except </span><span class="s1">FileNotFoundError:</span>
+            <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">delete(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">return </span><span class="s1">self._delete(self._key_to_file(key</span><span class="s2">, </span><span class="s1">version))</span>
+
+    <span class="s2">def </span><span class="s1">_delete(self</span><span class="s2">, </span><span class="s1">fname):</span>
+        <span class="s2">if not </span><span class="s1">fname.startswith(self._dir) </span><span class="s2">or not </span><span class="s1">os.path.exists(fname):</span>
+            <span class="s2">return False</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">os.remove(fname)</span>
+        <span class="s2">except </span><span class="s1">FileNotFoundError:</span>
+            <span class="s4"># The file may have been removed by another process.</span>
+            <span class="s2">return False</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">has_key(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">fname = self._key_to_file(key</span><span class="s2">, </span><span class="s1">version)</span>
+        <span class="s2">if </span><span class="s1">os.path.exists(fname):</span>
+            <span class="s2">with </span><span class="s1">open(fname</span><span class="s2">, </span><span class="s3">'rb'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">f:</span>
+                <span class="s2">return not </span><span class="s1">self._is_expired(f)</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">_cull(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Remove random cache entries if max_entries is reached at a ratio 
+        of num_entries / cull_frequency. A value of 0 for CULL_FREQUENCY means 
+        that the entire cache will be purged. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">filelist = self._list_cache_files()</span>
+        <span class="s1">num_entries = len(filelist)</span>
+        <span class="s2">if </span><span class="s1">num_entries &lt; self._max_entries:</span>
+            <span class="s2">return  </span><span class="s4"># return early if no culling is required</span>
+        <span class="s2">if </span><span class="s1">self._cull_frequency == </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">self.clear()  </span><span class="s4"># Clear the cache when CULL_FREQUENCY = 0</span>
+        <span class="s4"># Delete a random selection of entries</span>
+        <span class="s1">filelist = random.sample(filelist</span><span class="s2">,</span>
+                                 <span class="s1">int(num_entries / self._cull_frequency))</span>
+        <span class="s2">for </span><span class="s1">fname </span><span class="s2">in </span><span class="s1">filelist:</span>
+            <span class="s1">self._delete(fname)</span>
+
+    <span class="s2">def </span><span class="s1">_createdir(self):</span>
+        <span class="s4"># Set the umask because os.makedirs() doesn't apply the &quot;mode&quot; argument</span>
+        <span class="s4"># to intermediate-level directories.</span>
+        <span class="s1">old_umask = os.umask(</span><span class="s5">0o077</span><span class="s1">)</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">os.makedirs(self._dir</span><span class="s2">, </span><span class="s5">0o700</span><span class="s2">, </span><span class="s1">exist_ok=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s2">finally</span><span class="s1">:</span>
+            <span class="s1">os.umask(old_umask)</span>
+
+    <span class="s2">def </span><span class="s1">_key_to_file(self</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">version=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Convert a key into a cache file path. Basically this is the 
+        root cache path joined with the md5sum of the key and a suffix. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">key = self.make_and_validate_key(key</span><span class="s2">, </span><span class="s1">version=version)</span>
+        <span class="s2">return </span><span class="s1">os.path.join(self._dir</span><span class="s2">, </span><span class="s3">''</span><span class="s1">.join(</span>
+            <span class="s1">[hashlib.md5(key.encode()).hexdigest()</span><span class="s2">, </span><span class="s1">self.cache_suffix]))</span>
+
+    <span class="s2">def </span><span class="s1">clear(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Remove all the cache files. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">fname </span><span class="s2">in </span><span class="s1">self._list_cache_files():</span>
+            <span class="s1">self._delete(fname)</span>
+
+    <span class="s2">def </span><span class="s1">_is_expired(self</span><span class="s2">, </span><span class="s1">f):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Take an open cache file `f` and delete it if it's expired. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">exp = pickle.load(f)</span>
+        <span class="s2">except </span><span class="s1">EOFError:</span>
+            <span class="s1">exp = </span><span class="s5">0  </span><span class="s4"># An empty file is considered expired.</span>
+        <span class="s2">if </span><span class="s1">exp </span><span class="s2">is not None and </span><span class="s1">exp &lt; time.time():</span>
+            <span class="s1">f.close()  </span><span class="s4"># On Windows a file has to be closed before deleting</span>
+            <span class="s1">self._delete(f.name)</span>
+            <span class="s2">return True</span>
+        <span class="s2">return False</span>
+
+    <span class="s2">def </span><span class="s1">_list_cache_files(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Get a list of paths to all the cache files. These are all the files 
+        in the root cache dir that end on the cache_suffix. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">[</span>
+            <span class="s1">os.path.join(self._dir</span><span class="s2">, </span><span class="s1">fname)</span>
+            <span class="s2">for </span><span class="s1">fname </span><span class="s2">in </span><span class="s1">glob.glob1(self._dir</span><span class="s2">, </span><span class="s3">'*%s' </span><span class="s1">% self.cache_suffix)</span>
+        <span class="s1">]</span>
+</pre>
+</body>
+</html>

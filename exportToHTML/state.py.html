@@ -1,0 +1,926 @@
+<html>
+<head>
+<title>state.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+state.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">copy</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">defaultdict</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">contextmanager</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">partial</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">AppConfig</span>
+<span class="s0">from </span><span class="s1">django.apps.registry </span><span class="s0">import </span><span class="s1">Apps</span><span class="s0">, </span><span class="s1">apps </span><span class="s0">as </span><span class="s1">global_apps</span>
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">FieldDoesNotExist</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">models</span>
+<span class="s0">from </span><span class="s1">django.db.migrations.utils </span><span class="s0">import </span><span class="s1">field_is_referenced</span><span class="s0">, </span><span class="s1">get_references</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">NOT_PROVIDED</span>
+<span class="s0">from </span><span class="s1">django.db.models.fields.related </span><span class="s0">import </span><span class="s1">RECURSIVE_RELATIONSHIP_CONSTANT</span>
+<span class="s0">from </span><span class="s1">django.db.models.options </span><span class="s0">import </span><span class="s1">DEFAULT_NAMES</span><span class="s0">, </span><span class="s1">normalize_together</span>
+<span class="s0">from </span><span class="s1">django.db.models.utils </span><span class="s0">import </span><span class="s1">make_model_tuple</span>
+<span class="s0">from </span><span class="s1">django.utils.functional </span><span class="s0">import </span><span class="s1">cached_property</span>
+<span class="s0">from </span><span class="s1">django.utils.module_loading </span><span class="s0">import </span><span class="s1">import_string</span>
+<span class="s0">from </span><span class="s1">django.utils.version </span><span class="s0">import </span><span class="s1">get_docs_version</span>
+
+<span class="s0">from </span><span class="s1">.exceptions </span><span class="s0">import </span><span class="s1">InvalidBasesError</span>
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">resolve_relation</span>
+
+
+<span class="s0">def </span><span class="s1">_get_app_label_and_model_name(model</span><span class="s0">, </span><span class="s1">app_label=</span><span class="s2">''</span><span class="s1">):</span>
+    <span class="s0">if </span><span class="s1">isinstance(model</span><span class="s0">, </span><span class="s1">str):</span>
+        <span class="s1">split = model.split(</span><span class="s2">'.'</span><span class="s0">, </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">tuple(split) </span><span class="s0">if </span><span class="s1">len(split) == </span><span class="s3">2 </span><span class="s0">else </span><span class="s1">(app_label</span><span class="s0">, </span><span class="s1">split[</span><span class="s3">0</span><span class="s1">])</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">model._meta.app_label</span><span class="s0">, </span><span class="s1">model._meta.model_name</span>
+
+
+<span class="s0">def </span><span class="s1">_get_related_models(m):</span>
+    <span class="s4">&quot;&quot;&quot;Return all models that have a direct relationship to the given model.&quot;&quot;&quot;</span>
+    <span class="s1">related_models = [</span>
+        <span class="s1">subclass </span><span class="s0">for </span><span class="s1">subclass </span><span class="s0">in </span><span class="s1">m.__subclasses__()</span>
+        <span class="s0">if </span><span class="s1">issubclass(subclass</span><span class="s0">, </span><span class="s1">models.Model)</span>
+    <span class="s1">]</span>
+    <span class="s1">related_fields_models = set()</span>
+    <span class="s0">for </span><span class="s1">f </span><span class="s0">in </span><span class="s1">m._meta.get_fields(include_parents=</span><span class="s0">True, </span><span class="s1">include_hidden=</span><span class="s0">True</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">f.is_relation </span><span class="s0">and </span><span class="s1">f.related_model </span><span class="s0">is not None and not </span><span class="s1">isinstance(f.related_model</span><span class="s0">, </span><span class="s1">str):</span>
+            <span class="s1">related_fields_models.add(f.model)</span>
+            <span class="s1">related_models.append(f.related_model)</span>
+    <span class="s5"># Reverse accessors of foreign keys to proxy models are attached to their</span>
+    <span class="s5"># concrete proxied model.</span>
+    <span class="s1">opts = m._meta</span>
+    <span class="s0">if </span><span class="s1">opts.proxy </span><span class="s0">and </span><span class="s1">m </span><span class="s0">in </span><span class="s1">related_fields_models:</span>
+        <span class="s1">related_models.append(opts.concrete_model)</span>
+    <span class="s0">return </span><span class="s1">related_models</span>
+
+
+<span class="s0">def </span><span class="s1">get_related_models_tuples(model):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Return a list of typical (app_label, model_name) tuples for all related 
+    models for the given model. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">{</span>
+        <span class="s1">(rel_mod._meta.app_label</span><span class="s0">, </span><span class="s1">rel_mod._meta.model_name)</span>
+        <span class="s0">for </span><span class="s1">rel_mod </span><span class="s0">in </span><span class="s1">_get_related_models(model)</span>
+    <span class="s1">}</span>
+
+
+<span class="s0">def </span><span class="s1">get_related_models_recursive(model):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Return all models that have a direct or indirect relationship 
+    to the given model. 
+ 
+    Relationships are either defined by explicit relational fields, like 
+    ForeignKey, ManyToManyField or OneToOneField, or by inheriting from another 
+    model (a superclass is related to its subclasses, but not vice versa). Note, 
+    however, that a model inheriting from a concrete model is also related to 
+    its superclass through the implicit *_ptr OneToOneField on the subclass. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">seen = set()</span>
+    <span class="s1">queue = _get_related_models(model)</span>
+    <span class="s0">for </span><span class="s1">rel_mod </span><span class="s0">in </span><span class="s1">queue:</span>
+        <span class="s1">rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name = rel_mod._meta.app_label</span><span class="s0">, </span><span class="s1">rel_mod._meta.model_name</span>
+        <span class="s0">if </span><span class="s1">(rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name) </span><span class="s0">in </span><span class="s1">seen:</span>
+            <span class="s0">continue</span>
+        <span class="s1">seen.add((rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name))</span>
+        <span class="s1">queue.extend(_get_related_models(rel_mod))</span>
+    <span class="s0">return </span><span class="s1">seen - {(model._meta.app_label</span><span class="s0">, </span><span class="s1">model._meta.model_name)}</span>
+
+
+<span class="s0">class </span><span class="s1">ProjectState:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Represent the entire project's overall state. This is the item that is 
+    passed around - do it here rather than at the app level so that cross-app 
+    FKs/etc. resolve properly. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">models=</span><span class="s0">None, </span><span class="s1">real_apps=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.models = models </span><span class="s0">or </span><span class="s1">{}</span>
+        <span class="s5"># Apps to include from main registry, usually unmigrated ones</span>
+        <span class="s0">if </span><span class="s1">real_apps </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">real_apps = set()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">assert </span><span class="s1">isinstance(real_apps</span><span class="s0">, </span><span class="s1">set)</span>
+        <span class="s1">self.real_apps = real_apps</span>
+        <span class="s1">self.is_delayed = </span><span class="s0">False</span>
+        <span class="s5"># {remote_model_key: {model_key: {field_name: field}}}</span>
+        <span class="s1">self._relations = </span><span class="s0">None</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">relations(self):</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">self.resolve_fields_and_relations()</span>
+        <span class="s0">return </span><span class="s1">self._relations</span>
+
+    <span class="s0">def </span><span class="s1">add_model(self</span><span class="s0">, </span><span class="s1">model_state):</span>
+        <span class="s1">model_key = model_state.app_label</span><span class="s0">, </span><span class="s1">model_state.name_lower</span>
+        <span class="s1">self.models[model_key] = model_state</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.resolve_model_relations(model_key)</span>
+        <span class="s0">if </span><span class="s2">'apps' </span><span class="s0">in </span><span class="s1">self.__dict__:  </span><span class="s5"># hasattr would cache the property</span>
+            <span class="s1">self.reload_model(*model_key)</span>
+
+    <span class="s0">def </span><span class="s1">remove_model(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name):</span>
+        <span class="s1">model_key = app_label</span><span class="s0">, </span><span class="s1">model_name</span>
+        <span class="s0">del </span><span class="s1">self.models[model_key]</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self._relations.pop(model_key</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s5"># Call list() since _relations can change size during iteration.</span>
+            <span class="s0">for </span><span class="s1">related_model_key</span><span class="s0">, </span><span class="s1">model_relations </span><span class="s0">in </span><span class="s1">list(self._relations.items()):</span>
+                <span class="s1">model_relations.pop(model_key</span><span class="s0">, None</span><span class="s1">)</span>
+                <span class="s0">if not </span><span class="s1">model_relations:</span>
+                    <span class="s0">del </span><span class="s1">self._relations[related_model_key]</span>
+        <span class="s0">if </span><span class="s2">'apps' </span><span class="s0">in </span><span class="s1">self.__dict__:  </span><span class="s5"># hasattr would cache the property</span>
+            <span class="s1">self.apps.unregister_model(*model_key)</span>
+            <span class="s5"># Need to do this explicitly since unregister_model() doesn't clear</span>
+            <span class="s5"># the cache automatically (#24513)</span>
+            <span class="s1">self.apps.clear_cache()</span>
+
+    <span class="s0">def </span><span class="s1">rename_model(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">old_name</span><span class="s0">, </span><span class="s1">new_name):</span>
+        <span class="s5"># Add a new model.</span>
+        <span class="s1">old_name_lower = old_name.lower()</span>
+        <span class="s1">new_name_lower = new_name.lower()</span>
+        <span class="s1">renamed_model = self.models[app_label</span><span class="s0">, </span><span class="s1">old_name_lower].clone()</span>
+        <span class="s1">renamed_model.name = new_name</span>
+        <span class="s1">self.models[app_label</span><span class="s0">, </span><span class="s1">new_name_lower] = renamed_model</span>
+        <span class="s5"># Repoint all fields pointing to the old model to the new one.</span>
+        <span class="s1">old_model_tuple = (app_label</span><span class="s0">, </span><span class="s1">old_name_lower)</span>
+        <span class="s1">new_remote_model = </span><span class="s2">f'</span><span class="s0">{</span><span class="s1">app_label</span><span class="s0">}</span><span class="s2">.</span><span class="s0">{</span><span class="s1">new_name</span><span class="s0">}</span><span class="s2">'</span>
+        <span class="s1">to_reload = set()</span>
+        <span class="s0">for </span><span class="s1">model_state</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">reference </span><span class="s0">in </span><span class="s1">get_references(self</span><span class="s0">, </span><span class="s1">old_model_tuple):</span>
+            <span class="s1">changed_field = </span><span class="s0">None</span>
+            <span class="s0">if </span><span class="s1">reference.to:</span>
+                <span class="s1">changed_field = field.clone()</span>
+                <span class="s1">changed_field.remote_field.model = new_remote_model</span>
+            <span class="s0">if </span><span class="s1">reference.through:</span>
+                <span class="s0">if </span><span class="s1">changed_field </span><span class="s0">is None</span><span class="s1">:</span>
+                    <span class="s1">changed_field = field.clone()</span>
+                <span class="s1">changed_field.remote_field.through = new_remote_model</span>
+            <span class="s0">if </span><span class="s1">changed_field:</span>
+                <span class="s1">model_state.fields[name] = changed_field</span>
+                <span class="s1">to_reload.add((model_state.app_label</span><span class="s0">, </span><span class="s1">model_state.name_lower))</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">old_name_key = app_label</span><span class="s0">, </span><span class="s1">old_name_lower</span>
+            <span class="s1">new_name_key = app_label</span><span class="s0">, </span><span class="s1">new_name_lower</span>
+            <span class="s0">if </span><span class="s1">old_name_key </span><span class="s0">in </span><span class="s1">self._relations:</span>
+                <span class="s1">self._relations[new_name_key] = self._relations.pop(old_name_key)</span>
+            <span class="s0">for </span><span class="s1">model_relations </span><span class="s0">in </span><span class="s1">self._relations.values():</span>
+                <span class="s0">if </span><span class="s1">old_name_key </span><span class="s0">in </span><span class="s1">model_relations:</span>
+                    <span class="s1">model_relations[new_name_key] = model_relations.pop(old_name_key)</span>
+        <span class="s5"># Reload models related to old model before removing the old model.</span>
+        <span class="s1">self.reload_models(to_reload</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">)</span>
+        <span class="s5"># Remove the old model.</span>
+        <span class="s1">self.remove_model(app_label</span><span class="s0">, </span><span class="s1">old_name_lower)</span>
+        <span class="s1">self.reload_model(app_label</span><span class="s0">, </span><span class="s1">new_name_lower</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">alter_model_options(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">options</span><span class="s0">, </span><span class="s1">option_keys=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">model_state = self.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+        <span class="s1">model_state.options = {**model_state.options</span><span class="s0">, </span><span class="s1">**options}</span>
+        <span class="s0">if </span><span class="s1">option_keys:</span>
+            <span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">option_keys:</span>
+                <span class="s0">if </span><span class="s1">key </span><span class="s0">not in </span><span class="s1">options:</span>
+                    <span class="s1">model_state.options.pop(key</span><span class="s0">, False</span><span class="s1">)</span>
+        <span class="s1">self.reload_model(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">alter_model_managers(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">managers):</span>
+        <span class="s1">model_state = self.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+        <span class="s1">model_state.managers = list(managers)</span>
+        <span class="s1">self.reload_model(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_append_option(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">option_name</span><span class="s0">, </span><span class="s1">obj):</span>
+        <span class="s1">model_state = self.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+        <span class="s1">model_state.options[option_name] = [*model_state.options[option_name]</span><span class="s0">, </span><span class="s1">obj]</span>
+        <span class="s1">self.reload_model(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_remove_option(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">option_name</span><span class="s0">, </span><span class="s1">obj_name):</span>
+        <span class="s1">model_state = self.models[app_label</span><span class="s0">, </span><span class="s1">model_name]</span>
+        <span class="s1">objs = model_state.options[option_name]</span>
+        <span class="s1">model_state.options[option_name] = [obj </span><span class="s0">for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">objs </span><span class="s0">if </span><span class="s1">obj.name != obj_name]</span>
+        <span class="s1">self.reload_model(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">add_index(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">index):</span>
+        <span class="s1">self._append_option(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s2">'indexes'</span><span class="s0">, </span><span class="s1">index)</span>
+
+    <span class="s0">def </span><span class="s1">remove_index(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">index_name):</span>
+        <span class="s1">self._remove_option(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s2">'indexes'</span><span class="s0">, </span><span class="s1">index_name)</span>
+
+    <span class="s0">def </span><span class="s1">add_constraint(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">constraint):</span>
+        <span class="s1">self._append_option(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s2">'constraints'</span><span class="s0">, </span><span class="s1">constraint)</span>
+
+    <span class="s0">def </span><span class="s1">remove_constraint(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">constraint_name):</span>
+        <span class="s1">self._remove_option(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s2">'constraints'</span><span class="s0">, </span><span class="s1">constraint_name)</span>
+
+    <span class="s0">def </span><span class="s1">add_field(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">preserve_default):</span>
+        <span class="s5"># If preserve default is off, don't use the default for future state.</span>
+        <span class="s0">if not </span><span class="s1">preserve_default:</span>
+            <span class="s1">field = field.clone()</span>
+            <span class="s1">field.default = NOT_PROVIDED</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">field = field</span>
+        <span class="s1">model_key = app_label</span><span class="s0">, </span><span class="s1">model_name</span>
+        <span class="s1">self.models[model_key].fields[name] = field</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.resolve_model_field_relations(model_key</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field)</span>
+        <span class="s5"># Delay rendering of relationships if it's not a relational field.</span>
+        <span class="s1">delay = </span><span class="s0">not </span><span class="s1">field.is_relation</span>
+        <span class="s1">self.reload_model(*model_key</span><span class="s0">, </span><span class="s1">delay=delay)</span>
+
+    <span class="s0">def </span><span class="s1">remove_field(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s1">model_key = app_label</span><span class="s0">, </span><span class="s1">model_name</span>
+        <span class="s1">model_state = self.models[model_key]</span>
+        <span class="s1">old_field = model_state.fields.pop(name)</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">self.resolve_model_field_relations(model_key</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">old_field)</span>
+        <span class="s5"># Delay rendering of relationships if it's not a relational field.</span>
+        <span class="s1">delay = </span><span class="s0">not </span><span class="s1">old_field.is_relation</span>
+        <span class="s1">self.reload_model(*model_key</span><span class="s0">, </span><span class="s1">delay=delay)</span>
+
+    <span class="s0">def </span><span class="s1">alter_field(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">preserve_default):</span>
+        <span class="s0">if not </span><span class="s1">preserve_default:</span>
+            <span class="s1">field = field.clone()</span>
+            <span class="s1">field.default = NOT_PROVIDED</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">field = field</span>
+        <span class="s1">model_key = app_label</span><span class="s0">, </span><span class="s1">model_name</span>
+        <span class="s1">fields = self.models[model_key].fields</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">old_field = fields.pop(name)</span>
+            <span class="s0">if </span><span class="s1">old_field.is_relation:</span>
+                <span class="s1">self.resolve_model_field_relations(model_key</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">old_field)</span>
+            <span class="s1">fields[name] = field</span>
+            <span class="s0">if </span><span class="s1">field.is_relation:</span>
+                <span class="s1">self.resolve_model_field_relations(model_key</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">fields[name] = field</span>
+        <span class="s5"># TODO: investigate if old relational fields must be reloaded or if</span>
+        <span class="s5"># it's sufficient if the new field is (#27737).</span>
+        <span class="s5"># Delay rendering of relationships if it's not a relational field and</span>
+        <span class="s5"># not referenced by a foreign key.</span>
+        <span class="s1">delay = (</span>
+            <span class="s0">not </span><span class="s1">field.is_relation </span><span class="s0">and</span>
+            <span class="s0">not </span><span class="s1">field_is_referenced(self</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">(name</span><span class="s0">, </span><span class="s1">field))</span>
+        <span class="s1">)</span>
+        <span class="s1">self.reload_model(*model_key</span><span class="s0">, </span><span class="s1">delay=delay)</span>
+
+    <span class="s0">def </span><span class="s1">rename_field(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">old_name</span><span class="s0">, </span><span class="s1">new_name):</span>
+        <span class="s1">model_key = app_label</span><span class="s0">, </span><span class="s1">model_name</span>
+        <span class="s1">model_state = self.models[model_key]</span>
+        <span class="s5"># Rename the field.</span>
+        <span class="s1">fields = model_state.fields</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">found = fields.pop(old_name)</span>
+        <span class="s0">except </span><span class="s1">KeyError:</span>
+            <span class="s0">raise </span><span class="s1">FieldDoesNotExist(</span>
+                <span class="s2">f&quot;</span><span class="s0">{</span><span class="s1">app_label</span><span class="s0">}</span><span class="s2">.</span><span class="s0">{</span><span class="s1">model_name</span><span class="s0">} </span><span class="s2">has no field named '</span><span class="s0">{</span><span class="s1">old_name</span><span class="s0">}</span><span class="s2">'&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">fields[new_name] = found</span>
+        <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">fields.values():</span>
+            <span class="s5"># Fix from_fields to refer to the new field.</span>
+            <span class="s1">from_fields = getattr(field</span><span class="s0">, </span><span class="s2">'from_fields'</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">from_fields:</span>
+                <span class="s1">field.from_fields = tuple([</span>
+                    <span class="s1">new_name </span><span class="s0">if </span><span class="s1">from_field_name == old_name </span><span class="s0">else </span><span class="s1">from_field_name</span>
+                    <span class="s0">for </span><span class="s1">from_field_name </span><span class="s0">in </span><span class="s1">from_fields</span>
+                <span class="s1">])</span>
+        <span class="s5"># Fix index/unique_together to refer to the new field.</span>
+        <span class="s1">options = model_state.options</span>
+        <span class="s0">for </span><span class="s1">option </span><span class="s0">in </span><span class="s1">(</span><span class="s2">'index_together'</span><span class="s0">, </span><span class="s2">'unique_together'</span><span class="s1">):</span>
+            <span class="s0">if </span><span class="s1">option </span><span class="s0">in </span><span class="s1">options:</span>
+                <span class="s1">options[option] = [</span>
+                    <span class="s1">[new_name </span><span class="s0">if </span><span class="s1">n == old_name </span><span class="s0">else </span><span class="s1">n </span><span class="s0">for </span><span class="s1">n </span><span class="s0">in </span><span class="s1">together]</span>
+                    <span class="s0">for </span><span class="s1">together </span><span class="s0">in </span><span class="s1">options[option]</span>
+                <span class="s1">]</span>
+        <span class="s5"># Fix to_fields to refer to the new field.</span>
+        <span class="s1">delay = </span><span class="s0">True</span>
+        <span class="s1">references = get_references(self</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">(old_name</span><span class="s0">, </span><span class="s1">found))</span>
+        <span class="s0">for </span><span class="s1">*_</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">reference </span><span class="s0">in </span><span class="s1">references:</span>
+            <span class="s1">delay = </span><span class="s0">False</span>
+            <span class="s0">if </span><span class="s1">reference.to:</span>
+                <span class="s1">remote_field</span><span class="s0">, </span><span class="s1">to_fields = reference.to</span>
+                <span class="s0">if </span><span class="s1">getattr(remote_field</span><span class="s0">, </span><span class="s2">'field_name'</span><span class="s0">, None</span><span class="s1">) == old_name:</span>
+                    <span class="s1">remote_field.field_name = new_name</span>
+                <span class="s0">if </span><span class="s1">to_fields:</span>
+                    <span class="s1">field.to_fields = tuple([</span>
+                        <span class="s1">new_name </span><span class="s0">if </span><span class="s1">to_field_name == old_name </span><span class="s0">else </span><span class="s1">to_field_name</span>
+                        <span class="s0">for </span><span class="s1">to_field_name </span><span class="s0">in </span><span class="s1">to_fields</span>
+                    <span class="s1">])</span>
+        <span class="s0">if </span><span class="s1">self._relations </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">old_name_lower = old_name.lower()</span>
+            <span class="s1">new_name_lower = new_name.lower()</span>
+            <span class="s0">for </span><span class="s1">to_model </span><span class="s0">in </span><span class="s1">self._relations.values():</span>
+                <span class="s0">if </span><span class="s1">old_name_lower </span><span class="s0">in </span><span class="s1">to_model[model_key]:</span>
+                    <span class="s1">field = to_model[model_key].pop(old_name_lower)</span>
+                    <span class="s1">field.name = new_name_lower</span>
+                    <span class="s1">to_model[model_key][new_name_lower] = field</span>
+        <span class="s1">self.reload_model(*model_key</span><span class="s0">, </span><span class="s1">delay=delay)</span>
+
+    <span class="s0">def </span><span class="s1">_find_reload_model(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">delay:</span>
+            <span class="s1">self.is_delayed = </span><span class="s0">True</span>
+
+        <span class="s1">related_models = set()</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">old_model = self.apps.get_model(app_label</span><span class="s0">, </span><span class="s1">model_name)</span>
+        <span class="s0">except </span><span class="s1">LookupError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s5"># Get all relations to and from the old model before reloading,</span>
+            <span class="s5"># as _meta.apps may change</span>
+            <span class="s0">if </span><span class="s1">delay:</span>
+                <span class="s1">related_models = get_related_models_tuples(old_model)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">related_models = get_related_models_recursive(old_model)</span>
+
+        <span class="s5"># Get all outgoing references from the model to be rendered</span>
+        <span class="s1">model_state = self.models[(app_label</span><span class="s0">, </span><span class="s1">model_name)]</span>
+        <span class="s5"># Directly related models are the models pointed to by ForeignKeys,</span>
+        <span class="s5"># OneToOneFields, and ManyToManyFields.</span>
+        <span class="s1">direct_related_models = set()</span>
+        <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model_state.fields.values():</span>
+            <span class="s0">if </span><span class="s1">field.is_relation:</span>
+                <span class="s0">if </span><span class="s1">field.remote_field.model == RECURSIVE_RELATIONSHIP_CONSTANT:</span>
+                    <span class="s0">continue</span>
+                <span class="s1">rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name = _get_app_label_and_model_name(field.related_model</span><span class="s0">, </span><span class="s1">app_label)</span>
+                <span class="s1">direct_related_models.add((rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name.lower()))</span>
+
+        <span class="s5"># For all direct related models recursively get all related models.</span>
+        <span class="s1">related_models.update(direct_related_models)</span>
+        <span class="s0">for </span><span class="s1">rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name </span><span class="s0">in </span><span class="s1">direct_related_models:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">rel_model = self.apps.get_model(rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name)</span>
+            <span class="s0">except </span><span class="s1">LookupError:</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">delay:</span>
+                    <span class="s1">related_models.update(get_related_models_tuples(rel_model))</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">related_models.update(get_related_models_recursive(rel_model))</span>
+
+        <span class="s5"># Include the model itself</span>
+        <span class="s1">related_models.add((app_label</span><span class="s0">, </span><span class="s1">model_name))</span>
+
+        <span class="s0">return </span><span class="s1">related_models</span>
+
+    <span class="s0">def </span><span class="s1">reload_model(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s2">'apps' </span><span class="s0">in </span><span class="s1">self.__dict__:  </span><span class="s5"># hasattr would cache the property</span>
+            <span class="s1">related_models = self._find_reload_model(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay)</span>
+            <span class="s1">self._reload(related_models)</span>
+
+    <span class="s0">def </span><span class="s1">reload_models(self</span><span class="s0">, </span><span class="s1">models</span><span class="s0">, </span><span class="s1">delay=</span><span class="s0">True</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s2">'apps' </span><span class="s0">in </span><span class="s1">self.__dict__:  </span><span class="s5"># hasattr would cache the property</span>
+            <span class="s1">related_models = set()</span>
+            <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name </span><span class="s0">in </span><span class="s1">models:</span>
+                <span class="s1">related_models.update(self._find_reload_model(app_label</span><span class="s0">, </span><span class="s1">model_name</span><span class="s0">, </span><span class="s1">delay))</span>
+            <span class="s1">self._reload(related_models)</span>
+
+    <span class="s0">def </span><span class="s1">_reload(self</span><span class="s0">, </span><span class="s1">related_models):</span>
+        <span class="s5"># Unregister all related models</span>
+        <span class="s0">with </span><span class="s1">self.apps.bulk_update():</span>
+            <span class="s0">for </span><span class="s1">rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name </span><span class="s0">in </span><span class="s1">related_models:</span>
+                <span class="s1">self.apps.unregister_model(rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name)</span>
+
+        <span class="s1">states_to_be_rendered = []</span>
+        <span class="s5"># Gather all models states of those models that will be rerendered.</span>
+        <span class="s5"># This includes:</span>
+        <span class="s5"># 1. All related models of unmigrated apps</span>
+        <span class="s0">for </span><span class="s1">model_state </span><span class="s0">in </span><span class="s1">self.apps.real_models:</span>
+            <span class="s0">if </span><span class="s1">(model_state.app_label</span><span class="s0">, </span><span class="s1">model_state.name_lower) </span><span class="s0">in </span><span class="s1">related_models:</span>
+                <span class="s1">states_to_be_rendered.append(model_state)</span>
+
+        <span class="s5"># 2. All related models of migrated apps</span>
+        <span class="s0">for </span><span class="s1">rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name </span><span class="s0">in </span><span class="s1">related_models:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">model_state = self.models[rel_app_label</span><span class="s0">, </span><span class="s1">rel_model_name]</span>
+            <span class="s0">except </span><span class="s1">KeyError:</span>
+                <span class="s0">pass</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">states_to_be_rendered.append(model_state)</span>
+
+        <span class="s5"># Render all models</span>
+        <span class="s1">self.apps.render_multiple(states_to_be_rendered)</span>
+
+    <span class="s0">def </span><span class="s1">update_model_field_relation(</span>
+        <span class="s1">self</span><span class="s0">, </span><span class="s1">model</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">concretes</span><span class="s0">,</span>
+    <span class="s1">):</span>
+        <span class="s1">remote_model_key = resolve_relation(model</span><span class="s0">, </span><span class="s1">*model_key)</span>
+        <span class="s0">if </span><span class="s1">remote_model_key[</span><span class="s3">0</span><span class="s1">] </span><span class="s0">not in </span><span class="s1">self.real_apps </span><span class="s0">and </span><span class="s1">remote_model_key </span><span class="s0">in </span><span class="s1">concretes:</span>
+            <span class="s1">remote_model_key = concretes[remote_model_key]</span>
+        <span class="s1">relations_to_remote_model = self._relations[remote_model_key]</span>
+        <span class="s0">if </span><span class="s1">field_name </span><span class="s0">in </span><span class="s1">self.models[model_key].fields:</span>
+            <span class="s5"># The assert holds because it's a new relation, or an altered</span>
+            <span class="s5"># relation, in which case references have been removed by</span>
+            <span class="s5"># alter_field().</span>
+            <span class="s0">assert </span><span class="s1">field_name </span><span class="s0">not in </span><span class="s1">relations_to_remote_model[model_key]</span>
+            <span class="s1">relations_to_remote_model[model_key][field_name] = field</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">del </span><span class="s1">relations_to_remote_model[model_key][field_name]</span>
+            <span class="s0">if not </span><span class="s1">relations_to_remote_model[model_key]:</span>
+                <span class="s0">del </span><span class="s1">relations_to_remote_model[model_key]</span>
+
+    <span class="s0">def </span><span class="s1">resolve_model_field_relations(</span>
+        <span class="s1">self</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">concretes=</span><span class="s0">None,</span>
+    <span class="s1">):</span>
+        <span class="s1">remote_field = field.remote_field</span>
+        <span class="s0">if not </span><span class="s1">remote_field:</span>
+            <span class="s0">return</span>
+        <span class="s0">if </span><span class="s1">concretes </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">concretes</span><span class="s0">, </span><span class="s1">_ = self._get_concrete_models_mapping_and_proxy_models()</span>
+
+        <span class="s1">self.update_model_field_relation(</span>
+            <span class="s1">remote_field.model</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">concretes</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+        <span class="s1">through = getattr(remote_field</span><span class="s0">, </span><span class="s2">'through'</span><span class="s0">, None</span><span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">through:</span>
+            <span class="s0">return</span>
+        <span class="s1">self.update_model_field_relation(through</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">concretes)</span>
+
+    <span class="s0">def </span><span class="s1">resolve_model_relations(self</span><span class="s0">, </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">concretes=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">concretes </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">concretes</span><span class="s0">, </span><span class="s1">_ = self._get_concrete_models_mapping_and_proxy_models()</span>
+
+        <span class="s1">model_state = self.models[model_key]</span>
+        <span class="s0">for </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model_state.fields.items():</span>
+            <span class="s1">self.resolve_model_field_relations(model_key</span><span class="s0">, </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field</span><span class="s0">, </span><span class="s1">concretes)</span>
+
+    <span class="s0">def </span><span class="s1">resolve_fields_and_relations(self):</span>
+        <span class="s5"># Resolve fields.</span>
+        <span class="s0">for </span><span class="s1">model_state </span><span class="s0">in </span><span class="s1">self.models.values():</span>
+            <span class="s0">for </span><span class="s1">field_name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model_state.fields.items():</span>
+                <span class="s1">field.name = field_name</span>
+        <span class="s5"># Resolve relations.</span>
+        <span class="s5"># {remote_model_key: {model_key: {field_name: field}}}</span>
+        <span class="s1">self._relations = defaultdict(partial(defaultdict</span><span class="s0">, </span><span class="s1">dict))</span>
+        <span class="s1">concretes</span><span class="s0">, </span><span class="s1">proxies = self._get_concrete_models_mapping_and_proxy_models()</span>
+
+        <span class="s0">for </span><span class="s1">model_key </span><span class="s0">in </span><span class="s1">concretes:</span>
+            <span class="s1">self.resolve_model_relations(model_key</span><span class="s0">, </span><span class="s1">concretes)</span>
+
+        <span class="s0">for </span><span class="s1">model_key </span><span class="s0">in </span><span class="s1">proxies:</span>
+            <span class="s1">self._relations[model_key] = self._relations[concretes[model_key]]</span>
+
+    <span class="s0">def </span><span class="s1">get_concrete_model_key(self</span><span class="s0">, </span><span class="s1">model):</span>
+        <span class="s1">concrete_models_mapping</span><span class="s0">, </span><span class="s1">_ = self._get_concrete_models_mapping_and_proxy_models()</span>
+        <span class="s1">model_key = make_model_tuple(model)</span>
+        <span class="s0">return </span><span class="s1">concrete_models_mapping[model_key]</span>
+
+    <span class="s0">def </span><span class="s1">_get_concrete_models_mapping_and_proxy_models(self):</span>
+        <span class="s1">concrete_models_mapping = {}</span>
+        <span class="s1">proxy_models = {}</span>
+        <span class="s5"># Split models to proxy and concrete models.</span>
+        <span class="s0">for </span><span class="s1">model_key</span><span class="s0">, </span><span class="s1">model_state </span><span class="s0">in </span><span class="s1">self.models.items():</span>
+            <span class="s0">if </span><span class="s1">model_state.options.get(</span><span class="s2">'proxy'</span><span class="s1">):</span>
+                <span class="s1">proxy_models[model_key] = model_state</span>
+                <span class="s5"># Find a concrete model for the proxy.</span>
+                <span class="s1">concrete_models_mapping[model_key] = self._find_concrete_model_from_proxy(</span>
+                    <span class="s1">proxy_models</span><span class="s0">, </span><span class="s1">model_state</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">concrete_models_mapping[model_key] = model_key</span>
+        <span class="s0">return </span><span class="s1">concrete_models_mapping</span><span class="s0">, </span><span class="s1">proxy_models</span>
+
+    <span class="s0">def </span><span class="s1">_find_concrete_model_from_proxy(self</span><span class="s0">, </span><span class="s1">proxy_models</span><span class="s0">, </span><span class="s1">model_state):</span>
+        <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">model_state.bases:</span>
+            <span class="s0">if not </span><span class="s1">(isinstance(base</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">or </span><span class="s1">issubclass(base</span><span class="s0">, </span><span class="s1">models.Model)):</span>
+                <span class="s0">continue</span>
+            <span class="s1">base_key = make_model_tuple(base)</span>
+            <span class="s1">base_state = proxy_models.get(base_key)</span>
+            <span class="s0">if not </span><span class="s1">base_state:</span>
+                <span class="s5"># Concrete model found, stop looking at bases.</span>
+                <span class="s0">return </span><span class="s1">base_key</span>
+            <span class="s0">return </span><span class="s1">self._find_concrete_model_from_proxy(proxy_models</span><span class="s0">, </span><span class="s1">base_state)</span>
+
+    <span class="s0">def </span><span class="s1">clone(self):</span>
+        <span class="s4">&quot;&quot;&quot;Return an exact copy of this ProjectState.&quot;&quot;&quot;</span>
+        <span class="s1">new_state = ProjectState(</span>
+            <span class="s1">models={k: v.clone() </span><span class="s0">for </span><span class="s1">k</span><span class="s0">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">self.models.items()}</span><span class="s0">,</span>
+            <span class="s1">real_apps=self.real_apps</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s0">if </span><span class="s2">'apps' </span><span class="s0">in </span><span class="s1">self.__dict__:</span>
+            <span class="s1">new_state.apps = self.apps.clone()</span>
+        <span class="s1">new_state.is_delayed = self.is_delayed</span>
+        <span class="s0">return </span><span class="s1">new_state</span>
+
+    <span class="s0">def </span><span class="s1">clear_delayed_apps_cache(self):</span>
+        <span class="s0">if </span><span class="s1">self.is_delayed </span><span class="s0">and </span><span class="s2">'apps' </span><span class="s0">in </span><span class="s1">self.__dict__:</span>
+            <span class="s0">del </span><span class="s1">self.__dict__[</span><span class="s2">'apps'</span><span class="s1">]</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">apps(self):</span>
+        <span class="s0">return </span><span class="s1">StateApps(self.real_apps</span><span class="s0">, </span><span class="s1">self.models)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">from_apps(cls</span><span class="s0">, </span><span class="s1">apps):</span>
+        <span class="s4">&quot;&quot;&quot;Take an Apps and return a ProjectState matching it.&quot;&quot;&quot;</span>
+        <span class="s1">app_models = {}</span>
+        <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">apps.get_models(include_swapped=</span><span class="s0">True</span><span class="s1">):</span>
+            <span class="s1">model_state = ModelState.from_model(model)</span>
+            <span class="s1">app_models[(model_state.app_label</span><span class="s0">, </span><span class="s1">model_state.name_lower)] = model_state</span>
+        <span class="s0">return </span><span class="s1">cls(app_models)</span>
+
+    <span class="s0">def </span><span class="s1">__eq__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">self.models == other.models </span><span class="s0">and </span><span class="s1">self.real_apps == other.real_apps</span>
+
+
+<span class="s0">class </span><span class="s1">AppConfigStub(AppConfig):</span>
+    <span class="s4">&quot;&quot;&quot;Stub of an AppConfig. Only provides a label and a dict of models.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">label):</span>
+        <span class="s1">self.apps = </span><span class="s0">None</span>
+        <span class="s1">self.models = {}</span>
+        <span class="s5"># App-label and app-name are not the same thing, so technically passing</span>
+        <span class="s5"># in the label here is wrong. In practice, migrations don't care about</span>
+        <span class="s5"># the app name, but we need something unique, and the label works fine.</span>
+        <span class="s1">self.label = label</span>
+        <span class="s1">self.name = label</span>
+
+    <span class="s0">def </span><span class="s1">import_models(self):</span>
+        <span class="s1">self.models = self.apps.all_models[self.label]</span>
+
+
+<span class="s0">class </span><span class="s1">StateApps(Apps):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Subclass of the global Apps registry class to better handle dynamic model 
+    additions and removals. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">real_apps</span><span class="s0">, </span><span class="s1">models</span><span class="s0">, </span><span class="s1">ignore_swappable=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s5"># Any apps in self.real_apps should have all their models included</span>
+        <span class="s5"># in the render. We don't use the original model instances as there</span>
+        <span class="s5"># are some variables that refer to the Apps object.</span>
+        <span class="s5"># FKs/M2Ms from real apps are also not included as they just</span>
+        <span class="s5"># mess things up with partial states (due to lack of dependencies)</span>
+        <span class="s1">self.real_models = []</span>
+        <span class="s0">for </span><span class="s1">app_label </span><span class="s0">in </span><span class="s1">real_apps:</span>
+            <span class="s1">app = global_apps.get_app_config(app_label)</span>
+            <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">app.get_models():</span>
+                <span class="s1">self.real_models.append(ModelState.from_model(model</span><span class="s0">, </span><span class="s1">exclude_rels=</span><span class="s0">True</span><span class="s1">))</span>
+        <span class="s5"># Populate the app registry with a stub for each application.</span>
+        <span class="s1">app_labels = {model_state.app_label </span><span class="s0">for </span><span class="s1">model_state </span><span class="s0">in </span><span class="s1">models.values()}</span>
+        <span class="s1">app_configs = [AppConfigStub(label) </span><span class="s0">for </span><span class="s1">label </span><span class="s0">in </span><span class="s1">sorted([*real_apps</span><span class="s0">, </span><span class="s1">*app_labels])]</span>
+        <span class="s1">super().__init__(app_configs)</span>
+
+        <span class="s5"># These locks get in the way of copying as implemented in clone(),</span>
+        <span class="s5"># which is called whenever Django duplicates a StateApps before</span>
+        <span class="s5"># updating it.</span>
+        <span class="s1">self._lock = </span><span class="s0">None</span>
+        <span class="s1">self.ready_event = </span><span class="s0">None</span>
+
+        <span class="s1">self.render_multiple([*models.values()</span><span class="s0">, </span><span class="s1">*self.real_models])</span>
+
+        <span class="s5"># There shouldn't be any operations pending at this point.</span>
+        <span class="s0">from </span><span class="s1">django.core.checks.model_checks </span><span class="s0">import </span><span class="s1">_check_lazy_references</span>
+        <span class="s1">ignore = {make_model_tuple(settings.AUTH_USER_MODEL)} </span><span class="s0">if </span><span class="s1">ignore_swappable </span><span class="s0">else </span><span class="s1">set()</span>
+        <span class="s1">errors = _check_lazy_references(self</span><span class="s0">, </span><span class="s1">ignore=ignore)</span>
+        <span class="s0">if </span><span class="s1">errors:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;</span><span class="s0">\n</span><span class="s2">&quot;</span><span class="s1">.join(error.msg </span><span class="s0">for </span><span class="s1">error </span><span class="s0">in </span><span class="s1">errors))</span>
+
+    <span class="s1">@contextmanager</span>
+    <span class="s0">def </span><span class="s1">bulk_update(self):</span>
+        <span class="s5"># Avoid clearing each model's cache for each change. Instead, clear</span>
+        <span class="s5"># all caches when we're finished updating the model instances.</span>
+        <span class="s1">ready = self.ready</span>
+        <span class="s1">self.ready = </span><span class="s0">False</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">yield</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s1">self.ready = ready</span>
+            <span class="s1">self.clear_cache()</span>
+
+    <span class="s0">def </span><span class="s1">render_multiple(self</span><span class="s0">, </span><span class="s1">model_states):</span>
+        <span class="s5"># We keep trying to render the models in a loop, ignoring invalid</span>
+        <span class="s5"># base errors, until the size of the unrendered models doesn't</span>
+        <span class="s5"># decrease by at least one, meaning there's a base dependency loop/</span>
+        <span class="s5"># missing base.</span>
+        <span class="s0">if not </span><span class="s1">model_states:</span>
+            <span class="s0">return</span>
+        <span class="s5"># Prevent that all model caches are expired for each render.</span>
+        <span class="s0">with </span><span class="s1">self.bulk_update():</span>
+            <span class="s1">unrendered_models = model_states</span>
+            <span class="s0">while </span><span class="s1">unrendered_models:</span>
+                <span class="s1">new_unrendered_models = []</span>
+                <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">unrendered_models:</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">model.render(self)</span>
+                    <span class="s0">except </span><span class="s1">InvalidBasesError:</span>
+                        <span class="s1">new_unrendered_models.append(model)</span>
+                <span class="s0">if </span><span class="s1">len(new_unrendered_models) == len(unrendered_models):</span>
+                    <span class="s0">raise </span><span class="s1">InvalidBasesError(</span>
+                        <span class="s2">&quot;Cannot resolve bases for %r</span><span class="s0">\n</span><span class="s2">This can happen if you are inheriting models from an &quot;</span>
+                        <span class="s2">&quot;app with migrations (e.g. contrib.auth)</span><span class="s0">\n </span><span class="s2">in an app with no migrations; see &quot;</span>
+                        <span class="s2">&quot;https://docs.djangoproject.com/en/%s/topics/migrations/#dependencies &quot;</span>
+                        <span class="s2">&quot;for more&quot; </span><span class="s1">% (new_unrendered_models</span><span class="s0">, </span><span class="s1">get_docs_version())</span>
+                    <span class="s1">)</span>
+                <span class="s1">unrendered_models = new_unrendered_models</span>
+
+    <span class="s0">def </span><span class="s1">clone(self):</span>
+        <span class="s4">&quot;&quot;&quot;Return a clone of this registry.&quot;&quot;&quot;</span>
+        <span class="s1">clone = StateApps([]</span><span class="s0">, </span><span class="s1">{})</span>
+        <span class="s1">clone.all_models = copy.deepcopy(self.all_models)</span>
+        <span class="s1">clone.app_configs = copy.deepcopy(self.app_configs)</span>
+        <span class="s5"># Set the pointer to the correct app registry.</span>
+        <span class="s0">for </span><span class="s1">app_config </span><span class="s0">in </span><span class="s1">clone.app_configs.values():</span>
+            <span class="s1">app_config.apps = clone</span>
+        <span class="s5"># No need to actually clone them, they'll never change</span>
+        <span class="s1">clone.real_models = self.real_models</span>
+        <span class="s0">return </span><span class="s1">clone</span>
+
+    <span class="s0">def </span><span class="s1">register_model(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model):</span>
+        <span class="s1">self.all_models[app_label][model._meta.model_name] = model</span>
+        <span class="s0">if </span><span class="s1">app_label </span><span class="s0">not in </span><span class="s1">self.app_configs:</span>
+            <span class="s1">self.app_configs[app_label] = AppConfigStub(app_label)</span>
+            <span class="s1">self.app_configs[app_label].apps = self</span>
+        <span class="s1">self.app_configs[app_label].models[model._meta.model_name] = model</span>
+        <span class="s1">self.do_pending_operations(model)</span>
+        <span class="s1">self.clear_cache()</span>
+
+    <span class="s0">def </span><span class="s1">unregister_model(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">model_name):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">del </span><span class="s1">self.all_models[app_label][model_name]</span>
+            <span class="s0">del </span><span class="s1">self.app_configs[app_label].models[model_name]</span>
+        <span class="s0">except </span><span class="s1">KeyError:</span>
+            <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">ModelState:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Represent a Django Model. Don't use the actual Model class as it's not 
+    designed to have its options changed - instead, mutate this one and then 
+    render it into a Model as required. 
+ 
+    Note that while you are allowed to mutate .fields, you are not allowed 
+    to mutate the Field instances inside there themselves - you must instead 
+    assign new ones, as these are not detached during a clone. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, </span><span class="s1">fields</span><span class="s0">, </span><span class="s1">options=</span><span class="s0">None, </span><span class="s1">bases=</span><span class="s0">None, </span><span class="s1">managers=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.app_label = app_label</span>
+        <span class="s1">self.name = name</span>
+        <span class="s1">self.fields = dict(fields)</span>
+        <span class="s1">self.options = options </span><span class="s0">or </span><span class="s1">{}</span>
+        <span class="s1">self.options.setdefault(</span><span class="s2">'indexes'</span><span class="s0">, </span><span class="s1">[])</span>
+        <span class="s1">self.options.setdefault(</span><span class="s2">'constraints'</span><span class="s0">, </span><span class="s1">[])</span>
+        <span class="s1">self.bases = bases </span><span class="s0">or </span><span class="s1">(models.Model</span><span class="s0">,</span><span class="s1">)</span>
+        <span class="s1">self.managers = managers </span><span class="s0">or </span><span class="s1">[]</span>
+        <span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">self.fields.items():</span>
+            <span class="s5"># Sanity-check that fields are NOT already bound to a model.</span>
+            <span class="s0">if </span><span class="s1">hasattr(field</span><span class="s0">, </span><span class="s2">'model'</span><span class="s1">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span>
+                    <span class="s2">'ModelState.fields cannot be bound to a model - &quot;%s&quot; is.' </span><span class="s1">% name</span>
+                <span class="s1">)</span>
+            <span class="s5"># Sanity-check that relation fields are NOT referring to a model class.</span>
+            <span class="s0">if </span><span class="s1">field.is_relation </span><span class="s0">and </span><span class="s1">hasattr(field.related_model</span><span class="s0">, </span><span class="s2">'_meta'</span><span class="s1">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span>
+                    <span class="s2">'ModelState.fields cannot refer to a model class - &quot;%s.to&quot; does. '</span>
+                    <span class="s2">'Use a string reference instead.' </span><span class="s1">% name</span>
+                <span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">field.many_to_many </span><span class="s0">and </span><span class="s1">hasattr(field.remote_field.through</span><span class="s0">, </span><span class="s2">'_meta'</span><span class="s1">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span>
+                    <span class="s2">'ModelState.fields cannot refer to a model class - &quot;%s.through&quot; does. '</span>
+                    <span class="s2">'Use a string reference instead.' </span><span class="s1">% name</span>
+                <span class="s1">)</span>
+        <span class="s5"># Sanity-check that indexes have their name set.</span>
+        <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">self.options[</span><span class="s2">'indexes'</span><span class="s1">]:</span>
+            <span class="s0">if not </span><span class="s1">index.name:</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span>
+                    <span class="s2">&quot;Indexes passed to ModelState require a name attribute. &quot;</span>
+                    <span class="s2">&quot;%r doesn't have one.&quot; </span><span class="s1">% index</span>
+                <span class="s1">)</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s0">def </span><span class="s1">name_lower(self):</span>
+        <span class="s0">return </span><span class="s1">self.name.lower()</span>
+
+    <span class="s0">def </span><span class="s1">get_field(self</span><span class="s0">, </span><span class="s1">field_name):</span>
+        <span class="s1">field_name = (</span>
+            <span class="s1">self.options[</span><span class="s2">'order_with_respect_to'</span><span class="s1">]</span>
+            <span class="s0">if </span><span class="s1">field_name == </span><span class="s2">'_order'</span>
+            <span class="s0">else </span><span class="s1">field_name</span>
+        <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self.fields[field_name]</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">from_model(cls</span><span class="s0">, </span><span class="s1">model</span><span class="s0">, </span><span class="s1">exclude_rels=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot;Given a model, return a ModelState representing it.&quot;&quot;&quot;</span>
+        <span class="s5"># Deconstruct the fields</span>
+        <span class="s1">fields = []</span>
+        <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model._meta.local_fields:</span>
+            <span class="s0">if </span><span class="s1">getattr(field</span><span class="s0">, </span><span class="s2">&quot;remote_field&quot;</span><span class="s0">, None</span><span class="s1">) </span><span class="s0">and </span><span class="s1">exclude_rels:</span>
+                <span class="s0">continue</span>
+            <span class="s0">if </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">models.OrderWrt):</span>
+                <span class="s0">continue</span>
+            <span class="s1">name = field.name</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">fields.append((name</span><span class="s0">, </span><span class="s1">field.clone()))</span>
+            <span class="s0">except </span><span class="s1">TypeError </span><span class="s0">as </span><span class="s1">e:</span>
+                <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">&quot;Couldn't reconstruct field %s on %s: %s&quot; </span><span class="s1">% (</span>
+                    <span class="s1">name</span><span class="s0">,</span>
+                    <span class="s1">model._meta.label</span><span class="s0">,</span>
+                    <span class="s1">e</span><span class="s0">,</span>
+                <span class="s1">))</span>
+        <span class="s0">if not </span><span class="s1">exclude_rels:</span>
+            <span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model._meta.local_many_to_many:</span>
+                <span class="s1">name = field.name</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">fields.append((name</span><span class="s0">, </span><span class="s1">field.clone()))</span>
+                <span class="s0">except </span><span class="s1">TypeError </span><span class="s0">as </span><span class="s1">e:</span>
+                    <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">&quot;Couldn't reconstruct m2m field %s on %s: %s&quot; </span><span class="s1">% (</span>
+                        <span class="s1">name</span><span class="s0">,</span>
+                        <span class="s1">model._meta.object_name</span><span class="s0">,</span>
+                        <span class="s1">e</span><span class="s0">,</span>
+                    <span class="s1">))</span>
+        <span class="s5"># Extract the options</span>
+        <span class="s1">options = {}</span>
+        <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">DEFAULT_NAMES:</span>
+            <span class="s5"># Ignore some special options</span>
+            <span class="s0">if </span><span class="s1">name </span><span class="s0">in </span><span class="s1">[</span><span class="s2">&quot;apps&quot;</span><span class="s0">, </span><span class="s2">&quot;app_label&quot;</span><span class="s1">]:</span>
+                <span class="s0">continue</span>
+            <span class="s0">elif </span><span class="s1">name </span><span class="s0">in </span><span class="s1">model._meta.original_attrs:</span>
+                <span class="s0">if </span><span class="s1">name == </span><span class="s2">&quot;unique_together&quot;</span><span class="s1">:</span>
+                    <span class="s1">ut = model._meta.original_attrs[</span><span class="s2">&quot;unique_together&quot;</span><span class="s1">]</span>
+                    <span class="s1">options[name] = set(normalize_together(ut))</span>
+                <span class="s0">elif </span><span class="s1">name == </span><span class="s2">&quot;index_together&quot;</span><span class="s1">:</span>
+                    <span class="s1">it = model._meta.original_attrs[</span><span class="s2">&quot;index_together&quot;</span><span class="s1">]</span>
+                    <span class="s1">options[name] = set(normalize_together(it))</span>
+                <span class="s0">elif </span><span class="s1">name == </span><span class="s2">&quot;indexes&quot;</span><span class="s1">:</span>
+                    <span class="s1">indexes = [idx.clone() </span><span class="s0">for </span><span class="s1">idx </span><span class="s0">in </span><span class="s1">model._meta.indexes]</span>
+                    <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">indexes:</span>
+                        <span class="s0">if not </span><span class="s1">index.name:</span>
+                            <span class="s1">index.set_name_with_model(model)</span>
+                    <span class="s1">options[</span><span class="s2">'indexes'</span><span class="s1">] = indexes</span>
+                <span class="s0">elif </span><span class="s1">name == </span><span class="s2">'constraints'</span><span class="s1">:</span>
+                    <span class="s1">options[</span><span class="s2">'constraints'</span><span class="s1">] = [con.clone() </span><span class="s0">for </span><span class="s1">con </span><span class="s0">in </span><span class="s1">model._meta.constraints]</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">options[name] = model._meta.original_attrs[name]</span>
+        <span class="s5"># If we're ignoring relationships, remove all field-listing model</span>
+        <span class="s5"># options (that option basically just means &quot;make a stub model&quot;)</span>
+        <span class="s0">if </span><span class="s1">exclude_rels:</span>
+            <span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">[</span><span class="s2">&quot;unique_together&quot;</span><span class="s0">, </span><span class="s2">&quot;index_together&quot;</span><span class="s0">, </span><span class="s2">&quot;order_with_respect_to&quot;</span><span class="s1">]:</span>
+                <span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s1">options:</span>
+                    <span class="s0">del </span><span class="s1">options[key]</span>
+        <span class="s5"># Private fields are ignored, so remove options that refer to them.</span>
+        <span class="s0">elif </span><span class="s1">options.get(</span><span class="s2">'order_with_respect_to'</span><span class="s1">) </span><span class="s0">in </span><span class="s1">{field.name </span><span class="s0">for </span><span class="s1">field </span><span class="s0">in </span><span class="s1">model._meta.private_fields}:</span>
+            <span class="s0">del </span><span class="s1">options[</span><span class="s2">'order_with_respect_to'</span><span class="s1">]</span>
+
+        <span class="s0">def </span><span class="s1">flatten_bases(model):</span>
+            <span class="s1">bases = []</span>
+            <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">model.__bases__:</span>
+                <span class="s0">if </span><span class="s1">hasattr(base</span><span class="s0">, </span><span class="s2">&quot;_meta&quot;</span><span class="s1">) </span><span class="s0">and </span><span class="s1">base._meta.abstract:</span>
+                    <span class="s1">bases.extend(flatten_bases(base))</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">bases.append(base)</span>
+            <span class="s0">return </span><span class="s1">bases</span>
+
+        <span class="s5"># We can't rely on __mro__ directly because we only want to flatten</span>
+        <span class="s5"># abstract models and not the whole tree. However by recursing on</span>
+        <span class="s5"># __bases__ we may end up with duplicates and ordering issues, we</span>
+        <span class="s5"># therefore discard any duplicates and reorder the bases according</span>
+        <span class="s5"># to their index in the MRO.</span>
+        <span class="s1">flattened_bases = sorted(set(flatten_bases(model))</span><span class="s0">, </span><span class="s1">key=</span><span class="s0">lambda </span><span class="s1">x: model.__mro__.index(x))</span>
+
+        <span class="s5"># Make our record</span>
+        <span class="s1">bases = tuple(</span>
+            <span class="s1">(</span>
+                <span class="s1">base._meta.label_lower</span>
+                <span class="s0">if </span><span class="s1">hasattr(base</span><span class="s0">, </span><span class="s2">&quot;_meta&quot;</span><span class="s1">) </span><span class="s0">else</span>
+                <span class="s1">base</span>
+            <span class="s1">)</span>
+            <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">flattened_bases</span>
+        <span class="s1">)</span>
+        <span class="s5"># Ensure at least one base inherits from models.Model</span>
+        <span class="s0">if not </span><span class="s1">any((isinstance(base</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">or </span><span class="s1">issubclass(base</span><span class="s0">, </span><span class="s1">models.Model)) </span><span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">bases):</span>
+            <span class="s1">bases = (models.Model</span><span class="s0">,</span><span class="s1">)</span>
+
+        <span class="s1">managers = []</span>
+        <span class="s1">manager_names = set()</span>
+        <span class="s1">default_manager_shim = </span><span class="s0">None</span>
+        <span class="s0">for </span><span class="s1">manager </span><span class="s0">in </span><span class="s1">model._meta.managers:</span>
+            <span class="s0">if </span><span class="s1">manager.name </span><span class="s0">in </span><span class="s1">manager_names:</span>
+                <span class="s5"># Skip overridden managers.</span>
+                <span class="s0">continue</span>
+            <span class="s0">elif </span><span class="s1">manager.use_in_migrations:</span>
+                <span class="s5"># Copy managers usable in migrations.</span>
+                <span class="s1">new_manager = copy.copy(manager)</span>
+                <span class="s1">new_manager._set_creation_counter()</span>
+            <span class="s0">elif </span><span class="s1">manager </span><span class="s0">is </span><span class="s1">model._base_manager </span><span class="s0">or </span><span class="s1">manager </span><span class="s0">is </span><span class="s1">model._default_manager:</span>
+                <span class="s5"># Shim custom managers used as default and base managers.</span>
+                <span class="s1">new_manager = models.Manager()</span>
+                <span class="s1">new_manager.model = manager.model</span>
+                <span class="s1">new_manager.name = manager.name</span>
+                <span class="s0">if </span><span class="s1">manager </span><span class="s0">is </span><span class="s1">model._default_manager:</span>
+                    <span class="s1">default_manager_shim = new_manager</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">continue</span>
+            <span class="s1">manager_names.add(manager.name)</span>
+            <span class="s1">managers.append((manager.name</span><span class="s0">, </span><span class="s1">new_manager))</span>
+
+        <span class="s5"># Ignore a shimmed default manager called objects if it's the only one.</span>
+        <span class="s0">if </span><span class="s1">managers == [(</span><span class="s2">'objects'</span><span class="s0">, </span><span class="s1">default_manager_shim)]:</span>
+            <span class="s1">managers = []</span>
+
+        <span class="s5"># Construct the new ModelState</span>
+        <span class="s0">return </span><span class="s1">cls(</span>
+            <span class="s1">model._meta.app_label</span><span class="s0">,</span>
+            <span class="s1">model._meta.object_name</span><span class="s0">,</span>
+            <span class="s1">fields</span><span class="s0">,</span>
+            <span class="s1">options</span><span class="s0">,</span>
+            <span class="s1">bases</span><span class="s0">,</span>
+            <span class="s1">managers</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">construct_managers(self):</span>
+        <span class="s4">&quot;&quot;&quot;Deep-clone the managers using deconstruction.&quot;&quot;&quot;</span>
+        <span class="s5"># Sort all managers by their creation counter</span>
+        <span class="s1">sorted_managers = sorted(self.managers</span><span class="s0">, </span><span class="s1">key=</span><span class="s0">lambda </span><span class="s1">v: v[</span><span class="s3">1</span><span class="s1">].creation_counter)</span>
+        <span class="s0">for </span><span class="s1">mgr_name</span><span class="s0">, </span><span class="s1">manager </span><span class="s0">in </span><span class="s1">sorted_managers:</span>
+            <span class="s1">as_manager</span><span class="s0">, </span><span class="s1">manager_path</span><span class="s0">, </span><span class="s1">qs_path</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs = manager.deconstruct()</span>
+            <span class="s0">if </span><span class="s1">as_manager:</span>
+                <span class="s1">qs_class = import_string(qs_path)</span>
+                <span class="s0">yield </span><span class="s1">mgr_name</span><span class="s0">, </span><span class="s1">qs_class.as_manager()</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">manager_class = import_string(manager_path)</span>
+                <span class="s0">yield </span><span class="s1">mgr_name</span><span class="s0">, </span><span class="s1">manager_class(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">clone(self):</span>
+        <span class="s4">&quot;&quot;&quot;Return an exact copy of this ModelState.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self.__class__(</span>
+            <span class="s1">app_label=self.app_label</span><span class="s0">,</span>
+            <span class="s1">name=self.name</span><span class="s0">,</span>
+            <span class="s1">fields=dict(self.fields)</span><span class="s0">,</span>
+            <span class="s5"># Since options are shallow-copied here, operations such as</span>
+            <span class="s5"># AddIndex must replace their option (e.g 'indexes') rather</span>
+            <span class="s5"># than mutating it.</span>
+            <span class="s1">options=dict(self.options)</span><span class="s0">,</span>
+            <span class="s1">bases=self.bases</span><span class="s0">,</span>
+            <span class="s1">managers=list(self.managers)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">render(self</span><span class="s0">, </span><span class="s1">apps):</span>
+        <span class="s4">&quot;&quot;&quot;Create a Model object from our current state into the given apps.&quot;&quot;&quot;</span>
+        <span class="s5"># First, make a Meta object</span>
+        <span class="s1">meta_contents = {</span><span class="s2">'app_label'</span><span class="s1">: self.app_label</span><span class="s0">, </span><span class="s2">'apps'</span><span class="s1">: apps</span><span class="s0">, </span><span class="s1">**self.options}</span>
+        <span class="s1">meta = type(</span><span class="s2">&quot;Meta&quot;</span><span class="s0">, </span><span class="s1">()</span><span class="s0">, </span><span class="s1">meta_contents)</span>
+        <span class="s5"># Then, work out our bases</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">bases = tuple(</span>
+                <span class="s1">(apps.get_model(base) </span><span class="s0">if </span><span class="s1">isinstance(base</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">else </span><span class="s1">base)</span>
+                <span class="s0">for </span><span class="s1">base </span><span class="s0">in </span><span class="s1">self.bases</span>
+            <span class="s1">)</span>
+        <span class="s0">except </span><span class="s1">LookupError:</span>
+            <span class="s0">raise </span><span class="s1">InvalidBasesError(</span><span class="s2">&quot;Cannot resolve one or more bases from %r&quot; </span><span class="s1">% (self.bases</span><span class="s0">,</span><span class="s1">))</span>
+        <span class="s5"># Clone fields for the body, add other bits.</span>
+        <span class="s1">body = {name: field.clone() </span><span class="s0">for </span><span class="s1">name</span><span class="s0">, </span><span class="s1">field </span><span class="s0">in </span><span class="s1">self.fields.items()}</span>
+        <span class="s1">body[</span><span class="s2">'Meta'</span><span class="s1">] = meta</span>
+        <span class="s1">body[</span><span class="s2">'__module__'</span><span class="s1">] = </span><span class="s2">&quot;__fake__&quot;</span>
+
+        <span class="s5"># Restore managers</span>
+        <span class="s1">body.update(self.construct_managers())</span>
+        <span class="s5"># Then, make a Model object (apps.register_model is called in __new__)</span>
+        <span class="s0">return </span><span class="s1">type(self.name</span><span class="s0">, </span><span class="s1">bases</span><span class="s0">, </span><span class="s1">body)</span>
+
+    <span class="s0">def </span><span class="s1">get_index_by_name(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s0">for </span><span class="s1">index </span><span class="s0">in </span><span class="s1">self.options[</span><span class="s2">'indexes'</span><span class="s1">]:</span>
+            <span class="s0">if </span><span class="s1">index.name == name:</span>
+                <span class="s0">return </span><span class="s1">index</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;No index named %s on model %s&quot; </span><span class="s1">% (name</span><span class="s0">, </span><span class="s1">self.name))</span>
+
+    <span class="s0">def </span><span class="s1">get_constraint_by_name(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s0">for </span><span class="s1">constraint </span><span class="s0">in </span><span class="s1">self.options[</span><span class="s2">'constraints'</span><span class="s1">]:</span>
+            <span class="s0">if </span><span class="s1">constraint.name == name:</span>
+                <span class="s0">return </span><span class="s1">constraint</span>
+        <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">'No constraint named %s on model %s' </span><span class="s1">% (name</span><span class="s0">, </span><span class="s1">self.name))</span>
+
+    <span class="s0">def </span><span class="s1">__repr__(self):</span>
+        <span class="s0">return </span><span class="s2">&quot;&lt;%s: '%s.%s'&gt;&quot; </span><span class="s1">% (self.__class__.__name__</span><span class="s0">, </span><span class="s1">self.app_label</span><span class="s0">, </span><span class="s1">self.name)</span>
+
+    <span class="s0">def </span><span class="s1">__eq__(self</span><span class="s0">, </span><span class="s1">other):</span>
+        <span class="s0">return </span><span class="s1">(</span>
+            <span class="s1">(self.app_label == other.app_label) </span><span class="s0">and</span>
+            <span class="s1">(self.name == other.name) </span><span class="s0">and</span>
+            <span class="s1">(len(self.fields) == len(other.fields)) </span><span class="s0">and</span>
+            <span class="s1">all(</span>
+                <span class="s1">k1 == k2 </span><span class="s0">and </span><span class="s1">f1.deconstruct()[</span><span class="s3">1</span><span class="s1">:] == f2.deconstruct()[</span><span class="s3">1</span><span class="s1">:]</span>
+                <span class="s0">for </span><span class="s1">(k1</span><span class="s0">, </span><span class="s1">f1)</span><span class="s0">, </span><span class="s1">(k2</span><span class="s0">, </span><span class="s1">f2) </span><span class="s0">in </span><span class="s1">zip(</span>
+                    <span class="s1">sorted(self.fields.items())</span><span class="s0">,</span>
+                    <span class="s1">sorted(other.fields.items())</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">) </span><span class="s0">and</span>
+            <span class="s1">(self.options == other.options) </span><span class="s0">and</span>
+            <span class="s1">(self.bases == other.bases) </span><span class="s0">and</span>
+            <span class="s1">(self.managers == other.managers)</span>
+        <span class="s1">)</span>
+</pre>
+</body>
+</html>

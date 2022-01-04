@@ -1,0 +1,392 @@
+<html>
+<head>
+<title>sphinx_steps.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sphinx_steps.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Provides a formatter that generates Sphinx-based documentation 
+of available step definitions (step implementations). 
+ 
+TODO: 
+  * Post-processor for step docstrings. 
+  * Solution for requires: table, text 
+  * i18n keywords 
+ 
+.. seealso:: 
+    http://sphinx-doc.org/ 
+ 
+.. note:: REQUIRES docutils 
+    :mod:`docutils` are needed to generate step-label for step references. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span><span class="s3">, </span><span class="s1">print_function</span>
+<span class="s3">from </span><span class="s1">operator </span><span class="s3">import </span><span class="s1">attrgetter</span>
+<span class="s3">import </span><span class="s1">inspect</span>
+<span class="s3">import </span><span class="s1">os.path</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">from </span><span class="s1">behave.formatter.steps </span><span class="s3">import </span><span class="s1">AbstractStepsFormatter</span>
+<span class="s3">from </span><span class="s1">behave.formatter </span><span class="s3">import </span><span class="s1">sphinx_util</span>
+<span class="s3">from </span><span class="s1">behave.model </span><span class="s3">import </span><span class="s1">Table</span>
+<span class="s3">try</span><span class="s1">:</span>
+    <span class="s0"># -- NEEDED FOR: step-labels (and step-refs)</span>
+    <span class="s3">from </span><span class="s1">docutils.nodes </span><span class="s3">import </span><span class="s1">fully_normalize_name</span>
+    <span class="s1">has_docutils = </span><span class="s3">True</span>
+<span class="s3">except </span><span class="s1">ImportError:</span>
+    <span class="s1">has_docutils = </span><span class="s3">False</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># HELPER CLASS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">StepsModule(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Value object to keep track of step definitions that belong to same module. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">module_name</span><span class="s3">, </span><span class="s1">step_definitions=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.module_name = module_name</span>
+        <span class="s1">self.step_definitions = step_definitions </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self._name = </span><span class="s3">None</span>
+        <span class="s1">self._filename = </span><span class="s3">None</span>
+
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">name(self):</span>
+        <span class="s3">if </span><span class="s1">self._name </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s0"># -- DISCOVER ON DEMAND: From step definitions (module).</span>
+            <span class="s0"># REQUIRED: To discover complete canonical module name.</span>
+            <span class="s1">module = self.module</span>
+            <span class="s3">if </span><span class="s1">module:</span>
+                <span class="s0"># -- USED-BY: Imported step libraries.</span>
+                <span class="s1">module_name = self.module.__name__</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># -- USED-BY: features/steps/*.py (without __init__.py)</span>
+                <span class="s1">module_name = self.module_name</span>
+            <span class="s1">self._name = module_name</span>
+        <span class="s3">return </span><span class="s1">self._name</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">filename(self):</span>
+        <span class="s3">if not </span><span class="s1">self._filename:</span>
+            <span class="s3">if </span><span class="s1">self.step_definitions:</span>
+                <span class="s1">filename = inspect.getfile(self.step_definitions[</span><span class="s4">0</span><span class="s1">].func)</span>
+                <span class="s1">self._filename = os.path.relpath(filename)</span>
+        <span class="s3">return </span><span class="s1">self._filename</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">module(self):</span>
+        <span class="s3">if </span><span class="s1">self.step_definitions:</span>
+            <span class="s3">return </span><span class="s1">inspect.getmodule(self.step_definitions[</span><span class="s4">0</span><span class="s1">].func)</span>
+        <span class="s3">return </span><span class="s1">sys.modules.get(self.module_name)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">module_doc(self):</span>
+        <span class="s1">module = self.module</span>
+        <span class="s3">if </span><span class="s1">module:</span>
+            <span class="s3">return </span><span class="s1">inspect.getdoc(module)</span>
+        <span class="s3">return None</span>
+
+    <span class="s3">def </span><span class="s1">append(self</span><span class="s3">, </span><span class="s1">step_definition):</span>
+        <span class="s1">self.step_definitions.append(step_definition)</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># CLASS: SphinxStepsDocumentGenerator</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">SphinxStepsDocumentGenerator(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Provides document generator class that generates Sphinx-based 
+    documentation for step definitions. The primary purpose is to: 
+ 
+      * help the step-library provider/writer 
+      * simplify self-documentation of step-libraries 
+ 
+    EXAMPLE: 
+        step_definitions = ...  # Collect from step_registry 
+        doc_generator = SphinxStepsDocumentGenerator(step_definitions, &quot;output&quot;) 
+        doc_generator.write_docs() 
+ 
+    .. seealso:: http://sphinx-doc.org/ 
+    &quot;&quot;&quot;</span>
+    <span class="s1">default_step_definition_doc = </span><span class="s5">&quot;&quot;&quot;</span><span class="s3">\ 
+</span><span class="s5">.. todo:: 
+    Step definition description is missing. 
+&quot;&quot;&quot;</span>
+    <span class="s1">shows_step_module_info = </span><span class="s3">True</span>
+    <span class="s1">shows_step_module_overview = </span><span class="s3">True</span>
+    <span class="s1">make_step_index_entries = </span><span class="s3">True</span>
+    <span class="s1">make_step_labels = has_docutils</span>
+
+    <span class="s1">document_separator = </span><span class="s5">&quot;# -- DOCUMENT-END &quot; </span><span class="s1">+ </span><span class="s5">&quot;-&quot; </span><span class="s1">* </span><span class="s4">60</span>
+    <span class="s1">step_document_prefix = </span><span class="s5">&quot;step_module.&quot;</span>
+    <span class="s1">step_heading_prefix = </span><span class="s5">&quot;**Step:** &quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">step_definitions</span><span class="s3">, </span><span class="s1">destdir=</span><span class="s3">None, </span><span class="s1">stream=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.step_definitions = step_definitions</span>
+        <span class="s1">self.destdir = destdir</span>
+        <span class="s1">self.stream = stream</span>
+        <span class="s1">self.document = </span><span class="s3">None</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">stdout_mode(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Indicates that output towards stdout should be used. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self.stream </span><span class="s3">is not None</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">describe_step_definition(step_definition</span><span class="s3">, </span><span class="s1">step_type=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">if not </span><span class="s1">step_type:</span>
+            <span class="s1">step_type = step_definition.step_type </span><span class="s3">or </span><span class="s5">&quot;step&quot;</span>
+
+        <span class="s3">if </span><span class="s1">step_type == </span><span class="s5">&quot;step&quot;</span><span class="s1">:</span>
+            <span class="s1">step_type_text = </span><span class="s5">&quot;Given/When/Then&quot;</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">step_type_text = step_type.capitalize()</span>
+        <span class="s0"># -- ESCAPE: Some chars required for ReST documents (like backticks)</span>
+        <span class="s1">step_text = step_definition.pattern</span>
+        <span class="s3">if </span><span class="s5">&quot;`&quot; </span><span class="s3">in </span><span class="s1">step_text:</span>
+            <span class="s1">step_text = step_text.replace(</span><span class="s5">&quot;`&quot;</span><span class="s3">, </span><span class="s5">r&quot;\`&quot;</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s5">u&quot;%s %s&quot; </span><span class="s1">% (step_type_text</span><span class="s3">, </span><span class="s1">step_text)</span>
+
+    <span class="s3">def </span><span class="s1">ensure_destdir_exists(self):</span>
+        <span class="s3">assert </span><span class="s1">self.destdir</span>
+        <span class="s3">if </span><span class="s1">os.path.isfile(self.destdir):</span>
+            <span class="s1">print(</span><span class="s5">&quot;OOPS: remove %s&quot; </span><span class="s1">% self.destdir)</span>
+            <span class="s1">os.remove(self.destdir)</span>
+        <span class="s3">if not </span><span class="s1">os.path.exists(self.destdir):</span>
+            <span class="s1">os.makedirs(self.destdir)</span>
+
+    <span class="s3">def </span><span class="s1">ensure_document_is_closed(self):</span>
+        <span class="s3">if </span><span class="s1">self.document </span><span class="s3">and not </span><span class="s1">self.stdout_mode:</span>
+            <span class="s1">self.document.close()</span>
+            <span class="s1">self.document = </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">discover_step_modules(self):</span>
+        <span class="s1">step_modules_map = {}</span>
+        <span class="s3">for </span><span class="s1">step_definition </span><span class="s3">in </span><span class="s1">self.step_definitions:</span>
+            <span class="s3">assert </span><span class="s1">step_definition.step_type </span><span class="s3">is not None</span>
+            <span class="s1">step_filename = step_definition.location.filename</span>
+            <span class="s1">step_module = step_modules_map.get(step_filename</span><span class="s3">, None</span><span class="s1">)</span>
+            <span class="s3">if not </span><span class="s1">step_module:</span>
+                <span class="s1">filename = inspect.getfile(step_definition.func)</span>
+                <span class="s1">module_name = inspect.getmodulename(filename)</span>
+                <span class="s3">assert </span><span class="s1">module_name</span><span class="s3">, </span><span class="s1">\</span>
+                    <span class="s5">&quot;step_definition: %s&quot; </span><span class="s1">% step_definition.location</span>
+                <span class="s1">step_module = StepsModule(module_name)</span>
+                <span class="s1">step_modules_map[step_filename] = step_module</span>
+            <span class="s1">step_module.append(step_definition)</span>
+
+        <span class="s1">step_modules = sorted(step_modules_map.values()</span><span class="s3">, </span><span class="s1">key=attrgetter(</span><span class="s5">&quot;name&quot;</span><span class="s1">))</span>
+        <span class="s3">for </span><span class="s1">module </span><span class="s3">in </span><span class="s1">step_modules:</span>
+            <span class="s1">step_definitions = sorted(module.step_definitions</span><span class="s3">,</span>
+                                      <span class="s1">key=attrgetter(</span><span class="s5">&quot;location&quot;</span><span class="s1">))</span>
+            <span class="s1">module.step_definitions = step_definitions</span>
+        <span class="s3">return </span><span class="s1">step_modules</span>
+
+    <span class="s3">def </span><span class="s1">create_document(self</span><span class="s3">, </span><span class="s1">filename):</span>
+        <span class="s3">if not </span><span class="s1">(filename.endswith(</span><span class="s5">&quot;.rst&quot;</span><span class="s1">) </span><span class="s3">or </span><span class="s1">filename.endswith(</span><span class="s5">&quot;.txt&quot;</span><span class="s1">)):</span>
+            <span class="s1">filename += </span><span class="s5">&quot;.rst&quot;</span>
+        <span class="s3">if </span><span class="s1">self.stdout_mode:</span>
+            <span class="s1">stream = self.stream</span>
+            <span class="s1">document = sphinx_util.DocumentWriter(stream</span><span class="s3">, </span><span class="s1">should_close=</span><span class="s3">False</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.ensure_destdir_exists()</span>
+            <span class="s1">filename = os.path.join(self.destdir</span><span class="s3">, </span><span class="s1">filename)</span>
+            <span class="s1">document = sphinx_util.DocumentWriter.open(filename)</span>
+        <span class="s3">return </span><span class="s1">document</span>
+
+    <span class="s3">def </span><span class="s1">write_docs(self):</span>
+        <span class="s1">step_modules = self.discover_step_modules()</span>
+        <span class="s1">self.write_step_module_index(step_modules)</span>
+        <span class="s3">for </span><span class="s1">step_module </span><span class="s3">in </span><span class="s1">step_modules:</span>
+            <span class="s1">self.write_step_module(step_module)</span>
+        <span class="s3">return </span><span class="s1">len(step_modules)</span>
+
+    <span class="s3">def </span><span class="s1">write_step_module_index(self</span><span class="s3">, </span><span class="s1">step_modules</span><span class="s3">, </span><span class="s1">filename=</span><span class="s5">&quot;index.rst&quot;</span><span class="s1">):</span>
+        <span class="s1">document = self.create_document(filename)</span>
+        <span class="s1">document.write(</span><span class="s5">&quot;.. _docid.steps:</span><span class="s3">\n\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+        <span class="s1">document.write_heading(</span><span class="s5">&quot;Step Definitions&quot;</span><span class="s1">)</span>
+        <span class="s1">document.write(</span><span class="s5">&quot;&quot;&quot;</span><span class="s3">\ 
+</span><span class="s5">The following step definitions are provided here. 
+ 
+---- 
+ 
+&quot;&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">entries = sorted([self.step_document_prefix + module.name</span>
+                          <span class="s3">for </span><span class="s1">module </span><span class="s3">in </span><span class="s1">step_modules])</span>
+        <span class="s1">document.write_toctree(entries</span><span class="s3">, </span><span class="s1">maxdepth=</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s1">document.close()</span>
+        <span class="s3">if </span><span class="s1">self.stdout_mode:</span>
+            <span class="s1">sys.stdout.write(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">%s</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">% self.document_separator)</span>
+
+    <span class="s3">def </span><span class="s1">write_step_module(self</span><span class="s3">, </span><span class="s1">step_module):</span>
+        <span class="s1">self.ensure_document_is_closed()</span>
+        <span class="s1">document_name = self.step_document_prefix + step_module.name</span>
+        <span class="s1">self.document = self.create_document(document_name)</span>
+        <span class="s1">self.document.write(</span><span class="s5">&quot;.. _docid.steps.%s:</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">% step_module.name)</span>
+        <span class="s1">self.document.write_heading(step_module.name</span><span class="s3">, </span><span class="s1">index_id=step_module.name)</span>
+        <span class="s3">if </span><span class="s1">self.shows_step_module_info:</span>
+            <span class="s1">self.document.write(</span><span class="s5">&quot;:Module:   %s</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">% step_module.name)</span>
+            <span class="s1">self.document.write(</span><span class="s5">&quot;:Filename: %s</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">% step_module.filename)</span>
+            <span class="s1">self.document.write(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">step_module.module_doc:</span>
+            <span class="s1">module_doc = step_module.module_doc.strip()</span>
+            <span class="s1">self.document.write(</span><span class="s5">&quot;%s</span><span class="s3">\n\n</span><span class="s5">&quot; </span><span class="s1">% module_doc)</span>
+        <span class="s3">if </span><span class="s1">self.shows_step_module_overview:</span>
+            <span class="s1">self.document.write_heading(</span><span class="s5">&quot;Step Overview&quot;</span><span class="s3">, </span><span class="s1">level=</span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s1">self.write_step_module_overview(step_module.step_definitions)</span>
+
+        <span class="s1">self.document.write_heading(</span><span class="s5">&quot;Step Definitions&quot;</span><span class="s3">, </span><span class="s1">level=</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s3">for </span><span class="s1">step_definition </span><span class="s3">in </span><span class="s1">step_module.step_definitions:</span>
+            <span class="s1">self.write_step_definition(step_definition)</span>
+
+        <span class="s0"># -- FINALLY: Clean up resources.</span>
+        <span class="s1">self.document.close()</span>
+        <span class="s1">self.document = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">self.stdout_mode:</span>
+            <span class="s1">sys.stdout.write(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">%s</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">% self.document_separator)</span>
+
+    <span class="s3">def </span><span class="s1">write_step_module_overview(self</span><span class="s3">, </span><span class="s1">step_definitions):</span>
+        <span class="s3">assert </span><span class="s1">self.document</span>
+        <span class="s1">headings = [</span><span class="s5">u&quot;Step Definition&quot;</span><span class="s3">, </span><span class="s5">u&quot;Given&quot;</span><span class="s3">, </span><span class="s5">u&quot;When&quot;</span><span class="s3">, </span><span class="s5">u&quot;Then&quot;</span><span class="s3">, </span><span class="s5">u&quot;Step&quot;</span><span class="s1">]</span>
+        <span class="s1">table = Table(headings)</span>
+        <span class="s1">step_type_cols = {</span>
+            <span class="s0"># -- pylint: disable=bad-whitespace</span>
+            <span class="s5">&quot;given&quot;</span><span class="s1">: [</span><span class="s5">u&quot;  x&quot;</span><span class="s3">, </span><span class="s5">u&quot;  &quot;</span><span class="s3">,  </span><span class="s5">u&quot;  &quot;</span><span class="s3">,  </span><span class="s5">u&quot;  &quot;</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s5">&quot;when&quot;</span><span class="s1">:  [</span><span class="s5">u&quot;  &quot;</span><span class="s3">,  </span><span class="s5">u&quot;  x&quot;</span><span class="s3">, </span><span class="s5">u&quot;  &quot;</span><span class="s3">,  </span><span class="s5">u&quot;  &quot;</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s5">&quot;then&quot;</span><span class="s1">:  [</span><span class="s5">u&quot;  &quot;</span><span class="s3">,  </span><span class="s5">u&quot;  &quot;</span><span class="s3">,  </span><span class="s5">u&quot;  x&quot;</span><span class="s3">, </span><span class="s5">u&quot;  &quot;</span><span class="s1">]</span><span class="s3">,</span>
+            <span class="s5">&quot;step&quot;</span><span class="s1">:  [</span><span class="s5">u&quot;  x&quot;</span><span class="s3">, </span><span class="s5">u&quot;  x&quot;</span><span class="s3">, </span><span class="s5">u&quot;  x&quot;</span><span class="s3">, </span><span class="s5">u&quot;  x&quot;</span><span class="s1">]</span><span class="s3">,</span>
+        <span class="s1">}</span>
+        <span class="s3">for </span><span class="s1">step_definition </span><span class="s3">in </span><span class="s1">step_definitions:</span>
+            <span class="s1">row = [self.describe_step_definition(step_definition)]</span>
+            <span class="s1">row.extend(step_type_cols[step_definition.step_type])</span>
+            <span class="s1">table.add_row(row)</span>
+        <span class="s1">self.document.write_table(table)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">make_step_definition_index_id(step):</span>
+        <span class="s3">if </span><span class="s1">step.step_type == </span><span class="s5">&quot;step&quot;</span><span class="s1">:</span>
+            <span class="s1">index_kinds = (</span><span class="s5">&quot;Given&quot;</span><span class="s3">, </span><span class="s5">&quot;When&quot;</span><span class="s3">, </span><span class="s5">&quot;Then&quot;</span><span class="s3">, </span><span class="s5">&quot;Step&quot;</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">keyword = step.step_type.capitalize()</span>
+            <span class="s1">index_kinds = (keyword</span><span class="s3">,</span><span class="s1">)</span>
+
+        <span class="s1">schema = </span><span class="s5">&quot;single: %s%s; %s %s&quot;</span>
+        <span class="s1">index_parts = []</span>
+        <span class="s3">for </span><span class="s1">index_kind </span><span class="s3">in </span><span class="s1">index_kinds:</span>
+            <span class="s1">keyword = index_kind</span>
+            <span class="s1">word = </span><span class="s5">&quot; step&quot;</span>
+            <span class="s3">if </span><span class="s1">index_kind == </span><span class="s5">&quot;Step&quot;</span><span class="s1">:</span>
+                <span class="s1">keyword = </span><span class="s5">&quot;Given/When/Then&quot;</span>
+                <span class="s1">word = </span><span class="s5">&quot;&quot;</span>
+            <span class="s1">part = schema % (index_kind</span><span class="s3">, </span><span class="s1">word</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">step.pattern)</span>
+            <span class="s1">index_parts.append(part)</span>
+        <span class="s1">joiner = </span><span class="s5">&quot;</span><span class="s3">\n    </span><span class="s5">&quot;</span>
+        <span class="s3">return </span><span class="s1">joiner + joiner.join(index_parts)</span>
+
+    <span class="s3">def </span><span class="s1">make_step_definition_doc(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s1">doc = inspect.getdoc(step.func)</span>
+        <span class="s3">if not </span><span class="s1">doc:</span>
+            <span class="s1">doc = self.default_step_definition_doc</span>
+        <span class="s1">doc = doc.strip()</span>
+        <span class="s3">return </span><span class="s1">doc</span>
+
+    <span class="s3">def </span><span class="s1">write_step_definition(self</span><span class="s3">, </span><span class="s1">step):</span>
+        <span class="s3">assert </span><span class="s1">self.document</span>
+        <span class="s1">step_text = self.describe_step_definition(step)</span>
+        <span class="s3">if </span><span class="s1">step_text.startswith(</span><span class="s5">&quot;* &quot;</span><span class="s1">):</span>
+            <span class="s1">step_text = step_text[</span><span class="s4">2</span><span class="s1">:]</span>
+        <span class="s1">index_id = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">self.make_step_index_entries:</span>
+            <span class="s1">index_id = self.make_step_definition_index_id(step)</span>
+
+        <span class="s1">heading = step_text</span>
+        <span class="s1">step_label = </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">self.step_heading_prefix:</span>
+            <span class="s1">heading = self.step_heading_prefix + step_text</span>
+        <span class="s3">if </span><span class="s1">has_docutils </span><span class="s3">and </span><span class="s1">self.make_step_labels:</span>
+            <span class="s0"># -- ADD STEP-LABEL (supports: step-refs by name)</span>
+            <span class="s0"># EXAMPLE: See also :ref:`When my step does &quot;{something}&quot;`.</span>
+            <span class="s1">step_label = fully_normalize_name(step_text)</span>
+            <span class="s0"># SKIP-HERE: self.document.write(&quot;.. _%s:\n\n&quot; % step_label)</span>
+        <span class="s1">self.document.write_heading(heading</span><span class="s3">, </span><span class="s1">level=</span><span class="s4">2</span><span class="s3">, </span><span class="s1">index_id=index_id</span><span class="s3">,</span>
+                                    <span class="s1">label=step_label)</span>
+        <span class="s1">step_definition_doc = self.make_step_definition_doc(step)</span>
+        <span class="s1">self.document.write(</span><span class="s5">&quot;%s</span><span class="s3">\n</span><span class="s5">&quot; </span><span class="s1">% step_definition_doc)</span>
+        <span class="s1">self.document.write(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># CLASS: SphinxStepsFormatter</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">SphinxStepsFormatter(AbstractStepsFormatter):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Provides formatter class that generates Sphinx-based documentation 
+    for all registered step definitions. The primary purpose is to: 
+ 
+      * help the step-library provider/writer 
+      * simplify self-documentation of step-libraries 
+ 
+    .. note:: 
+        Supports dry-run mode. 
+        Supports destination directory mode to write multiple documents. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">name = </span><span class="s5">&quot;sphinx.steps&quot;</span>
+    <span class="s1">description = </span><span class="s5">&quot;Generate sphinx-based documentation for step definitions.&quot;</span>
+    <span class="s1">doc_generator_class = SphinxStepsDocumentGenerator</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">stream_opener</span><span class="s3">, </span><span class="s1">config):</span>
+        <span class="s1">super(SphinxStepsFormatter</span><span class="s3">, </span><span class="s1">self).__init__(stream_opener</span><span class="s3">, </span><span class="s1">config)</span>
+        <span class="s1">self.destdir = stream_opener.name</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">step_definitions(self):</span>
+        <span class="s2">&quot;&quot;&quot;Derive step definitions from step-registry.&quot;&quot;&quot;</span>
+        <span class="s1">steps = []</span>
+        <span class="s3">for </span><span class="s1">step_type</span><span class="s3">, </span><span class="s1">step_definitions </span><span class="s3">in </span><span class="s1">self.step_registry.steps.items():</span>
+            <span class="s3">for </span><span class="s1">step </span><span class="s3">in </span><span class="s1">step_definitions:</span>
+                <span class="s1">step.step_type = step_type</span>
+                <span class="s1">steps.append(step)</span>
+        <span class="s3">return </span><span class="s1">steps</span>
+
+    <span class="s0"># -- FORMATTER-API:</span>
+    <span class="s3">def </span><span class="s1">close(self):</span>
+        <span class="s2">&quot;&quot;&quot;Called at end of test run.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">self.step_registry:</span>
+            <span class="s1">self.discover_step_definitions()</span>
+        <span class="s1">self.report()</span>
+
+    <span class="s0"># -- SPECIFIC-API:</span>
+    <span class="s3">def </span><span class="s1">create_document_generator(self):</span>
+        <span class="s1">generator_class = self.doc_generator_class</span>
+        <span class="s3">if </span><span class="s1">self.stdout_mode:</span>
+            <span class="s3">return </span><span class="s1">generator_class(self.step_definitions</span><span class="s3">, </span><span class="s1">stream=self.stream)</span>
+        <span class="s0"># -- OTHERWISE:</span>
+        <span class="s3">return </span><span class="s1">generator_class(self.step_definitions</span><span class="s3">, </span><span class="s1">destdir=self.destdir)</span>
+
+    <span class="s3">def </span><span class="s1">report(self):</span>
+        <span class="s1">document_generator = self.create_document_generator()</span>
+        <span class="s1">document_counts = document_generator.write_docs()</span>
+        <span class="s3">if not </span><span class="s1">self.stdout_mode:</span>
+            <span class="s1">msg = </span><span class="s5">&quot;%s: Written %s document(s) into directory '%s'.</span><span class="s3">\n</span><span class="s5">&quot;</span>
+            <span class="s1">sys.stdout.write(msg % (self.name</span><span class="s3">, </span><span class="s1">document_counts</span><span class="s3">, </span><span class="s1">self.destdir))</span>
+</pre>
+</body>
+</html>

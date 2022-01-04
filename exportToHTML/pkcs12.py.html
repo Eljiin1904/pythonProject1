@@ -1,0 +1,89 @@
+<html>
+<head>
+<title>pkcs12.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+pkcs12.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">x509</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">serialization</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.asymmetric </span><span class="s2">import </span><span class="s1">dsa</span><span class="s2">, </span><span class="s1">ec</span><span class="s2">, </span><span class="s1">rsa</span>
+
+
+<span class="s1">_ALLOWED_PKCS12_TYPES = typing.Union[</span>
+    <span class="s1">rsa.RSAPrivateKey</span><span class="s2">,</span>
+    <span class="s1">dsa.DSAPrivateKey</span><span class="s2">,</span>
+    <span class="s1">ec.EllipticCurvePrivateKey</span><span class="s2">,</span>
+<span class="s1">]</span>
+
+
+<span class="s2">def </span><span class="s1">load_key_and_certificates(</span>
+    <span class="s1">data: bytes</span><span class="s2">, </span><span class="s1">password: typing.Optional[bytes]</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+<span class="s1">) -&gt; typing.Tuple[</span>
+    <span class="s1">typing.Optional[_ALLOWED_PKCS12_TYPES]</span><span class="s2">,</span>
+    <span class="s1">typing.Optional[x509.Certificate]</span><span class="s2">,</span>
+    <span class="s1">typing.List[x509.Certificate]</span><span class="s2">,</span>
+<span class="s1">]:</span>
+    <span class="s1">backend = _get_backend(backend)</span>
+    <span class="s2">return </span><span class="s1">backend.load_key_and_certificates_from_pkcs12(data</span><span class="s2">, </span><span class="s1">password)</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_key_and_certificates(</span>
+    <span class="s1">name: typing.Optional[bytes]</span><span class="s2">,</span>
+    <span class="s1">key: typing.Optional[_ALLOWED_PKCS12_TYPES]</span><span class="s2">,</span>
+    <span class="s1">cert: typing.Optional[x509.Certificate]</span><span class="s2">,</span>
+    <span class="s1">cas: typing.Optional[typing.Iterable[x509.Certificate]]</span><span class="s2">,</span>
+    <span class="s1">encryption_algorithm: serialization.KeySerializationEncryption</span><span class="s2">,</span>
+<span class="s1">) -&gt; bytes:</span>
+    <span class="s2">if </span><span class="s1">key </span><span class="s2">is not None and not </span><span class="s1">isinstance(</span>
+        <span class="s1">key</span><span class="s2">,</span>
+        <span class="s1">(</span>
+            <span class="s1">rsa.RSAPrivateKey</span><span class="s2">,</span>
+            <span class="s1">dsa.DSAPrivateKey</span><span class="s2">,</span>
+            <span class="s1">ec.EllipticCurvePrivateKey</span><span class="s2">,</span>
+        <span class="s1">)</span><span class="s2">,</span>
+    <span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;Key must be RSA, DSA, or EllipticCurve private key.&quot;</span><span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">cert </span><span class="s2">is not None and not </span><span class="s1">isinstance(cert</span><span class="s2">, </span><span class="s1">x509.Certificate):</span>
+        <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;cert must be a certificate&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">cas </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s1">cas = list(cas)</span>
+        <span class="s2">if not </span><span class="s1">all(isinstance(val</span><span class="s2">, </span><span class="s1">x509.Certificate) </span><span class="s2">for </span><span class="s1">val </span><span class="s2">in </span><span class="s1">cas):</span>
+            <span class="s2">raise </span><span class="s1">TypeError(</span><span class="s3">&quot;all values in cas must be certificates&quot;</span><span class="s1">)</span>
+
+    <span class="s2">if not </span><span class="s1">isinstance(</span>
+        <span class="s1">encryption_algorithm</span><span class="s2">, </span><span class="s1">serialization.KeySerializationEncryption</span>
+    <span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">TypeError(</span>
+            <span class="s3">&quot;Key encryption algorithm must be a &quot;</span>
+            <span class="s3">&quot;KeySerializationEncryption instance&quot;</span>
+        <span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">key </span><span class="s2">is None and </span><span class="s1">cert </span><span class="s2">is None and not </span><span class="s1">cas:</span>
+        <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;You must supply at least one of key, cert, or cas&quot;</span><span class="s1">)</span>
+
+    <span class="s1">backend = _get_backend(</span><span class="s2">None</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">backend.serialize_key_and_certificates_to_pkcs12(</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s1">key</span><span class="s2">, </span><span class="s1">cert</span><span class="s2">, </span><span class="s1">cas</span><span class="s2">, </span><span class="s1">encryption_algorithm</span>
+    <span class="s1">)</span>
+</pre>
+</body>
+</html>

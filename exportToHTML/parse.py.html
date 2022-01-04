@@ -1,0 +1,1371 @@
+<html>
+<head>
+<title>parse.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parse.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: UTF-8 -*-</span>
+<span class="s0"># BASED-ON: https://github.com/r1chardj0n3s/parse/parse.py</span>
+<span class="s0"># VERSION:  parse 1.12.0</span>
+<span class="s0"># Same as original parse modules.</span>
+<span class="s0">#</span>
+<span class="s0"># pylint: disable=line-too-long, invalid-name, too-many-locals, too-many-arguments</span>
+<span class="s0"># pylint: disable=redefined-builtin, too-few-public-methods, no-else-return</span>
+<span class="s0"># pylint: disable=unused-variable, no-self-use, missing-docstring</span>
+<span class="s0"># pylint: disable=unused-argument, unused-variable</span>
+<span class="s0"># pylint: disable=too-many-branches, too-many-statements</span>
+<span class="s0"># pylint: disable=all</span>
+<span class="s0">#</span>
+<span class="s0">#  -- ORIGINAL-CODE STARTS-HERE ------------------------------------------------</span>
+<span class="s2">r'''Parse strings using a specification based on the Python format() syntax. 
+ 
+   ``parse()`` is the opposite of ``format()`` 
+ 
+The module is set up to only export ``parse()``, ``search()``, ``findall()``, 
+and ``with_pattern()`` when ``import \*`` is used: 
+ 
+&gt;&gt;&gt; from parse import * 
+ 
+From there it's a simple thing to parse a string: 
+ 
+&gt;&gt;&gt; parse(&quot;It's {}, I love it!&quot;, &quot;It's spam, I love it!&quot;) 
+&lt;Result ('spam',) {}&gt; 
+&gt;&gt;&gt; _[0] 
+'spam' 
+ 
+Or to search a string for some pattern: 
+ 
+&gt;&gt;&gt; search('Age: {:d}\n', 'Name: Rufus\nAge: 42\nColor: red\n') 
+&lt;Result (42,) {}&gt; 
+ 
+Or find all the occurrences of some pattern in a string: 
+ 
+&gt;&gt;&gt; ''.join(r.fixed[0] for r in findall(&quot;&gt;{}&lt;&quot;, &quot;&lt;p&gt;the &lt;b&gt;bold&lt;/b&gt; text&lt;/p&gt;&quot;)) 
+'the bold text' 
+ 
+If you're going to use the same pattern to match lots of strings you can 
+compile it once: 
+ 
+&gt;&gt;&gt; from parse import compile 
+&gt;&gt;&gt; p = compile(&quot;It's {}, I love it!&quot;) 
+&gt;&gt;&gt; print(p) 
+&lt;Parser &quot;It's {}, I love it!&quot;&gt; 
+&gt;&gt;&gt; p.parse(&quot;It's spam, I love it!&quot;) 
+&lt;Result ('spam',) {}&gt; 
+ 
+(&quot;compile&quot; is not exported for ``import *`` usage as it would override the 
+built-in ``compile()`` function) 
+ 
+The default behaviour is to match strings case insensitively. You may match with 
+case by specifying `case_sensitive=True`: 
+ 
+&gt;&gt;&gt; parse('SPAM', 'spam', case_sensitive=True) is None 
+True 
+ 
+ 
+Format Syntax 
+------------- 
+ 
+A basic version of the `Format String Syntax`_ is supported with anonymous 
+(fixed-position), named and formatted fields:: 
+ 
+   {[field name]:[format spec]} 
+ 
+Field names must be a valid Python identifiers, including dotted names; 
+element indexes imply dictionaries (see below for example). 
+ 
+Numbered fields are also not supported: the result of parsing will include 
+the parsed fields in the order they are parsed. 
+ 
+The conversion of fields to types other than strings is done based on the 
+type in the format specification, which mirrors the ``format()`` behaviour. 
+There are no &quot;!&quot; field conversions like ``format()`` has. 
+ 
+Some simple parse() format string examples: 
+ 
+&gt;&gt;&gt; parse(&quot;Bring me a {}&quot;, &quot;Bring me a shrubbery&quot;) 
+&lt;Result ('shrubbery',) {}&gt; 
+&gt;&gt;&gt; r = parse(&quot;The {} who say {}&quot;, &quot;The knights who say Ni!&quot;) 
+&gt;&gt;&gt; print(r) 
+&lt;Result ('knights', 'Ni!') {}&gt; 
+&gt;&gt;&gt; print(r.fixed) 
+('knights', 'Ni!') 
+&gt;&gt;&gt; r = parse(&quot;Bring out the holy {item}&quot;, &quot;Bring out the holy hand grenade&quot;) 
+&gt;&gt;&gt; print(r) 
+&lt;Result () {'item': 'hand grenade'}&gt; 
+&gt;&gt;&gt; print(r.named) 
+{'item': 'hand grenade'} 
+&gt;&gt;&gt; print(r['item']) 
+hand grenade 
+&gt;&gt;&gt; 'item' in r 
+True 
+ 
+Note that `in` only works if you have named fields. Dotted names and indexes 
+are possible though the application must make additional sense of the result: 
+ 
+&gt;&gt;&gt; r = parse(&quot;Mmm, {food.type}, I love it!&quot;, &quot;Mmm, spam, I love it!&quot;) 
+&gt;&gt;&gt; print(r) 
+&lt;Result () {'food.type': 'spam'}&gt; 
+&gt;&gt;&gt; print(r.named) 
+{'food.type': 'spam'} 
+&gt;&gt;&gt; print(r['food.type']) 
+spam 
+&gt;&gt;&gt; r = parse(&quot;My quest is {quest[name]}&quot;, &quot;My quest is to seek the holy grail!&quot;) 
+&gt;&gt;&gt; print(r) 
+&lt;Result () {'quest': {'name': 'to seek the holy grail!'}}&gt; 
+&gt;&gt;&gt; print(r['quest']) 
+{'name': 'to seek the holy grail!'} 
+&gt;&gt;&gt; print(r['quest']['name']) 
+to seek the holy grail! 
+ 
+If the text you're matching has braces in it you can match those by including 
+a double-brace ``{{`` or ``}}`` in your format string, just like format() does. 
+ 
+ 
+Format Specification 
+-------------------- 
+ 
+Most often a straight format-less ``{}`` will suffice where a more complex 
+format specification might have been used. 
+ 
+Most of `format()`'s `Format Specification Mini-Language`_ is supported: 
+ 
+   [[fill]align][0][width][.precision][type] 
+ 
+The differences between `parse()` and `format()` are: 
+ 
+- The align operators will cause spaces (or specified fill character) to be 
+  stripped from the parsed value. The width is not enforced; it just indicates 
+  there may be whitespace or &quot;0&quot;s to strip. 
+- Numeric parsing will automatically handle a &quot;0b&quot;, &quot;0o&quot; or &quot;0x&quot; prefix. 
+  That is, the &quot;#&quot; format character is handled automatically by d, b, o 
+  and x formats. For &quot;d&quot; any will be accepted, but for the others the correct 
+  prefix must be present if at all. 
+- Numeric sign is handled automatically. 
+- The thousands separator is handled automatically if the &quot;n&quot; type is used. 
+- The types supported are a slightly different mix to the format() types.  Some 
+  format() types come directly over: &quot;d&quot;, &quot;n&quot;, &quot;%&quot;, &quot;f&quot;, &quot;e&quot;, &quot;b&quot;, &quot;o&quot; and &quot;x&quot;. 
+  In addition some regular expression character group types &quot;D&quot;, &quot;w&quot;, &quot;W&quot;, &quot;s&quot; 
+  and &quot;S&quot; are also available. 
+- The &quot;e&quot; and &quot;g&quot; types are case-insensitive so there is not need for 
+  the &quot;E&quot; or &quot;G&quot; types. 
+ 
+===== =========================================== ======== 
+Type  Characters Matched                          Output 
+===== =========================================== ======== 
+l     Letters (ASCII)                             str 
+w     Letters, numbers and underscore             str 
+W     Not letters, numbers and underscore         str 
+s     Whitespace                                  str 
+S     Non-whitespace                              str 
+d     Digits (effectively integer numbers)        int 
+D     Non-digit                                   str 
+n     Numbers with thousands separators (, or .)  int 
+%     Percentage (converted to value/100.0)       float 
+f     Fixed-point numbers                         float 
+F     Decimal numbers                             Decimal 
+e     Floating-point numbers with exponent        float 
+      e.g. 1.1e-10, NAN (all case insensitive) 
+g     General number format (either d, f or e)    float 
+b     Binary numbers                              int 
+o     Octal numbers                               int 
+x     Hexadecimal numbers (lower and upper case)  int 
+ti    ISO 8601 format date/time                   datetime 
+      e.g. 1972-01-20T10:21:36Z (&quot;T&quot; and &quot;Z&quot; 
+      optional) 
+te    RFC2822 e-mail format date/time             datetime 
+      e.g. Mon, 20 Jan 1972 10:21:36 +1000 
+tg    Global (day/month) format date/time         datetime 
+      e.g. 20/1/1972 10:21:36 AM +1:00 
+ta    US (month/day) format date/time             datetime 
+      e.g. 1/20/1972 10:21:36 PM +10:30 
+tc    ctime() format date/time                    datetime 
+      e.g. Sun Sep 16 01:03:52 1973 
+th    HTTP log format date/time                   datetime 
+      e.g. 21/Nov/2011:00:07:11 +0000 
+ts    Linux system log format date/time           datetime 
+      e.g. Nov  9 03:37:44 
+tt    Time                                        time 
+      e.g. 10:21:36 PM -5:30 
+===== =========================================== ======== 
+ 
+Some examples of typed parsing with ``None`` returned if the typing 
+does not match: 
+ 
+&gt;&gt;&gt; parse('Our {:d} {:w} are...', 'Our 3 weapons are...') 
+&lt;Result (3, 'weapons') {}&gt; 
+&gt;&gt;&gt; parse('Our {:d} {:w} are...', 'Our three weapons are...') 
+&gt;&gt;&gt; parse('Meet at {:tg}', 'Meet at 1/2/2011 11:00 PM') 
+&lt;Result (datetime.datetime(2011, 2, 1, 23, 0),) {}&gt; 
+ 
+And messing about with alignment: 
+ 
+&gt;&gt;&gt; parse('with {:&gt;} herring', 'with     a herring') 
+&lt;Result ('a',) {}&gt; 
+&gt;&gt;&gt; parse('spam {:^} spam', 'spam    lovely     spam') 
+&lt;Result ('lovely',) {}&gt; 
+ 
+Note that the &quot;center&quot; alignment does not test to make sure the value is 
+centered - it just strips leading and trailing whitespace. 
+ 
+Width and precision may be used to restrict the size of matched text 
+from the input. Width specifies a minimum size and precision specifies 
+a maximum. For example: 
+ 
+&gt;&gt;&gt; parse('{:.2}{:.2}', 'look')           # specifying precision 
+&lt;Result ('lo', 'ok') {}&gt; 
+&gt;&gt;&gt; parse('{:4}{:4}', 'look at that')     # specifying width 
+&lt;Result ('look', 'at that') {}&gt; 
+&gt;&gt;&gt; parse('{:4}{:.4}', 'look at that')    # specifying both 
+&lt;Result ('look at ', 'that') {}&gt; 
+&gt;&gt;&gt; parse('{:2d}{:2d}', '0440')           # parsing two contiguous numbers 
+&lt;Result (4, 40) {}&gt; 
+ 
+Some notes for the date and time types: 
+ 
+- the presence of the time part is optional (including ISO 8601, starting 
+  at the &quot;T&quot;). A full datetime object will always be returned; the time 
+  will be set to 00:00:00. You may also specify a time without seconds. 
+- when a seconds amount is present in the input fractions will be parsed 
+  to give microseconds. 
+- except in ISO 8601 the day and month digits may be 0-padded. 
+- the date separator for the tg and ta formats may be &quot;-&quot; or &quot;/&quot;. 
+- named months (abbreviations or full names) may be used in the ta and tg 
+  formats in place of numeric months. 
+- as per RFC 2822 the e-mail format may omit the day (and comma), and the 
+  seconds but nothing else. 
+- hours greater than 12 will be happily accepted. 
+- the AM/PM are optional, and if PM is found then 12 hours will be added 
+  to the datetime object's hours amount - even if the hour is greater 
+  than 12 (for consistency.) 
+- in ISO 8601 the &quot;Z&quot; (UTC) timezone part may be a numeric offset 
+- timezones are specified as &quot;+HH:MM&quot; or &quot;-HH:MM&quot;. The hour may be one or two 
+  digits (0-padded is OK.) Also, the &quot;:&quot; is optional. 
+- the timezone is optional in all except the e-mail format (it defaults to 
+  UTC.) 
+- named timezones are not handled yet. 
+ 
+Note: attempting to match too many datetime fields in a single parse() will 
+currently result in a resource allocation issue. A TooManyFields exception 
+will be raised in this instance. The current limit is about 15. It is hoped 
+that this limit will be removed one day. 
+ 
+.. _`Format String Syntax`: 
+  http://docs.python.org/library/string.html#format-string-syntax 
+.. _`Format Specification Mini-Language`: 
+  http://docs.python.org/library/string.html#format-specification-mini-language 
+ 
+ 
+Result and Match Objects 
+------------------------ 
+ 
+The result of a ``parse()`` and ``search()`` operation is either ``None`` (no match), a 
+``Result`` instance or a ``Match`` instance if ``evaluate_result`` is False. 
+ 
+The ``Result`` instance has three attributes: 
+ 
+fixed 
+   A tuple of the fixed-position, anonymous fields extracted from the input. 
+named 
+   A dictionary of the named fields extracted from the input. 
+spans 
+   A dictionary mapping the names and fixed position indices matched to a 
+   2-tuple slice range of where the match occurred in the input. 
+   The span does not include any stripped padding (alignment or width). 
+ 
+The ``Match`` instance has one method: 
+ 
+evaluate_result() 
+   Generates and returns a ``Result`` instance for this ``Match`` object. 
+ 
+ 
+ 
+Custom Type Conversions 
+----------------------- 
+ 
+If you wish to have matched fields automatically converted to your own type you 
+may pass in a dictionary of type conversion information to ``parse()`` and 
+``compile()``. 
+ 
+The converter will be passed the field string matched. Whatever it returns 
+will be substituted in the ``Result`` instance for that field. 
+ 
+Your custom type conversions may override the builtin types if you supply one 
+with the same identifier. 
+ 
+&gt;&gt;&gt; def shouty(string): 
+...    return string.upper() 
+... 
+&gt;&gt;&gt; parse('{:shouty} world', 'hello world', dict(shouty=shouty)) 
+&lt;Result ('HELLO',) {}&gt; 
+ 
+If the type converter has the optional ``pattern`` attribute, it is used as 
+regular expression for better pattern matching (instead of the default one). 
+ 
+&gt;&gt;&gt; def parse_number(text): 
+...    return int(text) 
+&gt;&gt;&gt; parse_number.pattern = r'\d+' 
+&gt;&gt;&gt; parse('Answer: {number:Number}', 'Answer: 42', dict(Number=parse_number)) 
+&lt;Result () {'number': 42}&gt; 
+&gt;&gt;&gt; _ = parse('Answer: {:Number}', 'Answer: Alice', dict(Number=parse_number)) 
+&gt;&gt;&gt; assert _ is None, &quot;MISMATCH&quot; 
+ 
+You can also use the ``with_pattern(pattern)`` decorator to add this 
+information to a type converter function: 
+ 
+&gt;&gt;&gt; from parse import with_pattern 
+&gt;&gt;&gt; @with_pattern(r'\d+') 
+... def parse_number(text): 
+...    return int(text) 
+&gt;&gt;&gt; parse('Answer: {number:Number}', 'Answer: 42', dict(Number=parse_number)) 
+&lt;Result () {'number': 42}&gt; 
+ 
+A more complete example of a custom type might be: 
+ 
+&gt;&gt;&gt; yesno_mapping = { 
+...     &quot;yes&quot;:  True,   &quot;no&quot;:    False, 
+...     &quot;on&quot;:   True,   &quot;off&quot;:   False, 
+...     &quot;true&quot;: True,   &quot;false&quot;: False, 
+... } 
+&gt;&gt;&gt; @with_pattern(r&quot;|&quot;.join(yesno_mapping)) 
+... def parse_yesno(text): 
+...     return yesno_mapping[text.lower()] 
+ 
+ 
+If the type converter ``pattern`` uses regex-grouping (with parenthesis), 
+you should indicate this by using the optional ``regex_group_count`` parameter 
+in the ``with_pattern()`` decorator: 
+ 
+&gt;&gt;&gt; @with_pattern(r'((\d+))', regex_group_count=2) 
+... def parse_number2(text): 
+...    return int(text) 
+&gt;&gt;&gt; parse('Answer: {:Number2} {:Number2}', 'Answer: 42 43', dict(Number2=parse_number2)) 
+&lt;Result (42, 43) {}&gt; 
+ 
+Otherwise, this may cause parsing problems with unnamed/fixed parameters. 
+ 
+ 
+Potential Gotchas 
+----------------- 
+ 
+`parse()` will always match the shortest text necessary (from left to right) 
+to fulfil the parse pattern, so for example: 
+ 
+&gt;&gt;&gt; pattern = '{dir1}/{dir2}' 
+&gt;&gt;&gt; data = 'root/parent/subdir' 
+&gt;&gt;&gt; sorted(parse(pattern, data).named.items()) 
+[('dir1', 'root'), ('dir2', 'parent/subdir')] 
+ 
+So, even though `{'dir1': 'root/parent', 'dir2': 'subdir'}` would also fit 
+the pattern, the actual match represents the shortest successful match for 
+`dir1`. 
+ 
+---- 
+ 
+**Version history (in brief)**: 
+ 
+- 1.12.0 Do not assume closing brace when an opening one is found (thanks @mattsep) 
+- 1.11.1 Revert having unicode char in docstring, it breaks Bamboo builds(?!) 
+- 1.11.0 Implement `__contains__` for Result instances. 
+- 1.10.0 Introduce a &quot;letters&quot; matcher, since &quot;w&quot; matches numbers 
+  also. 
+- 1.9.1 Fix deprecation warnings around backslashes in regex strings 
+  (thanks Mickael Schoentgen). Also fix some documentation formatting 
+  issues. 
+- 1.9.0 We now honor precision and width specifiers when parsing numbers 
+  and strings, allowing parsing of concatenated elements of fixed width 
+  (thanks Julia Signell) 
+- 1.8.4 Add LICENSE file at request of packagers. 
+  Correct handling of AM/PM to follow most common interpretation. 
+  Correct parsing of hexadecimal that looks like a binary prefix. 
+  Add ability to parse case sensitively. 
+  Add parsing of numbers to Decimal with &quot;F&quot; (thanks John Vandenberg) 
+- 1.8.3 Add regex_group_count to with_pattern() decorator to support 
+  user-defined types that contain brackets/parenthesis (thanks Jens Engel) 
+- 1.8.2 add documentation for including braces in format string 
+- 1.8.1 ensure bare hexadecimal digits are not matched 
+- 1.8.0 support manual control over result evaluation (thanks Timo Furrer) 
+- 1.7.0 parse dict fields (thanks Mark Visser) and adapted to allow 
+  more than 100 re groups in Python 3.5+ (thanks David King) 
+- 1.6.6 parse Linux system log dates (thanks Alex Cowan) 
+- 1.6.5 handle precision in float format (thanks Levi Kilcher) 
+- 1.6.4 handle pipe &quot;|&quot; characters in parse string (thanks Martijn Pieters) 
+- 1.6.3 handle repeated instances of named fields, fix bug in PM time 
+  overflow 
+- 1.6.2 fix logging to use local, not root logger (thanks Necku) 
+- 1.6.1 be more flexible regarding matched ISO datetimes and timezones in 
+  general, fix bug in timezones without &quot;:&quot; and improve docs 
+- 1.6.0 add support for optional ``pattern`` attribute in user-defined types 
+  (thanks Jens Engel) 
+- 1.5.3 fix handling of question marks 
+- 1.5.2 fix type conversion error with dotted names (thanks Sebastian Thiel) 
+- 1.5.1 implement handling of named datetime fields 
+- 1.5 add handling of dotted field names (thanks Sebastian Thiel) 
+- 1.4.1 fix parsing of &quot;0&quot; in int conversion (thanks James Rowe) 
+- 1.4 add __getitem__ convenience access on Result. 
+- 1.3.3 fix Python 2.5 setup.py issue. 
+- 1.3.2 fix Python 3.2 setup.py issue. 
+- 1.3.1 fix a couple of Python 3.2 compatibility issues. 
+- 1.3 added search() and findall(); removed compile() from ``import *`` 
+  export as it overwrites builtin. 
+- 1.2 added ability for custom and override type conversions to be 
+  provided; some cleanup 
+- 1.1.9 to keep things simpler number sign is handled automatically; 
+  significant robustification in the face of edge-case input. 
+- 1.1.8 allow &quot;d&quot; fields to have number base &quot;0x&quot; etc. prefixes; 
+  fix up some field type interactions after stress-testing the parser; 
+  implement &quot;%&quot; type. 
+- 1.1.7 Python 3 compatibility tweaks (2.5 to 2.7 and 3.2 are supported). 
+- 1.1.6 add &quot;e&quot; and &quot;g&quot; field types; removed redundant &quot;h&quot; and &quot;X&quot;; 
+  removed need for explicit &quot;#&quot;. 
+- 1.1.5 accept textual dates in more places; Result now holds match span 
+  positions. 
+- 1.1.4 fixes to some int type conversion; implemented &quot;=&quot; alignment; added 
+  date/time parsing with a variety of formats handled. 
+- 1.1.3 type conversion is automatic based on specified field types. Also added 
+  &quot;f&quot; and &quot;n&quot; types. 
+- 1.1.2 refactored, added compile() and limited ``from parse import *`` 
+- 1.1.1 documentation improvements 
+- 1.1.0 implemented more of the `Format Specification Mini-Language`_ 
+  and removed the restriction on mixing fixed-position and named fields 
+- 1.0.0 initial release 
+ 
+This code is copyright 2012-2019 Richard Jones &lt;richard@python.org&gt; 
+See the end of the source file for the license of use. 
+'''</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s1">__version__ = </span><span class="s4">'1.12.0'</span>
+
+<span class="s0"># yes, I now have two problems</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">from </span><span class="s1">datetime </span><span class="s3">import </span><span class="s1">datetime</span><span class="s3">, </span><span class="s1">time</span><span class="s3">, </span><span class="s1">tzinfo</span><span class="s3">, </span><span class="s1">timedelta</span>
+<span class="s3">from </span><span class="s1">decimal </span><span class="s3">import </span><span class="s1">Decimal</span>
+<span class="s3">from </span><span class="s1">functools </span><span class="s3">import </span><span class="s1">partial</span>
+<span class="s3">import </span><span class="s1">logging</span>
+
+<span class="s1">__all__ = </span><span class="s4">'parse search findall with_pattern'</span><span class="s1">.split()</span>
+
+<span class="s1">log = logging.getLogger(__name__)</span>
+
+
+<span class="s3">def </span><span class="s1">with_pattern(pattern</span><span class="s3">, </span><span class="s1">regex_group_count=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s2">r&quot;&quot;&quot;Attach a regular expression pattern matcher to a custom type converter 
+    function. 
+ 
+    This annotates the type converter with the :attr:`pattern` attribute. 
+ 
+    EXAMPLE: 
+        &gt;&gt;&gt; import parse 
+        &gt;&gt;&gt; @parse.with_pattern(r&quot;\d+&quot;) 
+        ... def parse_number(text): 
+        ...     return int(text) 
+ 
+    is equivalent to: 
+ 
+        &gt;&gt;&gt; def parse_number(text): 
+        ...     return int(text) 
+        &gt;&gt;&gt; parse_number.pattern = r&quot;\d+&quot; 
+ 
+    :param pattern: regular expression pattern (as text) 
+    :param regex_group_count: Indicates how many regex-groups are in pattern. 
+    :return: wrapped function 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">decorator(func):</span>
+        <span class="s1">func.pattern = pattern</span>
+        <span class="s1">func.regex_group_count = regex_group_count</span>
+        <span class="s3">return </span><span class="s1">func</span>
+    <span class="s3">return </span><span class="s1">decorator</span>
+
+
+<span class="s3">def </span><span class="s1">int_convert(base):</span>
+    <span class="s2">'''Convert a string to an integer. 
+ 
+    The string may start with a sign. 
+ 
+    It may be of a base other than 10. 
+ 
+    If may start with a base indicator, 0#nnnn, which we assume should 
+    override the specified base. 
+ 
+    It may also have other non-numeric characters that we can ignore. 
+    '''</span>
+    <span class="s1">CHARS = </span><span class="s4">'0123456789abcdefghijklmnopqrstuvwxyz'</span>
+
+    <span class="s3">def </span><span class="s1">f(string</span><span class="s3">, </span><span class="s1">match</span><span class="s3">, </span><span class="s1">base=base):</span>
+        <span class="s3">if </span><span class="s1">string[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">'-'</span><span class="s1">:</span>
+            <span class="s1">sign = -</span><span class="s5">1</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">sign = </span><span class="s5">1</span>
+
+        <span class="s3">if </span><span class="s1">string[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">'0' </span><span class="s3">and </span><span class="s1">len(string) &gt; </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s3">if </span><span class="s1">string[</span><span class="s5">1</span><span class="s1">] </span><span class="s3">in </span><span class="s4">'bB'</span><span class="s1">:</span>
+                <span class="s1">base = </span><span class="s5">2</span>
+            <span class="s3">elif </span><span class="s1">string[</span><span class="s5">1</span><span class="s1">] </span><span class="s3">in </span><span class="s4">'oO'</span><span class="s1">:</span>
+                <span class="s1">base = </span><span class="s5">8</span>
+            <span class="s3">elif </span><span class="s1">string[</span><span class="s5">1</span><span class="s1">] </span><span class="s3">in </span><span class="s4">'xX'</span><span class="s1">:</span>
+                <span class="s1">base = </span><span class="s5">16</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># just go with the base specifed</span>
+                <span class="s3">pass</span>
+
+        <span class="s1">chars = CHARS[:base]</span>
+        <span class="s1">string = re.sub(</span><span class="s4">'[^%s]' </span><span class="s1">% chars</span><span class="s3">, </span><span class="s4">''</span><span class="s3">, </span><span class="s1">string.lower())</span>
+        <span class="s3">return </span><span class="s1">sign * int(string</span><span class="s3">, </span><span class="s1">base)</span>
+    <span class="s3">return </span><span class="s1">f</span>
+
+
+<span class="s3">def </span><span class="s1">percentage(string</span><span class="s3">, </span><span class="s1">match):</span>
+    <span class="s3">return </span><span class="s1">float(string[:-</span><span class="s5">1</span><span class="s1">]) / </span><span class="s5">100.</span>
+
+
+<span class="s3">class </span><span class="s1">FixedTzOffset(tzinfo):</span>
+    <span class="s2">&quot;&quot;&quot;Fixed offset in minutes east from UTC. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">ZERO = timedelta(</span><span class="s5">0</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">offset</span><span class="s3">, </span><span class="s1">name):</span>
+        <span class="s1">self._offset = timedelta(minutes=offset)</span>
+        <span class="s1">self._name = name</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;%s %s %s&gt;' </span><span class="s1">% (self.__class__.__name__</span><span class="s3">, </span><span class="s1">self._name</span><span class="s3">,</span>
+            <span class="s1">self._offset)</span>
+
+    <span class="s3">def </span><span class="s1">utcoffset(self</span><span class="s3">, </span><span class="s1">dt):</span>
+        <span class="s3">return </span><span class="s1">self._offset</span>
+
+    <span class="s3">def </span><span class="s1">tzname(self</span><span class="s3">, </span><span class="s1">dt):</span>
+        <span class="s3">return </span><span class="s1">self._name</span>
+
+    <span class="s3">def </span><span class="s1">dst(self</span><span class="s3">, </span><span class="s1">dt):</span>
+        <span class="s3">return </span><span class="s1">self.ZERO</span>
+
+    <span class="s3">def </span><span class="s1">__eq__(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s3">return </span><span class="s1">self._name == other._name </span><span class="s3">and </span><span class="s1">self._offset == other._offset</span>
+
+
+<span class="s1">MONTHS_MAP = dict(</span>
+    <span class="s1">Jan=</span><span class="s5">1</span><span class="s3">, </span><span class="s1">January=</span><span class="s5">1</span><span class="s3">,</span>
+    <span class="s1">Feb=</span><span class="s5">2</span><span class="s3">, </span><span class="s1">February=</span><span class="s5">2</span><span class="s3">,</span>
+    <span class="s1">Mar=</span><span class="s5">3</span><span class="s3">, </span><span class="s1">March=</span><span class="s5">3</span><span class="s3">,</span>
+    <span class="s1">Apr=</span><span class="s5">4</span><span class="s3">, </span><span class="s1">April=</span><span class="s5">4</span><span class="s3">,</span>
+    <span class="s1">May=</span><span class="s5">5</span><span class="s3">,</span>
+    <span class="s1">Jun=</span><span class="s5">6</span><span class="s3">, </span><span class="s1">June=</span><span class="s5">6</span><span class="s3">,</span>
+    <span class="s1">Jul=</span><span class="s5">7</span><span class="s3">, </span><span class="s1">July=</span><span class="s5">7</span><span class="s3">,</span>
+    <span class="s1">Aug=</span><span class="s5">8</span><span class="s3">, </span><span class="s1">August=</span><span class="s5">8</span><span class="s3">,</span>
+    <span class="s1">Sep=</span><span class="s5">9</span><span class="s3">, </span><span class="s1">September=</span><span class="s5">9</span><span class="s3">,</span>
+    <span class="s1">Oct=</span><span class="s5">10</span><span class="s3">, </span><span class="s1">October=</span><span class="s5">10</span><span class="s3">,</span>
+    <span class="s1">Nov=</span><span class="s5">11</span><span class="s3">, </span><span class="s1">November=</span><span class="s5">11</span><span class="s3">,</span>
+    <span class="s1">Dec=</span><span class="s5">12</span><span class="s3">, </span><span class="s1">December=</span><span class="s5">12</span>
+<span class="s1">)</span>
+<span class="s1">DAYS_PAT = </span><span class="s4">r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)'</span>
+<span class="s1">MONTHS_PAT = </span><span class="s4">r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'</span>
+<span class="s1">ALL_MONTHS_PAT = </span><span class="s4">r'(%s)' </span><span class="s1">% </span><span class="s4">'|'</span><span class="s1">.join(MONTHS_MAP)</span>
+<span class="s1">TIME_PAT = </span><span class="s4">r'(\d{1,2}:\d{1,2}(:\d{1,2}(\.\d+)?)?)'</span>
+<span class="s1">AM_PAT = </span><span class="s4">r'(\s+[AP]M)'</span>
+<span class="s1">TZ_PAT = </span><span class="s4">r'(\s+[-+]\d\d?:?\d\d)'</span>
+
+
+<span class="s3">def </span><span class="s1">date_convert(string</span><span class="s3">, </span><span class="s1">match</span><span class="s3">, </span><span class="s1">ymd=</span><span class="s3">None, </span><span class="s1">mdy=</span><span class="s3">None, </span><span class="s1">dmy=</span><span class="s3">None,</span>
+        <span class="s1">d_m_y=</span><span class="s3">None, </span><span class="s1">hms=</span><span class="s3">None, </span><span class="s1">am=</span><span class="s3">None, </span><span class="s1">tz=</span><span class="s3">None, </span><span class="s1">mm=</span><span class="s3">None, </span><span class="s1">dd=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s2">'''Convert the incoming string containing some date / time info into a 
+    datetime instance. 
+    '''</span>
+    <span class="s1">groups = match.groups()</span>
+    <span class="s1">time_only = </span><span class="s3">False</span>
+    <span class="s3">if </span><span class="s1">mm </span><span class="s3">and </span><span class="s1">dd:</span>
+        <span class="s1">y=datetime.today().year</span>
+        <span class="s1">m=groups[mm]</span>
+        <span class="s1">d=groups[dd]</span>
+    <span class="s3">elif </span><span class="s1">ymd </span><span class="s3">is not None</span><span class="s1">:</span>
+        <span class="s1">y</span><span class="s3">, </span><span class="s1">m</span><span class="s3">, </span><span class="s1">d = re.split(</span><span class="s4">r'[-/\s]'</span><span class="s3">, </span><span class="s1">groups[ymd])</span>
+    <span class="s3">elif </span><span class="s1">mdy </span><span class="s3">is not None</span><span class="s1">:</span>
+        <span class="s1">m</span><span class="s3">, </span><span class="s1">d</span><span class="s3">, </span><span class="s1">y = re.split(</span><span class="s4">r'[-/\s]'</span><span class="s3">, </span><span class="s1">groups[mdy])</span>
+    <span class="s3">elif </span><span class="s1">dmy </span><span class="s3">is not None</span><span class="s1">:</span>
+        <span class="s1">d</span><span class="s3">, </span><span class="s1">m</span><span class="s3">, </span><span class="s1">y = re.split(</span><span class="s4">r'[-/\s]'</span><span class="s3">, </span><span class="s1">groups[dmy])</span>
+    <span class="s3">elif </span><span class="s1">d_m_y </span><span class="s3">is not None</span><span class="s1">:</span>
+        <span class="s1">d</span><span class="s3">, </span><span class="s1">m</span><span class="s3">, </span><span class="s1">y = d_m_y</span>
+        <span class="s1">d = groups[d]</span>
+        <span class="s1">m = groups[m]</span>
+        <span class="s1">y = groups[y]</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s1">time_only = </span><span class="s3">True</span>
+
+    <span class="s1">H = M = S = u = </span><span class="s5">0</span>
+    <span class="s3">if </span><span class="s1">hms </span><span class="s3">is not None and </span><span class="s1">groups[hms]:</span>
+        <span class="s1">t = groups[hms].split(</span><span class="s4">':'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">len(t) == </span><span class="s5">2</span><span class="s1">:</span>
+            <span class="s1">H</span><span class="s3">, </span><span class="s1">M = t</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">H</span><span class="s3">, </span><span class="s1">M</span><span class="s3">, </span><span class="s1">S = t</span>
+            <span class="s3">if </span><span class="s4">'.' </span><span class="s3">in </span><span class="s1">S:</span>
+                <span class="s1">S</span><span class="s3">, </span><span class="s1">u = S.split(</span><span class="s4">'.'</span><span class="s1">)</span>
+                <span class="s1">u = int(float(</span><span class="s4">'.' </span><span class="s1">+ u) * </span><span class="s5">1000000</span><span class="s1">)</span>
+            <span class="s1">S = int(S)</span>
+        <span class="s1">H = int(H)</span>
+        <span class="s1">M = int(M)</span>
+
+    <span class="s3">if </span><span class="s1">am </span><span class="s3">is not None</span><span class="s1">:</span>
+        <span class="s1">am = groups[am]</span>
+        <span class="s3">if </span><span class="s1">am:</span>
+            <span class="s1">am = am.strip()</span>
+        <span class="s3">if </span><span class="s1">am == </span><span class="s4">'AM' </span><span class="s3">and </span><span class="s1">H == </span><span class="s5">12</span><span class="s1">:</span>
+            <span class="s0"># correction for &quot;12&quot; hour functioning as &quot;0&quot; hour: 12:15 AM = 00:15 by 24 hr clock</span>
+            <span class="s1">H -= </span><span class="s5">12</span>
+        <span class="s3">elif </span><span class="s1">am == </span><span class="s4">'PM' </span><span class="s3">and </span><span class="s1">H == </span><span class="s5">12</span><span class="s1">:</span>
+            <span class="s0"># no correction needed: 12PM is midday, 12:00 by 24 hour clock</span>
+            <span class="s3">pass</span>
+        <span class="s3">elif </span><span class="s1">am == </span><span class="s4">'PM'</span><span class="s1">:</span>
+            <span class="s1">H += </span><span class="s5">12</span>
+
+    <span class="s3">if </span><span class="s1">tz </span><span class="s3">is not None</span><span class="s1">:</span>
+        <span class="s1">tz = groups[tz]</span>
+    <span class="s3">if </span><span class="s1">tz == </span><span class="s4">'Z'</span><span class="s1">:</span>
+        <span class="s1">tz = FixedTzOffset(</span><span class="s5">0</span><span class="s3">, </span><span class="s4">'UTC'</span><span class="s1">)</span>
+    <span class="s3">elif </span><span class="s1">tz:</span>
+        <span class="s1">tz = tz.strip()</span>
+        <span class="s3">if </span><span class="s1">tz.isupper():</span>
+            <span class="s0"># TODO use the awesome python TZ module?</span>
+            <span class="s3">pass</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">sign = tz[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s3">if </span><span class="s4">':' </span><span class="s3">in </span><span class="s1">tz:</span>
+                <span class="s1">tzh</span><span class="s3">, </span><span class="s1">tzm = tz[</span><span class="s5">1</span><span class="s1">:].split(</span><span class="s4">':'</span><span class="s1">)</span>
+            <span class="s3">elif </span><span class="s1">len(tz) == </span><span class="s5">4</span><span class="s1">:  </span><span class="s0"># 'snnn'</span>
+                <span class="s1">tzh</span><span class="s3">, </span><span class="s1">tzm = tz[</span><span class="s5">1</span><span class="s1">]</span><span class="s3">, </span><span class="s1">tz[</span><span class="s5">2</span><span class="s1">:</span><span class="s5">4</span><span class="s1">]</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">tzh</span><span class="s3">, </span><span class="s1">tzm = tz[</span><span class="s5">1</span><span class="s1">:</span><span class="s5">3</span><span class="s1">]</span><span class="s3">, </span><span class="s1">tz[</span><span class="s5">3</span><span class="s1">:</span><span class="s5">5</span><span class="s1">]</span>
+            <span class="s1">offset = int(tzm) + int(tzh) * </span><span class="s5">60</span>
+            <span class="s3">if </span><span class="s1">sign == </span><span class="s4">'-'</span><span class="s1">:</span>
+                <span class="s1">offset = -offset</span>
+            <span class="s1">tz = FixedTzOffset(offset</span><span class="s3">, </span><span class="s1">tz)</span>
+
+    <span class="s3">if </span><span class="s1">time_only:</span>
+        <span class="s1">d = time(H</span><span class="s3">, </span><span class="s1">M</span><span class="s3">, </span><span class="s1">S</span><span class="s3">, </span><span class="s1">u</span><span class="s3">, </span><span class="s1">tzinfo=tz)</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s1">y = int(y)</span>
+        <span class="s3">if </span><span class="s1">m.isdigit():</span>
+            <span class="s1">m = int(m)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">m = MONTHS_MAP[m]</span>
+        <span class="s1">d = int(d)</span>
+        <span class="s1">d = datetime(y</span><span class="s3">, </span><span class="s1">m</span><span class="s3">, </span><span class="s1">d</span><span class="s3">, </span><span class="s1">H</span><span class="s3">, </span><span class="s1">M</span><span class="s3">, </span><span class="s1">S</span><span class="s3">, </span><span class="s1">u</span><span class="s3">, </span><span class="s1">tzinfo=tz)</span>
+
+    <span class="s3">return </span><span class="s1">d</span>
+
+
+<span class="s3">class </span><span class="s1">TooManyFields(ValueError):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">RepeatedNameError(ValueError):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s0"># note: {} are handled separately</span>
+<span class="s0"># note: I don't use r'' here because Sublime Text 2 syntax highlight has a fit</span>
+<span class="s1">REGEX_SAFETY = re.compile(</span><span class="s4">r'([?\\\\.[\]()*+\^$!\|])'</span><span class="s1">)</span>
+
+<span class="s0"># allowed field types</span>
+<span class="s1">ALLOWED_TYPES = set(list(</span><span class="s4">'nbox%fFegwWdDsSl'</span><span class="s1">) +</span>
+    <span class="s1">[</span><span class="s4">'t' </span><span class="s1">+ c </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s4">'ieahgcts'</span><span class="s1">])</span>
+
+
+<span class="s3">def </span><span class="s1">extract_format(format</span><span class="s3">, </span><span class="s1">extra_types):</span>
+    <span class="s2">'''Pull apart the format [[fill]align][0][width][.precision][type] 
+    '''</span>
+    <span class="s1">fill = align = </span><span class="s3">None</span>
+    <span class="s3">if </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">] </span><span class="s3">in </span><span class="s4">'&lt;&gt;=^'</span><span class="s1">:</span>
+        <span class="s1">align = format[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+    <span class="s3">elif </span><span class="s1">len(format) &gt; </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">format[</span><span class="s5">1</span><span class="s1">] </span><span class="s3">in </span><span class="s4">'&lt;&gt;=^'</span><span class="s1">:</span>
+        <span class="s1">fill = format[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">align = format[</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s1">format = format[</span><span class="s5">2</span><span class="s1">:]</span>
+
+    <span class="s1">zero = </span><span class="s3">False</span>
+    <span class="s3">if </span><span class="s1">format </span><span class="s3">and </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">'0'</span><span class="s1">:</span>
+        <span class="s1">zero = </span><span class="s3">True</span>
+        <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+
+    <span class="s1">width = </span><span class="s4">''</span>
+    <span class="s3">while </span><span class="s1">format:</span>
+        <span class="s3">if not </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">].isdigit():</span>
+            <span class="s3">break</span>
+        <span class="s1">width += format[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+
+    <span class="s3">if </span><span class="s1">format.startswith(</span><span class="s4">'.'</span><span class="s1">):</span>
+        <span class="s0"># Precision isn't needed but we need to capture it so that</span>
+        <span class="s0"># the ValueError isn't raised.</span>
+        <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]  </span><span class="s0"># drop the '.'</span>
+        <span class="s1">precision = </span><span class="s4">''</span>
+        <span class="s3">while </span><span class="s1">format:</span>
+            <span class="s3">if not </span><span class="s1">format[</span><span class="s5">0</span><span class="s1">].isdigit():</span>
+                <span class="s3">break</span>
+            <span class="s1">precision += format[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">format = format[</span><span class="s5">1</span><span class="s1">:]</span>
+
+    <span class="s0"># the rest is the type, if present</span>
+    <span class="s1">type = format</span>
+    <span class="s3">if </span><span class="s1">type </span><span class="s3">and </span><span class="s1">type </span><span class="s3">not in </span><span class="s1">ALLOWED_TYPES </span><span class="s3">and </span><span class="s1">type </span><span class="s3">not in </span><span class="s1">extra_types:</span>
+        <span class="s3">raise </span><span class="s1">ValueError(</span><span class="s4">'format spec %r not recognised' </span><span class="s1">% type)</span>
+
+    <span class="s3">return </span><span class="s1">locals()</span>
+
+
+<span class="s1">PARSE_RE = re.compile(</span><span class="s4">r&quot;&quot;&quot;({{|}}|{\w*(?:(?:\.\w+)|(?:\[[^\]]+\]))*(?::[^}]+)?})&quot;&quot;&quot;</span><span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Parser(object):</span>
+    <span class="s2">'''Encapsulate a format string that may be used to parse other strings. 
+    '''</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">format</span><span class="s3">, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">case_sensitive=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s0"># a mapping of a name as in {hello.world} to a regex-group compatible</span>
+        <span class="s0"># name, like hello__world Its used to prevent the transformation of</span>
+        <span class="s0"># name-to-group and group to name to fail subtly, such as in:</span>
+        <span class="s0"># hello_.world-&gt; hello___world-&gt;hello._world</span>
+        <span class="s1">self._group_to_name_map = {}</span>
+        <span class="s0"># also store the original field name to group name mapping to allow</span>
+        <span class="s0"># multiple instances of a name in the format string</span>
+        <span class="s1">self._name_to_group_map = {}</span>
+        <span class="s0"># and to sanity check the repeated instances store away the first</span>
+        <span class="s0"># field type specification for the named field</span>
+        <span class="s1">self._name_types = {}</span>
+
+        <span class="s1">self._format = format</span>
+        <span class="s3">if </span><span class="s1">extra_types </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">extra_types = {}</span>
+        <span class="s1">self._extra_types = extra_types</span>
+        <span class="s3">if </span><span class="s1">case_sensitive:</span>
+            <span class="s1">self._re_flags = re.DOTALL</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._re_flags = re.IGNORECASE | re.DOTALL</span>
+        <span class="s1">self._fixed_fields = []</span>
+        <span class="s1">self._named_fields = []</span>
+        <span class="s1">self._group_index = </span><span class="s5">0</span>
+        <span class="s1">self._type_conversions = {}</span>
+        <span class="s1">self._expression = self._generate_expression()</span>
+        <span class="s1">self.__search_re = </span><span class="s3">None</span>
+        <span class="s1">self.__match_re = </span><span class="s3">None</span>
+
+        <span class="s1">log.debug(</span><span class="s4">'format %r -&gt; %r'</span><span class="s3">, </span><span class="s1">format</span><span class="s3">, </span><span class="s1">self._expression)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">if </span><span class="s1">len(self._format) &gt; </span><span class="s5">20</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s4">'&lt;%s %r&gt;' </span><span class="s1">% (self.__class__.__name__</span><span class="s3">,</span>
+                <span class="s1">self._format[:</span><span class="s5">17</span><span class="s1">] + </span><span class="s4">'...'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s4">'&lt;%s %r&gt;' </span><span class="s1">% (self.__class__.__name__</span><span class="s3">, </span><span class="s1">self._format)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">_search_re(self):</span>
+        <span class="s3">if </span><span class="s1">self.__search_re </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">self.__search_re = re.compile(self._expression</span><span class="s3">, </span><span class="s1">self._re_flags)</span>
+            <span class="s3">except </span><span class="s1">AssertionError:</span>
+                <span class="s0"># access error through sys to keep py3k and backward compat</span>
+                <span class="s1">e = str(sys.exc_info()[</span><span class="s5">1</span><span class="s1">])</span>
+                <span class="s3">if </span><span class="s1">e.endswith(</span><span class="s4">'this version only supports 100 named groups'</span><span class="s1">):</span>
+                    <span class="s3">raise </span><span class="s1">TooManyFields(</span><span class="s4">'sorry, you are attempting to parse '</span>
+                        <span class="s4">'too many complex fields'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">self.__search_re</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">_match_re(self):</span>
+        <span class="s3">if </span><span class="s1">self.__match_re </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">expression = </span><span class="s4">r'^%s$' </span><span class="s1">% self._expression</span>
+            <span class="s3">try</span><span class="s1">:</span>
+                <span class="s1">self.__match_re = re.compile(expression</span><span class="s3">, </span><span class="s1">self._re_flags)</span>
+            <span class="s3">except </span><span class="s1">AssertionError:</span>
+                <span class="s0"># access error through sys to keep py3k and backward compat</span>
+                <span class="s1">e = str(sys.exc_info()[</span><span class="s5">1</span><span class="s1">])</span>
+                <span class="s3">if </span><span class="s1">e.endswith(</span><span class="s4">'this version only supports 100 named groups'</span><span class="s1">):</span>
+                    <span class="s3">raise </span><span class="s1">TooManyFields(</span><span class="s4">'sorry, you are attempting to parse '</span>
+                        <span class="s4">'too many complex fields'</span><span class="s1">)</span>
+            <span class="s3">except </span><span class="s1">re.error:</span>
+                <span class="s3">raise </span><span class="s1">NotImplementedError(</span><span class="s4">&quot;Group names (e.g. (?P&lt;name&gt;) can &quot;</span>
+                    <span class="s4">&quot;cause failure, as they are not escaped properly: '%s'&quot; </span><span class="s1">%</span>
+                    <span class="s1">expression)</span>
+        <span class="s3">return </span><span class="s1">self.__match_re</span>
+
+    <span class="s3">def </span><span class="s1">parse(self</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">evaluate_result=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s2">'''Match my format to the string exactly. 
+ 
+        Return a Result or Match instance or None if there's no match. 
+        '''</span>
+        <span class="s1">m = self._match_re.match(string)</span>
+        <span class="s3">if </span><span class="s1">m </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return None</span>
+
+        <span class="s3">if </span><span class="s1">evaluate_result:</span>
+            <span class="s3">return </span><span class="s1">self.evaluate_result(m)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">Match(self</span><span class="s3">, </span><span class="s1">m)</span>
+
+    <span class="s3">def </span><span class="s1">search(self</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">pos=</span><span class="s5">0</span><span class="s3">, </span><span class="s1">endpos=</span><span class="s3">None, </span><span class="s1">evaluate_result=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s2">'''Search the string for my format. 
+ 
+        Optionally start the search at &quot;pos&quot; character index and limit the 
+        search to a maximum index of endpos - equivalent to 
+        search(string[:endpos]). 
+ 
+        If the ``evaluate_result`` argument is set to ``False`` a 
+        Match instance is returned instead of the actual Result instance. 
+ 
+        Return either a Result instance or None if there's no match. 
+        '''</span>
+        <span class="s3">if </span><span class="s1">endpos </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">endpos = len(string)</span>
+        <span class="s1">m = self._search_re.search(string</span><span class="s3">, </span><span class="s1">pos</span><span class="s3">, </span><span class="s1">endpos)</span>
+        <span class="s3">if </span><span class="s1">m </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return None</span>
+
+        <span class="s3">if </span><span class="s1">evaluate_result:</span>
+            <span class="s3">return </span><span class="s1">self.evaluate_result(m)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">Match(self</span><span class="s3">, </span><span class="s1">m)</span>
+
+    <span class="s3">def </span><span class="s1">findall(self</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">pos=</span><span class="s5">0</span><span class="s3">, </span><span class="s1">endpos=</span><span class="s3">None, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">evaluate_result=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s2">'''Search &quot;string&quot; for all occurrences of &quot;format&quot;. 
+ 
+        Optionally start the search at &quot;pos&quot; character index and limit the 
+        search to a maximum index of endpos - equivalent to 
+        search(string[:endpos]). 
+ 
+        Returns an iterator that holds Result or Match instances for each format match 
+        found. 
+        '''</span>
+        <span class="s3">if </span><span class="s1">endpos </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">endpos = len(string)</span>
+        <span class="s3">return </span><span class="s1">ResultIterator(self</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">pos</span><span class="s3">, </span><span class="s1">endpos</span><span class="s3">, </span><span class="s1">evaluate_result=evaluate_result)</span>
+
+    <span class="s3">def </span><span class="s1">_expand_named_fields(self</span><span class="s3">, </span><span class="s1">named_fields):</span>
+        <span class="s1">result = {}</span>
+        <span class="s3">for </span><span class="s1">field</span><span class="s3">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">named_fields.items():</span>
+            <span class="s0"># split 'aaa[bbb][ccc]...' into 'aaa' and '[bbb][ccc]...'</span>
+            <span class="s1">basename</span><span class="s3">, </span><span class="s1">subkeys = re.match(</span><span class="s4">r'([^\[]+)(.*)'</span><span class="s3">, </span><span class="s1">field).groups()</span>
+
+            <span class="s0"># create nested dictionaries {'aaa': {'bbb': {'ccc': ...}}}</span>
+            <span class="s1">d = result</span>
+            <span class="s1">k = basename</span>
+
+            <span class="s3">if </span><span class="s1">subkeys:</span>
+                <span class="s3">for </span><span class="s1">subkey </span><span class="s3">in </span><span class="s1">re.findall(</span><span class="s4">r'\[[^\]]+\]'</span><span class="s3">, </span><span class="s1">subkeys):</span>
+                    <span class="s1">d = d.setdefault(k</span><span class="s3">,</span><span class="s1">{})</span>
+                    <span class="s1">k = subkey[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]</span>
+
+            <span class="s0"># assign the value to the last key</span>
+            <span class="s1">d[k] = value</span>
+
+        <span class="s3">return </span><span class="s1">result</span>
+
+    <span class="s3">def </span><span class="s1">evaluate_result(self</span><span class="s3">, </span><span class="s1">m):</span>
+        <span class="s2">'''Generate a Result instance for the given regex match object'''</span>
+        <span class="s0"># ok, figure the fixed fields we've pulled out and type convert them</span>
+        <span class="s1">fixed_fields = list(m.groups())</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">self._fixed_fields:</span>
+            <span class="s3">if </span><span class="s1">n </span><span class="s3">in </span><span class="s1">self._type_conversions:</span>
+                <span class="s1">fixed_fields[n] = self._type_conversions[n](fixed_fields[n]</span><span class="s3">, </span><span class="s1">m)</span>
+        <span class="s1">fixed_fields = tuple(fixed_fields[n] </span><span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">self._fixed_fields)</span>
+
+        <span class="s0"># grab the named fields, converting where requested</span>
+        <span class="s1">groupdict = m.groupdict()</span>
+        <span class="s1">named_fields = {}</span>
+        <span class="s1">name_map = {}</span>
+        <span class="s3">for </span><span class="s1">k </span><span class="s3">in </span><span class="s1">self._named_fields:</span>
+            <span class="s1">korig = self._group_to_name_map[k]</span>
+            <span class="s1">name_map[korig] = k</span>
+            <span class="s3">if </span><span class="s1">k </span><span class="s3">in </span><span class="s1">self._type_conversions:</span>
+                <span class="s1">value = self._type_conversions[k](groupdict[k]</span><span class="s3">, </span><span class="s1">m)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">value = groupdict[k]</span>
+
+            <span class="s1">named_fields[korig] = value</span>
+
+        <span class="s0"># now figure the match spans</span>
+        <span class="s1">spans = dict((n</span><span class="s3">, </span><span class="s1">m.span(name_map[n])) </span><span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">named_fields)</span>
+        <span class="s1">spans.update((i</span><span class="s3">, </span><span class="s1">m.span(n + </span><span class="s5">1</span><span class="s1">))</span>
+            <span class="s3">for </span><span class="s1">i</span><span class="s3">, </span><span class="s1">n </span><span class="s3">in </span><span class="s1">enumerate(self._fixed_fields))</span>
+
+        <span class="s0"># and that's our result</span>
+        <span class="s3">return </span><span class="s1">Result(fixed_fields</span><span class="s3">, </span><span class="s1">self._expand_named_fields(named_fields)</span><span class="s3">, </span><span class="s1">spans)</span>
+
+    <span class="s3">def </span><span class="s1">_regex_replace(self</span><span class="s3">, </span><span class="s1">match):</span>
+        <span class="s3">return </span><span class="s4">'</span><span class="s3">\\</span><span class="s4">' </span><span class="s1">+ match.group(</span><span class="s5">1</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_generate_expression(self):</span>
+        <span class="s0"># turn my _format attribute into the _expression attribute</span>
+        <span class="s1">e = []</span>
+        <span class="s3">for </span><span class="s1">part </span><span class="s3">in </span><span class="s1">PARSE_RE.split(self._format):</span>
+            <span class="s3">if not </span><span class="s1">part:</span>
+                <span class="s3">continue</span>
+            <span class="s3">elif </span><span class="s1">part == </span><span class="s4">'{{'</span><span class="s1">:</span>
+                <span class="s1">e.append(</span><span class="s4">r'\{'</span><span class="s1">)</span>
+            <span class="s3">elif </span><span class="s1">part == </span><span class="s4">'}}'</span><span class="s1">:</span>
+                <span class="s1">e.append(</span><span class="s4">r'\}'</span><span class="s1">)</span>
+            <span class="s3">elif </span><span class="s1">part[</span><span class="s5">0</span><span class="s1">] == </span><span class="s4">'{' </span><span class="s3">and </span><span class="s1">part[-</span><span class="s5">1</span><span class="s1">] == </span><span class="s4">'}'</span><span class="s1">:</span>
+                <span class="s0"># this will be a braces-delimited field to handle</span>
+                <span class="s1">e.append(self._handle_field(part))</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># just some text to match</span>
+                <span class="s1">e.append(REGEX_SAFETY.sub(self._regex_replace</span><span class="s3">, </span><span class="s1">part))</span>
+        <span class="s3">return </span><span class="s4">''</span><span class="s1">.join(e)</span>
+
+    <span class="s3">def </span><span class="s1">_to_group_name(self</span><span class="s3">, </span><span class="s1">field):</span>
+        <span class="s0"># return a version of field which can be used as capture group, even</span>
+        <span class="s0"># though it might contain '.'</span>
+        <span class="s1">group = field.replace(</span><span class="s4">'.'</span><span class="s3">, </span><span class="s4">'_'</span><span class="s1">).replace(</span><span class="s4">'['</span><span class="s3">, </span><span class="s4">'_'</span><span class="s1">).replace(</span><span class="s4">']'</span><span class="s3">, </span><span class="s4">'_'</span><span class="s1">)</span>
+
+        <span class="s0"># make sure we don't collide (&quot;a.b&quot; colliding with &quot;a_b&quot;)</span>
+        <span class="s1">n = </span><span class="s5">1</span>
+        <span class="s3">while </span><span class="s1">group </span><span class="s3">in </span><span class="s1">self._group_to_name_map:</span>
+            <span class="s1">n += </span><span class="s5">1</span>
+            <span class="s3">if </span><span class="s4">'.' </span><span class="s3">in </span><span class="s1">field:</span>
+                <span class="s1">group = field.replace(</span><span class="s4">'.'</span><span class="s3">, </span><span class="s4">'_' </span><span class="s1">* n)</span>
+            <span class="s3">elif </span><span class="s4">'_' </span><span class="s3">in </span><span class="s1">field:</span>
+                <span class="s1">group = field.replace(</span><span class="s4">'_'</span><span class="s3">, </span><span class="s4">'_' </span><span class="s1">* n)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">raise </span><span class="s1">KeyError(</span><span class="s4">'duplicated group name %r' </span><span class="s1">% (field</span><span class="s3">,</span><span class="s1">))</span>
+
+        <span class="s0"># save off the mapping</span>
+        <span class="s1">self._group_to_name_map[group] = field</span>
+        <span class="s1">self._name_to_group_map[field] = group</span>
+        <span class="s3">return </span><span class="s1">group</span>
+
+    <span class="s3">def </span><span class="s1">_handle_field(self</span><span class="s3">, </span><span class="s1">field):</span>
+        <span class="s0"># first: lose the braces</span>
+        <span class="s1">field = field[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]</span>
+
+        <span class="s0"># now figure whether this is an anonymous or named field, and whether</span>
+        <span class="s0"># there's any format specification</span>
+        <span class="s1">format = </span><span class="s4">''</span>
+        <span class="s3">if </span><span class="s1">field </span><span class="s3">and </span><span class="s1">field[</span><span class="s5">0</span><span class="s1">].isalpha():</span>
+            <span class="s3">if </span><span class="s4">':' </span><span class="s3">in </span><span class="s1">field:</span>
+                <span class="s1">name</span><span class="s3">, </span><span class="s1">format = field.split(</span><span class="s4">':'</span><span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">name = field</span>
+            <span class="s3">if </span><span class="s1">name </span><span class="s3">in </span><span class="s1">self._name_to_group_map:</span>
+                <span class="s3">if </span><span class="s1">self._name_types[name] != format:</span>
+                    <span class="s3">raise </span><span class="s1">RepeatedNameError(</span><span class="s4">'field type %r for field &quot;%s&quot; '</span>
+                        <span class="s4">'does not match previous seen type %r' </span><span class="s1">% (format</span><span class="s3">,</span>
+                        <span class="s1">name</span><span class="s3">, </span><span class="s1">self._name_types[name]))</span>
+                <span class="s1">group = self._name_to_group_map[name]</span>
+                <span class="s0"># match previously-seen value</span>
+                <span class="s3">return </span><span class="s4">r'(?P=%s)' </span><span class="s1">% group</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">group = self._to_group_name(name)</span>
+                <span class="s1">self._name_types[name] = format</span>
+            <span class="s1">self._named_fields.append(group)</span>
+            <span class="s0"># this will become a group, which must not contain dots</span>
+            <span class="s1">wrap = </span><span class="s4">r'(?P&lt;%s&gt;%%s)' </span><span class="s1">% group</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._fixed_fields.append(self._group_index)</span>
+            <span class="s1">wrap = </span><span class="s4">r'(%s)'</span>
+            <span class="s3">if </span><span class="s4">':' </span><span class="s3">in </span><span class="s1">field:</span>
+                <span class="s1">format = field[</span><span class="s5">1</span><span class="s1">:]</span>
+            <span class="s1">group = self._group_index</span>
+
+        <span class="s0"># simplest case: no type specifier ({} or {name})</span>
+        <span class="s3">if not </span><span class="s1">format:</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+            <span class="s3">return </span><span class="s1">wrap % </span><span class="s4">r'.+?'</span>
+
+        <span class="s0"># decode the format specification</span>
+        <span class="s1">format = extract_format(format</span><span class="s3">, </span><span class="s1">self._extra_types)</span>
+
+        <span class="s0"># figure type conversions, if any</span>
+        <span class="s1">type = format[</span><span class="s4">'type'</span><span class="s1">]</span>
+        <span class="s1">is_numeric = type </span><span class="s3">and </span><span class="s1">type </span><span class="s3">in </span><span class="s4">'n%fegdobh'</span>
+        <span class="s3">if </span><span class="s1">type </span><span class="s3">in </span><span class="s1">self._extra_types:</span>
+            <span class="s1">type_converter = self._extra_types[type]</span>
+            <span class="s1">s = getattr(type_converter</span><span class="s3">, </span><span class="s4">'pattern'</span><span class="s3">, </span><span class="s4">r'.+?'</span><span class="s1">)</span>
+            <span class="s1">regex_group_count = getattr(type_converter</span><span class="s3">, </span><span class="s4">'regex_group_count'</span><span class="s3">, </span><span class="s5">0</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">regex_group_count </span><span class="s3">is None</span><span class="s1">:</span>
+                <span class="s1">regex_group_count = </span><span class="s5">0</span>
+            <span class="s1">self._group_index += regex_group_count</span>
+
+            <span class="s3">def </span><span class="s1">f(string</span><span class="s3">, </span><span class="s1">m):</span>
+                <span class="s3">return </span><span class="s1">type_converter(string)</span>
+            <span class="s1">self._type_conversions[group] = f</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'n'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'\d{1,3}([,.]\d{3})*'</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+            <span class="s1">self._type_conversions[group] = int_convert(</span><span class="s5">10</span><span class="s1">)</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'b'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'(0[bB])?[01]+'</span>
+            <span class="s1">self._type_conversions[group] = int_convert(</span><span class="s5">2</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'o'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'(0[oO])?[0-7]+'</span>
+            <span class="s1">self._type_conversions[group] = int_convert(</span><span class="s5">8</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'x'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'(0[xX])?[0-9a-fA-F]+'</span>
+            <span class="s1">self._type_conversions[group] = int_convert(</span><span class="s5">16</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'%'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'\d+(\.\d+)?%'</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+            <span class="s1">self._type_conversions[group] = percentage</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'f'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'\d+\.\d+'</span>
+            <span class="s1">self._type_conversions[group] = </span><span class="s3">lambda </span><span class="s1">s</span><span class="s3">, </span><span class="s1">m: float(s)</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'F'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'\d+\.\d+'</span>
+            <span class="s1">self._type_conversions[group] = </span><span class="s3">lambda </span><span class="s1">s</span><span class="s3">, </span><span class="s1">m: Decimal(s)</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'e'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'\d+\.\d+[eE][-+]?\d+|nan|NAN|[-+]?inf|[-+]?INF'</span>
+            <span class="s1">self._type_conversions[group] = </span><span class="s3">lambda </span><span class="s1">s</span><span class="s3">, </span><span class="s1">m: float(s)</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'g'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'\d+(\.\d+)?([eE][-+]?\d+)?|nan|NAN|[-+]?inf|[-+]?INF'</span>
+            <span class="s1">self._group_index += </span><span class="s5">2</span>
+            <span class="s1">self._type_conversions[group] = </span><span class="s3">lambda </span><span class="s1">s</span><span class="s3">, </span><span class="s1">m: float(s)</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'d'</span><span class="s1">:</span>
+            <span class="s3">if </span><span class="s1">format.get(</span><span class="s4">'width'</span><span class="s1">):</span>
+                <span class="s1">width = </span><span class="s4">r'{1,%s}' </span><span class="s1">% int(format[</span><span class="s4">'width'</span><span class="s1">])</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">width = </span><span class="s4">'+'</span>
+            <span class="s1">s = </span><span class="s4">r'\d{w}|0[xX][0-9a-fA-F]{w}|0[bB][01]{w}|0[oO][0-7]{w}'</span><span class="s1">.format(w=width)</span>
+            <span class="s1">self._type_conversions[group] = int_convert(</span><span class="s5">10</span><span class="s1">)</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'ti'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'(\d{4}-\d\d-\d\d)((\s+|T)%s)?(Z|\s*[-+]\d\d:?\d\d)?' </span><span class="s1">% \</span>
+                <span class="s1">TIME_PAT</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">ymd=n + </span><span class="s5">1</span><span class="s3">,</span>
+                <span class="s1">hms=n + </span><span class="s5">4</span><span class="s3">, </span><span class="s1">tz=n + </span><span class="s5">7</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">7</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'tg'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'(\d{1,2}[-/](\d{1,2}|%s)[-/]\d{4})(\s+%s)?%s?%s?' </span><span class="s1">% (</span>
+                <span class="s1">ALL_MONTHS_PAT</span><span class="s3">, </span><span class="s1">TIME_PAT</span><span class="s3">, </span><span class="s1">AM_PAT</span><span class="s3">, </span><span class="s1">TZ_PAT)</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">dmy=n + </span><span class="s5">1</span><span class="s3">,</span>
+                <span class="s1">hms=n + </span><span class="s5">5</span><span class="s3">, </span><span class="s1">am=n + </span><span class="s5">8</span><span class="s3">, </span><span class="s1">tz=n + </span><span class="s5">9</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">9</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'ta'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'((\d{1,2}|%s)[-/]\d{1,2}[-/]\d{4})(\s+%s)?%s?%s?' </span><span class="s1">% (</span>
+                <span class="s1">ALL_MONTHS_PAT</span><span class="s3">, </span><span class="s1">TIME_PAT</span><span class="s3">, </span><span class="s1">AM_PAT</span><span class="s3">, </span><span class="s1">TZ_PAT)</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">mdy=n + </span><span class="s5">1</span><span class="s3">,</span>
+                <span class="s1">hms=n + </span><span class="s5">5</span><span class="s3">, </span><span class="s1">am=n + </span><span class="s5">8</span><span class="s3">, </span><span class="s1">tz=n + </span><span class="s5">9</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">9</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'te'</span><span class="s1">:</span>
+            <span class="s0"># this will allow microseconds through if they're present, but meh</span>
+            <span class="s1">s = </span><span class="s4">r'(%s,\s+)?(\d{1,2}\s+%s\s+\d{4})\s+%s%s' </span><span class="s1">% (DAYS_PAT</span><span class="s3">,</span>
+                <span class="s1">MONTHS_PAT</span><span class="s3">, </span><span class="s1">TIME_PAT</span><span class="s3">, </span><span class="s1">TZ_PAT)</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">dmy=n + </span><span class="s5">3</span><span class="s3">,</span>
+                <span class="s1">hms=n + </span><span class="s5">5</span><span class="s3">, </span><span class="s1">tz=n + </span><span class="s5">8</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">8</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'th'</span><span class="s1">:</span>
+            <span class="s0"># slight flexibility here from the stock Apache format</span>
+            <span class="s1">s = </span><span class="s4">r'(\d{1,2}[-/]%s[-/]\d{4}):%s%s' </span><span class="s1">% (MONTHS_PAT</span><span class="s3">, </span><span class="s1">TIME_PAT</span><span class="s3">,</span>
+                <span class="s1">TZ_PAT)</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">dmy=n + </span><span class="s5">1</span><span class="s3">,</span>
+                <span class="s1">hms=n + </span><span class="s5">3</span><span class="s3">, </span><span class="s1">tz=n + </span><span class="s5">6</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">6</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'tc'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'(%s)\s+%s\s+(\d{1,2})\s+%s\s+(\d{4})' </span><span class="s1">% (</span>
+                <span class="s1">DAYS_PAT</span><span class="s3">, </span><span class="s1">MONTHS_PAT</span><span class="s3">, </span><span class="s1">TIME_PAT)</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">,</span>
+                <span class="s1">d_m_y=(n + </span><span class="s5">4</span><span class="s3">, </span><span class="s1">n + </span><span class="s5">3</span><span class="s3">, </span><span class="s1">n + </span><span class="s5">8</span><span class="s1">)</span><span class="s3">, </span><span class="s1">hms=n + </span><span class="s5">5</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">8</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'tt'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'%s?%s?%s?' </span><span class="s1">% (TIME_PAT</span><span class="s3">, </span><span class="s1">AM_PAT</span><span class="s3">, </span><span class="s1">TZ_PAT)</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">hms=n + </span><span class="s5">1</span><span class="s3">,</span>
+                <span class="s1">am=n + </span><span class="s5">4</span><span class="s3">, </span><span class="s1">tz=n + </span><span class="s5">5</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">5</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'ts'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'%s(\s+)(\d+)(\s+)(\d{1,2}:\d{1,2}:\d{1,2})?' </span><span class="s1">% MONTHS_PAT</span>
+            <span class="s1">n = self._group_index</span>
+            <span class="s1">self._type_conversions[group] = partial(date_convert</span><span class="s3">, </span><span class="s1">mm=n+</span><span class="s5">1</span><span class="s3">, </span><span class="s1">dd=n+</span><span class="s5">3</span><span class="s3">,</span>
+                <span class="s1">hms=n + </span><span class="s5">5</span><span class="s1">)</span>
+            <span class="s1">self._group_index += </span><span class="s5">5</span>
+        <span class="s3">elif </span><span class="s1">type == </span><span class="s4">'l'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'[A-Za-z]+'</span>
+        <span class="s3">elif </span><span class="s1">type:</span>
+            <span class="s1">s = </span><span class="s4">r'\%s+' </span><span class="s1">% type</span>
+        <span class="s3">elif </span><span class="s1">format.get(</span><span class="s4">'precision'</span><span class="s1">):</span>
+            <span class="s3">if </span><span class="s1">format.get(</span><span class="s4">'width'</span><span class="s1">):</span>
+                <span class="s1">s = </span><span class="s4">r'.{%s,%s}?' </span><span class="s1">% (format[</span><span class="s4">'width'</span><span class="s1">]</span><span class="s3">, </span><span class="s1">format[</span><span class="s4">'precision'</span><span class="s1">])</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">s = </span><span class="s4">r'.{1,%s}?' </span><span class="s1">% format[</span><span class="s4">'precision'</span><span class="s1">]</span>
+        <span class="s3">elif </span><span class="s1">format.get(</span><span class="s4">'width'</span><span class="s1">):</span>
+            <span class="s1">s = </span><span class="s4">r'.{%s,}?' </span><span class="s1">% format[</span><span class="s4">'width'</span><span class="s1">]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">r'.+?'</span>
+
+        <span class="s1">align = format[</span><span class="s4">'align'</span><span class="s1">]</span>
+        <span class="s1">fill = format[</span><span class="s4">'fill'</span><span class="s1">]</span>
+
+        <span class="s0"># handle some numeric-specific things like fill and sign</span>
+        <span class="s3">if </span><span class="s1">is_numeric:</span>
+            <span class="s0"># prefix with something (align &quot;=&quot; trumps zero)</span>
+            <span class="s3">if </span><span class="s1">align == </span><span class="s4">'='</span><span class="s1">:</span>
+                <span class="s0"># special case - align &quot;=&quot; acts like the zero above but with</span>
+                <span class="s0"># configurable fill defaulting to &quot;0&quot;</span>
+                <span class="s3">if not </span><span class="s1">fill:</span>
+                    <span class="s1">fill = </span><span class="s4">'0'</span>
+                <span class="s1">s = </span><span class="s4">r'%s*' </span><span class="s1">% fill + s</span>
+
+            <span class="s0"># allow numbers to be prefixed with a sign</span>
+            <span class="s1">s = </span><span class="s4">r'[-+ ]?' </span><span class="s1">+ s</span>
+
+        <span class="s3">if not </span><span class="s1">fill:</span>
+            <span class="s1">fill = </span><span class="s4">' '</span>
+
+        <span class="s0"># Place into a group now - this captures the value we want to keep.</span>
+        <span class="s0"># Everything else from now is just padding to be stripped off</span>
+        <span class="s3">if </span><span class="s1">wrap:</span>
+            <span class="s1">s = wrap % s</span>
+            <span class="s1">self._group_index += </span><span class="s5">1</span>
+
+        <span class="s3">if </span><span class="s1">format[</span><span class="s4">'width'</span><span class="s1">]:</span>
+            <span class="s0"># all we really care about is that if the format originally</span>
+            <span class="s0"># specified a width then there will probably be padding - without</span>
+            <span class="s0"># an explicit alignment that'll mean right alignment with spaces</span>
+            <span class="s0"># padding</span>
+            <span class="s3">if not </span><span class="s1">align:</span>
+                <span class="s1">align = </span><span class="s4">'&gt;'</span>
+
+        <span class="s3">if </span><span class="s1">fill </span><span class="s3">in </span><span class="s4">r'.\+?*[](){}^$'</span><span class="s1">:</span>
+            <span class="s1">fill = </span><span class="s4">'</span><span class="s3">\\</span><span class="s4">' </span><span class="s1">+ fill</span>
+
+        <span class="s0"># align &quot;=&quot; has been handled</span>
+        <span class="s3">if </span><span class="s1">align == </span><span class="s4">'&lt;'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">'%s%s*' </span><span class="s1">% (s</span><span class="s3">, </span><span class="s1">fill)</span>
+        <span class="s3">elif </span><span class="s1">align == </span><span class="s4">'&gt;'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">'%s*%s' </span><span class="s1">% (fill</span><span class="s3">, </span><span class="s1">s)</span>
+        <span class="s3">elif </span><span class="s1">align == </span><span class="s4">'^'</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s4">'%s*%s%s*' </span><span class="s1">% (fill</span><span class="s3">, </span><span class="s1">s</span><span class="s3">, </span><span class="s1">fill)</span>
+
+        <span class="s3">return </span><span class="s1">s</span>
+
+
+<span class="s3">class </span><span class="s1">Result(object):</span>
+    <span class="s2">'''The result of a parse() or search(). 
+ 
+    Fixed results may be looked up using `result[index]`. 
+ 
+    Named results may be looked up using `result['name']`. 
+ 
+    Named results may be tested for existence using `'name' in result`. 
+    '''</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">fixed</span><span class="s3">, </span><span class="s1">named</span><span class="s3">, </span><span class="s1">spans):</span>
+        <span class="s1">self.fixed = fixed</span>
+        <span class="s1">self.named = named</span>
+        <span class="s1">self.spans = spans</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__(self</span><span class="s3">, </span><span class="s1">item):</span>
+        <span class="s3">if </span><span class="s1">isinstance(item</span><span class="s3">, </span><span class="s1">int):</span>
+            <span class="s3">return </span><span class="s1">self.fixed[item]</span>
+        <span class="s3">return </span><span class="s1">self.named[item]</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s4">'&lt;%s %r %r&gt;' </span><span class="s1">% (self.__class__.__name__</span><span class="s3">, </span><span class="s1">self.fixed</span><span class="s3">,</span>
+            <span class="s1">self.named)</span>
+
+    <span class="s3">def </span><span class="s1">__contains__(self</span><span class="s3">, </span><span class="s1">name):</span>
+        <span class="s3">return </span><span class="s1">name </span><span class="s3">in </span><span class="s1">self.named</span>
+
+
+<span class="s3">class </span><span class="s1">Match(object):</span>
+    <span class="s2">'''The result of a parse() or search() if no results are generated. 
+ 
+    This class is only used to expose internal used regex match objects 
+    to the user and use them for external Parser.evaluate_result calls. 
+    '''</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">parser</span><span class="s3">, </span><span class="s1">match):</span>
+        <span class="s1">self.parser = parser</span>
+        <span class="s1">self.match = match</span>
+
+    <span class="s3">def </span><span class="s1">evaluate_result(self):</span>
+        <span class="s2">'''Generate results for this Match'''</span>
+        <span class="s3">return </span><span class="s1">self.parser.evaluate_result(self.match)</span>
+
+
+<span class="s3">class </span><span class="s1">ResultIterator(object):</span>
+    <span class="s2">'''The result of a findall() operation. 
+ 
+    Each element is a Result instance. 
+    '''</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">parser</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">pos</span><span class="s3">, </span><span class="s1">endpos</span><span class="s3">, </span><span class="s1">evaluate_result=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s1">self.parser = parser</span>
+        <span class="s1">self.string = string</span>
+        <span class="s1">self.pos = pos</span>
+        <span class="s1">self.endpos = endpos</span>
+        <span class="s1">self.evaluate_result = evaluate_result</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">__next__(self):</span>
+        <span class="s1">m = self.parser._search_re.search(self.string</span><span class="s3">, </span><span class="s1">self.pos</span><span class="s3">, </span><span class="s1">self.endpos)</span>
+        <span class="s3">if </span><span class="s1">m </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">StopIteration()</span>
+        <span class="s1">self.pos = m.end()</span>
+
+        <span class="s3">if </span><span class="s1">self.evaluate_result:</span>
+            <span class="s3">return </span><span class="s1">self.parser.evaluate_result(m)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">Match(self.parser</span><span class="s3">, </span><span class="s1">m)</span>
+
+    <span class="s0"># pre-py3k compat</span>
+    <span class="s1">next = __next__</span>
+
+
+<span class="s3">def </span><span class="s1">parse(format</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">evaluate_result=</span><span class="s3">True, </span><span class="s1">case_sensitive=</span><span class="s3">False</span><span class="s1">):</span>
+    <span class="s2">'''Using &quot;format&quot; attempt to pull values from &quot;string&quot;. 
+ 
+    The format must match the string contents exactly. If the value 
+    you're looking for is instead just a part of the string use 
+    search(). 
+ 
+    If ``evaluate_result`` is True the return value will be an Result instance with two attributes: 
+ 
+     .fixed - tuple of fixed-position values from the string 
+     .named - dict of named values from the string 
+ 
+    If ``evaluate_result`` is False the return value will be a Match instance with one method: 
+ 
+     .evaluate_result() - This will return a Result instance like you would get 
+                          with ``evaluate_result`` set to True 
+ 
+    The default behaviour is to match strings case insensitively. You may match with 
+    case by specifying case_sensitive=True. 
+ 
+    If the format is invalid a ValueError will be raised. 
+ 
+    See the module documentation for the use of &quot;extra_types&quot;. 
+ 
+    In the case there is no match parse() will return None. 
+    '''</span>
+    <span class="s1">p = Parser(format</span><span class="s3">, </span><span class="s1">extra_types=extra_types</span><span class="s3">, </span><span class="s1">case_sensitive=case_sensitive)</span>
+    <span class="s3">return </span><span class="s1">p.parse(string</span><span class="s3">, </span><span class="s1">evaluate_result=evaluate_result)</span>
+
+
+<span class="s3">def </span><span class="s1">search(format</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">pos=</span><span class="s5">0</span><span class="s3">, </span><span class="s1">endpos=</span><span class="s3">None, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">evaluate_result=</span><span class="s3">True,</span>
+        <span class="s1">case_sensitive=</span><span class="s3">False</span><span class="s1">):</span>
+    <span class="s2">'''Search &quot;string&quot; for the first occurrence of &quot;format&quot;. 
+ 
+    The format may occur anywhere within the string. If 
+    instead you wish for the format to exactly match the string 
+    use parse(). 
+ 
+    Optionally start the search at &quot;pos&quot; character index and limit the search 
+    to a maximum index of endpos - equivalent to search(string[:endpos]). 
+ 
+    If ``evaluate_result`` is True the return value will be an Result instance with two attributes: 
+ 
+     .fixed - tuple of fixed-position values from the string 
+     .named - dict of named values from the string 
+ 
+    If ``evaluate_result`` is False the return value will be a Match instance with one method: 
+ 
+     .evaluate_result() - This will return a Result instance like you would get 
+                          with ``evaluate_result`` set to True 
+ 
+    The default behaviour is to match strings case insensitively. You may match with 
+    case by specifying case_sensitive=True. 
+ 
+    If the format is invalid a ValueError will be raised. 
+ 
+    See the module documentation for the use of &quot;extra_types&quot;. 
+ 
+    In the case there is no match parse() will return None. 
+    '''</span>
+    <span class="s1">p = Parser(format</span><span class="s3">, </span><span class="s1">extra_types=extra_types</span><span class="s3">, </span><span class="s1">case_sensitive=case_sensitive)</span>
+    <span class="s3">return </span><span class="s1">p.search(string</span><span class="s3">, </span><span class="s1">pos</span><span class="s3">, </span><span class="s1">endpos</span><span class="s3">, </span><span class="s1">evaluate_result=evaluate_result)</span>
+
+
+<span class="s3">def </span><span class="s1">findall(format</span><span class="s3">, </span><span class="s1">string</span><span class="s3">, </span><span class="s1">pos=</span><span class="s5">0</span><span class="s3">, </span><span class="s1">endpos=</span><span class="s3">None, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">evaluate_result=</span><span class="s3">True,</span>
+        <span class="s1">case_sensitive=</span><span class="s3">False</span><span class="s1">):</span>
+    <span class="s2">'''Search &quot;string&quot; for all occurrences of &quot;format&quot;. 
+ 
+    You will be returned an iterator that holds Result instances 
+    for each format match found. 
+ 
+    Optionally start the search at &quot;pos&quot; character index and limit the search 
+    to a maximum index of endpos - equivalent to search(string[:endpos]). 
+ 
+    If ``evaluate_result`` is True each returned Result instance has two attributes: 
+ 
+     .fixed - tuple of fixed-position values from the string 
+     .named - dict of named values from the string 
+ 
+    If ``evaluate_result`` is False each returned value is a Match instance with one method: 
+ 
+     .evaluate_result() - This will return a Result instance like you would get 
+                          with ``evaluate_result`` set to True 
+ 
+    The default behaviour is to match strings case insensitively. You may match with 
+    case by specifying case_sensitive=True. 
+ 
+    If the format is invalid a ValueError will be raised. 
+ 
+    See the module documentation for the use of &quot;extra_types&quot;. 
+    '''</span>
+    <span class="s1">p = Parser(format</span><span class="s3">, </span><span class="s1">extra_types=extra_types</span><span class="s3">, </span><span class="s1">case_sensitive=case_sensitive)</span>
+    <span class="s3">return </span><span class="s1">Parser(format</span><span class="s3">, </span><span class="s1">extra_types=extra_types).findall(string</span><span class="s3">, </span><span class="s1">pos</span><span class="s3">, </span><span class="s1">endpos</span><span class="s3">, </span><span class="s1">evaluate_result=evaluate_result)</span>
+
+
+<span class="s3">def </span><span class="s1">compile(format</span><span class="s3">, </span><span class="s1">extra_types=</span><span class="s3">None, </span><span class="s1">case_sensitive=</span><span class="s3">False</span><span class="s1">):</span>
+    <span class="s2">'''Create a Parser instance to parse &quot;format&quot;. 
+ 
+    The resultant Parser has a method .parse(string) which 
+    behaves in the same manner as parse(format, string). 
+ 
+    The default behaviour is to match strings case insensitively. You may match with 
+    case by specifying case_sensitive=True. 
+ 
+    Use this function if you intend to parse many strings 
+    with the same format. 
+ 
+    See the module documentation for the use of &quot;extra_types&quot;. 
+ 
+    Returns a Parser instance. 
+    '''</span>
+    <span class="s3">return </span><span class="s1">Parser(format</span><span class="s3">, </span><span class="s1">extra_types=extra_types)</span>
+
+
+<span class="s0"># Copyright (c) 2012-2019 Richard Jones &lt;richard@python.org&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># Permission is hereby granted, free of charge, to any person obtaining a copy</span>
+<span class="s0"># of this software and associated documentation files (the &quot;Software&quot;), to deal</span>
+<span class="s0"># in the Software without restriction, including without limitation the rights</span>
+<span class="s0"># to use, copy, modify, merge, publish, distribute, sublicense, and/or sell</span>
+<span class="s0"># copies of the Software, and to permit persons to whom the Software is</span>
+<span class="s0"># furnished to do so, subject to the following conditions:</span>
+<span class="s0">#</span>
+<span class="s0">#  The above copyright notice and this permission notice shall be included in</span>
+<span class="s0">#  all copies or substantial portions of the Software.</span>
+<span class="s0">#</span>
+<span class="s0"># THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</span>
+<span class="s0"># IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</span>
+<span class="s0"># FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE</span>
+<span class="s0"># AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER</span>
+<span class="s0"># LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,</span>
+<span class="s0"># OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE</span>
+<span class="s0"># SOFTWARE.</span>
+
+<span class="s0"># vim: set filetype=python ts=4 sw=4 et si tw=75</span>
+</pre>
+</body>
+</html>

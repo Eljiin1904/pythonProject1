@@ -1,0 +1,101 @@
+<html>
+<head>
+<title>inspect.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #808080;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+inspect.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">inspect</span>
+
+
+<span class="s1">@functools.lru_cache(maxsize=</span><span class="s2">512</span><span class="s1">)</span>
+<span class="s0">def </span><span class="s1">_get_func_parameters(func</span><span class="s0">, </span><span class="s1">remove_first):</span>
+    <span class="s1">parameters = tuple(inspect.signature(func).parameters.values())</span>
+    <span class="s0">if </span><span class="s1">remove_first:</span>
+        <span class="s1">parameters = parameters[</span><span class="s2">1</span><span class="s1">:]</span>
+    <span class="s0">return </span><span class="s1">parameters</span>
+
+
+<span class="s0">def </span><span class="s1">_get_callable_parameters(meth_or_func):</span>
+    <span class="s1">is_method = inspect.ismethod(meth_or_func)</span>
+    <span class="s1">func = meth_or_func.__func__ </span><span class="s0">if </span><span class="s1">is_method </span><span class="s0">else </span><span class="s1">meth_or_func</span>
+    <span class="s0">return </span><span class="s1">_get_func_parameters(func</span><span class="s0">, </span><span class="s1">remove_first=is_method)</span>
+
+
+<span class="s0">def </span><span class="s1">get_func_args(func):</span>
+    <span class="s1">params = _get_callable_parameters(func)</span>
+    <span class="s0">return </span><span class="s1">[</span>
+        <span class="s1">param.name </span><span class="s0">for </span><span class="s1">param </span><span class="s0">in </span><span class="s1">params</span>
+        <span class="s0">if </span><span class="s1">param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD</span>
+    <span class="s1">]</span>
+
+
+<span class="s0">def </span><span class="s1">get_func_full_args(func):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Return a list of (argument name, default value) tuples. If the argument 
+    does not have a default value, omit it in the tuple. Arguments such as 
+    *args and **kwargs are also included. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">params = _get_callable_parameters(func)</span>
+    <span class="s1">args = []</span>
+    <span class="s0">for </span><span class="s1">param </span><span class="s0">in </span><span class="s1">params:</span>
+        <span class="s1">name = param.name</span>
+        <span class="s4"># Ignore 'self'</span>
+        <span class="s0">if </span><span class="s1">name == </span><span class="s5">'self'</span><span class="s1">:</span>
+            <span class="s0">continue</span>
+        <span class="s0">if </span><span class="s1">param.kind == inspect.Parameter.VAR_POSITIONAL:</span>
+            <span class="s1">name = </span><span class="s5">'*' </span><span class="s1">+ name</span>
+        <span class="s0">elif </span><span class="s1">param.kind == inspect.Parameter.VAR_KEYWORD:</span>
+            <span class="s1">name = </span><span class="s5">'**' </span><span class="s1">+ name</span>
+        <span class="s0">if </span><span class="s1">param.default != inspect.Parameter.empty:</span>
+            <span class="s1">args.append((name</span><span class="s0">, </span><span class="s1">param.default))</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">args.append((name</span><span class="s0">,</span><span class="s1">))</span>
+    <span class="s0">return </span><span class="s1">args</span>
+
+
+<span class="s0">def </span><span class="s1">func_accepts_kwargs(func):</span>
+    <span class="s3">&quot;&quot;&quot;Return True if function 'func' accepts keyword arguments **kwargs.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">any(</span>
+        <span class="s1">p </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">_get_callable_parameters(func)</span>
+        <span class="s0">if </span><span class="s1">p.kind == p.VAR_KEYWORD</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">func_accepts_var_args(func):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Return True if function 'func' accepts positional arguments *args. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">any(</span>
+        <span class="s1">p </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">_get_callable_parameters(func)</span>
+        <span class="s0">if </span><span class="s1">p.kind == p.VAR_POSITIONAL</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">method_has_no_args(meth):</span>
+    <span class="s3">&quot;&quot;&quot;Return True if a method only accepts 'self'.&quot;&quot;&quot;</span>
+    <span class="s1">count = len([</span>
+        <span class="s1">p </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">_get_callable_parameters(meth)</span>
+        <span class="s0">if </span><span class="s1">p.kind == p.POSITIONAL_OR_KEYWORD</span>
+    <span class="s1">])</span>
+    <span class="s0">return </span><span class="s1">count == </span><span class="s2">0 </span><span class="s0">if </span><span class="s1">inspect.ismethod(meth) </span><span class="s0">else </span><span class="s1">count == </span><span class="s2">1</span>
+
+
+<span class="s0">def </span><span class="s1">func_supports_parameter(func</span><span class="s0">, </span><span class="s1">name):</span>
+    <span class="s0">return </span><span class="s1">any(param.name == name </span><span class="s0">for </span><span class="s1">param </span><span class="s0">in </span><span class="s1">_get_callable_parameters(func))</span>
+</pre>
+</body>
+</html>

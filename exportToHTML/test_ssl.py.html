@@ -1,0 +1,1320 @@
+<html>
+<head>
+<title>test_ssl.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_ssl.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">re</span>
+<span class="s0">import </span><span class="s1">sys</span>
+
+<span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">import </span><span class="s1">socket </span><span class="s0">as </span><span class="s1">stdlib_socket</span>
+<span class="s0">import </span><span class="s1">ssl</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">contextmanager</span>
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">partial</span>
+
+<span class="s0">from </span><span class="s1">OpenSSL </span><span class="s0">import </span><span class="s1">SSL</span>
+<span class="s0">import </span><span class="s1">trustme</span>
+<span class="s0">from </span><span class="s1">async_generator </span><span class="s0">import </span><span class="s1">asynccontextmanager</span>
+
+<span class="s0">import </span><span class="s1">trio</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">_core</span>
+<span class="s0">from </span><span class="s1">.._highlevel_socket </span><span class="s0">import </span><span class="s1">SocketStream</span><span class="s0">, </span><span class="s1">SocketListener</span>
+<span class="s0">from </span><span class="s1">.._highlevel_generic </span><span class="s0">import </span><span class="s1">aclose_forcefully</span>
+<span class="s0">from </span><span class="s1">.._core </span><span class="s0">import </span><span class="s1">ClosedResourceError</span><span class="s0">, </span><span class="s1">BrokenResourceError</span>
+<span class="s0">from </span><span class="s1">.._highlevel_open_tcp_stream </span><span class="s0">import </span><span class="s1">open_tcp_stream</span>
+<span class="s0">from </span><span class="s1">.. </span><span class="s0">import </span><span class="s1">socket </span><span class="s0">as </span><span class="s1">tsocket</span>
+<span class="s0">from </span><span class="s1">.._ssl </span><span class="s0">import </span><span class="s1">SSLStream</span><span class="s0">, </span><span class="s1">SSLListener</span><span class="s0">, </span><span class="s1">NeedHandshakeError</span>
+<span class="s0">from </span><span class="s1">.._util </span><span class="s0">import </span><span class="s1">ConflictDetector</span>
+
+<span class="s0">from </span><span class="s1">.._core.tests.tutil </span><span class="s0">import </span><span class="s1">slow</span>
+
+<span class="s0">from </span><span class="s1">..testing </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">assert_checkpoints</span><span class="s0">,</span>
+    <span class="s1">Sequencer</span><span class="s0">,</span>
+    <span class="s1">memory_stream_pair</span><span class="s0">,</span>
+    <span class="s1">lockstep_stream_pair</span><span class="s0">,</span>
+    <span class="s1">check_two_way_stream</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+<span class="s2"># We have two different kinds of echo server fixtures we use for testing. The</span>
+<span class="s2"># first is a real server written using the stdlib ssl module and blocking</span>
+<span class="s2"># sockets. It runs in a thread and we talk to it over a real socketpair(), to</span>
+<span class="s2"># validate interoperability in a semi-realistic setting.</span>
+<span class="s2">#</span>
+<span class="s2"># The second is a very weird virtual echo server that lives inside a custom</span>
+<span class="s2"># Stream class. It lives entirely inside the Python object space; there are no</span>
+<span class="s2"># operating system calls in it at all. No threads, no I/O, nothing. It's</span>
+<span class="s2"># 'send_all' call takes encrypted data from a client and feeds it directly into</span>
+<span class="s2"># the server-side TLS state engine to decrypt, then takes that data, feeds it</span>
+<span class="s2"># back through to get the encrypted response, and returns it from 'receive_some'. This</span>
+<span class="s2"># gives us full control and reproducibility. This server is written using</span>
+<span class="s2"># PyOpenSSL, so that we can trigger renegotiations on demand. It also allows</span>
+<span class="s2"># us to insert random (virtual) delays, to really exercise all the weird paths</span>
+<span class="s2"># in SSLStream's state engine.</span>
+<span class="s2">#</span>
+<span class="s2"># Both present a certificate for &quot;trio-test-1.example.org&quot;.</span>
+
+<span class="s1">TRIO_TEST_CA = trustme.CA()</span>
+<span class="s1">TRIO_TEST_1_CERT = TRIO_TEST_CA.issue_server_cert(</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">)</span>
+
+<span class="s1">SERVER_CTX = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)</span>
+<span class="s1">TRIO_TEST_1_CERT.configure_cert(SERVER_CTX)</span>
+
+<span class="s2"># TLS 1.3 has a lot of changes from previous versions. So we want to run tests</span>
+<span class="s2"># with both TLS 1.3, and TLS 1.2.</span>
+<span class="s0">if </span><span class="s1">hasattr(ssl</span><span class="s0">, </span><span class="s3">&quot;OP_NO_TLSv1_3&quot;</span><span class="s1">):</span>
+    <span class="s2"># &quot;tls13&quot; means that we're willing to negotiate TLS 1.3. Usually that's</span>
+    <span class="s2"># what will happen, but the renegotiation tests explicitly force a</span>
+    <span class="s2"># downgrade on the server side. &quot;tls12&quot; means we refuse to negotiate TLS</span>
+    <span class="s2"># 1.3, so we'll almost certainly use TLS 1.2.</span>
+    <span class="s1">client_ctx_params = [</span><span class="s3">&quot;tls13&quot;</span><span class="s0">, </span><span class="s3">&quot;tls12&quot;</span><span class="s1">]</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s2"># We can't control whether we use TLS 1.3, so we just have to accept</span>
+    <span class="s2"># whatever openssl wants to use. This might be TLS 1.2 (if openssl is</span>
+    <span class="s2"># old), or it might be TLS 1.3 (if openssl is new, but our python version</span>
+    <span class="s2"># is too old to expose the configuration knobs).</span>
+    <span class="s1">client_ctx_params = [</span><span class="s3">&quot;default&quot;</span><span class="s1">]</span>
+
+
+<span class="s1">@pytest.fixture(scope=</span><span class="s3">&quot;module&quot;</span><span class="s0">, </span><span class="s1">params=client_ctx_params)</span>
+<span class="s0">def </span><span class="s1">client_ctx(request):</span>
+    <span class="s1">ctx = ssl.create_default_context()</span>
+    <span class="s1">TRIO_TEST_CA.configure_trust(ctx)</span>
+    <span class="s0">if </span><span class="s1">request.param </span><span class="s0">in </span><span class="s1">[</span><span class="s3">&quot;default&quot;</span><span class="s0">, </span><span class="s3">&quot;tls13&quot;</span><span class="s1">]:</span>
+        <span class="s0">return </span><span class="s1">ctx</span>
+    <span class="s0">elif </span><span class="s1">request.param == </span><span class="s3">&quot;tls12&quot;</span><span class="s1">:</span>
+        <span class="s1">ctx.options |= ssl.OP_NO_TLSv1_3</span>
+        <span class="s0">return </span><span class="s1">ctx</span>
+    <span class="s0">else</span><span class="s1">:  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">assert False</span>
+
+
+<span class="s2"># The blocking socket server.</span>
+<span class="s0">def </span><span class="s1">ssl_echo_serve_sync(sock</span><span class="s0">, </span><span class="s1">*</span><span class="s0">, </span><span class="s1">expect_fail=</span><span class="s0">False</span><span class="s1">):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">wrapped = SERVER_CTX.wrap_socket(</span>
+            <span class="s1">sock</span><span class="s0">, </span><span class="s1">server_side=</span><span class="s0">True, </span><span class="s1">suppress_ragged_eofs=</span><span class="s0">False</span>
+        <span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">wrapped:</span>
+            <span class="s1">wrapped.do_handshake()</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s1">data = wrapped.recv(</span><span class="s4">4096</span><span class="s1">)</span>
+                <span class="s0">if not </span><span class="s1">data:</span>
+                    <span class="s2"># other side has initiated a graceful shutdown; we try to</span>
+                    <span class="s2"># respond in kind but it's legal for them to have already</span>
+                    <span class="s2"># gone away.</span>
+                    <span class="s1">exceptions = (BrokenPipeError</span><span class="s0">, </span><span class="s1">ssl.SSLZeroReturnError)</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">wrapped.unwrap()</span>
+                    <span class="s0">except </span><span class="s1">exceptions:</span>
+                        <span class="s0">pass</span>
+                    <span class="s0">except </span><span class="s1">ssl.SSLWantWriteError:  </span><span class="s2"># pragma: no cover</span>
+                        <span class="s2"># Under unclear conditions, CPython sometimes raises</span>
+                        <span class="s2"># SSLWantWriteError here. This is a bug (bpo-32219),</span>
+                        <span class="s2"># but it's not our bug.  Christian Heimes thinks</span>
+                        <span class="s2"># it's fixed in 'recent' CPython versions so we fail</span>
+                        <span class="s2"># the test for those and ignore it for earlier</span>
+                        <span class="s2"># versions.</span>
+                        <span class="s0">if </span><span class="s1">(</span>
+                            <span class="s1">sys.implementation.name != </span><span class="s3">&quot;cpython&quot;</span>
+                            <span class="s0">or </span><span class="s1">sys.version_info &gt;= (</span><span class="s4">3</span><span class="s0">, </span><span class="s4">8</span><span class="s1">)</span>
+                        <span class="s1">):</span>
+                            <span class="s1">pytest.fail(</span>
+                                <span class="s3">&quot;still an issue on recent python versions &quot;</span>
+                                <span class="s3">&quot;add a comment to &quot;</span>
+                                <span class="s3">&quot;https://bugs.python.org/issue32219&quot;</span>
+                            <span class="s1">)</span>
+                    <span class="s0">return</span>
+                <span class="s1">wrapped.sendall(data)</span>
+    <span class="s2"># This is an obscure workaround for an openssl bug. In server mode, in</span>
+    <span class="s2"># some versions, openssl sends some extra data at the end of do_handshake</span>
+    <span class="s2"># that it shouldn't send. Normally this is harmless, but, if the other</span>
+    <span class="s2"># side shuts down the connection before it reads that data, it might cause</span>
+    <span class="s2"># the OS to report a ECONNREST or even ECONNABORTED (which is just wrong,</span>
+    <span class="s2"># since ECONNABORTED is supposed to mean that connect() failed, but what</span>
+    <span class="s2"># can you do). In this case the other side did nothing wrong, but there's</span>
+    <span class="s2"># no way to recover, so we let it pass, and just cross our fingers its not</span>
+    <span class="s2"># hiding any (other) real bugs. For more details see:</span>
+    <span class="s2">#</span>
+    <span class="s2">#   https://github.com/python-trio/trio/issues/1293</span>
+    <span class="s2">#</span>
+    <span class="s2"># Also, this happens frequently but non-deterministically, so we have to</span>
+    <span class="s2"># 'no cover' it to avoid coverage flapping.</span>
+    <span class="s0">except </span><span class="s1">(ConnectionResetError</span><span class="s0">, </span><span class="s1">ConnectionAbortedError):  </span><span class="s2"># pragma: no cover</span>
+        <span class="s0">return</span>
+    <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc:</span>
+        <span class="s0">if </span><span class="s1">expect_fail:</span>
+            <span class="s1">print(</span><span class="s3">&quot;ssl_echo_serve_sync got error as expected:&quot;</span><span class="s0">, </span><span class="s1">exc)</span>
+        <span class="s0">else</span><span class="s1">:  </span><span class="s2"># pragma: no cover</span>
+            <span class="s1">print(</span><span class="s3">&quot;ssl_echo_serve_sync got unexpected error:&quot;</span><span class="s0">, </span><span class="s1">exc)</span>
+            <span class="s0">raise</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">if </span><span class="s1">expect_fail:  </span><span class="s2"># pragma: no cover</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span><span class="s3">&quot;failed to fail?&quot;</span><span class="s1">)</span>
+    <span class="s0">finally</span><span class="s1">:</span>
+        <span class="s1">sock.close()</span>
+
+
+<span class="s2"># Fixture that gives a raw socket connected to a trio-test-1 echo server</span>
+<span class="s2"># (running in a thread). Useful for testing making connections with different</span>
+<span class="s2"># SSLContexts.</span>
+<span class="s1">@asynccontextmanager</span>
+<span class="s0">async def </span><span class="s1">ssl_echo_server_raw(**kwargs):</span>
+    <span class="s1">a</span><span class="s0">, </span><span class="s1">b = stdlib_socket.socketpair()</span>
+    <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s2"># Exiting the 'with a, b' context manager closes the sockets, which</span>
+        <span class="s2"># causes the thread to exit (possibly with an error), which allows the</span>
+        <span class="s2"># nursery context manager to exit too.</span>
+        <span class="s0">with </span><span class="s1">a</span><span class="s0">, </span><span class="s1">b:</span>
+            <span class="s1">nursery.start_soon(</span>
+                <span class="s1">trio.to_thread.run_sync</span><span class="s0">, </span><span class="s1">partial(ssl_echo_serve_sync</span><span class="s0">, </span><span class="s1">b</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">)</span>
+
+            <span class="s0">yield </span><span class="s1">SocketStream(tsocket.from_stdlib_socket(a))</span>
+
+
+<span class="s2"># Fixture that gives a properly set up SSLStream connected to a trio-test-1</span>
+<span class="s2"># echo server (running in a thread)</span>
+<span class="s1">@asynccontextmanager</span>
+<span class="s0">async def </span><span class="s1">ssl_echo_server(client_ctx</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server_raw(**kwargs) </span><span class="s0">as </span><span class="s1">sock:</span>
+        <span class="s0">yield </span><span class="s1">SSLStream(sock</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">)</span>
+
+
+<span class="s2"># The weird in-memory server ... thing.</span>
+<span class="s2"># Doesn't inherit from Stream because I left out the methods that we don't</span>
+<span class="s2"># actually need.</span>
+<span class="s0">class </span><span class="s1">PyOpenSSLEchoStream:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">sleeper=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">ctx = SSL.Context(SSL.SSLv23_METHOD)</span>
+        <span class="s2"># TLS 1.3 removes renegotiation support. Which is great for them, but</span>
+        <span class="s2"># we still have to support versions before that, and that means we</span>
+        <span class="s2"># need to test renegotiation support, which means we need to force this</span>
+        <span class="s2"># to use a lower version where this test server can trigger</span>
+        <span class="s2"># renegotiations. Of course TLS 1.3 support isn't released yet, but</span>
+        <span class="s2"># I'm told that this will work once it is. (And once it is we can</span>
+        <span class="s2"># remove the pragma: no cover too.) Alternatively, we could switch to</span>
+        <span class="s2"># using TLSv1_2_METHOD.</span>
+        <span class="s2">#</span>
+        <span class="s2"># Discussion: https://github.com/pyca/pyopenssl/issues/624</span>
+
+        <span class="s2"># This is the right way, but we can't use it until this PR is in a</span>
+        <span class="s2"># released:</span>
+        <span class="s2">#     https://github.com/pyca/pyopenssl/pull/861</span>
+        <span class="s2">#</span>
+        <span class="s2"># if hasattr(SSL, &quot;OP_NO_TLSv1_3&quot;):</span>
+        <span class="s2">#     ctx.set_options(SSL.OP_NO_TLSv1_3)</span>
+        <span class="s2">#</span>
+        <span class="s2"># Fortunately pyopenssl uses cryptography under the hood, so we can be</span>
+        <span class="s2"># confident that they're using the same version of openssl</span>
+        <span class="s0">from </span><span class="s1">cryptography.hazmat.bindings.openssl.binding </span><span class="s0">import </span><span class="s1">Binding</span>
+
+        <span class="s1">b = Binding()</span>
+        <span class="s0">if </span><span class="s1">hasattr(b.lib</span><span class="s0">, </span><span class="s3">&quot;SSL_OP_NO_TLSv1_3&quot;</span><span class="s1">):</span>
+            <span class="s1">ctx.set_options(b.lib.SSL_OP_NO_TLSv1_3)</span>
+
+        <span class="s2"># Unfortunately there's currently no way to say &quot;use 1.3 or worse&quot;, we</span>
+        <span class="s2"># can only disable specific versions. And if the two sides start</span>
+        <span class="s2"># negotiating 1.4 at some point in the future, it *might* mean that</span>
+        <span class="s2"># our tests silently stop working properly. So the next line is a</span>
+        <span class="s2"># tripwire to remind us we need to revisit this stuff in 5 years or</span>
+        <span class="s2"># whatever when the next TLS version is released:</span>
+        <span class="s0">assert not </span><span class="s1">hasattr(SSL</span><span class="s0">, </span><span class="s3">&quot;OP_NO_TLSv1_4&quot;</span><span class="s1">)</span>
+        <span class="s1">TRIO_TEST_1_CERT.configure_cert(ctx)</span>
+        <span class="s1">self._conn = SSL.Connection(ctx</span><span class="s0">, None</span><span class="s1">)</span>
+        <span class="s1">self._conn.set_accept_state()</span>
+        <span class="s1">self._lot = _core.ParkingLot()</span>
+        <span class="s1">self._pending_cleartext = bytearray()</span>
+
+        <span class="s1">self._send_all_conflict_detector = ConflictDetector(</span>
+            <span class="s3">&quot;simultaneous calls to PyOpenSSLEchoStream.send_all&quot;</span>
+        <span class="s1">)</span>
+        <span class="s1">self._receive_some_conflict_detector = ConflictDetector(</span>
+            <span class="s3">&quot;simultaneous calls to PyOpenSSLEchoStream.receive_some&quot;</span>
+        <span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">sleeper </span><span class="s0">is None</span><span class="s1">:</span>
+
+            <span class="s0">async def </span><span class="s1">no_op_sleeper(_):</span>
+                <span class="s0">return</span>
+
+            <span class="s1">self.sleeper = no_op_sleeper</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.sleeper = sleeper</span>
+
+    <span class="s0">async def </span><span class="s1">aclose(self):</span>
+        <span class="s1">self._conn.bio_shutdown()</span>
+
+    <span class="s0">def </span><span class="s1">renegotiate_pending(self):</span>
+        <span class="s0">return </span><span class="s1">self._conn.renegotiate_pending()</span>
+
+    <span class="s0">def </span><span class="s1">renegotiate(self):</span>
+        <span class="s2"># Returns false if a renegotiation is already in progress, meaning</span>
+        <span class="s2"># nothing happens.</span>
+        <span class="s0">assert </span><span class="s1">self._conn.renegotiate()</span>
+
+    <span class="s0">async def </span><span class="s1">wait_send_all_might_not_block(self):</span>
+        <span class="s0">with </span><span class="s1">self._send_all_conflict_detector:</span>
+            <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+            <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+            <span class="s0">await </span><span class="s1">self.sleeper(</span><span class="s3">&quot;wait_send_all_might_not_block&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">send_all(self</span><span class="s0">, </span><span class="s1">data):</span>
+        <span class="s1">print(</span><span class="s3">&quot;  --&gt; transport_stream.send_all&quot;</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">self._send_all_conflict_detector:</span>
+            <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+            <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+            <span class="s0">await </span><span class="s1">self.sleeper(</span><span class="s3">&quot;send_all&quot;</span><span class="s1">)</span>
+            <span class="s1">self._conn.bio_write(data)</span>
+            <span class="s0">while True</span><span class="s1">:</span>
+                <span class="s0">await </span><span class="s1">self.sleeper(</span><span class="s3">&quot;send_all&quot;</span><span class="s1">)</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">data = self._conn.recv(</span><span class="s4">1</span><span class="s1">)</span>
+                <span class="s0">except </span><span class="s1">SSL.ZeroReturnError:</span>
+                    <span class="s1">self._conn.shutdown()</span>
+                    <span class="s1">print(</span><span class="s3">&quot;renegotiations:&quot;</span><span class="s0">, </span><span class="s1">self._conn.total_renegotiations())</span>
+                    <span class="s0">break</span>
+                <span class="s0">except </span><span class="s1">SSL.WantReadError:</span>
+                    <span class="s0">break</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self._pending_cleartext += data</span>
+            <span class="s1">self._lot.unpark_all()</span>
+            <span class="s0">await </span><span class="s1">self.sleeper(</span><span class="s3">&quot;send_all&quot;</span><span class="s1">)</span>
+            <span class="s1">print(</span><span class="s3">&quot;  &lt;-- transport_stream.send_all finished&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">receive_some(self</span><span class="s0">, </span><span class="s1">nbytes=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">print(</span><span class="s3">&quot;  --&gt; transport_stream.receive_some&quot;</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">nbytes </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">nbytes = </span><span class="s4">65536  </span><span class="s2"># arbitrary</span>
+        <span class="s0">with </span><span class="s1">self._receive_some_conflict_detector:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+                <span class="s0">await </span><span class="s1">_core.checkpoint()</span>
+                <span class="s0">while True</span><span class="s1">:</span>
+                    <span class="s0">await </span><span class="s1">self.sleeper(</span><span class="s3">&quot;receive_some&quot;</span><span class="s1">)</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s0">return </span><span class="s1">self._conn.bio_read(nbytes)</span>
+                    <span class="s0">except </span><span class="s1">SSL.WantReadError:</span>
+                        <span class="s2"># No data in our ciphertext buffer; try to generate</span>
+                        <span class="s2"># some.</span>
+                        <span class="s0">if </span><span class="s1">self._pending_cleartext:</span>
+                            <span class="s2"># We have some cleartext; maybe we can encrypt it</span>
+                            <span class="s2"># and then return it.</span>
+                            <span class="s1">print(</span><span class="s3">&quot;    trying&quot;</span><span class="s0">, </span><span class="s1">self._pending_cleartext)</span>
+                            <span class="s0">try</span><span class="s1">:</span>
+                                <span class="s2"># PyOpenSSL bug: doesn't accept bytearray</span>
+                                <span class="s2"># https://github.com/pyca/pyopenssl/issues/621</span>
+                                <span class="s1">next_byte = self._pending_cleartext[</span><span class="s4">0</span><span class="s1">:</span><span class="s4">1</span><span class="s1">]</span>
+                                <span class="s1">self._conn.send(bytes(next_byte))</span>
+                            <span class="s2"># Apparently this next bit never gets hit in the</span>
+                            <span class="s2"># test suite, but it's not an interesting omission</span>
+                            <span class="s2"># so let's pragma it.</span>
+                            <span class="s0">except </span><span class="s1">SSL.WantReadError:  </span><span class="s2"># pragma: no cover</span>
+                                <span class="s2"># We didn't manage to send the cleartext (and</span>
+                                <span class="s2"># in particular we better leave it there to</span>
+                                <span class="s2"># try again, due to openssl's retry</span>
+                                <span class="s2"># semantics), but it's possible we pushed a</span>
+                                <span class="s2"># renegotiation forward and *now* we have data</span>
+                                <span class="s2"># to send.</span>
+                                <span class="s0">try</span><span class="s1">:</span>
+                                    <span class="s0">return </span><span class="s1">self._conn.bio_read(nbytes)</span>
+                                <span class="s0">except </span><span class="s1">SSL.WantReadError:</span>
+                                    <span class="s2"># Nope. We're just going to have to wait</span>
+                                    <span class="s2"># for someone to call send_all() to give</span>
+                                    <span class="s2"># use more data.</span>
+                                    <span class="s1">print(</span><span class="s3">&quot;parking (a)&quot;</span><span class="s1">)</span>
+                                    <span class="s0">await </span><span class="s1">self._lot.park()</span>
+                            <span class="s0">else</span><span class="s1">:</span>
+                                <span class="s2"># We successfully sent that byte, so we don't</span>
+                                <span class="s2"># have to again.</span>
+                                <span class="s0">del </span><span class="s1">self._pending_cleartext[</span><span class="s4">0</span><span class="s1">:</span><span class="s4">1</span><span class="s1">]</span>
+                        <span class="s0">else</span><span class="s1">:</span>
+                            <span class="s2"># no pending cleartext; nothing to do but wait for</span>
+                            <span class="s2"># someone to call send_all</span>
+                            <span class="s1">print(</span><span class="s3">&quot;parking (b)&quot;</span><span class="s1">)</span>
+                            <span class="s0">await </span><span class="s1">self._lot.park()</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s0">await </span><span class="s1">self.sleeper(</span><span class="s3">&quot;receive_some&quot;</span><span class="s1">)</span>
+                <span class="s1">print(</span><span class="s3">&quot;  &lt;-- transport_stream.receive_some finished&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_PyOpenSSLEchoStream_gives_resource_busy_errors():</span>
+    <span class="s2"># Make sure that PyOpenSSLEchoStream complains if two tasks call send_all</span>
+    <span class="s2"># at the same time, or ditto for receive_some. The tricky cases where SSLStream</span>
+    <span class="s2"># might accidentally do this are during renegotiation, which we test using</span>
+    <span class="s2"># PyOpenSSLEchoStream, so this makes sure that if we do have a bug then</span>
+    <span class="s2"># PyOpenSSLEchoStream will notice and complain.</span>
+
+    <span class="s1">s = PyOpenSSLEchoStream()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(s.send_all</span><span class="s0">, </span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+            <span class="s1">nursery.start_soon(s.send_all</span><span class="s0">, </span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s3">&quot;simultaneous&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s1">s = PyOpenSSLEchoStream()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(s.send_all</span><span class="s0">, </span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+            <span class="s1">nursery.start_soon(s.wait_send_all_might_not_block)</span>
+    <span class="s0">assert </span><span class="s3">&quot;simultaneous&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s1">s = PyOpenSSLEchoStream()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(s.wait_send_all_might_not_block)</span>
+            <span class="s1">nursery.start_soon(s.wait_send_all_might_not_block)</span>
+    <span class="s0">assert </span><span class="s3">&quot;simultaneous&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s1">s = PyOpenSSLEchoStream()</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(s.receive_some</span><span class="s0">, </span><span class="s4">1</span><span class="s1">)</span>
+            <span class="s1">nursery.start_soon(s.receive_some</span><span class="s0">, </span><span class="s4">1</span><span class="s1">)</span>
+    <span class="s0">assert </span><span class="s3">&quot;simultaneous&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+
+<span class="s1">@contextmanager</span>
+<span class="s0">def </span><span class="s1">virtual_ssl_echo_server(client_ctx</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+    <span class="s1">fakesock = PyOpenSSLEchoStream(**kwargs)</span>
+    <span class="s0">yield </span><span class="s1">SSLStream(fakesock</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">def </span><span class="s1">ssl_wrap_pair(</span>
+    <span class="s1">client_ctx</span><span class="s0">,</span>
+    <span class="s1">client_transport</span><span class="s0">,</span>
+    <span class="s1">server_transport</span><span class="s0">,</span>
+    <span class="s1">*</span><span class="s0">,</span>
+    <span class="s1">client_kwargs={}</span><span class="s0">,</span>
+    <span class="s1">server_kwargs={}</span><span class="s0">,</span>
+<span class="s1">):</span>
+    <span class="s1">client_ssl = SSLStream(</span>
+        <span class="s1">client_transport</span><span class="s0">,</span>
+        <span class="s1">client_ctx</span><span class="s0">,</span>
+        <span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s0">,</span>
+        <span class="s1">**client_kwargs</span><span class="s0">,</span>
+    <span class="s1">)</span>
+    <span class="s1">server_ssl = SSLStream(</span>
+        <span class="s1">server_transport</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">server_side=</span><span class="s0">True, </span><span class="s1">**server_kwargs</span>
+    <span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">client_ssl</span><span class="s0">, </span><span class="s1">server_ssl</span>
+
+
+<span class="s0">def </span><span class="s1">ssl_memory_stream_pair(client_ctx</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+    <span class="s1">client_transport</span><span class="s0">, </span><span class="s1">server_transport = memory_stream_pair()</span>
+    <span class="s0">return </span><span class="s1">ssl_wrap_pair(client_ctx</span><span class="s0">, </span><span class="s1">client_transport</span><span class="s0">, </span><span class="s1">server_transport</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s0">def </span><span class="s1">ssl_lockstep_stream_pair(client_ctx</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+    <span class="s1">client_transport</span><span class="s0">, </span><span class="s1">server_transport = lockstep_stream_pair()</span>
+    <span class="s0">return </span><span class="s1">ssl_wrap_pair(client_ctx</span><span class="s0">, </span><span class="s1">client_transport</span><span class="s0">, </span><span class="s1">server_transport</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+
+<span class="s2"># Simple smoke test for handshake/send/receive/shutdown talking to a</span>
+<span class="s2"># synchronous server, plus make sure that we do the bare minimum of</span>
+<span class="s2"># certificate checking (even though this is really Python's responsibility)</span>
+<span class="s0">async def </span><span class="s1">test_ssl_client_basics(client_ctx):</span>
+    <span class="s2"># Everything OK</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server(client_ctx) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">assert not </span><span class="s1">s.server_side</span>
+        <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;x&quot;</span>
+        <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+    <span class="s2"># Didn't configure the CA file, should fail</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server_raw(expect_fail=</span><span class="s0">True</span><span class="s1">) </span><span class="s0">as </span><span class="s1">sock:</span>
+        <span class="s1">bad_client_ctx = ssl.create_default_context()</span>
+        <span class="s1">s = SSLStream(sock</span><span class="s0">, </span><span class="s1">bad_client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">)</span>
+        <span class="s0">assert not </span><span class="s1">s.server_side</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">ssl.SSLError)</span>
+
+    <span class="s2"># Trusted CA, but wrong host name</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server_raw(expect_fail=</span><span class="s0">True</span><span class="s1">) </span><span class="s0">as </span><span class="s1">sock:</span>
+        <span class="s1">s = SSLStream(sock</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-2.example.org&quot;</span><span class="s1">)</span>
+        <span class="s0">assert not </span><span class="s1">s.server_side</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">ssl.CertificateError)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_server_basics(client_ctx):</span>
+    <span class="s1">a</span><span class="s0">, </span><span class="s1">b = stdlib_socket.socketpair()</span>
+    <span class="s0">with </span><span class="s1">a</span><span class="s0">, </span><span class="s1">b:</span>
+        <span class="s1">server_sock = tsocket.from_stdlib_socket(b)</span>
+        <span class="s1">server_transport = SSLStream(</span>
+            <span class="s1">SocketStream(server_sock)</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">server_side=</span><span class="s0">True</span>
+        <span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">server_transport.server_side</span>
+
+        <span class="s0">def </span><span class="s1">client():</span>
+            <span class="s0">with </span><span class="s1">client_ctx.wrap_socket(</span>
+                <span class="s1">a</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span>
+            <span class="s1">) </span><span class="s0">as </span><span class="s1">client_sock:</span>
+                <span class="s1">client_sock.sendall(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+                <span class="s0">assert </span><span class="s1">client_sock.recv(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;y&quot;</span>
+                <span class="s1">client_sock.sendall(</span><span class="s5">b&quot;z&quot;</span><span class="s1">)</span>
+                <span class="s1">client_sock.unwrap()</span>
+
+        <span class="s1">t = threading.Thread(target=client)</span>
+        <span class="s1">t.start()</span>
+
+        <span class="s0">assert await </span><span class="s1">server_transport.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;x&quot;</span>
+        <span class="s0">await </span><span class="s1">server_transport.send_all(</span><span class="s5">b&quot;y&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">server_transport.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;z&quot;</span>
+        <span class="s0">assert await </span><span class="s1">server_transport.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">await </span><span class="s1">server_transport.aclose()</span>
+
+        <span class="s1">t.join()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_attributes(client_ctx):</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server_raw(expect_fail=</span><span class="s0">True</span><span class="s1">) </span><span class="s0">as </span><span class="s1">sock:</span>
+        <span class="s1">good_ctx = client_ctx</span>
+        <span class="s1">bad_ctx = ssl.create_default_context()</span>
+        <span class="s1">s = SSLStream(sock</span><span class="s0">, </span><span class="s1">good_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">)</span>
+
+        <span class="s0">assert </span><span class="s1">s.transport_stream </span><span class="s0">is </span><span class="s1">sock</span>
+
+        <span class="s2"># Forwarded attribute getting</span>
+        <span class="s0">assert </span><span class="s1">s.context </span><span class="s0">is </span><span class="s1">good_ctx</span>
+        <span class="s0">assert </span><span class="s1">s.server_side == </span><span class="s0">False  </span><span class="s2"># noqa</span>
+        <span class="s0">assert </span><span class="s1">s.server_hostname == </span><span class="s3">&quot;trio-test-1.example.org&quot;</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(AttributeError):</span>
+            <span class="s1">s.asfdasdfsa</span>
+
+        <span class="s2"># __dir__</span>
+        <span class="s0">assert </span><span class="s3">&quot;transport_stream&quot; </span><span class="s0">in </span><span class="s1">dir(s)</span>
+        <span class="s0">assert </span><span class="s3">&quot;context&quot; </span><span class="s0">in </span><span class="s1">dir(s)</span>
+
+        <span class="s2"># Setting the attribute goes through to the underlying object</span>
+
+        <span class="s2"># most attributes on SSLObject are read-only</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(AttributeError):</span>
+            <span class="s1">s.server_side = </span><span class="s0">True</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(AttributeError):</span>
+            <span class="s1">s.server_hostname = </span><span class="s3">&quot;asdf&quot;</span>
+
+        <span class="s2"># but .context is *not*. Check that we forward attribute setting by</span>
+        <span class="s2"># making sure that after we set the bad context our handshake indeed</span>
+        <span class="s2"># fails:</span>
+        <span class="s1">s.context = bad_ctx</span>
+        <span class="s0">assert </span><span class="s1">s.context </span><span class="s0">is </span><span class="s1">bad_ctx</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+        <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">ssl.SSLError)</span>
+
+
+<span class="s2"># Note: this test fails horribly if we force TLS 1.2 and trigger a</span>
+<span class="s2"># renegotiation at the beginning (e.g. by switching to the pyopenssl</span>
+<span class="s2"># server). Usually the client crashes in SSLObject.write with &quot;UNEXPECTED</span>
+<span class="s2"># RECORD&quot;; sometimes we get something more exotic like a SyscallError. This is</span>
+<span class="s2"># odd because openssl isn't doing any syscalls, but so it goes. After lots of</span>
+<span class="s2"># websearching I'm pretty sure this is due to a bug in OpenSSL, where it just</span>
+<span class="s2"># can't reliably handle full-duplex communication combined with</span>
+<span class="s2"># renegotiation. Nice, eh?</span>
+<span class="s2">#</span>
+<span class="s2">#   https://rt.openssl.org/Ticket/Display.html?id=3712</span>
+<span class="s2">#   https://rt.openssl.org/Ticket/Display.html?id=2481</span>
+<span class="s2">#   http://openssl.6102.n7.nabble.com/TLS-renegotiation-failure-on-receiving-application-data-during-handshake-td48127.html</span>
+<span class="s2">#   https://stackoverflow.com/questions/18728355/ssl-renegotiation-with-full-duplex-socket-communication</span>
+<span class="s2">#</span>
+<span class="s2"># In some variants of this test (maybe only against the java server?) I've</span>
+<span class="s2"># also seen cases where our send_all blocks waiting to write, and then our receive_some</span>
+<span class="s2"># also blocks waiting to write, and they never wake up again. It looks like</span>
+<span class="s2"># some kind of deadlock. I suspect there may be an issue where we've filled up</span>
+<span class="s2"># the send buffers, and the remote side is trying to handle the renegotiation</span>
+<span class="s2"># from inside a write() call, so it has a problem: there's all this application</span>
+<span class="s2"># data clogging up the pipe, but it can't process and return it to the</span>
+<span class="s2"># application because it's in write(), and it doesn't want to buffer infinite</span>
+<span class="s2"># amounts of data, and... actually I guess those are the only two choices.</span>
+<span class="s2">#</span>
+<span class="s2"># NSS even documents that you shouldn't try to do a renegotiation except when</span>
+<span class="s2"># the connection is idle:</span>
+<span class="s2">#</span>
+<span class="s2">#   https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/SSL_functions/sslfnc.html#1061582</span>
+<span class="s2">#</span>
+<span class="s2"># I begin to see why HTTP/2 forbids renegotiation and TLS 1.3 removes it...</span>
+
+
+<span class="s0">async def </span><span class="s1">test_full_duplex_basics(client_ctx):</span>
+    <span class="s1">CHUNKS = </span><span class="s4">30</span>
+    <span class="s1">CHUNK_SIZE = </span><span class="s4">32768</span>
+    <span class="s1">EXPECTED = CHUNKS * CHUNK_SIZE</span>
+
+    <span class="s1">sent = bytearray()</span>
+    <span class="s1">received = bytearray()</span>
+
+    <span class="s0">async def </span><span class="s1">sender(s):</span>
+        <span class="s0">nonlocal </span><span class="s1">sent</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(CHUNKS):</span>
+            <span class="s1">print(i)</span>
+            <span class="s1">chunk = bytes([i] * CHUNK_SIZE)</span>
+            <span class="s1">sent += chunk</span>
+            <span class="s0">await </span><span class="s1">s.send_all(chunk)</span>
+
+    <span class="s0">async def </span><span class="s1">receiver(s):</span>
+        <span class="s0">nonlocal </span><span class="s1">received</span>
+        <span class="s0">while </span><span class="s1">len(received) &lt; EXPECTED:</span>
+            <span class="s1">chunk = </span><span class="s0">await </span><span class="s1">s.receive_some(CHUNK_SIZE // </span><span class="s4">2</span><span class="s1">)</span>
+            <span class="s1">received += chunk</span>
+
+    <span class="s0">async with </span><span class="s1">ssl_echo_server(client_ctx) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(sender</span><span class="s0">, </span><span class="s1">s)</span>
+            <span class="s1">nursery.start_soon(receiver</span><span class="s0">, </span><span class="s1">s)</span>
+            <span class="s2"># And let's have some doing handshakes too, everyone</span>
+            <span class="s2"># simultaneously</span>
+            <span class="s1">nursery.start_soon(s.do_handshake)</span>
+            <span class="s1">nursery.start_soon(s.do_handshake)</span>
+
+        <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+    <span class="s0">assert </span><span class="s1">len(sent) == len(received) == EXPECTED</span>
+    <span class="s0">assert </span><span class="s1">sent == received</span>
+
+
+<span class="s0">async def </span><span class="s1">test_renegotiation_simple(client_ctx):</span>
+    <span class="s0">with </span><span class="s1">virtual_ssl_echo_server(client_ctx) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+
+        <span class="s1">s.transport_stream.renegotiate()</span>
+        <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;a&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;a&quot;</span>
+
+        <span class="s2"># Have to send some more data back and forth to make sure the</span>
+        <span class="s2"># renegotiation is finished before shutting down the</span>
+        <span class="s2"># connection... otherwise openssl raises an error. I think this is a</span>
+        <span class="s2"># bug in openssl but what can ya do.</span>
+        <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;b&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;b&quot;</span>
+
+        <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+
+<span class="s1">@slow</span>
+<span class="s0">async def </span><span class="s1">test_renegotiation_randomized(mock_clock</span><span class="s0">, </span><span class="s1">client_ctx):</span>
+    <span class="s2"># The only blocking things in this function are our random sleeps, so 0 is</span>
+    <span class="s2"># a good threshold.</span>
+    <span class="s1">mock_clock.autojump_threshold = </span><span class="s4">0</span>
+
+    <span class="s0">import </span><span class="s1">random</span>
+
+    <span class="s1">r = random.Random(</span><span class="s4">0</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">sleeper(_):</span>
+        <span class="s0">await </span><span class="s1">trio.sleep(r.uniform(</span><span class="s4">0</span><span class="s0">, </span><span class="s4">10</span><span class="s1">))</span>
+
+    <span class="s0">async def </span><span class="s1">clear():</span>
+        <span class="s0">while </span><span class="s1">s.transport_stream.renegotiate_pending():</span>
+            <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+                <span class="s0">await </span><span class="s1">send(</span><span class="s5">b&quot;-&quot;</span><span class="s1">)</span>
+            <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+                <span class="s0">await </span><span class="s1">expect(</span><span class="s5">b&quot;-&quot;</span><span class="s1">)</span>
+        <span class="s1">print(</span><span class="s3">&quot;-- clear --&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">send(byte):</span>
+        <span class="s0">await </span><span class="s1">s.transport_stream.sleeper(</span><span class="s3">&quot;outer send&quot;</span><span class="s1">)</span>
+        <span class="s1">print(</span><span class="s3">&quot;calling SSLStream.send_all&quot;</span><span class="s0">, </span><span class="s1">byte)</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.send_all(byte)</span>
+
+    <span class="s0">async def </span><span class="s1">expect(expected):</span>
+        <span class="s0">await </span><span class="s1">s.transport_stream.sleeper(</span><span class="s3">&quot;expect&quot;</span><span class="s1">)</span>
+        <span class="s1">print(</span><span class="s3">&quot;calling SSLStream.receive_some, expecting&quot;</span><span class="s0">, </span><span class="s1">expected)</span>
+        <span class="s0">assert </span><span class="s1">len(expected) == </span><span class="s4">1</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">assert await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">) == expected</span>
+
+    <span class="s0">with </span><span class="s1">virtual_ssl_echo_server(client_ctx</span><span class="s0">, </span><span class="s1">sleeper=sleeper) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+
+        <span class="s0">await </span><span class="s1">send(</span><span class="s5">b&quot;a&quot;</span><span class="s1">)</span>
+        <span class="s1">s.transport_stream.renegotiate()</span>
+        <span class="s0">await </span><span class="s1">expect(</span><span class="s5">b&quot;a&quot;</span><span class="s1">)</span>
+
+        <span class="s0">await </span><span class="s1">clear()</span>
+
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">100</span><span class="s1">):</span>
+            <span class="s1">b1 = bytes([i % </span><span class="s4">0xFF</span><span class="s1">])</span>
+            <span class="s1">b2 = bytes([(</span><span class="s4">2 </span><span class="s1">* i) % </span><span class="s4">0xFF</span><span class="s1">])</span>
+            <span class="s1">s.transport_stream.renegotiate()</span>
+            <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+                <span class="s1">nursery.start_soon(send</span><span class="s0">, </span><span class="s1">b1)</span>
+                <span class="s1">nursery.start_soon(expect</span><span class="s0">, </span><span class="s1">b1)</span>
+            <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+                <span class="s1">nursery.start_soon(expect</span><span class="s0">, </span><span class="s1">b2)</span>
+                <span class="s1">nursery.start_soon(send</span><span class="s0">, </span><span class="s1">b2)</span>
+            <span class="s0">await </span><span class="s1">clear()</span>
+
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range(</span><span class="s4">100</span><span class="s1">):</span>
+            <span class="s1">b1 = bytes([i % </span><span class="s4">0xFF</span><span class="s1">])</span>
+            <span class="s1">b2 = bytes([(</span><span class="s4">2 </span><span class="s1">* i) % </span><span class="s4">0xFF</span><span class="s1">])</span>
+            <span class="s0">await </span><span class="s1">send(b1)</span>
+            <span class="s1">s.transport_stream.renegotiate()</span>
+            <span class="s0">await </span><span class="s1">expect(b1)</span>
+            <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+                <span class="s1">nursery.start_soon(expect</span><span class="s0">, </span><span class="s1">b2)</span>
+                <span class="s1">nursery.start_soon(send</span><span class="s0">, </span><span class="s1">b2)</span>
+            <span class="s0">await </span><span class="s1">clear()</span>
+
+    <span class="s2"># Checking that wait_send_all_might_not_block and receive_some don't</span>
+    <span class="s2"># conflict:</span>
+
+    <span class="s2"># 1) Set up a situation where expect (receive_some) is blocked sending,</span>
+    <span class="s2"># and wait_send_all_might_not_block comes in.</span>
+
+    <span class="s2"># Our receive_some() call will get stuck when it hits send_all</span>
+    <span class="s0">async def </span><span class="s1">sleeper_with_slow_send_all(method):</span>
+        <span class="s0">if </span><span class="s1">method == </span><span class="s3">&quot;send_all&quot;</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">trio.sleep(</span><span class="s4">100000</span><span class="s1">)</span>
+
+    <span class="s2"># And our wait_send_all_might_not_block call will give it time to get</span>
+    <span class="s2"># stuck, and then start</span>
+    <span class="s0">async def </span><span class="s1">sleep_then_wait_writable():</span>
+        <span class="s0">await </span><span class="s1">trio.sleep(</span><span class="s4">1000</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">s.wait_send_all_might_not_block()</span>
+
+    <span class="s0">with </span><span class="s1">virtual_ssl_echo_server(client_ctx</span><span class="s0">, </span><span class="s1">sleeper=sleeper_with_slow_send_all) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">send(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s1">s.transport_stream.renegotiate()</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(expect</span><span class="s0">, </span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+            <span class="s1">nursery.start_soon(sleep_then_wait_writable)</span>
+
+        <span class="s0">await </span><span class="s1">clear()</span>
+
+        <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+    <span class="s2"># 2) Same, but now wait_send_all_might_not_block is stuck when</span>
+    <span class="s2"># receive_some tries to send.</span>
+
+    <span class="s0">async def </span><span class="s1">sleeper_with_slow_wait_writable_and_expect(method):</span>
+        <span class="s0">if </span><span class="s1">method == </span><span class="s3">&quot;wait_send_all_might_not_block&quot;</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">trio.sleep(</span><span class="s4">100000</span><span class="s1">)</span>
+        <span class="s0">elif </span><span class="s1">method == </span><span class="s3">&quot;expect&quot;</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">trio.sleep(</span><span class="s4">1000</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">virtual_ssl_echo_server(</span>
+        <span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">sleeper=sleeper_with_slow_wait_writable_and_expect</span>
+    <span class="s1">) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">send(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s1">s.transport_stream.renegotiate()</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(expect</span><span class="s0">, </span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+            <span class="s1">nursery.start_soon(s.wait_send_all_might_not_block)</span>
+
+        <span class="s0">await </span><span class="s1">clear()</span>
+
+        <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_resource_busy_errors(client_ctx):</span>
+    <span class="s0">async def </span><span class="s1">do_send_all():</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">do_receive_some():</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">do_wait_send_all_might_not_block():</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.wait_send_all_might_not_block()</span>
+
+    <span class="s1">s</span><span class="s0">, </span><span class="s1">_ = ssl_lockstep_stream_pair(client_ctx)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(do_send_all)</span>
+            <span class="s1">nursery.start_soon(do_send_all)</span>
+    <span class="s0">assert </span><span class="s3">&quot;another task&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s1">s</span><span class="s0">, </span><span class="s1">_ = ssl_lockstep_stream_pair(client_ctx)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(do_receive_some)</span>
+            <span class="s1">nursery.start_soon(do_receive_some)</span>
+    <span class="s0">assert </span><span class="s3">&quot;another task&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s1">s</span><span class="s0">, </span><span class="s1">_ = ssl_lockstep_stream_pair(client_ctx)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(do_send_all)</span>
+            <span class="s1">nursery.start_soon(do_wait_send_all_might_not_block)</span>
+    <span class="s0">assert </span><span class="s3">&quot;another task&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+    <span class="s1">s</span><span class="s0">, </span><span class="s1">_ = ssl_lockstep_stream_pair(client_ctx)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(_core.BusyResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(do_wait_send_all_might_not_block)</span>
+            <span class="s1">nursery.start_soon(do_wait_send_all_might_not_block)</span>
+    <span class="s0">assert </span><span class="s3">&quot;another task&quot; </span><span class="s0">in </span><span class="s1">str(excinfo.value)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_wait_writable_calls_underlying_wait_writable():</span>
+    <span class="s1">record = []</span>
+
+    <span class="s0">class </span><span class="s1">NotAStream:</span>
+        <span class="s0">async def </span><span class="s1">wait_send_all_might_not_block(self):</span>
+            <span class="s1">record.append(</span><span class="s3">&quot;ok&quot;</span><span class="s1">)</span>
+
+    <span class="s1">ctx = ssl.create_default_context()</span>
+    <span class="s1">s = SSLStream(NotAStream()</span><span class="s0">, </span><span class="s1">ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;x&quot;</span><span class="s1">)</span>
+    <span class="s0">await </span><span class="s1">s.wait_send_all_might_not_block()</span>
+    <span class="s0">assert </span><span class="s1">record == [</span><span class="s3">&quot;ok&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_checkpoints(client_ctx):</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server(client_ctx) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.wait_send_all_might_not_block()</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;xxx&quot;</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s2"># These receive_some's in theory could return immediately, because the</span>
+        <span class="s2"># &quot;xxx&quot; was sent in a single record and after the first</span>
+        <span class="s2"># receive_some(1) the rest are sitting inside the SSLObject's internal</span>
+        <span class="s2"># buffers.</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.unwrap()</span>
+
+    <span class="s0">async with </span><span class="s1">ssl_echo_server(client_ctx) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_send_all_empty_string(client_ctx):</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server(client_ctx) </span><span class="s0">as </span><span class="s1">s:</span>
+        <span class="s0">await </span><span class="s1">s.do_handshake()</span>
+
+        <span class="s2"># underlying SSLObject interprets writing b&quot;&quot; as indicating an EOF,</span>
+        <span class="s2"># for some reason. Make sure we don't inherit this.</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;&quot;</span><span class="s1">)</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;&quot;</span><span class="s1">)</span>
+        <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">s.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;x&quot;</span>
+
+        <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+
+<span class="s1">@pytest.mark.parametrize(</span><span class="s3">&quot;https_compatible&quot;</span><span class="s0">, </span><span class="s1">[</span><span class="s0">False, True</span><span class="s1">])</span>
+<span class="s0">async def </span><span class="s1">test_SSLStream_generic(client_ctx</span><span class="s0">, </span><span class="s1">https_compatible):</span>
+    <span class="s0">async def </span><span class="s1">stream_maker():</span>
+        <span class="s0">return </span><span class="s1">ssl_memory_stream_pair(</span>
+            <span class="s1">client_ctx</span><span class="s0">,</span>
+            <span class="s1">client_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: https_compatible}</span><span class="s0">,</span>
+            <span class="s1">server_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: https_compatible}</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">clogged_stream_maker():</span>
+        <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_lockstep_stream_pair(client_ctx)</span>
+        <span class="s2"># If we don't do handshakes up front, then we run into a problem in</span>
+        <span class="s2"># the following situation:</span>
+        <span class="s2"># - server does wait_send_all_might_not_block</span>
+        <span class="s2"># - client does receive_some to unclog it</span>
+        <span class="s2"># Then the client's receive_some will actually send some data to start</span>
+        <span class="s2"># the handshake, and itself get stuck.</span>
+        <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">nursery.start_soon(client.do_handshake)</span>
+            <span class="s1">nursery.start_soon(server.do_handshake)</span>
+        <span class="s0">return </span><span class="s1">client</span><span class="s0">, </span><span class="s1">server</span>
+
+    <span class="s0">await </span><span class="s1">check_two_way_stream(stream_maker</span><span class="s0">, </span><span class="s1">clogged_stream_maker)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_unwrap(client_ctx):</span>
+    <span class="s1">client_ssl</span><span class="s0">, </span><span class="s1">server_ssl = ssl_memory_stream_pair(client_ctx)</span>
+    <span class="s1">client_transport = client_ssl.transport_stream</span>
+    <span class="s1">server_transport = server_ssl.transport_stream</span>
+
+    <span class="s1">seq = Sequencer()</span>
+
+    <span class="s0">async def </span><span class="s1">client():</span>
+        <span class="s0">await </span><span class="s1">client_ssl.do_handshake()</span>
+        <span class="s0">await </span><span class="s1">client_ssl.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">client_ssl.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;y&quot;</span>
+        <span class="s0">await </span><span class="s1">client_ssl.send_all(</span><span class="s5">b&quot;z&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># After sending that, disable outgoing data from our end, to make</span>
+        <span class="s2"># sure the server doesn't see our EOF until after we've sent some</span>
+        <span class="s2"># trailing data</span>
+        <span class="s0">async with </span><span class="s1">seq(</span><span class="s4">0</span><span class="s1">):</span>
+            <span class="s1">send_all_hook = client_transport.send_stream.send_all_hook</span>
+            <span class="s1">client_transport.send_stream.send_all_hook = </span><span class="s0">None</span>
+
+        <span class="s0">assert await </span><span class="s1">client_ssl.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">assert </span><span class="s1">client_ssl.transport_stream </span><span class="s0">is </span><span class="s1">client_transport</span>
+        <span class="s2"># We just received EOF. Unwrap the connection and send some more.</span>
+        <span class="s1">raw</span><span class="s0">, </span><span class="s1">trailing = </span><span class="s0">await </span><span class="s1">client_ssl.unwrap()</span>
+        <span class="s0">assert </span><span class="s1">raw </span><span class="s0">is </span><span class="s1">client_transport</span>
+        <span class="s0">assert </span><span class="s1">trailing == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">assert </span><span class="s1">client_ssl.transport_stream </span><span class="s0">is None</span>
+        <span class="s0">await </span><span class="s1">raw.send_all(</span><span class="s5">b&quot;trailing&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># Reconnect the streams. Now the server will receive both our shutdown</span>
+        <span class="s2"># acknowledgement + the trailing data in a single lump.</span>
+        <span class="s1">client_transport.send_stream.send_all_hook = send_all_hook</span>
+        <span class="s0">await </span><span class="s1">client_transport.send_stream.send_all_hook()</span>
+
+    <span class="s0">async def </span><span class="s1">server():</span>
+        <span class="s0">await </span><span class="s1">server_ssl.do_handshake()</span>
+        <span class="s0">assert await </span><span class="s1">server_ssl.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;x&quot;</span>
+        <span class="s0">await </span><span class="s1">server_ssl.send_all(</span><span class="s5">b&quot;y&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">server_ssl.receive_some(</span><span class="s4">1</span><span class="s1">) == </span><span class="s5">b&quot;z&quot;</span>
+        <span class="s2"># Now client is blocked waiting for us to send something, but</span>
+        <span class="s2"># instead we close the TLS connection (with sequencer to make sure</span>
+        <span class="s2"># that the client won't see and automatically respond before we've had</span>
+        <span class="s2"># a chance to disable the client-&gt;server transport)</span>
+        <span class="s0">async with </span><span class="s1">seq(</span><span class="s4">1</span><span class="s1">):</span>
+            <span class="s1">raw</span><span class="s0">, </span><span class="s1">trailing = </span><span class="s0">await </span><span class="s1">server_ssl.unwrap()</span>
+        <span class="s0">assert </span><span class="s1">raw </span><span class="s0">is </span><span class="s1">server_transport</span>
+        <span class="s0">assert </span><span class="s1">trailing == </span><span class="s5">b&quot;trailing&quot;</span>
+        <span class="s0">assert </span><span class="s1">server_ssl.transport_stream </span><span class="s0">is None</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client)</span>
+        <span class="s1">nursery.start_soon(server)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_closing_nice_case(client_ctx):</span>
+    <span class="s2"># the nice case: graceful closes all around</span>
+
+    <span class="s1">client_ssl</span><span class="s0">, </span><span class="s1">server_ssl = ssl_memory_stream_pair(client_ctx)</span>
+    <span class="s1">client_transport = client_ssl.transport_stream</span>
+
+    <span class="s2"># Both the handshake and the close require back-and-forth discussion, so</span>
+    <span class="s2"># we need to run them concurrently</span>
+    <span class="s0">async def </span><span class="s1">client_closer():</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">client_ssl.aclose()</span>
+
+    <span class="s0">async def </span><span class="s1">server_closer():</span>
+        <span class="s0">assert await </span><span class="s1">server_ssl.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">assert await </span><span class="s1">server_ssl.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">server_ssl.aclose()</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client_closer)</span>
+        <span class="s1">nursery.start_soon(server_closer)</span>
+
+    <span class="s2"># closing the SSLStream also closes its transport</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">client_transport.send_all(</span><span class="s5">b&quot;123&quot;</span><span class="s1">)</span>
+
+    <span class="s2"># once closed, it's OK to close again</span>
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">await </span><span class="s1">client_ssl.aclose()</span>
+    <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+        <span class="s0">await </span><span class="s1">client_ssl.aclose()</span>
+
+    <span class="s2"># Trying to send more data does not work</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">server_ssl.send_all(</span><span class="s5">b&quot;123&quot;</span><span class="s1">)</span>
+
+    <span class="s2"># And once the connection is has been closed *locally*, then instead of</span>
+    <span class="s2"># getting empty bytestrings we get a proper error</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">client_ssl.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">client_ssl.unwrap()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(ClosedResourceError):</span>
+        <span class="s0">await </span><span class="s1">client_ssl.do_handshake()</span>
+
+    <span class="s2"># Check that a graceful close *before* handshaking gives a clean EOF on</span>
+    <span class="s2"># the other side</span>
+    <span class="s1">client_ssl</span><span class="s0">, </span><span class="s1">server_ssl = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async def </span><span class="s1">expect_eof_server():</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">assert await </span><span class="s1">server_ssl.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">server_ssl.aclose()</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client_ssl.aclose)</span>
+        <span class="s1">nursery.start_soon(expect_eof_server)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_send_all_fails_in_the_middle(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">async def </span><span class="s1">bad_hook():</span>
+        <span class="s0">raise </span><span class="s1">KeyError</span>
+
+    <span class="s1">client.transport_stream.send_stream.send_all_hook = bad_hook</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(KeyError):</span>
+        <span class="s0">await </span><span class="s1">client.send_all(</span><span class="s5">b&quot;x&quot;</span><span class="s1">)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+        <span class="s0">await </span><span class="s1">client.wait_send_all_might_not_block()</span>
+
+    <span class="s1">closed = </span><span class="s4">0</span>
+
+    <span class="s0">def </span><span class="s1">close_hook():</span>
+        <span class="s0">nonlocal </span><span class="s1">closed</span>
+        <span class="s1">closed += </span><span class="s4">1</span>
+
+    <span class="s1">client.transport_stream.send_stream.close_hook = close_hook</span>
+    <span class="s1">client.transport_stream.receive_stream.close_hook = close_hook</span>
+    <span class="s0">await </span><span class="s1">client.aclose()</span>
+
+    <span class="s0">assert </span><span class="s1">closed == </span><span class="s4">2</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_over_ssl(client_ctx):</span>
+    <span class="s1">client_0</span><span class="s0">, </span><span class="s1">server_0 = memory_stream_pair()</span>
+
+    <span class="s1">client_1 = SSLStream(</span>
+        <span class="s1">client_0</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span>
+    <span class="s1">)</span>
+    <span class="s1">server_1 = SSLStream(server_0</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">server_side=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s1">client_2 = SSLStream(</span>
+        <span class="s1">client_1</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span>
+    <span class="s1">)</span>
+    <span class="s1">server_2 = SSLStream(server_1</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">server_side=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">client():</span>
+        <span class="s0">await </span><span class="s1">client_2.send_all(</span><span class="s5">b&quot;hi&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">client_2.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;bye&quot;</span>
+
+    <span class="s0">async def </span><span class="s1">server():</span>
+        <span class="s0">assert await </span><span class="s1">server_2.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;hi&quot;</span>
+        <span class="s0">await </span><span class="s1">server_2.send_all(</span><span class="s5">b&quot;bye&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client)</span>
+        <span class="s1">nursery.start_soon(server)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_bad_shutdown(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">await </span><span class="s1">trio.aclose_forcefully(client)</span>
+    <span class="s2"># now the server sees a broken stream</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+        <span class="s0">await </span><span class="s1">server.receive_some(</span><span class="s4">10</span><span class="s1">)</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+        <span class="s0">await </span><span class="s1">server.send_all(</span><span class="s5">b&quot;x&quot; </span><span class="s1">* </span><span class="s4">10</span><span class="s1">)</span>
+
+    <span class="s0">await </span><span class="s1">server.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_bad_shutdown_but_its_ok(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(</span>
+        <span class="s1">client_ctx</span><span class="s0">,</span>
+        <span class="s1">server_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: </span><span class="s0">True</span><span class="s1">}</span><span class="s0">,</span>
+        <span class="s1">client_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: </span><span class="s0">True</span><span class="s1">}</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">await </span><span class="s1">trio.aclose_forcefully(client)</span>
+    <span class="s2"># the server sees that as a clean shutdown</span>
+    <span class="s0">assert await </span><span class="s1">server.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+    <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+        <span class="s0">await </span><span class="s1">server.send_all(</span><span class="s5">b&quot;x&quot; </span><span class="s1">* </span><span class="s4">10</span><span class="s1">)</span>
+
+    <span class="s0">await </span><span class="s1">server.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_handshake_failure_during_aclose():</span>
+    <span class="s2"># Weird scenario: aclose() triggers an automatic handshake, and this</span>
+    <span class="s2"># fails. This also exercises a bit of code in aclose() that was otherwise</span>
+    <span class="s2"># uncovered, for re-raising exceptions after calling aclose_forcefully on</span>
+    <span class="s2"># the underlying transport.</span>
+    <span class="s0">async with </span><span class="s1">ssl_echo_server_raw(expect_fail=</span><span class="s0">True</span><span class="s1">) </span><span class="s0">as </span><span class="s1">sock:</span>
+        <span class="s2"># Don't configure trust correctly</span>
+        <span class="s1">client_ctx = ssl.create_default_context()</span>
+        <span class="s1">s = SSLStream(sock</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">)</span>
+        <span class="s2"># It's a little unclear here whether aclose should swallow the error</span>
+        <span class="s2"># or let it escape. We *do* swallow the error if it arrives when we're</span>
+        <span class="s2"># sending close_notify, because both sides closing the connection</span>
+        <span class="s2"># simultaneously is allowed. But I guess when https_compatible=False</span>
+        <span class="s2"># then it's bad if we can get through a whole connection with a peer</span>
+        <span class="s2"># that has no valid certificate, and never raise an error.</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+            <span class="s0">await </span><span class="s1">s.aclose()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_only_closes_stream_once(client_ctx):</span>
+    <span class="s2"># We used to have a bug where if transport_stream.aclose() raised an</span>
+    <span class="s2"># error, we would call it again. This checks that that's fixed.</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s1">client_orig_close_hook = client.transport_stream.send_stream.close_hook</span>
+    <span class="s1">transport_close_count = </span><span class="s4">0</span>
+
+    <span class="s0">def </span><span class="s1">close_hook():</span>
+        <span class="s0">nonlocal </span><span class="s1">transport_close_count</span>
+        <span class="s1">client_orig_close_hook()</span>
+        <span class="s1">transport_close_count += </span><span class="s4">1</span>
+        <span class="s0">raise </span><span class="s1">KeyError</span>
+
+    <span class="s1">client.transport_stream.send_stream.close_hook = close_hook</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(KeyError):</span>
+        <span class="s0">await </span><span class="s1">client.aclose()</span>
+    <span class="s0">assert </span><span class="s1">transport_close_count == </span><span class="s4">1</span>
+
+
+<span class="s0">async def </span><span class="s1">test_ssl_https_compatibility_disagreement(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(</span>
+        <span class="s1">client_ctx</span><span class="s0">,</span>
+        <span class="s1">server_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: </span><span class="s0">False</span><span class="s1">}</span><span class="s0">,</span>
+        <span class="s1">client_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: </span><span class="s0">True</span><span class="s1">}</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s2"># client is in HTTPS-mode, server is not</span>
+    <span class="s2"># so client doing graceful_shutdown causes an error on server</span>
+    <span class="s0">async def </span><span class="s1">receive_and_expect_error():</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">server.receive_some(</span><span class="s4">10</span><span class="s1">)</span>
+        <span class="s0">assert </span><span class="s1">isinstance(excinfo.value.__cause__</span><span class="s0">, </span><span class="s1">ssl.SSLEOFError)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.aclose)</span>
+        <span class="s1">nursery.start_soon(receive_and_expect_error)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_https_mode_eof_before_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(</span>
+        <span class="s1">client_ctx</span><span class="s0">,</span>
+        <span class="s1">server_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: </span><span class="s0">True</span><span class="s1">}</span><span class="s0">,</span>
+        <span class="s1">client_kwargs={</span><span class="s3">&quot;https_compatible&quot;</span><span class="s1">: </span><span class="s0">True</span><span class="s1">}</span><span class="s0">,</span>
+    <span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">server_expect_clean_eof():</span>
+        <span class="s0">assert await </span><span class="s1">server.receive_some(</span><span class="s4">10</span><span class="s1">) == </span><span class="s5">b&quot;&quot;</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.aclose)</span>
+        <span class="s1">nursery.start_soon(server_expect_clean_eof)</span>
+
+
+<span class="s0">async def </span><span class="s1">test_send_error_during_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async def </span><span class="s1">bad_hook():</span>
+        <span class="s0">raise </span><span class="s1">KeyError</span>
+
+    <span class="s1">client.transport_stream.send_stream.send_all_hook = bad_hook</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(KeyError):</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">client.do_handshake()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">client.do_handshake()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_receive_error_during_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async def </span><span class="s1">bad_hook():</span>
+        <span class="s0">raise </span><span class="s1">KeyError</span>
+
+    <span class="s1">client.transport_stream.receive_stream.receive_some_hook = bad_hook</span>
+
+    <span class="s0">async def </span><span class="s1">client_side(cancel_scope):</span>
+        <span class="s0">with </span><span class="s1">pytest.raises(KeyError):</span>
+            <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+                <span class="s0">await </span><span class="s1">client.do_handshake()</span>
+        <span class="s1">cancel_scope.cancel()</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client_side</span><span class="s0">, </span><span class="s1">nursery.cancel_scope)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(BrokenResourceError):</span>
+        <span class="s0">with </span><span class="s1">assert_checkpoints():</span>
+            <span class="s0">await </span><span class="s1">client.do_handshake()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_selected_alpn_protocol_before_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(NeedHandshakeError):</span>
+        <span class="s1">client.selected_alpn_protocol()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(NeedHandshakeError):</span>
+        <span class="s1">server.selected_alpn_protocol()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_selected_alpn_protocol_when_not_set(client_ctx):</span>
+    <span class="s2"># ALPN protocol still returns None when it's not set,</span>
+    <span class="s2"># instead of raising an exception</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">assert </span><span class="s1">client.selected_alpn_protocol() </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s1">server.selected_alpn_protocol() </span><span class="s0">is None</span>
+
+    <span class="s0">assert </span><span class="s1">client.selected_alpn_protocol() == server.selected_alpn_protocol()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_selected_npn_protocol_before_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(NeedHandshakeError):</span>
+        <span class="s1">client.selected_npn_protocol()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(NeedHandshakeError):</span>
+        <span class="s1">server.selected_npn_protocol()</span>
+
+
+<span class="s1">@pytest.mark.filterwarnings(</span>
+    <span class="s3">r&quot;ignore: ssl module. NPN is deprecated, use ALPN instead:UserWarning&quot;</span>
+<span class="s1">)</span>
+<span class="s0">async def </span><span class="s1">test_selected_npn_protocol_when_not_set(client_ctx):</span>
+    <span class="s2"># NPN protocol still returns None when it's not set,</span>
+    <span class="s2"># instead of raising an exception</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">assert </span><span class="s1">client.selected_npn_protocol() </span><span class="s0">is None</span>
+    <span class="s0">assert </span><span class="s1">server.selected_npn_protocol() </span><span class="s0">is None</span>
+
+    <span class="s0">assert </span><span class="s1">client.selected_npn_protocol() == server.selected_npn_protocol()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_get_channel_binding_before_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(NeedHandshakeError):</span>
+        <span class="s1">client.get_channel_binding()</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(NeedHandshakeError):</span>
+        <span class="s1">server.get_channel_binding()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_get_channel_binding_after_handshake(client_ctx):</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">assert </span><span class="s1">client.get_channel_binding() </span><span class="s0">is not None</span>
+    <span class="s0">assert </span><span class="s1">server.get_channel_binding() </span><span class="s0">is not None</span>
+
+    <span class="s0">assert </span><span class="s1">client.get_channel_binding() == server.get_channel_binding()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_getpeercert(client_ctx):</span>
+    <span class="s2"># Make sure we're not affected by https://bugs.python.org/issue29334</span>
+    <span class="s1">client</span><span class="s0">, </span><span class="s1">server = ssl_memory_stream_pair(client_ctx)</span>
+
+    <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">nursery.start_soon(client.do_handshake)</span>
+        <span class="s1">nursery.start_soon(server.do_handshake)</span>
+
+    <span class="s0">assert </span><span class="s1">server.getpeercert() </span><span class="s0">is None</span>
+    <span class="s1">print(client.getpeercert())</span>
+    <span class="s0">assert </span><span class="s1">(</span><span class="s3">&quot;DNS&quot;</span><span class="s0">, </span><span class="s3">&quot;trio-test-1.example.org&quot;</span><span class="s1">) </span><span class="s0">in </span><span class="s1">client.getpeercert()[</span><span class="s3">&quot;subjectAltName&quot;</span><span class="s1">]</span>
+
+
+<span class="s0">async def </span><span class="s1">test_SSLListener(client_ctx):</span>
+    <span class="s0">async def </span><span class="s1">setup(**kwargs):</span>
+        <span class="s1">listen_sock = tsocket.socket()</span>
+        <span class="s0">await </span><span class="s1">listen_sock.bind((</span><span class="s3">&quot;127.0.0.1&quot;</span><span class="s0">, </span><span class="s4">0</span><span class="s1">))</span>
+        <span class="s1">listen_sock.listen(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s1">socket_listener = SocketListener(listen_sock)</span>
+        <span class="s1">ssl_listener = SSLListener(socket_listener</span><span class="s0">, </span><span class="s1">SERVER_CTX</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+        <span class="s1">transport_client = </span><span class="s0">await </span><span class="s1">open_tcp_stream(*listen_sock.getsockname())</span>
+        <span class="s1">ssl_client = SSLStream(</span>
+            <span class="s1">transport_client</span><span class="s0">, </span><span class="s1">client_ctx</span><span class="s0">, </span><span class="s1">server_hostname=</span><span class="s3">&quot;trio-test-1.example.org&quot;</span>
+        <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">listen_sock</span><span class="s0">, </span><span class="s1">ssl_listener</span><span class="s0">, </span><span class="s1">ssl_client</span>
+
+    <span class="s1">listen_sock</span><span class="s0">, </span><span class="s1">ssl_listener</span><span class="s0">, </span><span class="s1">ssl_client = </span><span class="s0">await </span><span class="s1">setup()</span>
+
+    <span class="s0">async with </span><span class="s1">ssl_client:</span>
+        <span class="s1">ssl_server = </span><span class="s0">await </span><span class="s1">ssl_listener.accept()</span>
+
+        <span class="s0">async with </span><span class="s1">ssl_server:</span>
+            <span class="s0">assert not </span><span class="s1">ssl_server._https_compatible</span>
+
+            <span class="s2"># Make sure the connection works</span>
+            <span class="s0">async with </span><span class="s1">_core.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+                <span class="s1">nursery.start_soon(ssl_client.do_handshake)</span>
+                <span class="s1">nursery.start_soon(ssl_server.do_handshake)</span>
+
+        <span class="s2"># Test SSLListener.aclose</span>
+        <span class="s0">await </span><span class="s1">ssl_listener.aclose()</span>
+        <span class="s0">assert </span><span class="s1">listen_sock.fileno() == -</span><span class="s4">1</span>
+
+    <span class="s2">################</span>
+
+    <span class="s2"># Test https_compatible</span>
+    <span class="s1">_</span><span class="s0">, </span><span class="s1">ssl_listener</span><span class="s0">, </span><span class="s1">ssl_client = </span><span class="s0">await </span><span class="s1">setup(https_compatible=</span><span class="s0">True</span><span class="s1">)</span>
+
+    <span class="s1">ssl_server = </span><span class="s0">await </span><span class="s1">ssl_listener.accept()</span>
+
+    <span class="s0">assert </span><span class="s1">ssl_server._https_compatible</span>
+
+    <span class="s0">await </span><span class="s1">aclose_forcefully(ssl_listener)</span>
+    <span class="s0">await </span><span class="s1">aclose_forcefully(ssl_client)</span>
+    <span class="s0">await </span><span class="s1">aclose_forcefully(ssl_server)</span>
+</pre>
+</body>
+</html>

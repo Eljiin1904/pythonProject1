@@ -1,0 +1,1340 @@
+<html>
+<head>
+<title>codegen.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+codegen.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># mako/codegen.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">&quot;&quot;&quot;provides functionality for rendering a parsetree constructing into module 
+source code.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">json</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">import </span><span class="s1">time</span>
+
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">ast</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">compat</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">exceptions</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">filters</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">parsetree</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">util</span>
+<span class="s3">from </span><span class="s1">mako.pygen </span><span class="s3">import </span><span class="s1">PythonPrinter</span>
+
+
+<span class="s1">MAGIC_NUMBER = </span><span class="s4">10</span>
+
+<span class="s0"># names which are hardwired into the</span>
+<span class="s0"># template and are not accessed via the</span>
+<span class="s0"># context itself</span>
+<span class="s1">TOPLEVEL_DECLARED = set([</span><span class="s5">&quot;UNDEFINED&quot;</span><span class="s3">, </span><span class="s5">&quot;STOP_RENDERING&quot;</span><span class="s1">])</span>
+<span class="s1">RESERVED_NAMES = set([</span><span class="s5">&quot;context&quot;</span><span class="s3">, </span><span class="s5">&quot;loop&quot;</span><span class="s1">]).union(TOPLEVEL_DECLARED)</span>
+
+
+<span class="s3">def </span><span class="s1">compile(  </span><span class="s0"># noqa</span>
+    <span class="s1">node</span><span class="s3">,</span>
+    <span class="s1">uri</span><span class="s3">,</span>
+    <span class="s1">filename=</span><span class="s3">None,</span>
+    <span class="s1">default_filters=</span><span class="s3">None,</span>
+    <span class="s1">buffer_filters=</span><span class="s3">None,</span>
+    <span class="s1">imports=</span><span class="s3">None,</span>
+    <span class="s1">future_imports=</span><span class="s3">None,</span>
+    <span class="s1">source_encoding=</span><span class="s3">None,</span>
+    <span class="s1">generate_magic_comment=</span><span class="s3">True,</span>
+    <span class="s1">disable_unicode=</span><span class="s3">False,</span>
+    <span class="s1">strict_undefined=</span><span class="s3">False,</span>
+    <span class="s1">enable_loop=</span><span class="s3">True,</span>
+    <span class="s1">reserved_names=frozenset()</span><span class="s3">,</span>
+<span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Generate module source code given a parsetree node, 
+      uri, and optional source filename&quot;&quot;&quot;</span>
+
+    <span class="s0"># if on Py2K, push the &quot;source_encoding&quot; string to be</span>
+    <span class="s0"># a bytestring itself, as we will be embedding it into</span>
+    <span class="s0"># the generated source and we don't want to coerce the</span>
+    <span class="s0"># result into a unicode object, in &quot;disable_unicode&quot; mode</span>
+    <span class="s3">if not </span><span class="s1">compat.py3k </span><span class="s3">and </span><span class="s1">isinstance(source_encoding</span><span class="s3">, </span><span class="s1">compat.text_type):</span>
+        <span class="s1">source_encoding = source_encoding.encode(source_encoding)</span>
+
+    <span class="s1">buf = util.FastEncodingBuffer()</span>
+
+    <span class="s1">printer = PythonPrinter(buf)</span>
+    <span class="s1">_GenerateRenderMethod(</span>
+        <span class="s1">printer</span><span class="s3">,</span>
+        <span class="s1">_CompileContext(</span>
+            <span class="s1">uri</span><span class="s3">,</span>
+            <span class="s1">filename</span><span class="s3">,</span>
+            <span class="s1">default_filters</span><span class="s3">,</span>
+            <span class="s1">buffer_filters</span><span class="s3">,</span>
+            <span class="s1">imports</span><span class="s3">,</span>
+            <span class="s1">future_imports</span><span class="s3">,</span>
+            <span class="s1">source_encoding</span><span class="s3">,</span>
+            <span class="s1">generate_magic_comment</span><span class="s3">,</span>
+            <span class="s1">disable_unicode</span><span class="s3">,</span>
+            <span class="s1">strict_undefined</span><span class="s3">,</span>
+            <span class="s1">enable_loop</span><span class="s3">,</span>
+            <span class="s1">reserved_names</span><span class="s3">,</span>
+        <span class="s1">)</span><span class="s3">,</span>
+        <span class="s1">node</span><span class="s3">,</span>
+    <span class="s1">)</span>
+    <span class="s3">return </span><span class="s1">buf.getvalue()</span>
+
+
+<span class="s3">class </span><span class="s1">_CompileContext(object):</span>
+    <span class="s3">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">uri</span><span class="s3">,</span>
+        <span class="s1">filename</span><span class="s3">,</span>
+        <span class="s1">default_filters</span><span class="s3">,</span>
+        <span class="s1">buffer_filters</span><span class="s3">,</span>
+        <span class="s1">imports</span><span class="s3">,</span>
+        <span class="s1">future_imports</span><span class="s3">,</span>
+        <span class="s1">source_encoding</span><span class="s3">,</span>
+        <span class="s1">generate_magic_comment</span><span class="s3">,</span>
+        <span class="s1">disable_unicode</span><span class="s3">,</span>
+        <span class="s1">strict_undefined</span><span class="s3">,</span>
+        <span class="s1">enable_loop</span><span class="s3">,</span>
+        <span class="s1">reserved_names</span><span class="s3">,</span>
+    <span class="s1">):</span>
+        <span class="s1">self.uri = uri</span>
+        <span class="s1">self.filename = filename</span>
+        <span class="s1">self.default_filters = default_filters</span>
+        <span class="s1">self.buffer_filters = buffer_filters</span>
+        <span class="s1">self.imports = imports</span>
+        <span class="s1">self.future_imports = future_imports</span>
+        <span class="s1">self.source_encoding = source_encoding</span>
+        <span class="s1">self.generate_magic_comment = generate_magic_comment</span>
+        <span class="s1">self.disable_unicode = disable_unicode</span>
+        <span class="s1">self.strict_undefined = strict_undefined</span>
+        <span class="s1">self.enable_loop = enable_loop</span>
+        <span class="s1">self.reserved_names = reserved_names</span>
+
+
+<span class="s3">class </span><span class="s1">_GenerateRenderMethod(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;A template visitor object which generates the 
+       full module source for a template. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">printer</span><span class="s3">, </span><span class="s1">compiler</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.printer = printer</span>
+        <span class="s1">self.compiler = compiler</span>
+        <span class="s1">self.node = node</span>
+        <span class="s1">self.identifier_stack = [</span><span class="s3">None</span><span class="s1">]</span>
+        <span class="s1">self.in_def = isinstance(node</span><span class="s3">, </span><span class="s1">(parsetree.DefTag</span><span class="s3">, </span><span class="s1">parsetree.BlockTag))</span>
+
+        <span class="s3">if </span><span class="s1">self.in_def:</span>
+            <span class="s1">name = </span><span class="s5">&quot;render_%s&quot; </span><span class="s1">% node.funcname</span>
+            <span class="s1">args = node.get_argument_expressions()</span>
+            <span class="s1">filtered = len(node.filter_args.args) &gt; </span><span class="s4">0</span>
+            <span class="s1">buffered = eval(node.attributes.get(</span><span class="s5">&quot;buffered&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">))</span>
+            <span class="s1">cached = eval(node.attributes.get(</span><span class="s5">&quot;cached&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">))</span>
+            <span class="s1">defs = </span><span class="s3">None</span>
+            <span class="s1">pagetag = </span><span class="s3">None</span>
+            <span class="s3">if </span><span class="s1">node.is_block </span><span class="s3">and not </span><span class="s1">node.is_anonymous:</span>
+                <span class="s1">args += [</span><span class="s5">&quot;**pageargs&quot;</span><span class="s1">]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">defs = self.write_toplevel()</span>
+            <span class="s1">pagetag = self.compiler.pagetag</span>
+            <span class="s1">name = </span><span class="s5">&quot;render_body&quot;</span>
+            <span class="s3">if </span><span class="s1">pagetag </span><span class="s3">is not None</span><span class="s1">:</span>
+                <span class="s1">args = pagetag.body_decl.get_argument_expressions()</span>
+                <span class="s3">if not </span><span class="s1">pagetag.body_decl.kwargs:</span>
+                    <span class="s1">args += [</span><span class="s5">&quot;**pageargs&quot;</span><span class="s1">]</span>
+                <span class="s1">cached = eval(pagetag.attributes.get(</span><span class="s5">&quot;cached&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">))</span>
+                <span class="s1">self.compiler.enable_loop = self.compiler.enable_loop </span><span class="s3">or </span><span class="s1">eval(</span>
+                    <span class="s1">pagetag.attributes.get(</span><span class="s5">&quot;enable_loop&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">args = [</span><span class="s5">&quot;**pageargs&quot;</span><span class="s1">]</span>
+                <span class="s1">cached = </span><span class="s3">False</span>
+            <span class="s1">buffered = filtered = </span><span class="s3">False</span>
+        <span class="s3">if </span><span class="s1">args </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">args = [</span><span class="s5">&quot;context&quot;</span><span class="s1">]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">args = [a </span><span class="s3">for </span><span class="s1">a </span><span class="s3">in </span><span class="s1">[</span><span class="s5">&quot;context&quot;</span><span class="s1">] + args]</span>
+
+        <span class="s1">self.write_render_callable(</span>
+            <span class="s1">pagetag </span><span class="s3">or </span><span class="s1">node</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, </span><span class="s1">filtered</span><span class="s3">, </span><span class="s1">cached</span>
+        <span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">defs </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s3">for </span><span class="s1">node </span><span class="s3">in </span><span class="s1">defs:</span>
+                <span class="s1">_GenerateRenderMethod(printer</span><span class="s3">, </span><span class="s1">compiler</span><span class="s3">, </span><span class="s1">node)</span>
+
+        <span class="s3">if not </span><span class="s1">self.in_def:</span>
+            <span class="s1">self.write_metadata_struct()</span>
+
+    <span class="s3">def </span><span class="s1">write_metadata_struct(self):</span>
+        <span class="s1">self.printer.source_map[self.printer.lineno] = max(</span>
+            <span class="s1">self.printer.source_map</span>
+        <span class="s1">)</span>
+        <span class="s1">struct = {</span>
+            <span class="s5">&quot;filename&quot;</span><span class="s1">: self.compiler.filename</span><span class="s3">,</span>
+            <span class="s5">&quot;uri&quot;</span><span class="s1">: self.compiler.uri</span><span class="s3">,</span>
+            <span class="s5">&quot;source_encoding&quot;</span><span class="s1">: self.compiler.source_encoding</span><span class="s3">,</span>
+            <span class="s5">&quot;line_map&quot;</span><span class="s1">: self.printer.source_map</span><span class="s3">,</span>
+        <span class="s1">}</span>
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s5">'&quot;&quot;&quot;'</span><span class="s3">,</span>
+            <span class="s5">&quot;__M_BEGIN_METADATA&quot;</span><span class="s3">,</span>
+            <span class="s1">json.dumps(struct)</span><span class="s3">,</span>
+            <span class="s5">&quot;__M_END_METADATA</span><span class="s3">\n</span><span class="s5">&quot; '&quot;&quot;&quot;'</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">identifiers(self):</span>
+        <span class="s3">return </span><span class="s1">self.identifier_stack[-</span><span class="s4">1</span><span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">write_toplevel(self):</span>
+        <span class="s2">&quot;&quot;&quot;Traverse a template structure for module-level directives and 
+        generate the start of module-level code. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">inherit = []</span>
+        <span class="s1">namespaces = {}</span>
+        <span class="s1">module_code = []</span>
+
+        <span class="s1">self.compiler.pagetag = </span><span class="s3">None</span>
+
+        <span class="s3">class </span><span class="s1">FindTopLevel(object):</span>
+            <span class="s3">def </span><span class="s1">visitInheritTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s1">inherit.append(node)</span>
+
+            <span class="s3">def </span><span class="s1">visitNamespaceTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s1">namespaces[node.name] = node</span>
+
+            <span class="s3">def </span><span class="s1">visitPageTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s1">self.compiler.pagetag = node</span>
+
+            <span class="s3">def </span><span class="s1">visitCode(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s3">if </span><span class="s1">node.ismodule:</span>
+                    <span class="s1">module_code.append(node)</span>
+
+        <span class="s1">f = FindTopLevel()</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">self.node.nodes:</span>
+            <span class="s1">n.accept_visitor(f)</span>
+
+        <span class="s1">self.compiler.namespaces = namespaces</span>
+
+        <span class="s1">module_ident = set()</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">module_code:</span>
+            <span class="s1">module_ident = module_ident.union(n.declared_identifiers())</span>
+
+        <span class="s1">module_identifiers = _Identifiers(self.compiler)</span>
+        <span class="s1">module_identifiers.declared = module_ident</span>
+
+        <span class="s0"># module-level names, python code</span>
+        <span class="s3">if </span><span class="s1">(</span>
+            <span class="s1">self.compiler.generate_magic_comment</span>
+            <span class="s3">and </span><span class="s1">self.compiler.source_encoding</span>
+        <span class="s1">):</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;# -*- coding:%s -*-&quot; </span><span class="s1">% self.compiler.source_encoding</span>
+            <span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">self.compiler.future_imports:</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;from __future__ import %s&quot;</span>
+                <span class="s1">% (</span><span class="s5">&quot;, &quot;</span><span class="s1">.join(self.compiler.future_imports)</span><span class="s3">,</span><span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;from mako import runtime, filters, cache&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;UNDEFINED = runtime.UNDEFINED&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;STOP_RENDERING = runtime.STOP_RENDERING&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_dict_builtin = dict&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_locals_builtin = locals&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;_magic_number = %r&quot; </span><span class="s1">% MAGIC_NUMBER)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;_modified_time = %r&quot; </span><span class="s1">% time.time())</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;_enable_loop = %r&quot; </span><span class="s1">% self.compiler.enable_loop)</span>
+        <span class="s1">self.printer.writeline(</span>
+            <span class="s5">&quot;_template_filename = %r&quot; </span><span class="s1">% self.compiler.filename</span>
+        <span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;_template_uri = %r&quot; </span><span class="s1">% self.compiler.uri)</span>
+        <span class="s1">self.printer.writeline(</span>
+            <span class="s5">&quot;_source_encoding = %r&quot; </span><span class="s1">% self.compiler.source_encoding</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">self.compiler.imports:</span>
+            <span class="s1">buf = </span><span class="s5">&quot;&quot;</span>
+            <span class="s3">for </span><span class="s1">imp </span><span class="s3">in </span><span class="s1">self.compiler.imports:</span>
+                <span class="s1">buf += imp + </span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span>
+                <span class="s1">self.printer.writeline(imp)</span>
+            <span class="s1">impcode = ast.PythonCode(</span>
+                <span class="s1">buf</span><span class="s3">,</span>
+                <span class="s1">source=</span><span class="s5">&quot;&quot;</span><span class="s3">,</span>
+                <span class="s1">lineno=</span><span class="s4">0</span><span class="s3">,</span>
+                <span class="s1">pos=</span><span class="s4">0</span><span class="s3">,</span>
+                <span class="s1">filename=</span><span class="s5">&quot;template defined imports&quot;</span><span class="s3">,</span>
+            <span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">impcode = </span><span class="s3">None</span>
+
+        <span class="s1">main_identifiers = module_identifiers.branch(self.node)</span>
+        <span class="s1">mit = module_identifiers.topleveldefs</span>
+        <span class="s1">module_identifiers.topleveldefs = mit.union(</span>
+            <span class="s1">main_identifiers.topleveldefs</span>
+        <span class="s1">)</span>
+        <span class="s1">module_identifiers.declared.update(TOPLEVEL_DECLARED)</span>
+        <span class="s3">if </span><span class="s1">impcode:</span>
+            <span class="s1">module_identifiers.declared.update(impcode.declared_identifiers)</span>
+
+        <span class="s1">self.compiler.identifiers = module_identifiers</span>
+        <span class="s1">self.printer.writeline(</span>
+            <span class="s5">&quot;_exports = %r&quot;</span>
+            <span class="s1">% [n.name </span><span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">main_identifiers.topleveldefs.values()]</span>
+        <span class="s1">)</span>
+        <span class="s1">self.printer.write_blanks(</span><span class="s4">2</span><span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">len(module_code):</span>
+            <span class="s1">self.write_module_code(module_code)</span>
+
+        <span class="s3">if </span><span class="s1">len(inherit):</span>
+            <span class="s1">self.write_namespaces(namespaces)</span>
+            <span class="s1">self.write_inherit(inherit[-</span><span class="s4">1</span><span class="s1">])</span>
+        <span class="s3">elif </span><span class="s1">len(namespaces):</span>
+            <span class="s1">self.write_namespaces(namespaces)</span>
+
+        <span class="s3">return </span><span class="s1">list(main_identifiers.topleveldefs.values())</span>
+
+    <span class="s3">def </span><span class="s1">write_render_callable(</span>
+        <span class="s1">self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, </span><span class="s1">filtered</span><span class="s3">, </span><span class="s1">cached</span>
+    <span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;write a top-level render callable. 
+ 
+        this could be the main render() method or that of a top-level def.&quot;&quot;&quot;</span>
+
+        <span class="s3">if </span><span class="s1">self.in_def:</span>
+            <span class="s1">decorator = node.decorator</span>
+            <span class="s3">if </span><span class="s1">decorator:</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;@runtime._decorate_toplevel(%s)&quot; </span><span class="s1">% decorator</span>
+                <span class="s1">)</span>
+
+        <span class="s1">self.printer.start_source(node.lineno)</span>
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s5">&quot;def %s(%s):&quot; </span><span class="s1">% (name</span><span class="s3">, </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(args))</span><span class="s3">,</span>
+            <span class="s0"># push new frame, assign current frame to __M_caller</span>
+            <span class="s5">&quot;__M_caller = context.caller_stack._push_frame()&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;try:&quot;</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">buffered </span><span class="s3">or </span><span class="s1">filtered </span><span class="s3">or </span><span class="s1">cached:</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;context._push_buffer()&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self.identifier_stack.append(</span>
+            <span class="s1">self.compiler.identifiers.branch(self.node)</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">(</span><span class="s3">not </span><span class="s1">self.in_def </span><span class="s3">or </span><span class="s1">self.node.is_block) </span><span class="s3">and </span><span class="s5">&quot;**pageargs&quot; </span><span class="s3">in </span><span class="s1">args:</span>
+            <span class="s1">self.identifier_stack[-</span><span class="s4">1</span><span class="s1">].argument_declared.add(</span><span class="s5">&quot;pageargs&quot;</span><span class="s1">)</span>
+
+        <span class="s3">if not </span><span class="s1">self.in_def </span><span class="s3">and </span><span class="s1">(</span>
+            <span class="s1">len(self.identifiers.locally_assigned) &gt; </span><span class="s4">0</span>
+            <span class="s3">or </span><span class="s1">len(self.identifiers.argument_declared) &gt; </span><span class="s4">0</span>
+        <span class="s1">):</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;__M_locals = __M_dict_builtin(%s)&quot;</span>
+                <span class="s1">% </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(</span>
+                    <span class="s1">[</span>
+                        <span class="s5">&quot;%s=%s&quot; </span><span class="s1">% (x</span><span class="s3">, </span><span class="s1">x)</span>
+                        <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">self.identifiers.argument_declared</span>
+                    <span class="s1">]</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self.write_variable_declares(self.identifiers</span><span class="s3">, </span><span class="s1">toplevel=</span><span class="s3">True</span><span class="s1">)</span>
+
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">self.node.nodes:</span>
+            <span class="s1">n.accept_visitor(self)</span>
+
+        <span class="s1">self.write_def_finish(self.node</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, </span><span class="s1">filtered</span><span class="s3">, </span><span class="s1">cached)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+        <span class="s1">self.printer.write_blanks(</span><span class="s4">2</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">cached:</span>
+            <span class="s1">self.write_cache_decorator(</span>
+                <span class="s1">node</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, </span><span class="s1">self.identifiers</span><span class="s3">, </span><span class="s1">toplevel=</span><span class="s3">True</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_module_code(self</span><span class="s3">, </span><span class="s1">module_code):</span>
+        <span class="s2">&quot;&quot;&quot;write module-level template code, i.e. that which 
+        is enclosed in &lt;%! %&gt; tags in the template.&quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">module_code:</span>
+            <span class="s1">self.printer.write_indented_block(n.text</span><span class="s3">, </span><span class="s1">starting_lineno=n.lineno)</span>
+
+    <span class="s3">def </span><span class="s1">write_inherit(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s2">&quot;&quot;&quot;write the module-level inheritance-determination callable.&quot;&quot;&quot;</span>
+
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s5">&quot;def _mako_inherit(template, context):&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;_mako_generate_namespaces(context)&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;return runtime._inherit_from(context, %s, _template_uri)&quot;</span>
+            <span class="s1">% (node.parsed_attributes[</span><span class="s5">&quot;file&quot;</span><span class="s1">])</span><span class="s3">,</span>
+            <span class="s3">None,</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_namespaces(self</span><span class="s3">, </span><span class="s1">namespaces):</span>
+        <span class="s2">&quot;&quot;&quot;write the module-level namespace-generating callable.&quot;&quot;&quot;</span>
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s5">&quot;def _mako_get_namespace(context, name):&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;try:&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;return context.namespaces[(__name__, name)]&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;except KeyError:&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;_mako_generate_namespaces(context)&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;return context.namespaces[(__name__, name)]&quot;</span><span class="s3">,</span>
+            <span class="s3">None,</span>
+            <span class="s3">None,</span>
+        <span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;def _mako_generate_namespaces(context):&quot;</span><span class="s1">)</span>
+
+        <span class="s3">for </span><span class="s1">node </span><span class="s3">in </span><span class="s1">namespaces.values():</span>
+            <span class="s3">if </span><span class="s5">&quot;import&quot; </span><span class="s3">in </span><span class="s1">node.attributes:</span>
+                <span class="s1">self.compiler.has_ns_imports = </span><span class="s3">True</span>
+            <span class="s1">self.printer.start_source(node.lineno)</span>
+            <span class="s3">if </span><span class="s1">len(node.nodes):</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;def make_namespace():&quot;</span><span class="s1">)</span>
+                <span class="s1">export = []</span>
+                <span class="s1">identifiers = self.compiler.identifiers.branch(node)</span>
+                <span class="s1">self.in_def = </span><span class="s3">True</span>
+
+                <span class="s3">class </span><span class="s1">NSDefVisitor(object):</span>
+                    <span class="s3">def </span><span class="s1">visitDefTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                        <span class="s1">s.visitDefOrBase(node)</span>
+
+                    <span class="s3">def </span><span class="s1">visitBlockTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                        <span class="s1">s.visitDefOrBase(node)</span>
+
+                    <span class="s3">def </span><span class="s1">visitDefOrBase(s</span><span class="s3">, </span><span class="s1">node):</span>
+                        <span class="s3">if </span><span class="s1">node.is_anonymous:</span>
+                            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                                <span class="s5">&quot;Can't put anonymous blocks inside &quot;</span>
+                                <span class="s5">&quot;&lt;%namespace&gt;&quot;</span><span class="s3">,</span>
+                                <span class="s1">**node.exception_kwargs</span>
+                            <span class="s1">)</span>
+                        <span class="s1">self.write_inline_def(node</span><span class="s3">, </span><span class="s1">identifiers</span><span class="s3">, </span><span class="s1">nested=</span><span class="s3">False</span><span class="s1">)</span>
+                        <span class="s1">export.append(node.funcname)</span>
+
+                <span class="s1">vis = NSDefVisitor()</span>
+                <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+                    <span class="s1">n.accept_visitor(vis)</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;return [%s]&quot; </span><span class="s1">% (</span><span class="s5">&quot;,&quot;</span><span class="s1">.join(export)))</span>
+                <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+                <span class="s1">self.in_def = </span><span class="s3">False</span>
+                <span class="s1">callable_name = </span><span class="s5">&quot;make_namespace()&quot;</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">callable_name = </span><span class="s5">&quot;None&quot;</span>
+
+            <span class="s3">if </span><span class="s5">&quot;file&quot; </span><span class="s3">in </span><span class="s1">node.parsed_attributes:</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;ns = runtime.TemplateNamespace(%r,&quot;</span>
+                    <span class="s5">&quot; context._clean_inheritance_tokens(),&quot;</span>
+                    <span class="s5">&quot; templateuri=%s, callables=%s, &quot;</span>
+                    <span class="s5">&quot; calling_uri=_template_uri)&quot;</span>
+                    <span class="s1">% (</span>
+                        <span class="s1">node.name</span><span class="s3">,</span>
+                        <span class="s1">node.parsed_attributes.get(</span><span class="s5">&quot;file&quot;</span><span class="s3">, </span><span class="s5">&quot;None&quot;</span><span class="s1">)</span><span class="s3">,</span>
+                        <span class="s1">callable_name</span><span class="s3">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s3">elif </span><span class="s5">&quot;module&quot; </span><span class="s3">in </span><span class="s1">node.parsed_attributes:</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;ns = runtime.ModuleNamespace(%r,&quot;</span>
+                    <span class="s5">&quot; context._clean_inheritance_tokens(),&quot;</span>
+                    <span class="s5">&quot; callables=%s, calling_uri=_template_uri,&quot;</span>
+                    <span class="s5">&quot; module=%s)&quot;</span>
+                    <span class="s1">% (</span>
+                        <span class="s1">node.name</span><span class="s3">,</span>
+                        <span class="s1">callable_name</span><span class="s3">,</span>
+                        <span class="s1">node.parsed_attributes.get(</span><span class="s5">&quot;module&quot;</span><span class="s3">, </span><span class="s5">&quot;None&quot;</span><span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">)</span>
+                <span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;ns = runtime.Namespace(%r,&quot;</span>
+                    <span class="s5">&quot; context._clean_inheritance_tokens(),&quot;</span>
+                    <span class="s5">&quot; callables=%s, calling_uri=_template_uri)&quot;</span>
+                    <span class="s1">% (node.name</span><span class="s3">, </span><span class="s1">callable_name)</span>
+                <span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">eval(node.attributes.get(</span><span class="s5">&quot;inheritable&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">)):</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;context['self'].%s = ns&quot; </span><span class="s1">% (node.name))</span>
+
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;context.namespaces[(__name__, %s)] = ns&quot; </span><span class="s1">% repr(node.name)</span>
+            <span class="s1">)</span>
+            <span class="s1">self.printer.write_blanks(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">len(namespaces):</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;pass&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_variable_declares(self</span><span class="s3">, </span><span class="s1">identifiers</span><span class="s3">, </span><span class="s1">toplevel=</span><span class="s3">False, </span><span class="s1">limit=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;write variable declarations at the top of a function. 
+ 
+        the variable declarations are in the form of callable 
+        definitions for defs and/or name lookup within the 
+        function's context argument. the names declared are based 
+        on the names that are referenced in the function body, 
+        which don't otherwise have any explicit assignment 
+        operation. names that are assigned within the body are 
+        assumed to be locally-scoped variables and are not 
+        separately declared. 
+ 
+        for def callable definitions, if the def is a top-level 
+        callable then a 'stub' callable is generated which wraps 
+        the current Context into a closure. if the def is not 
+        top-level, it is fully rendered as a local closure. 
+ 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0"># collection of all defs available to us in this scope</span>
+        <span class="s1">comp_idents = dict([(c.funcname</span><span class="s3">, </span><span class="s1">c) </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">identifiers.defs])</span>
+        <span class="s1">to_write = set()</span>
+
+        <span class="s0"># write &quot;context.get()&quot; for all variables we are going to</span>
+        <span class="s0"># need that arent in the namespace yet</span>
+        <span class="s1">to_write = to_write.union(identifiers.undeclared)</span>
+
+        <span class="s0"># write closure functions for closures that we define</span>
+        <span class="s0"># right here</span>
+        <span class="s1">to_write = to_write.union(</span>
+            <span class="s1">[c.funcname </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">identifiers.closuredefs.values()]</span>
+        <span class="s1">)</span>
+
+        <span class="s0"># remove identifiers that are declared in the argument</span>
+        <span class="s0"># signature of the callable</span>
+        <span class="s1">to_write = to_write.difference(identifiers.argument_declared)</span>
+
+        <span class="s0"># remove identifiers that we are going to assign to.</span>
+        <span class="s0"># in this way we mimic Python's behavior,</span>
+        <span class="s0"># i.e. assignment to a variable within a block</span>
+        <span class="s0"># means that variable is now a &quot;locally declared&quot; var,</span>
+        <span class="s0"># which cannot be referenced beforehand.</span>
+        <span class="s1">to_write = to_write.difference(identifiers.locally_declared)</span>
+
+        <span class="s3">if </span><span class="s1">self.compiler.enable_loop:</span>
+            <span class="s1">has_loop = </span><span class="s5">&quot;loop&quot; </span><span class="s3">in </span><span class="s1">to_write</span>
+            <span class="s1">to_write.discard(</span><span class="s5">&quot;loop&quot;</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">has_loop = </span><span class="s3">False</span>
+
+        <span class="s0"># if a limiting set was sent, constraint to those items in that list</span>
+        <span class="s0"># (this is used for the caching decorator)</span>
+        <span class="s3">if </span><span class="s1">limit </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s1">to_write = to_write.intersection(limit)</span>
+
+        <span class="s3">if </span><span class="s1">toplevel </span><span class="s3">and </span><span class="s1">getattr(self.compiler</span><span class="s3">, </span><span class="s5">&quot;has_ns_imports&quot;</span><span class="s3">, False</span><span class="s1">):</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;_import_ns = {}&quot;</span><span class="s1">)</span>
+            <span class="s1">self.compiler.has_imports = </span><span class="s3">True</span>
+            <span class="s3">for </span><span class="s1">ident</span><span class="s3">, </span><span class="s1">ns </span><span class="s3">in </span><span class="s1">self.compiler.namespaces.items():</span>
+                <span class="s3">if </span><span class="s5">&quot;import&quot; </span><span class="s3">in </span><span class="s1">ns.attributes:</span>
+                    <span class="s1">self.printer.writeline(</span>
+                        <span class="s5">&quot;_mako_get_namespace(context, %r).&quot;</span>
+                        <span class="s5">&quot;_populate(_import_ns, %r)&quot;</span>
+                        <span class="s1">% (</span>
+                            <span class="s1">ident</span><span class="s3">,</span>
+                            <span class="s1">re.split(</span><span class="s5">r&quot;\s*,\s*&quot;</span><span class="s3">, </span><span class="s1">ns.attributes[</span><span class="s5">&quot;import&quot;</span><span class="s1">])</span><span class="s3">,</span>
+                        <span class="s1">)</span>
+                    <span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">has_loop:</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;loop = __M_loop = runtime.LoopStack()&quot;</span><span class="s1">)</span>
+
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">to_write:</span>
+            <span class="s3">if </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">comp_idents:</span>
+                <span class="s1">comp = comp_idents[ident]</span>
+                <span class="s3">if </span><span class="s1">comp.is_block:</span>
+                    <span class="s3">if not </span><span class="s1">comp.is_anonymous:</span>
+                        <span class="s1">self.write_def_decl(comp</span><span class="s3">, </span><span class="s1">identifiers)</span>
+                    <span class="s3">else</span><span class="s1">:</span>
+                        <span class="s1">self.write_inline_def(comp</span><span class="s3">, </span><span class="s1">identifiers</span><span class="s3">, </span><span class="s1">nested=</span><span class="s3">True</span><span class="s1">)</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s3">if </span><span class="s1">comp.is_root():</span>
+                        <span class="s1">self.write_def_decl(comp</span><span class="s3">, </span><span class="s1">identifiers)</span>
+                    <span class="s3">else</span><span class="s1">:</span>
+                        <span class="s1">self.write_inline_def(comp</span><span class="s3">, </span><span class="s1">identifiers</span><span class="s3">, </span><span class="s1">nested=</span><span class="s3">True</span><span class="s1">)</span>
+
+            <span class="s3">elif </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">self.compiler.namespaces:</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;%s = _mako_get_namespace(context, %r)&quot; </span><span class="s1">% (ident</span><span class="s3">, </span><span class="s1">ident)</span>
+                <span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">if </span><span class="s1">getattr(self.compiler</span><span class="s3">, </span><span class="s5">&quot;has_ns_imports&quot;</span><span class="s3">, False</span><span class="s1">):</span>
+                    <span class="s3">if </span><span class="s1">self.compiler.strict_undefined:</span>
+                        <span class="s1">self.printer.writelines(</span>
+                            <span class="s5">&quot;%s = _import_ns.get(%r, UNDEFINED)&quot;</span>
+                            <span class="s1">% (ident</span><span class="s3">, </span><span class="s1">ident)</span><span class="s3">,</span>
+                            <span class="s5">&quot;if %s is UNDEFINED:&quot; </span><span class="s1">% ident</span><span class="s3">,</span>
+                            <span class="s5">&quot;try:&quot;</span><span class="s3">,</span>
+                            <span class="s5">&quot;%s = context[%r]&quot; </span><span class="s1">% (ident</span><span class="s3">, </span><span class="s1">ident)</span><span class="s3">,</span>
+                            <span class="s5">&quot;except KeyError:&quot;</span><span class="s3">,</span>
+                            <span class="s5">&quot;raise NameError(</span><span class="s3">\&quot;</span><span class="s5">'%s' is not defined</span><span class="s3">\&quot;</span><span class="s5">)&quot; </span><span class="s1">% ident</span><span class="s3">,</span>
+                            <span class="s3">None,</span>
+                            <span class="s3">None,</span>
+                        <span class="s1">)</span>
+                    <span class="s3">else</span><span class="s1">:</span>
+                        <span class="s1">self.printer.writeline(</span>
+                            <span class="s5">&quot;%s = _import_ns.get&quot;</span>
+                            <span class="s5">&quot;(%r, context.get(%r, UNDEFINED))&quot;</span>
+                            <span class="s1">% (ident</span><span class="s3">, </span><span class="s1">ident</span><span class="s3">, </span><span class="s1">ident)</span>
+                        <span class="s1">)</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s3">if </span><span class="s1">self.compiler.strict_undefined:</span>
+                        <span class="s1">self.printer.writelines(</span>
+                            <span class="s5">&quot;try:&quot;</span><span class="s3">,</span>
+                            <span class="s5">&quot;%s = context[%r]&quot; </span><span class="s1">% (ident</span><span class="s3">, </span><span class="s1">ident)</span><span class="s3">,</span>
+                            <span class="s5">&quot;except KeyError:&quot;</span><span class="s3">,</span>
+                            <span class="s5">&quot;raise NameError(</span><span class="s3">\&quot;</span><span class="s5">'%s' is not defined</span><span class="s3">\&quot;</span><span class="s5">)&quot; </span><span class="s1">% ident</span><span class="s3">,</span>
+                            <span class="s3">None,</span>
+                        <span class="s1">)</span>
+                    <span class="s3">else</span><span class="s1">:</span>
+                        <span class="s1">self.printer.writeline(</span>
+                            <span class="s5">&quot;%s = context.get(%r, UNDEFINED)&quot; </span><span class="s1">% (ident</span><span class="s3">, </span><span class="s1">ident)</span>
+                        <span class="s1">)</span>
+
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_writer = context.writer()&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_def_decl(self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">identifiers):</span>
+        <span class="s2">&quot;&quot;&quot;write a locally-available callable referencing a top-level def&quot;&quot;&quot;</span>
+        <span class="s1">funcname = node.funcname</span>
+        <span class="s1">namedecls = node.get_argument_expressions()</span>
+        <span class="s1">nameargs = node.get_argument_expressions(as_call=</span><span class="s3">True</span><span class="s1">)</span>
+
+        <span class="s3">if not </span><span class="s1">self.in_def </span><span class="s3">and </span><span class="s1">(</span>
+            <span class="s1">len(self.identifiers.locally_assigned) &gt; </span><span class="s4">0</span>
+            <span class="s3">or </span><span class="s1">len(self.identifiers.argument_declared) &gt; </span><span class="s4">0</span>
+        <span class="s1">):</span>
+            <span class="s1">nameargs.insert(</span><span class="s4">0</span><span class="s3">, </span><span class="s5">&quot;context._locals(__M_locals)&quot;</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">nameargs.insert(</span><span class="s4">0</span><span class="s3">, </span><span class="s5">&quot;context&quot;</span><span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;def %s(%s):&quot; </span><span class="s1">% (funcname</span><span class="s3">, </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(namedecls)))</span>
+        <span class="s1">self.printer.writeline(</span>
+            <span class="s5">&quot;return render_%s(%s)&quot; </span><span class="s1">% (funcname</span><span class="s3">, </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(nameargs))</span>
+        <span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_inline_def(self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">identifiers</span><span class="s3">, </span><span class="s1">nested):</span>
+        <span class="s2">&quot;&quot;&quot;write a locally-available def callable inside an enclosing def.&quot;&quot;&quot;</span>
+
+        <span class="s1">namedecls = node.get_argument_expressions()</span>
+
+        <span class="s1">decorator = node.decorator</span>
+        <span class="s3">if </span><span class="s1">decorator:</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;@runtime._decorate_inline(context, %s)&quot; </span><span class="s1">% decorator</span>
+            <span class="s1">)</span>
+        <span class="s1">self.printer.writeline(</span>
+            <span class="s5">&quot;def %s(%s):&quot; </span><span class="s1">% (node.funcname</span><span class="s3">, </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(namedecls))</span>
+        <span class="s1">)</span>
+        <span class="s1">filtered = len(node.filter_args.args) &gt; </span><span class="s4">0</span>
+        <span class="s1">buffered = eval(node.attributes.get(</span><span class="s5">&quot;buffered&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">))</span>
+        <span class="s1">cached = eval(node.attributes.get(</span><span class="s5">&quot;cached&quot;</span><span class="s3">, </span><span class="s5">&quot;False&quot;</span><span class="s1">))</span>
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s0"># push new frame, assign current frame to __M_caller</span>
+            <span class="s5">&quot;__M_caller = context.caller_stack._push_frame()&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;try:&quot;</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">buffered </span><span class="s3">or </span><span class="s1">filtered </span><span class="s3">or </span><span class="s1">cached:</span>
+            <span class="s1">self.printer.writelines(</span><span class="s5">&quot;context._push_buffer()&quot;</span><span class="s1">)</span>
+
+        <span class="s1">identifiers = identifiers.branch(node</span><span class="s3">, </span><span class="s1">nested=nested)</span>
+
+        <span class="s1">self.write_variable_declares(identifiers)</span>
+
+        <span class="s1">self.identifier_stack.append(identifiers)</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+            <span class="s1">n.accept_visitor(self)</span>
+        <span class="s1">self.identifier_stack.pop()</span>
+
+        <span class="s1">self.write_def_finish(node</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, </span><span class="s1">filtered</span><span class="s3">, </span><span class="s1">cached)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">cached:</span>
+            <span class="s1">self.write_cache_decorator(</span>
+                <span class="s1">node</span><span class="s3">,</span>
+                <span class="s1">node.funcname</span><span class="s3">,</span>
+                <span class="s1">namedecls</span><span class="s3">,</span>
+                <span class="s3">False,</span>
+                <span class="s1">identifiers</span><span class="s3">,</span>
+                <span class="s1">inline=</span><span class="s3">True,</span>
+                <span class="s1">toplevel=</span><span class="s3">False,</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_def_finish(</span>
+        <span class="s1">self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, </span><span class="s1">filtered</span><span class="s3">, </span><span class="s1">cached</span><span class="s3">, </span><span class="s1">callstack=</span><span class="s3">True</span>
+    <span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;write the end section of a rendering function, either outermost or 
+        inline. 
+ 
+        this takes into account if the rendering function was filtered, 
+        buffered, etc.  and closes the corresponding try: block if any, and 
+        writes code to retrieve captured content, apply filters, send proper 
+        return value.&quot;&quot;&quot;</span>
+
+        <span class="s3">if not </span><span class="s1">buffered </span><span class="s3">and not </span><span class="s1">cached </span><span class="s3">and not </span><span class="s1">filtered:</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;return ''&quot;</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">callstack:</span>
+                <span class="s1">self.printer.writelines(</span>
+                    <span class="s5">&quot;finally:&quot;</span><span class="s3">, </span><span class="s5">&quot;context.caller_stack._pop_frame()&quot;</span><span class="s3">, None</span>
+                <span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">buffered </span><span class="s3">or </span><span class="s1">filtered </span><span class="s3">or </span><span class="s1">cached:</span>
+            <span class="s3">if </span><span class="s1">buffered </span><span class="s3">or </span><span class="s1">cached:</span>
+                <span class="s0"># in a caching scenario, don't try to get a writer</span>
+                <span class="s0"># from the context after popping; assume the caching</span>
+                <span class="s0"># implemenation might be using a context with no</span>
+                <span class="s0"># extra buffers</span>
+                <span class="s1">self.printer.writelines(</span>
+                    <span class="s5">&quot;finally:&quot;</span><span class="s3">, </span><span class="s5">&quot;__M_buf = context._pop_buffer()&quot;</span>
+                <span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">self.printer.writelines(</span>
+                    <span class="s5">&quot;finally:&quot;</span><span class="s3">,</span>
+                    <span class="s5">&quot;__M_buf, __M_writer = context._pop_buffer_and_writer()&quot;</span><span class="s3">,</span>
+                <span class="s1">)</span>
+
+            <span class="s3">if </span><span class="s1">callstack:</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;context.caller_stack._pop_frame()&quot;</span><span class="s1">)</span>
+
+            <span class="s1">s = </span><span class="s5">&quot;__M_buf.getvalue()&quot;</span>
+            <span class="s3">if </span><span class="s1">filtered:</span>
+                <span class="s1">s = self.create_filter_callable(</span>
+                    <span class="s1">node.filter_args.args</span><span class="s3">, </span><span class="s1">s</span><span class="s3">, False</span>
+                <span class="s1">)</span>
+            <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">buffered </span><span class="s3">and not </span><span class="s1">cached:</span>
+                <span class="s1">s = self.create_filter_callable(</span>
+                    <span class="s1">self.compiler.buffer_filters</span><span class="s3">, </span><span class="s1">s</span><span class="s3">, False</span>
+                <span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">buffered </span><span class="s3">or </span><span class="s1">cached:</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;return %s&quot; </span><span class="s1">% s)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">self.printer.writelines(</span><span class="s5">&quot;__M_writer(%s)&quot; </span><span class="s1">% s</span><span class="s3">, </span><span class="s5">&quot;return ''&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">write_cache_decorator(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">node_or_pagetag</span><span class="s3">,</span>
+        <span class="s1">name</span><span class="s3">,</span>
+        <span class="s1">args</span><span class="s3">,</span>
+        <span class="s1">buffered</span><span class="s3">,</span>
+        <span class="s1">identifiers</span><span class="s3">,</span>
+        <span class="s1">inline=</span><span class="s3">False,</span>
+        <span class="s1">toplevel=</span><span class="s3">False,</span>
+    <span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;write a post-function decorator to replace a rendering 
+            callable with a cached version of itself.&quot;&quot;&quot;</span>
+
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_%s = %s&quot; </span><span class="s1">% (name</span><span class="s3">, </span><span class="s1">name))</span>
+        <span class="s1">cachekey = node_or_pagetag.parsed_attributes.get(</span>
+            <span class="s5">&quot;cache_key&quot;</span><span class="s3">, </span><span class="s1">repr(name)</span>
+        <span class="s1">)</span>
+
+        <span class="s1">cache_args = {}</span>
+        <span class="s3">if </span><span class="s1">self.compiler.pagetag </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s1">cache_args.update(</span>
+                <span class="s1">(pa[</span><span class="s4">6</span><span class="s1">:]</span><span class="s3">, </span><span class="s1">self.compiler.pagetag.parsed_attributes[pa])</span>
+                <span class="s3">for </span><span class="s1">pa </span><span class="s3">in </span><span class="s1">self.compiler.pagetag.parsed_attributes</span>
+                <span class="s3">if </span><span class="s1">pa.startswith(</span><span class="s5">&quot;cache_&quot;</span><span class="s1">) </span><span class="s3">and </span><span class="s1">pa != </span><span class="s5">&quot;cache_key&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">cache_args.update(</span>
+            <span class="s1">(pa[</span><span class="s4">6</span><span class="s1">:]</span><span class="s3">, </span><span class="s1">node_or_pagetag.parsed_attributes[pa])</span>
+            <span class="s3">for </span><span class="s1">pa </span><span class="s3">in </span><span class="s1">node_or_pagetag.parsed_attributes</span>
+            <span class="s3">if </span><span class="s1">pa.startswith(</span><span class="s5">&quot;cache_&quot;</span><span class="s1">) </span><span class="s3">and </span><span class="s1">pa != </span><span class="s5">&quot;cache_key&quot;</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s5">&quot;timeout&quot; </span><span class="s3">in </span><span class="s1">cache_args:</span>
+            <span class="s1">cache_args[</span><span class="s5">&quot;timeout&quot;</span><span class="s1">] = int(eval(cache_args[</span><span class="s5">&quot;timeout&quot;</span><span class="s1">]))</span>
+
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;def %s(%s):&quot; </span><span class="s1">% (name</span><span class="s3">, </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(args)))</span>
+
+        <span class="s0"># form &quot;arg1, arg2, arg3=arg3, arg4=arg4&quot;, etc.</span>
+        <span class="s1">pass_args = [</span>
+            <span class="s5">&quot;%s=%s&quot; </span><span class="s1">% ((a.split(</span><span class="s5">&quot;=&quot;</span><span class="s1">)[</span><span class="s4">0</span><span class="s1">]</span><span class="s3">,</span><span class="s1">) * </span><span class="s4">2</span><span class="s1">) </span><span class="s3">if </span><span class="s5">&quot;=&quot; </span><span class="s3">in </span><span class="s1">a </span><span class="s3">else </span><span class="s1">a </span><span class="s3">for </span><span class="s1">a </span><span class="s3">in </span><span class="s1">args</span>
+        <span class="s1">]</span>
+
+        <span class="s1">self.write_variable_declares(</span>
+            <span class="s1">identifiers</span><span class="s3">,</span>
+            <span class="s1">toplevel=toplevel</span><span class="s3">,</span>
+            <span class="s1">limit=node_or_pagetag.undeclared_identifiers()</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">buffered:</span>
+            <span class="s1">s = (</span>
+                <span class="s5">&quot;context.get('local').&quot;</span>
+                <span class="s5">&quot;cache._ctx_get_or_create(&quot;</span>
+                <span class="s5">&quot;%s, lambda:__M_%s(%s),  context, %s__M_defname=%r)&quot;</span>
+                <span class="s1">% (</span>
+                    <span class="s1">cachekey</span><span class="s3">,</span>
+                    <span class="s1">name</span><span class="s3">,</span>
+                    <span class="s5">&quot;,&quot;</span><span class="s1">.join(pass_args)</span><span class="s3">,</span>
+                    <span class="s5">&quot;&quot;</span><span class="s1">.join(</span>
+                        <span class="s1">[</span><span class="s5">&quot;%s=%s, &quot; </span><span class="s1">% (k</span><span class="s3">, </span><span class="s1">v) </span><span class="s3">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">cache_args.items()]</span>
+                    <span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">name</span><span class="s3">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+            <span class="s0"># apply buffer_filters</span>
+            <span class="s1">s = self.create_filter_callable(</span>
+                <span class="s1">self.compiler.buffer_filters</span><span class="s3">, </span><span class="s1">s</span><span class="s3">, False</span>
+            <span class="s1">)</span>
+            <span class="s1">self.printer.writelines(</span><span class="s5">&quot;return &quot; </span><span class="s1">+ s</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.printer.writelines(</span>
+                <span class="s5">&quot;__M_writer(context.get('local').&quot;</span>
+                <span class="s5">&quot;cache._ctx_get_or_create(&quot;</span>
+                <span class="s5">&quot;%s, lambda:__M_%s(%s), context, %s__M_defname=%r))&quot;</span>
+                <span class="s1">% (</span>
+                    <span class="s1">cachekey</span><span class="s3">,</span>
+                    <span class="s1">name</span><span class="s3">,</span>
+                    <span class="s5">&quot;,&quot;</span><span class="s1">.join(pass_args)</span><span class="s3">,</span>
+                    <span class="s5">&quot;&quot;</span><span class="s1">.join(</span>
+                        <span class="s1">[</span><span class="s5">&quot;%s=%s, &quot; </span><span class="s1">% (k</span><span class="s3">, </span><span class="s1">v) </span><span class="s3">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">cache_args.items()]</span>
+                    <span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">name</span><span class="s3">,</span>
+                <span class="s1">)</span><span class="s3">,</span>
+                <span class="s5">&quot;return ''&quot;</span><span class="s3">,</span>
+                <span class="s3">None,</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">create_filter_callable(self</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">target</span><span class="s3">, </span><span class="s1">is_expression):</span>
+        <span class="s2">&quot;&quot;&quot;write a filter-applying expression based on the filters 
+        present in the given filter names, adjusting for the global 
+        'default' filter aliases as needed.&quot;&quot;&quot;</span>
+
+        <span class="s3">def </span><span class="s1">locate_encode(name):</span>
+            <span class="s3">if </span><span class="s1">re.match(</span><span class="s5">r&quot;decode\..+&quot;</span><span class="s3">, </span><span class="s1">name):</span>
+                <span class="s3">return </span><span class="s5">&quot;filters.&quot; </span><span class="s1">+ name</span>
+            <span class="s3">elif </span><span class="s1">self.compiler.disable_unicode:</span>
+                <span class="s3">return </span><span class="s1">filters.NON_UNICODE_ESCAPES.get(name</span><span class="s3">, </span><span class="s1">name)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">return </span><span class="s1">filters.DEFAULT_ESCAPES.get(name</span><span class="s3">, </span><span class="s1">name)</span>
+
+        <span class="s3">if </span><span class="s5">&quot;n&quot; </span><span class="s3">not in </span><span class="s1">args:</span>
+            <span class="s3">if </span><span class="s1">is_expression:</span>
+                <span class="s3">if </span><span class="s1">self.compiler.pagetag:</span>
+                    <span class="s1">args = self.compiler.pagetag.filter_args.args + args</span>
+                <span class="s3">if </span><span class="s1">self.compiler.default_filters </span><span class="s3">and </span><span class="s5">&quot;n&quot; </span><span class="s3">not in </span><span class="s1">args:</span>
+                    <span class="s1">args = self.compiler.default_filters + args</span>
+        <span class="s3">for </span><span class="s1">e </span><span class="s3">in </span><span class="s1">args:</span>
+            <span class="s0"># if filter given as a function, get just the identifier portion</span>
+            <span class="s3">if </span><span class="s1">e == </span><span class="s5">&quot;n&quot;</span><span class="s1">:</span>
+                <span class="s3">continue</span>
+            <span class="s1">m = re.match(</span><span class="s5">r&quot;(.+?)(\(.*\))&quot;</span><span class="s3">, </span><span class="s1">e)</span>
+            <span class="s3">if </span><span class="s1">m:</span>
+                <span class="s1">ident</span><span class="s3">, </span><span class="s1">fargs = m.group(</span><span class="s4">1</span><span class="s3">, </span><span class="s4">2</span><span class="s1">)</span>
+                <span class="s1">f = locate_encode(ident)</span>
+                <span class="s1">e = f + fargs</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">e = locate_encode(e)</span>
+                <span class="s3">assert </span><span class="s1">e </span><span class="s3">is not None</span>
+            <span class="s1">target = </span><span class="s5">&quot;%s(%s)&quot; </span><span class="s1">% (e</span><span class="s3">, </span><span class="s1">target)</span>
+        <span class="s3">return </span><span class="s1">target</span>
+
+    <span class="s3">def </span><span class="s1">visitExpression(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.printer.start_source(node.lineno)</span>
+        <span class="s3">if </span><span class="s1">(</span>
+            <span class="s1">len(node.escapes)</span>
+            <span class="s3">or </span><span class="s1">(</span>
+                <span class="s1">self.compiler.pagetag </span><span class="s3">is not None</span>
+                <span class="s3">and </span><span class="s1">len(self.compiler.pagetag.filter_args.args)</span>
+            <span class="s1">)</span>
+            <span class="s3">or </span><span class="s1">len(self.compiler.default_filters)</span>
+        <span class="s1">):</span>
+
+            <span class="s1">s = self.create_filter_callable(</span>
+                <span class="s1">node.escapes_code.args</span><span class="s3">, </span><span class="s5">&quot;%s&quot; </span><span class="s1">% node.text</span><span class="s3">, True</span>
+            <span class="s1">)</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_writer(%s)&quot; </span><span class="s1">% s)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_writer(%s)&quot; </span><span class="s1">% node.text)</span>
+
+    <span class="s3">def </span><span class="s1">visitControlLine(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s1">node.isend:</span>
+            <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">node.has_loop_context:</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;finally:&quot;</span><span class="s1">)</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;loop = __M_loop._exit()&quot;</span><span class="s1">)</span>
+                <span class="s1">self.printer.writeline(</span><span class="s3">None</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.printer.start_source(node.lineno)</span>
+            <span class="s3">if </span><span class="s1">self.compiler.enable_loop </span><span class="s3">and </span><span class="s1">node.keyword == </span><span class="s5">&quot;for&quot;</span><span class="s1">:</span>
+                <span class="s1">text = mangle_mako_loop(node</span><span class="s3">, </span><span class="s1">self.printer)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">text = node.text</span>
+            <span class="s1">self.printer.writeline(text)</span>
+            <span class="s1">children = node.get_children()</span>
+            <span class="s0"># this covers the three situations where we want to insert a pass:</span>
+            <span class="s0">#    1) a ternary control line with no children,</span>
+            <span class="s0">#    2) a primary control line with nothing but its own ternary</span>
+            <span class="s0">#          and end control lines, and</span>
+            <span class="s0">#    3) any control line with no content other than comments</span>
+            <span class="s3">if not </span><span class="s1">children </span><span class="s3">or </span><span class="s1">(</span>
+                <span class="s1">compat.all(</span>
+                    <span class="s1">isinstance(c</span><span class="s3">, </span><span class="s1">(parsetree.Comment</span><span class="s3">, </span><span class="s1">parsetree.ControlLine))</span>
+                    <span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">children</span>
+                <span class="s1">)</span>
+                <span class="s3">and </span><span class="s1">compat.all(</span>
+                    <span class="s1">(node.is_ternary(c.keyword) </span><span class="s3">or </span><span class="s1">c.isend)</span>
+                    <span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">children</span>
+                    <span class="s3">if </span><span class="s1">isinstance(c</span><span class="s3">, </span><span class="s1">parsetree.ControlLine)</span>
+                <span class="s1">)</span>
+            <span class="s1">):</span>
+                <span class="s1">self.printer.writeline(</span><span class="s5">&quot;pass&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitText(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.printer.start_source(node.lineno)</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;__M_writer(%s)&quot; </span><span class="s1">% repr(node.content))</span>
+
+    <span class="s3">def </span><span class="s1">visitTextTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">filtered = len(node.filter_args.args) &gt; </span><span class="s4">0</span>
+        <span class="s3">if </span><span class="s1">filtered:</span>
+            <span class="s1">self.printer.writelines(</span>
+                <span class="s5">&quot;__M_writer = context._push_writer()&quot;</span><span class="s3">, </span><span class="s5">&quot;try:&quot;</span>
+            <span class="s1">)</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+            <span class="s1">n.accept_visitor(self)</span>
+        <span class="s3">if </span><span class="s1">filtered:</span>
+            <span class="s1">self.printer.writelines(</span>
+                <span class="s5">&quot;finally:&quot;</span><span class="s3">,</span>
+                <span class="s5">&quot;__M_buf, __M_writer = context._pop_buffer_and_writer()&quot;</span><span class="s3">,</span>
+                <span class="s5">&quot;__M_writer(%s)&quot;</span>
+                <span class="s1">% self.create_filter_callable(</span>
+                    <span class="s1">node.filter_args.args</span><span class="s3">, </span><span class="s5">&quot;__M_buf.getvalue()&quot;</span><span class="s3">, False</span>
+                <span class="s1">)</span><span class="s3">,</span>
+                <span class="s3">None,</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitCode(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if not </span><span class="s1">node.ismodule:</span>
+            <span class="s1">self.printer.write_indented_block(</span>
+                <span class="s1">node.text</span><span class="s3">, </span><span class="s1">starting_lineno=node.lineno</span>
+            <span class="s1">)</span>
+
+            <span class="s3">if not </span><span class="s1">self.in_def </span><span class="s3">and </span><span class="s1">len(self.identifiers.locally_assigned) &gt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s0"># if we are the &quot;template&quot; def, fudge locally</span>
+                <span class="s0"># declared/modified variables into the &quot;__M_locals&quot; dictionary,</span>
+                <span class="s0"># which is used for def calls within the same template,</span>
+                <span class="s0"># to simulate &quot;enclosing scope&quot;</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;__M_locals_builtin_stored = __M_locals_builtin()&quot;</span>
+                <span class="s1">)</span>
+                <span class="s1">self.printer.writeline(</span>
+                    <span class="s5">&quot;__M_locals.update(__M_dict_builtin([(__M_key,&quot;</span>
+                    <span class="s5">&quot; __M_locals_builtin_stored[__M_key]) for __M_key in&quot;</span>
+                    <span class="s5">&quot; [%s] if __M_key in __M_locals_builtin_stored]))&quot;</span>
+                    <span class="s1">% </span><span class="s5">&quot;,&quot;</span><span class="s1">.join([repr(x) </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">node.declared_identifiers()])</span>
+                <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitIncludeTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.printer.start_source(node.lineno)</span>
+        <span class="s1">args = node.attributes.get(</span><span class="s5">&quot;args&quot;</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">args:</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;runtime._include_file(context, %s, _template_uri, %s)&quot;</span>
+                <span class="s1">% (node.parsed_attributes[</span><span class="s5">&quot;file&quot;</span><span class="s1">]</span><span class="s3">, </span><span class="s1">args)</span>
+            <span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;runtime._include_file(context, %s, _template_uri)&quot;</span>
+                <span class="s1">% (node.parsed_attributes[</span><span class="s5">&quot;file&quot;</span><span class="s1">])</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitNamespaceTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">pass</span>
+
+    <span class="s3">def </span><span class="s1">visitDefTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">pass</span>
+
+    <span class="s3">def </span><span class="s1">visitBlockTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s1">node.is_anonymous:</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;%s()&quot; </span><span class="s1">% node.funcname)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">nameargs = node.get_argument_expressions(as_call=</span><span class="s3">True</span><span class="s1">)</span>
+            <span class="s1">nameargs += [</span><span class="s5">&quot;**pageargs&quot;</span><span class="s1">]</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;if 'parent' not in context._data or &quot;</span>
+                <span class="s5">&quot;not hasattr(context._data['parent'], '%s'):&quot; </span><span class="s1">% node.funcname</span>
+            <span class="s1">)</span>
+            <span class="s1">self.printer.writeline(</span>
+                <span class="s5">&quot;context['self'].%s(%s)&quot; </span><span class="s1">% (node.funcname</span><span class="s3">, </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(nameargs))</span>
+            <span class="s1">)</span>
+            <span class="s1">self.printer.writeline(</span><span class="s5">&quot;</span><span class="s3">\n</span><span class="s5">&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitCallNamespaceTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s0"># TODO: we can put namespace-specific checks here, such</span>
+        <span class="s0"># as ensure the given namespace will be imported,</span>
+        <span class="s0"># pre-import the namespace, etc.</span>
+        <span class="s1">self.visitCallTag(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitCallTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;def ccall(caller):&quot;</span><span class="s1">)</span>
+        <span class="s1">export = [</span><span class="s5">&quot;body&quot;</span><span class="s1">]</span>
+        <span class="s1">callable_identifiers = self.identifiers.branch(node</span><span class="s3">, </span><span class="s1">nested=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s1">body_identifiers = callable_identifiers.branch(node</span><span class="s3">, </span><span class="s1">nested=</span><span class="s3">False</span><span class="s1">)</span>
+        <span class="s0"># we want the 'caller' passed to ccall to be used</span>
+        <span class="s0"># for the body() function, but for other non-body()</span>
+        <span class="s0"># &lt;%def&gt;s within &lt;%call&gt; we want the current caller</span>
+        <span class="s0"># off the call stack (if any)</span>
+        <span class="s1">body_identifiers.add_declared(</span><span class="s5">&quot;caller&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self.identifier_stack.append(body_identifiers)</span>
+
+        <span class="s3">class </span><span class="s1">DefVisitor(object):</span>
+            <span class="s3">def </span><span class="s1">visitDefTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s1">s.visitDefOrBase(node)</span>
+
+            <span class="s3">def </span><span class="s1">visitBlockTag(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s1">s.visitDefOrBase(node)</span>
+
+            <span class="s3">def </span><span class="s1">visitDefOrBase(s</span><span class="s3">, </span><span class="s1">node):</span>
+                <span class="s1">self.write_inline_def(node</span><span class="s3">, </span><span class="s1">callable_identifiers</span><span class="s3">, </span><span class="s1">nested=</span><span class="s3">False</span><span class="s1">)</span>
+                <span class="s3">if not </span><span class="s1">node.is_anonymous:</span>
+                    <span class="s1">export.append(node.funcname)</span>
+                <span class="s0"># remove defs that are within the &lt;%call&gt; from the</span>
+                <span class="s0"># &quot;closuredefs&quot; defined in the body, so they dont render twice</span>
+                <span class="s3">if </span><span class="s1">node.funcname </span><span class="s3">in </span><span class="s1">body_identifiers.closuredefs:</span>
+                    <span class="s3">del </span><span class="s1">body_identifiers.closuredefs[node.funcname]</span>
+
+        <span class="s1">vis = DefVisitor()</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+            <span class="s1">n.accept_visitor(vis)</span>
+        <span class="s1">self.identifier_stack.pop()</span>
+
+        <span class="s1">bodyargs = node.body_decl.get_argument_expressions()</span>
+        <span class="s1">self.printer.writeline(</span><span class="s5">&quot;def body(%s):&quot; </span><span class="s1">% </span><span class="s5">&quot;,&quot;</span><span class="s1">.join(bodyargs))</span>
+
+        <span class="s0"># TODO: figure out best way to specify</span>
+        <span class="s0"># buffering/nonbuffering (at call time would be better)</span>
+        <span class="s1">buffered = </span><span class="s3">False</span>
+        <span class="s3">if </span><span class="s1">buffered:</span>
+            <span class="s1">self.printer.writelines(</span><span class="s5">&quot;context._push_buffer()&quot;</span><span class="s3">, </span><span class="s5">&quot;try:&quot;</span><span class="s1">)</span>
+        <span class="s1">self.write_variable_declares(body_identifiers)</span>
+        <span class="s1">self.identifier_stack.append(body_identifiers)</span>
+
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+            <span class="s1">n.accept_visitor(self)</span>
+        <span class="s1">self.identifier_stack.pop()</span>
+
+        <span class="s1">self.write_def_finish(node</span><span class="s3">, </span><span class="s1">buffered</span><span class="s3">, False, False, </span><span class="s1">callstack=</span><span class="s3">False</span><span class="s1">)</span>
+        <span class="s1">self.printer.writelines(</span><span class="s3">None, </span><span class="s5">&quot;return [%s]&quot; </span><span class="s1">% (</span><span class="s5">&quot;,&quot;</span><span class="s1">.join(export))</span><span class="s3">, None</span><span class="s1">)</span>
+
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s0"># push on caller for nested call</span>
+            <span class="s5">&quot;context.caller_stack.nextcaller = &quot;</span>
+            <span class="s5">&quot;runtime.Namespace('caller', context, &quot;</span>
+            <span class="s5">&quot;callables=ccall(__M_caller))&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;try:&quot;</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self.printer.start_source(node.lineno)</span>
+        <span class="s1">self.printer.writelines(</span>
+            <span class="s5">&quot;__M_writer(%s)&quot;</span>
+            <span class="s1">% self.create_filter_callable([]</span><span class="s3">, </span><span class="s1">node.expression</span><span class="s3">, True</span><span class="s1">)</span><span class="s3">,</span>
+            <span class="s5">&quot;finally:&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;context.caller_stack.nextcaller = None&quot;</span><span class="s3">,</span>
+            <span class="s3">None,</span>
+        <span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">_Identifiers(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;tracks the status of identifier names as template code is rendered.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">compiler</span><span class="s3">, </span><span class="s1">node=</span><span class="s3">None, </span><span class="s1">parent=</span><span class="s3">None, </span><span class="s1">nested=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s3">if </span><span class="s1">parent </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s0"># if we are the branch created in write_namespaces(),</span>
+            <span class="s0"># we don't share any context from the main body().</span>
+            <span class="s3">if </span><span class="s1">isinstance(node</span><span class="s3">, </span><span class="s1">parsetree.NamespaceTag):</span>
+                <span class="s1">self.declared = set()</span>
+                <span class="s1">self.topleveldefs = util.SetLikeDict()</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s0"># things that have already been declared</span>
+                <span class="s0"># in an enclosing namespace (i.e. names we can just use)</span>
+                <span class="s1">self.declared = (</span>
+                    <span class="s1">set(parent.declared)</span>
+                    <span class="s1">.union([c.name </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">parent.closuredefs.values()])</span>
+                    <span class="s1">.union(parent.locally_declared)</span>
+                    <span class="s1">.union(parent.argument_declared)</span>
+                <span class="s1">)</span>
+
+                <span class="s0"># if these identifiers correspond to a &quot;nested&quot;</span>
+                <span class="s0"># scope, it means whatever the parent identifiers</span>
+                <span class="s0"># had as undeclared will have been declared by that parent,</span>
+                <span class="s0"># and therefore we have them in our scope.</span>
+                <span class="s3">if </span><span class="s1">nested:</span>
+                    <span class="s1">self.declared = self.declared.union(parent.undeclared)</span>
+
+                <span class="s0"># top level defs that are available</span>
+                <span class="s1">self.topleveldefs = util.SetLikeDict(**parent.topleveldefs)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.declared = set()</span>
+            <span class="s1">self.topleveldefs = util.SetLikeDict()</span>
+
+        <span class="s1">self.compiler = compiler</span>
+
+        <span class="s0"># things within this level that are referenced before they</span>
+        <span class="s0"># are declared (e.g. assigned to)</span>
+        <span class="s1">self.undeclared = set()</span>
+
+        <span class="s0"># things that are declared locally.  some of these things</span>
+        <span class="s0"># could be in the &quot;undeclared&quot; list as well if they are</span>
+        <span class="s0"># referenced before declared</span>
+        <span class="s1">self.locally_declared = set()</span>
+
+        <span class="s0"># assignments made in explicit python blocks.</span>
+        <span class="s0"># these will be propagated to</span>
+        <span class="s0"># the context of local def calls.</span>
+        <span class="s1">self.locally_assigned = set()</span>
+
+        <span class="s0"># things that are declared in the argument</span>
+        <span class="s0"># signature of the def callable</span>
+        <span class="s1">self.argument_declared = set()</span>
+
+        <span class="s0"># closure defs that are defined in this level</span>
+        <span class="s1">self.closuredefs = util.SetLikeDict()</span>
+
+        <span class="s1">self.node = node</span>
+
+        <span class="s3">if </span><span class="s1">node </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s1">node.accept_visitor(self)</span>
+
+        <span class="s1">illegal_names = self.compiler.reserved_names.intersection(</span>
+            <span class="s1">self.locally_declared</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">illegal_names:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.NameConflictError(</span>
+                <span class="s5">&quot;Reserved words declared in template: %s&quot;</span>
+                <span class="s1">% </span><span class="s5">&quot;, &quot;</span><span class="s1">.join(illegal_names)</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">branch(self</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">&quot;&quot;&quot;create a new Identifiers for a new Node, with 
+          this Identifiers as the parent.&quot;&quot;&quot;</span>
+
+        <span class="s3">return </span><span class="s1">_Identifiers(self.compiler</span><span class="s3">, </span><span class="s1">node</span><span class="s3">, </span><span class="s1">self</span><span class="s3">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">defs(self):</span>
+        <span class="s3">return </span><span class="s1">set(self.topleveldefs.union(self.closuredefs).values())</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s1">(</span>
+            <span class="s5">&quot;Identifiers(declared=%r, locally_declared=%r, &quot;</span>
+            <span class="s5">&quot;undeclared=%r, topleveldefs=%r, closuredefs=%r, &quot;</span>
+            <span class="s5">&quot;argumentdeclared=%r)&quot;</span>
+            <span class="s1">% (</span>
+                <span class="s1">list(self.declared)</span><span class="s3">,</span>
+                <span class="s1">list(self.locally_declared)</span><span class="s3">,</span>
+                <span class="s1">list(self.undeclared)</span><span class="s3">,</span>
+                <span class="s1">[c.name </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">self.topleveldefs.values()]</span><span class="s3">,</span>
+                <span class="s1">[c.name </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">self.closuredefs.values()]</span><span class="s3">,</span>
+                <span class="s1">self.argument_declared</span><span class="s3">,</span>
+            <span class="s1">)</span>
+        <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">check_declared(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s2">&quot;&quot;&quot;update the state of this Identifiers with the undeclared 
+            and declared identifiers of the given node.&quot;&quot;&quot;</span>
+
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+            <span class="s3">if </span><span class="s1">ident != </span><span class="s5">&quot;context&quot; </span><span class="s3">and </span><span class="s1">ident </span><span class="s3">not in </span><span class="s1">self.declared.union(</span>
+                <span class="s1">self.locally_declared</span>
+            <span class="s1">):</span>
+                <span class="s1">self.undeclared.add(ident)</span>
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.declared_identifiers():</span>
+            <span class="s1">self.locally_declared.add(ident)</span>
+
+    <span class="s3">def </span><span class="s1">add_declared(self</span><span class="s3">, </span><span class="s1">ident):</span>
+        <span class="s1">self.declared.add(ident)</span>
+        <span class="s3">if </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">self.undeclared:</span>
+            <span class="s1">self.undeclared.remove(ident)</span>
+
+    <span class="s3">def </span><span class="s1">visitExpression(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.check_declared(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitControlLine(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.check_declared(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitCode(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if not </span><span class="s1">node.ismodule:</span>
+            <span class="s1">self.check_declared(node)</span>
+            <span class="s1">self.locally_assigned = self.locally_assigned.union(</span>
+                <span class="s1">node.declared_identifiers()</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitNamespaceTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s0"># only traverse into the sub-elements of a</span>
+        <span class="s0"># &lt;%namespace&gt; tag if we are the branch created in</span>
+        <span class="s0"># write_namespaces()</span>
+        <span class="s3">if </span><span class="s1">self.node </span><span class="s3">is </span><span class="s1">node:</span>
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+                <span class="s1">n.accept_visitor(self)</span>
+
+    <span class="s3">def </span><span class="s1">_check_name_exists(self</span><span class="s3">, </span><span class="s1">collection</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">existing = collection.get(node.funcname)</span>
+        <span class="s1">collection[node.funcname] = node</span>
+        <span class="s3">if </span><span class="s1">(</span>
+            <span class="s1">existing </span><span class="s3">is not None</span>
+            <span class="s3">and </span><span class="s1">existing </span><span class="s3">is not </span><span class="s1">node</span>
+            <span class="s3">and </span><span class="s1">(node.is_block </span><span class="s3">or </span><span class="s1">existing.is_block)</span>
+        <span class="s1">):</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s5">&quot;%%def or %%block named '%s' already &quot;</span>
+                <span class="s5">&quot;exists in this template.&quot; </span><span class="s1">% node.funcname</span><span class="s3">,</span>
+                <span class="s1">**node.exception_kwargs</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">visitDefTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s1">node.is_root() </span><span class="s3">and not </span><span class="s1">node.is_anonymous:</span>
+            <span class="s1">self._check_name_exists(self.topleveldefs</span><span class="s3">, </span><span class="s1">node)</span>
+        <span class="s3">elif </span><span class="s1">node </span><span class="s3">is not </span><span class="s1">self.node:</span>
+            <span class="s1">self._check_name_exists(self.closuredefs</span><span class="s3">, </span><span class="s1">node)</span>
+
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+            <span class="s3">if </span><span class="s1">ident != </span><span class="s5">&quot;context&quot; </span><span class="s3">and </span><span class="s1">ident </span><span class="s3">not in </span><span class="s1">self.declared.union(</span>
+                <span class="s1">self.locally_declared</span>
+            <span class="s1">):</span>
+                <span class="s1">self.undeclared.add(ident)</span>
+
+        <span class="s0"># visit defs only one level deep</span>
+        <span class="s3">if </span><span class="s1">node </span><span class="s3">is </span><span class="s1">self.node:</span>
+            <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.declared_identifiers():</span>
+                <span class="s1">self.argument_declared.add(ident)</span>
+
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+                <span class="s1">n.accept_visitor(self)</span>
+
+    <span class="s3">def </span><span class="s1">visitBlockTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s1">node </span><span class="s3">is not </span><span class="s1">self.node </span><span class="s3">and not </span><span class="s1">node.is_anonymous:</span>
+
+            <span class="s3">if </span><span class="s1">isinstance(self.node</span><span class="s3">, </span><span class="s1">parsetree.DefTag):</span>
+                <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                    <span class="s5">&quot;Named block '%s' not allowed inside of def '%s'&quot;</span>
+                    <span class="s1">% (node.name</span><span class="s3">, </span><span class="s1">self.node.name)</span><span class="s3">,</span>
+                    <span class="s1">**node.exception_kwargs</span>
+                <span class="s1">)</span>
+            <span class="s3">elif </span><span class="s1">isinstance(</span>
+                <span class="s1">self.node</span><span class="s3">, </span><span class="s1">(parsetree.CallTag</span><span class="s3">, </span><span class="s1">parsetree.CallNamespaceTag)</span>
+            <span class="s1">):</span>
+                <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                    <span class="s5">&quot;Named block '%s' not allowed inside of &lt;%%call&gt; tag&quot;</span>
+                    <span class="s1">% (node.name</span><span class="s3">,</span><span class="s1">)</span><span class="s3">,</span>
+                    <span class="s1">**node.exception_kwargs</span>
+                <span class="s1">)</span>
+
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+            <span class="s3">if </span><span class="s1">ident != </span><span class="s5">&quot;context&quot; </span><span class="s3">and </span><span class="s1">ident </span><span class="s3">not in </span><span class="s1">self.declared.union(</span>
+                <span class="s1">self.locally_declared</span>
+            <span class="s1">):</span>
+                <span class="s1">self.undeclared.add(ident)</span>
+
+        <span class="s3">if not </span><span class="s1">node.is_anonymous:</span>
+            <span class="s1">self._check_name_exists(self.topleveldefs</span><span class="s3">, </span><span class="s1">node)</span>
+            <span class="s1">self.undeclared.add(node.funcname)</span>
+        <span class="s3">elif </span><span class="s1">node </span><span class="s3">is not </span><span class="s1">self.node:</span>
+            <span class="s1">self._check_name_exists(self.closuredefs</span><span class="s3">, </span><span class="s1">node)</span>
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.declared_identifiers():</span>
+            <span class="s1">self.argument_declared.add(ident)</span>
+        <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+            <span class="s1">n.accept_visitor(self)</span>
+
+    <span class="s3">def </span><span class="s1">visitTextTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+            <span class="s3">if </span><span class="s1">ident != </span><span class="s5">&quot;context&quot; </span><span class="s3">and </span><span class="s1">ident </span><span class="s3">not in </span><span class="s1">self.declared.union(</span>
+                <span class="s1">self.locally_declared</span>
+            <span class="s1">):</span>
+                <span class="s1">self.undeclared.add(ident)</span>
+
+    <span class="s3">def </span><span class="s1">visitIncludeTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.check_declared(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitPageTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.declared_identifiers():</span>
+            <span class="s1">self.argument_declared.add(ident)</span>
+        <span class="s1">self.check_declared(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitCallNamespaceTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self.visitCallTag(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitCallTag(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s1">node </span><span class="s3">is </span><span class="s1">self.node:</span>
+            <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+                <span class="s3">if </span><span class="s1">ident != </span><span class="s5">&quot;context&quot; </span><span class="s3">and </span><span class="s1">ident </span><span class="s3">not in </span><span class="s1">self.declared.union(</span>
+                    <span class="s1">self.locally_declared</span>
+                <span class="s1">):</span>
+                    <span class="s1">self.undeclared.add(ident)</span>
+            <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.declared_identifiers():</span>
+                <span class="s1">self.argument_declared.add(ident)</span>
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.nodes:</span>
+                <span class="s1">n.accept_visitor(self)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">for </span><span class="s1">ident </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+                <span class="s3">if </span><span class="s1">ident != </span><span class="s5">&quot;context&quot; </span><span class="s3">and </span><span class="s1">ident </span><span class="s3">not in </span><span class="s1">self.declared.union(</span>
+                    <span class="s1">self.locally_declared</span>
+                <span class="s1">):</span>
+                    <span class="s1">self.undeclared.add(ident)</span>
+
+
+<span class="s1">_FOR_LOOP = re.compile(</span>
+    <span class="s5">r&quot;^for\s+((?:\(?)\s*[A-Za-z_][A-Za-z_0-9]*&quot;</span>
+    <span class="s5">r&quot;(?:\s*,\s*(?:[A-Za-z_][A-Za-z0-9_]*),??)*\s*(?:\)?))\s+in\s+(.*):&quot;</span>
+<span class="s1">)</span>
+
+
+<span class="s3">def </span><span class="s1">mangle_mako_loop(node</span><span class="s3">, </span><span class="s1">printer):</span>
+    <span class="s2">&quot;&quot;&quot;converts a for loop into a context manager wrapped around a for loop 
+    when access to the `loop` variable has been detected in the for loop body 
+    &quot;&quot;&quot;</span>
+    <span class="s1">loop_variable = LoopVariable()</span>
+    <span class="s1">node.accept_visitor(loop_variable)</span>
+    <span class="s3">if </span><span class="s1">loop_variable.detected:</span>
+        <span class="s1">node.nodes[-</span><span class="s4">1</span><span class="s1">].has_loop_context = </span><span class="s3">True</span>
+        <span class="s1">match = _FOR_LOOP.match(node.text)</span>
+        <span class="s3">if </span><span class="s1">match:</span>
+            <span class="s1">printer.writelines(</span>
+                <span class="s5">&quot;loop = __M_loop._enter(%s)&quot; </span><span class="s1">% match.group(</span><span class="s4">2</span><span class="s1">)</span><span class="s3">,</span>
+                <span class="s5">&quot;try:&quot;</span>
+                <span class="s0"># 'with __M_loop(%s) as loop:' % match.group(2)</span>
+            <span class="s1">)</span>
+            <span class="s1">text = </span><span class="s5">&quot;for %s in loop:&quot; </span><span class="s1">% match.group(</span><span class="s4">1</span><span class="s1">)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">SyntaxError(</span><span class="s5">&quot;Couldn't apply loop context: %s&quot; </span><span class="s1">% node.text)</span>
+    <span class="s3">else</span><span class="s1">:</span>
+        <span class="s1">text = node.text</span>
+    <span class="s3">return </span><span class="s1">text</span>
+
+
+<span class="s3">class </span><span class="s1">LoopVariable(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;A node visitor which looks for the name 'loop' within undeclared 
+    identifiers.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.detected = </span><span class="s3">False</span>
+
+    <span class="s3">def </span><span class="s1">_loop_reference_detected(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s3">if </span><span class="s5">&quot;loop&quot; </span><span class="s3">in </span><span class="s1">node.undeclared_identifiers():</span>
+            <span class="s1">self.detected = </span><span class="s3">True</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">node.get_children():</span>
+                <span class="s1">n.accept_visitor(self)</span>
+
+    <span class="s3">def </span><span class="s1">visitControlLine(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self._loop_reference_detected(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitCode(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self._loop_reference_detected(node)</span>
+
+    <span class="s3">def </span><span class="s1">visitExpression(self</span><span class="s3">, </span><span class="s1">node):</span>
+        <span class="s1">self._loop_reference_detected(node)</span>
+</pre>
+</body>
+</html>

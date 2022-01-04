@@ -1,0 +1,153 @@
+<html>
+<head>
+<title>managers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #6897bb;}
+.s4 { color: #808080;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+managers.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">datetime</span>
+<span class="s0">import </span><span class="s1">time</span>
+
+<span class="s0">from </span><span class="s1">dateutil.relativedelta </span><span class="s0">import </span><span class="s1">relativedelta</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">models</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Q</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">timezone</span>
+
+<span class="s0">from </span><span class="s1">. </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">.utils </span><span class="s0">import </span><span class="s1">handle_naive_datetime</span>
+
+<span class="s1">QUERYSET_PROXY_METHODS = (</span>
+    <span class="s2">'year'</span><span class="s0">,</span>
+    <span class="s2">'month'</span><span class="s0">,</span>
+    <span class="s2">'week'</span><span class="s0">,</span>
+    <span class="s2">'day'</span><span class="s0">,</span>
+    <span class="s2">'today'</span><span class="s0">,</span>
+    <span class="s2">'this_week'</span><span class="s0">,</span>
+    <span class="s2">'this_month'</span><span class="s0">,</span>
+    <span class="s2">'this_year'</span><span class="s0">,</span>
+    <span class="s2">'unique_visits'</span><span class="s0">,</span>
+    <span class="s2">'attr_list'</span><span class="s0">,</span>
+    <span class="s2">'search'</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">RequestQuerySet(models.query.QuerySet):</span>
+    <span class="s0">def </span><span class="s1">year(self</span><span class="s0">, </span><span class="s1">year):</span>
+        <span class="s0">return </span><span class="s1">self.filter(time__year=year)</span>
+
+    <span class="s0">def </span><span class="s1">month(self</span><span class="s0">, </span><span class="s1">year=</span><span class="s0">None, </span><span class="s1">month=</span><span class="s0">None, </span><span class="s1">month_format=</span><span class="s2">'%b'</span><span class="s0">, </span><span class="s1">date=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">if not </span><span class="s1">date:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">year </span><span class="s0">and </span><span class="s1">month:</span>
+                    <span class="s1">date = datetime.date(*time.strptime(year + month</span><span class="s0">, </span><span class="s2">'%Y' </span><span class="s1">+ month_format)[:</span><span class="s3">3</span><span class="s1">])</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">'Request.objects.month() takes exactly 2 arguments'</span><span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s0">return</span>
+        <span class="s4"># Truncate to date.</span>
+        <span class="s0">if </span><span class="s1">isinstance(date</span><span class="s0">, </span><span class="s1">datetime.datetime):</span>
+            <span class="s1">date = date.date()</span>
+        <span class="s4"># Calculate first and last day of month, for use in a date-range</span>
+        <span class="s4"># lookup.</span>
+        <span class="s1">first_day = datetime.datetime.combine(date.replace(day=</span><span class="s3">1</span><span class="s1">)</span><span class="s0">, </span><span class="s1">datetime.time.min)</span>
+        <span class="s1">last_day = first_day + relativedelta(months=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self.filter(</span>
+            <span class="s1">time__gte=handle_naive_datetime(first_day)</span><span class="s0">,</span>
+            <span class="s1">time__lt=handle_naive_datetime(last_day)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">week(self</span><span class="s0">, </span><span class="s1">year</span><span class="s0">, </span><span class="s1">week):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">date = datetime.date(*time.strptime(year + </span><span class="s2">'-0-' </span><span class="s1">+ week</span><span class="s0">, </span><span class="s2">'%Y-%w-%U'</span><span class="s1">)[:</span><span class="s3">3</span><span class="s1">])</span>
+        <span class="s0">except </span><span class="s1">ValueError:</span>
+            <span class="s0">return</span>
+
+        <span class="s1">first_day = datetime.datetime.combine(date</span><span class="s0">, </span><span class="s1">datetime.time.min)</span>
+        <span class="s1">last_day = first_day + datetime.timedelta(days=</span><span class="s3">7</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self.filter(</span>
+            <span class="s1">time__gte=handle_naive_datetime(first_day)</span><span class="s0">,</span>
+            <span class="s1">time__lt=handle_naive_datetime(last_day)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">day(self</span><span class="s0">, </span><span class="s1">year=</span><span class="s0">None, </span><span class="s1">month=</span><span class="s0">None, </span><span class="s1">day=</span><span class="s0">None, </span><span class="s1">month_format=</span><span class="s2">'%b'</span><span class="s0">, </span><span class="s1">day_format=</span><span class="s2">'%d'</span><span class="s0">, </span><span class="s1">date=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">if not </span><span class="s1">date:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">if </span><span class="s1">year </span><span class="s0">and </span><span class="s1">month </span><span class="s0">and </span><span class="s1">day:</span>
+                    <span class="s1">date = datetime.date(*time.strptime(year + month + day</span><span class="s0">, </span><span class="s2">'%Y' </span><span class="s1">+ month_format + day_format)[:</span><span class="s3">3</span><span class="s1">])</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s2">'Request.objects.day() takes exactly 3 arguments'</span><span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">ValueError:</span>
+                <span class="s0">return</span>
+        <span class="s0">return </span><span class="s1">self.filter(time__range=(</span>
+            <span class="s1">handle_naive_datetime(datetime.datetime.combine(date</span><span class="s0">, </span><span class="s1">datetime.time.min))</span><span class="s0">,</span>
+            <span class="s1">handle_naive_datetime(datetime.datetime.combine(date</span><span class="s0">, </span><span class="s1">datetime.time.max))</span><span class="s0">,</span>
+        <span class="s1">))</span>
+
+    <span class="s0">def </span><span class="s1">today(self):</span>
+        <span class="s0">return </span><span class="s1">self.day(date=datetime.date.today())</span>
+
+    <span class="s0">def </span><span class="s1">this_year(self):</span>
+        <span class="s0">return </span><span class="s1">self.year(datetime.date.today().year)</span>
+
+    <span class="s0">def </span><span class="s1">this_month(self):</span>
+        <span class="s0">return </span><span class="s1">self.month(date=datetime.date.today())</span>
+
+    <span class="s0">def </span><span class="s1">this_week(self):</span>
+        <span class="s1">today = datetime.date.today()</span>
+        <span class="s0">return </span><span class="s1">self.week(str(today.year)</span><span class="s0">, </span><span class="s1">today.strftime(</span><span class="s2">'%U'</span><span class="s1">))</span>
+
+    <span class="s0">def </span><span class="s1">unique_visits(self):</span>
+        <span class="s0">return </span><span class="s1">self.exclude(referer__startswith=settings.BASE_URL)</span>
+
+    <span class="s0">def </span><span class="s1">attr_list(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s0">return </span><span class="s1">[getattr(item</span><span class="s0">, </span><span class="s1">name</span><span class="s0">, None</span><span class="s1">) </span><span class="s0">for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">self </span><span class="s0">if </span><span class="s1">hasattr(item</span><span class="s0">, </span><span class="s1">name)]</span>
+
+    <span class="s0">def </span><span class="s1">search(self):</span>
+        <span class="s0">return </span><span class="s1">self.filter(Q(referer__contains=</span><span class="s2">'google'</span><span class="s1">) | Q(referer__contains=</span><span class="s2">'yahoo'</span><span class="s1">) | Q(referer__contains=</span><span class="s2">'bing'</span><span class="s1">))</span>
+
+
+<span class="s0">class </span><span class="s1">RequestManager(models.Manager):</span>
+    <span class="s0">def </span><span class="s1">__getattr__(self</span><span class="s0">, </span><span class="s1">attr</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s0">if </span><span class="s1">attr </span><span class="s0">in </span><span class="s1">QUERYSET_PROXY_METHODS:</span>
+            <span class="s0">return </span><span class="s1">getattr(self.get_queryset()</span><span class="s0">, </span><span class="s1">attr</span><span class="s0">, None</span><span class="s1">)</span>
+        <span class="s1">super().__getattr__(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">get_queryset(self):</span>
+        <span class="s0">return </span><span class="s1">RequestQuerySet(self.model)</span>
+
+    <span class="s0">def </span><span class="s1">active_users(self</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s5">''' 
+        Returns a list of active users. 
+ 
+        Any arguments passed to this method will be 
+        given to timedelta for time filtering. 
+ 
+        Example: 
+        &gt;&gt;&gt; Request.object.active_users(minutes=15) 
+        [&lt;User: kylef&gt;, &lt;User: krisje8&gt;] 
+        '''</span>
+
+        <span class="s1">qs = self.filter(user__isnull=</span><span class="s0">False</span><span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">options:</span>
+            <span class="s1">time = timezone.now() - datetime.timedelta(**options)</span>
+            <span class="s1">qs = qs.filter(time__gte=time)</span>
+
+        <span class="s1">requests = qs.select_related(</span><span class="s2">'user'</span><span class="s1">).only(</span><span class="s2">'user'</span><span class="s1">)</span>
+
+        <span class="s0">return </span><span class="s1">set([request.user </span><span class="s0">for </span><span class="s1">request </span><span class="s0">in </span><span class="s1">requests])</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,344 @@
+<html>
+<head>
+<title>transaction.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+transaction.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">ContextDecorator</span><span class="s0">, </span><span class="s1">contextmanager</span>
+
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">DatabaseError</span><span class="s0">, </span><span class="s1">Error</span><span class="s0">, </span><span class="s1">ProgrammingError</span><span class="s0">, </span><span class="s1">connections</span><span class="s0">,</span>
+<span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">TransactionManagementError(ProgrammingError):</span>
+    <span class="s2">&quot;&quot;&quot;Transaction management is used improperly.&quot;&quot;&quot;</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">def </span><span class="s1">get_connection(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Get a database connection by name, or the default database connection 
+    if no name is provided. This is a private API. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">using </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s1">using = DEFAULT_DB_ALIAS</span>
+    <span class="s0">return </span><span class="s1">connections[using]</span>
+
+
+<span class="s0">def </span><span class="s1">get_autocommit(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Get the autocommit status of the connection.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">get_connection(using).get_autocommit()</span>
+
+
+<span class="s0">def </span><span class="s1">set_autocommit(autocommit</span><span class="s0">, </span><span class="s1">using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Set the autocommit status of the connection.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">get_connection(using).set_autocommit(autocommit)</span>
+
+
+<span class="s0">def </span><span class="s1">commit(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Commit a transaction.&quot;&quot;&quot;</span>
+    <span class="s1">get_connection(using).commit()</span>
+
+
+<span class="s0">def </span><span class="s1">rollback(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Roll back a transaction.&quot;&quot;&quot;</span>
+    <span class="s1">get_connection(using).rollback()</span>
+
+
+<span class="s0">def </span><span class="s1">savepoint(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Create a savepoint (if supported and required by the backend) inside the 
+    current transaction. Return an identifier for the savepoint that will be 
+    used for the subsequent rollback or commit. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">get_connection(using).savepoint()</span>
+
+
+<span class="s0">def </span><span class="s1">savepoint_rollback(sid</span><span class="s0">, </span><span class="s1">using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Roll back the most recent savepoint (if one exists). Do nothing if 
+    savepoints are not supported. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">get_connection(using).savepoint_rollback(sid)</span>
+
+
+<span class="s0">def </span><span class="s1">savepoint_commit(sid</span><span class="s0">, </span><span class="s1">using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Commit the most recent savepoint (if one exists). Do nothing if 
+    savepoints are not supported. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">get_connection(using).savepoint_commit(sid)</span>
+
+
+<span class="s0">def </span><span class="s1">clean_savepoints(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Reset the counter used to generate unique savepoint ids in this thread. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">get_connection(using).clean_savepoints()</span>
+
+
+<span class="s0">def </span><span class="s1">get_rollback(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Get the &quot;needs rollback&quot; flag -- for *advanced use* only.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">get_connection(using).get_rollback()</span>
+
+
+<span class="s0">def </span><span class="s1">set_rollback(rollback</span><span class="s0">, </span><span class="s1">using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Set or unset the &quot;needs rollback&quot; flag -- for *advanced use* only. 
+ 
+    When `rollback` is `True`, trigger a rollback when exiting the innermost 
+    enclosing atomic block that has `savepoint=True` (that's the default). Use 
+    this to force a rollback without raising an exception. 
+ 
+    When `rollback` is `False`, prevent such a rollback. Use this only after 
+    rolling back to a known-good state! Otherwise, you break the atomic block 
+    and data corruption may occur. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">get_connection(using).set_rollback(rollback)</span>
+
+
+<span class="s1">@contextmanager</span>
+<span class="s0">def </span><span class="s1">mark_for_rollback_on_error(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Internal low-level utility to mark a transaction as &quot;needs rollback&quot; when 
+    an exception is raised while not enforcing the enclosed block to be in a 
+    transaction. This is needed by Model.save() and friends to avoid starting a 
+    transaction when in autocommit mode and a single query is executed. 
+ 
+    It's equivalent to: 
+ 
+        connection = get_connection(using) 
+        if connection.get_autocommit(): 
+            yield 
+        else: 
+            with transaction.atomic(using=using, savepoint=False): 
+                yield 
+ 
+    but it uses low-level utilities to avoid performance overhead. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s0">yield</span>
+    <span class="s0">except </span><span class="s1">Exception:</span>
+        <span class="s1">connection = get_connection(using)</span>
+        <span class="s0">if </span><span class="s1">connection.in_atomic_block:</span>
+            <span class="s1">connection.needs_rollback = </span><span class="s0">True</span>
+        <span class="s0">raise</span>
+
+
+<span class="s0">def </span><span class="s1">on_commit(func</span><span class="s0">, </span><span class="s1">using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Register `func` to be called when the current transaction is committed. 
+    If the current transaction is rolled back, `func` will not be called. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">get_connection(using).on_commit(func)</span>
+
+
+<span class="s3">#################################</span>
+<span class="s3"># Decorators / context managers #</span>
+<span class="s3">#################################</span>
+
+<span class="s0">class </span><span class="s1">Atomic(ContextDecorator):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Guarantee the atomic execution of a given block. 
+ 
+    An instance can be used either as a decorator or as a context manager. 
+ 
+    When it's used as a decorator, __call__ wraps the execution of the 
+    decorated function in the instance itself, used as a context manager. 
+ 
+    When it's used as a context manager, __enter__ creates a transaction or a 
+    savepoint, depending on whether a transaction is already in progress, and 
+    __exit__ commits the transaction or releases the savepoint on normal exit, 
+    and rolls back the transaction or to the savepoint on exceptions. 
+ 
+    It's possible to disable the creation of savepoints if the goal is to 
+    ensure that some code runs within a transaction without creating overhead. 
+ 
+    A stack of savepoints identifiers is maintained as an attribute of the 
+    connection. None denotes the absence of a savepoint. 
+ 
+    This allows reentrancy even if the same AtomicWrapper is reused. For 
+    example, it's possible to define `oa = atomic('other')` and use `@oa` or 
+    `with oa:` multiple times. 
+ 
+    Since database connections are thread-local, this is thread-safe. 
+ 
+    An atomic block can be tagged as durable. In this case, raise a 
+    RuntimeError if it's nested within another atomic block. This guarantees 
+    that database changes in a durable block are committed to the database when 
+    the block exists without error. 
+ 
+    This is a private API. 
+    &quot;&quot;&quot;</span>
+    <span class="s3"># This private flag is provided only to disable the durability checks in</span>
+    <span class="s3"># TestCase.</span>
+    <span class="s1">_ensure_durability = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">using</span><span class="s0">, </span><span class="s1">savepoint</span><span class="s0">, </span><span class="s1">durable):</span>
+        <span class="s1">self.using = using</span>
+        <span class="s1">self.savepoint = savepoint</span>
+        <span class="s1">self.durable = durable</span>
+
+    <span class="s0">def </span><span class="s1">__enter__(self):</span>
+        <span class="s1">connection = get_connection(self.using)</span>
+
+        <span class="s0">if </span><span class="s1">self.durable </span><span class="s0">and </span><span class="s1">self._ensure_durability </span><span class="s0">and </span><span class="s1">connection.in_atomic_block:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                <span class="s4">'A durable atomic block cannot be nested within another '</span>
+                <span class="s4">'atomic block.'</span>
+            <span class="s1">)</span>
+        <span class="s0">if not </span><span class="s1">connection.in_atomic_block:</span>
+            <span class="s3"># Reset state when entering an outermost atomic block.</span>
+            <span class="s1">connection.commit_on_exit = </span><span class="s0">True</span>
+            <span class="s1">connection.needs_rollback = </span><span class="s0">False</span>
+            <span class="s0">if not </span><span class="s1">connection.get_autocommit():</span>
+                <span class="s3"># Pretend we're already in an atomic block to bypass the code</span>
+                <span class="s3"># that disables autocommit to enter a transaction, and make a</span>
+                <span class="s3"># note to deal with this case in __exit__.</span>
+                <span class="s1">connection.in_atomic_block = </span><span class="s0">True</span>
+                <span class="s1">connection.commit_on_exit = </span><span class="s0">False</span>
+
+        <span class="s0">if </span><span class="s1">connection.in_atomic_block:</span>
+            <span class="s3"># We're already in a transaction; create a savepoint, unless we</span>
+            <span class="s3"># were told not to or we're already waiting for a rollback. The</span>
+            <span class="s3"># second condition avoids creating useless savepoints and prevents</span>
+            <span class="s3"># overwriting needs_rollback until the rollback is performed.</span>
+            <span class="s0">if </span><span class="s1">self.savepoint </span><span class="s0">and not </span><span class="s1">connection.needs_rollback:</span>
+                <span class="s1">sid = connection.savepoint()</span>
+                <span class="s1">connection.savepoint_ids.append(sid)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">connection.savepoint_ids.append(</span><span class="s0">None</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">connection.set_autocommit(</span><span class="s0">False, </span><span class="s1">force_begin_transaction_with_broken_autocommit=</span><span class="s0">True</span><span class="s1">)</span>
+            <span class="s1">connection.in_atomic_block = </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">__exit__(self</span><span class="s0">, </span><span class="s1">exc_type</span><span class="s0">, </span><span class="s1">exc_value</span><span class="s0">, </span><span class="s1">traceback):</span>
+        <span class="s1">connection = get_connection(self.using)</span>
+
+        <span class="s0">if </span><span class="s1">connection.savepoint_ids:</span>
+            <span class="s1">sid = connection.savepoint_ids.pop()</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s3"># Prematurely unset this flag to allow using commit or rollback.</span>
+            <span class="s1">connection.in_atomic_block = </span><span class="s0">False</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">connection.closed_in_transaction:</span>
+                <span class="s3"># The database will perform a rollback by itself.</span>
+                <span class="s3"># Wait until we exit the outermost block.</span>
+                <span class="s0">pass</span>
+
+            <span class="s0">elif </span><span class="s1">exc_type </span><span class="s0">is None and not </span><span class="s1">connection.needs_rollback:</span>
+                <span class="s0">if </span><span class="s1">connection.in_atomic_block:</span>
+                    <span class="s3"># Release savepoint if there is one</span>
+                    <span class="s0">if </span><span class="s1">sid </span><span class="s0">is not None</span><span class="s1">:</span>
+                        <span class="s0">try</span><span class="s1">:</span>
+                            <span class="s1">connection.savepoint_commit(sid)</span>
+                        <span class="s0">except </span><span class="s1">DatabaseError:</span>
+                            <span class="s0">try</span><span class="s1">:</span>
+                                <span class="s1">connection.savepoint_rollback(sid)</span>
+                                <span class="s3"># The savepoint won't be reused. Release it to</span>
+                                <span class="s3"># minimize overhead for the database server.</span>
+                                <span class="s1">connection.savepoint_commit(sid)</span>
+                            <span class="s0">except </span><span class="s1">Error:</span>
+                                <span class="s3"># If rolling back to a savepoint fails, mark for</span>
+                                <span class="s3"># rollback at a higher level and avoid shadowing</span>
+                                <span class="s3"># the original exception.</span>
+                                <span class="s1">connection.needs_rollback = </span><span class="s0">True</span>
+                            <span class="s0">raise</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s3"># Commit transaction</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">connection.commit()</span>
+                    <span class="s0">except </span><span class="s1">DatabaseError:</span>
+                        <span class="s0">try</span><span class="s1">:</span>
+                            <span class="s1">connection.rollback()</span>
+                        <span class="s0">except </span><span class="s1">Error:</span>
+                            <span class="s3"># An error during rollback means that something</span>
+                            <span class="s3"># went wrong with the connection. Drop it.</span>
+                            <span class="s1">connection.close()</span>
+                        <span class="s0">raise</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s3"># This flag will be set to True again if there isn't a savepoint</span>
+                <span class="s3"># allowing to perform the rollback at this level.</span>
+                <span class="s1">connection.needs_rollback = </span><span class="s0">False</span>
+                <span class="s0">if </span><span class="s1">connection.in_atomic_block:</span>
+                    <span class="s3"># Roll back to savepoint if there is one, mark for rollback</span>
+                    <span class="s3"># otherwise.</span>
+                    <span class="s0">if </span><span class="s1">sid </span><span class="s0">is None</span><span class="s1">:</span>
+                        <span class="s1">connection.needs_rollback = </span><span class="s0">True</span>
+                    <span class="s0">else</span><span class="s1">:</span>
+                        <span class="s0">try</span><span class="s1">:</span>
+                            <span class="s1">connection.savepoint_rollback(sid)</span>
+                            <span class="s3"># The savepoint won't be reused. Release it to</span>
+                            <span class="s3"># minimize overhead for the database server.</span>
+                            <span class="s1">connection.savepoint_commit(sid)</span>
+                        <span class="s0">except </span><span class="s1">Error:</span>
+                            <span class="s3"># If rolling back to a savepoint fails, mark for</span>
+                            <span class="s3"># rollback at a higher level and avoid shadowing</span>
+                            <span class="s3"># the original exception.</span>
+                            <span class="s1">connection.needs_rollback = </span><span class="s0">True</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s3"># Roll back transaction</span>
+                    <span class="s0">try</span><span class="s1">:</span>
+                        <span class="s1">connection.rollback()</span>
+                    <span class="s0">except </span><span class="s1">Error:</span>
+                        <span class="s3"># An error during rollback means that something</span>
+                        <span class="s3"># went wrong with the connection. Drop it.</span>
+                        <span class="s1">connection.close()</span>
+
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s3"># Outermost block exit when autocommit was enabled.</span>
+            <span class="s0">if not </span><span class="s1">connection.in_atomic_block:</span>
+                <span class="s0">if </span><span class="s1">connection.closed_in_transaction:</span>
+                    <span class="s1">connection.connection = </span><span class="s0">None</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">connection.set_autocommit(</span><span class="s0">True</span><span class="s1">)</span>
+            <span class="s3"># Outermost block exit when autocommit was disabled.</span>
+            <span class="s0">elif not </span><span class="s1">connection.savepoint_ids </span><span class="s0">and not </span><span class="s1">connection.commit_on_exit:</span>
+                <span class="s0">if </span><span class="s1">connection.closed_in_transaction:</span>
+                    <span class="s1">connection.connection = </span><span class="s0">None</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">connection.in_atomic_block = </span><span class="s0">False</span>
+
+
+<span class="s0">def </span><span class="s1">atomic(using=</span><span class="s0">None, </span><span class="s1">savepoint=</span><span class="s0">True, </span><span class="s1">durable=</span><span class="s0">False</span><span class="s1">):</span>
+    <span class="s3"># Bare decorator: @atomic -- although the first argument is called</span>
+    <span class="s3"># `using`, it's actually the function being decorated.</span>
+    <span class="s0">if </span><span class="s1">callable(using):</span>
+        <span class="s0">return </span><span class="s1">Atomic(DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">savepoint</span><span class="s0">, </span><span class="s1">durable)(using)</span>
+    <span class="s3"># Decorator: @atomic(...) or context manager: with atomic(...): ...</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">return </span><span class="s1">Atomic(using</span><span class="s0">, </span><span class="s1">savepoint</span><span class="s0">, </span><span class="s1">durable)</span>
+
+
+<span class="s0">def </span><span class="s1">_non_atomic_requests(view</span><span class="s0">, </span><span class="s1">using):</span>
+    <span class="s0">try</span><span class="s1">:</span>
+        <span class="s1">view._non_atomic_requests.add(using)</span>
+    <span class="s0">except </span><span class="s1">AttributeError:</span>
+        <span class="s1">view._non_atomic_requests = {using}</span>
+    <span class="s0">return </span><span class="s1">view</span>
+
+
+<span class="s0">def </span><span class="s1">non_atomic_requests(using=</span><span class="s0">None</span><span class="s1">):</span>
+    <span class="s0">if </span><span class="s1">callable(using):</span>
+        <span class="s0">return </span><span class="s1">_non_atomic_requests(using</span><span class="s0">, </span><span class="s1">DEFAULT_DB_ALIAS)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">if </span><span class="s1">using </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">using = DEFAULT_DB_ALIAS</span>
+        <span class="s0">return lambda </span><span class="s1">view: _non_atomic_requests(view</span><span class="s0">, </span><span class="s1">using)</span>
+</pre>
+</body>
+</html>

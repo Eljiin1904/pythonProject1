@@ -1,0 +1,89 @@
+<html>
+<head>
+<title>scrypt.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+scrypt.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is dual licensed under the terms of the Apache License, Version</span>
+<span class="s0"># 2.0, and the BSD License. See the LICENSE file in the root of this repository</span>
+<span class="s0"># for complete details.</span>
+
+
+<span class="s2">import </span><span class="s1">sys</span>
+
+<span class="s2">from </span><span class="s1">cryptography </span><span class="s2">import </span><span class="s1">utils</span>
+<span class="s2">from </span><span class="s1">cryptography.exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">AlreadyFinalized</span><span class="s2">,</span>
+    <span class="s1">InvalidKey</span><span class="s2">,</span>
+    <span class="s1">UnsupportedAlgorithm</span><span class="s2">,</span>
+    <span class="s1">_Reasons</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends </span><span class="s2">import </span><span class="s1">_get_backend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.backends.interfaces </span><span class="s2">import </span><span class="s1">ScryptBackend</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives </span><span class="s2">import </span><span class="s1">constant_time</span>
+<span class="s2">from </span><span class="s1">cryptography.hazmat.primitives.kdf </span><span class="s2">import </span><span class="s1">KeyDerivationFunction</span>
+
+
+<span class="s0"># This is used by the scrypt tests to skip tests that require more memory</span>
+<span class="s0"># than the MEM_LIMIT</span>
+<span class="s1">_MEM_LIMIT = sys.maxsize // </span><span class="s3">2</span>
+
+
+<span class="s2">class </span><span class="s1">Scrypt(KeyDerivationFunction):</span>
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">salt: bytes</span><span class="s2">, </span><span class="s1">length: int</span><span class="s2">, </span><span class="s1">n: int</span><span class="s2">, </span><span class="s1">r: int</span><span class="s2">, </span><span class="s1">p: int</span><span class="s2">, </span><span class="s1">backend=</span><span class="s2">None</span>
+    <span class="s1">):</span>
+        <span class="s1">backend = _get_backend(backend)</span>
+        <span class="s2">if not </span><span class="s1">isinstance(backend</span><span class="s2">, </span><span class="s1">ScryptBackend):</span>
+            <span class="s2">raise </span><span class="s1">UnsupportedAlgorithm(</span>
+                <span class="s4">&quot;Backend object does not implement ScryptBackend.&quot;</span><span class="s2">,</span>
+                <span class="s1">_Reasons.BACKEND_MISSING_INTERFACE</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s1">self._length = length</span>
+        <span class="s1">utils._check_bytes(</span><span class="s4">&quot;salt&quot;</span><span class="s2">, </span><span class="s1">salt)</span>
+        <span class="s2">if </span><span class="s1">n &lt; </span><span class="s3">2 </span><span class="s2">or </span><span class="s1">(n &amp; (n - </span><span class="s3">1</span><span class="s1">)) != </span><span class="s3">0</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;n must be greater than 1 and be a power of 2.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">r &lt; </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;r must be greater than or equal to 1.&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">p &lt; </span><span class="s3">1</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s4">&quot;p must be greater than or equal to 1.&quot;</span><span class="s1">)</span>
+
+        <span class="s1">self._used = </span><span class="s2">False</span>
+        <span class="s1">self._salt = salt</span>
+        <span class="s1">self._n = n</span>
+        <span class="s1">self._r = r</span>
+        <span class="s1">self._p = p</span>
+        <span class="s1">self._backend = backend</span>
+
+    <span class="s2">def </span><span class="s1">derive(self</span><span class="s2">, </span><span class="s1">key_material: bytes) -&gt; bytes:</span>
+        <span class="s2">if </span><span class="s1">self._used:</span>
+            <span class="s2">raise </span><span class="s1">AlreadyFinalized(</span><span class="s4">&quot;Scrypt instances can only be used once.&quot;</span><span class="s1">)</span>
+        <span class="s1">self._used = </span><span class="s2">True</span>
+
+        <span class="s1">utils._check_byteslike(</span><span class="s4">&quot;key_material&quot;</span><span class="s2">, </span><span class="s1">key_material)</span>
+        <span class="s2">return </span><span class="s1">self._backend.derive_scrypt(</span>
+            <span class="s1">key_material</span><span class="s2">, </span><span class="s1">self._salt</span><span class="s2">, </span><span class="s1">self._length</span><span class="s2">, </span><span class="s1">self._n</span><span class="s2">, </span><span class="s1">self._r</span><span class="s2">, </span><span class="s1">self._p</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">verify(self</span><span class="s2">, </span><span class="s1">key_material: bytes</span><span class="s2">, </span><span class="s1">expected_key: bytes) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">derived_key = self.derive(key_material)</span>
+        <span class="s2">if not </span><span class="s1">constant_time.bytes_eq(derived_key</span><span class="s2">, </span><span class="s1">expected_key):</span>
+            <span class="s2">raise </span><span class="s1">InvalidKey(</span><span class="s4">&quot;Keys do not match.&quot;</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

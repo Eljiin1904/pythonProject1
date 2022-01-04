@@ -1,0 +1,97 @@
+<html>
+<head>
+<title>scripts.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+scripts.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;pytest-bdd scripts.&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">argparse</span>
+<span class="s2">import </span><span class="s1">os.path</span>
+<span class="s2">import </span><span class="s1">re</span>
+
+<span class="s2">import </span><span class="s1">glob2</span>
+
+<span class="s2">from </span><span class="s1">.generation </span><span class="s2">import </span><span class="s1">generate_code</span><span class="s2">, </span><span class="s1">parse_feature_files</span>
+
+<span class="s1">MIGRATE_REGEX = re.compile(</span><span class="s3">r&quot;\s?(\w+)\s=\sscenario\((.+)\)&quot;</span><span class="s2">, </span><span class="s1">flags=re.MULTILINE)</span>
+
+
+<span class="s2">def </span><span class="s1">migrate_tests(args):</span>
+    <span class="s0">&quot;&quot;&quot;Migrate outdated tests to the most recent form.&quot;&quot;&quot;</span>
+    <span class="s1">path = args.path</span>
+    <span class="s2">for </span><span class="s1">file_path </span><span class="s2">in </span><span class="s1">glob2.iglob(os.path.join(os.path.abspath(path)</span><span class="s2">, </span><span class="s3">&quot;**&quot;</span><span class="s2">, </span><span class="s3">&quot;*.py&quot;</span><span class="s1">)):</span>
+        <span class="s1">migrate_tests_in_file(file_path)</span>
+
+
+<span class="s2">def </span><span class="s1">migrate_tests_in_file(file_path):</span>
+    <span class="s0">&quot;&quot;&quot;Migrate all bdd-based tests in the given test file.&quot;&quot;&quot;</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s2">with </span><span class="s1">open(file_path</span><span class="s2">, </span><span class="s3">&quot;r+&quot;</span><span class="s1">) </span><span class="s2">as </span><span class="s1">fd:</span>
+            <span class="s1">content = fd.read()</span>
+            <span class="s1">new_content = MIGRATE_REGEX.sub(</span><span class="s3">r&quot;\n@scenario(\2)\ndef \1():\n    pass\n&quot;</span><span class="s2">, </span><span class="s1">content)</span>
+            <span class="s2">if </span><span class="s1">new_content != content:</span>
+                <span class="s4"># the regex above potentially causes the end of the file to</span>
+                <span class="s4"># have an extra newline</span>
+                <span class="s1">new_content = new_content.rstrip(</span><span class="s3">&quot;</span><span class="s2">\n</span><span class="s3">&quot;</span><span class="s1">) + </span><span class="s3">&quot;</span><span class="s2">\n</span><span class="s3">&quot;</span>
+                <span class="s1">fd.seek(</span><span class="s5">0</span><span class="s1">)</span>
+                <span class="s1">fd.write(new_content)</span>
+                <span class="s1">print(</span><span class="s3">f&quot;migrated: </span><span class="s2">{</span><span class="s1">file_path</span><span class="s2">}</span><span class="s3">&quot;</span><span class="s1">)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">print(</span><span class="s3">f&quot;skipped: </span><span class="s2">{</span><span class="s1">file_path</span><span class="s2">}</span><span class="s3">&quot;</span><span class="s1">)</span>
+    <span class="s2">except </span><span class="s1">OSError:</span>
+        <span class="s2">pass</span>
+
+
+<span class="s2">def </span><span class="s1">check_existense(file_name):</span>
+    <span class="s0">&quot;&quot;&quot;Check file or directory name for existence.&quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">os.path.exists(file_name):</span>
+        <span class="s2">raise </span><span class="s1">argparse.ArgumentTypeError(</span><span class="s3">f&quot;</span><span class="s2">{</span><span class="s1">file_name</span><span class="s2">} </span><span class="s3">is an invalid file or directory name&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">file_name</span>
+
+
+<span class="s2">def </span><span class="s1">print_generated_code(args):</span>
+    <span class="s0">&quot;&quot;&quot;Print generated test code for the given filenames.&quot;&quot;&quot;</span>
+    <span class="s1">features</span><span class="s2">, </span><span class="s1">scenarios</span><span class="s2">, </span><span class="s1">steps = parse_feature_files(args.files)</span>
+    <span class="s1">code = generate_code(features</span><span class="s2">, </span><span class="s1">scenarios</span><span class="s2">, </span><span class="s1">steps)</span>
+    <span class="s1">print(code)</span>
+
+
+<span class="s2">def </span><span class="s1">main():</span>
+    <span class="s0">&quot;&quot;&quot;Main entry point.&quot;&quot;&quot;</span>
+    <span class="s1">parser = argparse.ArgumentParser(prog=</span><span class="s3">&quot;pytest-bdd&quot;</span><span class="s1">)</span>
+    <span class="s1">subparsers = parser.add_subparsers(help=</span><span class="s3">&quot;sub-command help&quot;</span><span class="s2">, </span><span class="s1">dest=</span><span class="s3">&quot;command&quot;</span><span class="s1">)</span>
+    <span class="s1">subparsers.required = </span><span class="s2">True</span>
+    <span class="s1">parser_generate = subparsers.add_parser(</span><span class="s3">&quot;generate&quot;</span><span class="s2">, </span><span class="s1">help=</span><span class="s3">&quot;generate help&quot;</span><span class="s1">)</span>
+    <span class="s1">parser_generate.add_argument(</span>
+        <span class="s3">&quot;files&quot;</span><span class="s2">,</span>
+        <span class="s1">metavar=</span><span class="s3">&quot;FEATURE_FILE&quot;</span><span class="s2">,</span>
+        <span class="s1">type=check_existense</span><span class="s2">,</span>
+        <span class="s1">nargs=</span><span class="s3">&quot;+&quot;</span><span class="s2">,</span>
+        <span class="s1">help=</span><span class="s3">&quot;Feature files to generate test code with&quot;</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">parser_generate.set_defaults(func=print_generated_code)</span>
+
+    <span class="s1">parser_migrate = subparsers.add_parser(</span><span class="s3">&quot;migrate&quot;</span><span class="s2">, </span><span class="s1">help=</span><span class="s3">&quot;migrate help&quot;</span><span class="s1">)</span>
+    <span class="s1">parser_migrate.add_argument(</span><span class="s3">&quot;path&quot;</span><span class="s2">, </span><span class="s1">metavar=</span><span class="s3">&quot;PATH&quot;</span><span class="s2">, </span><span class="s1">help=</span><span class="s3">&quot;Migrate outdated tests to the most recent form&quot;</span><span class="s1">)</span>
+    <span class="s1">parser_migrate.set_defaults(func=migrate_tests)</span>
+
+    <span class="s1">args = parser.parse_args()</span>
+    <span class="s2">if </span><span class="s1">hasattr(args</span><span class="s2">, </span><span class="s3">&quot;func&quot;</span><span class="s1">):</span>
+        <span class="s1">args.func(args)</span>
+</pre>
+</body>
+</html>

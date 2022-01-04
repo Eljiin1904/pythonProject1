@@ -1,0 +1,286 @@
+<html>
+<head>
+<title>json_parser.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+json_parser.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Read behave's JSON output files and store retrieved information in 
+:mod:`behave.model` elements. 
+ 
+Utility to retrieve runtime information from behave's JSON output. 
+ 
+REQUIRES: Python &gt;= 2.6 (json module is part of Python standard library) 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">import </span><span class="s1">codecs</span>
+<span class="s3">from </span><span class="s1">behave </span><span class="s3">import </span><span class="s1">model</span>
+<span class="s3">from </span><span class="s1">behave.model_core </span><span class="s3">import </span><span class="s1">Status</span>
+<span class="s3">try</span><span class="s1">:</span>
+    <span class="s3">import </span><span class="s1">json</span>
+<span class="s3">except </span><span class="s1">ImportError:</span>
+    <span class="s0"># -- PYTHON 2.5 backward compatible: Use simplejson module.</span>
+    <span class="s3">import </span><span class="s1">simplejson </span><span class="s3">as </span><span class="s1">json</span>
+
+
+<span class="s1">__author__ = </span><span class="s4">&quot;Jens Engel&quot;</span>
+
+
+<span class="s0"># ----------------------------------------------------------------------------</span>
+<span class="s0"># FUNCTIONS:</span>
+<span class="s0"># ----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">parse(json_filename</span><span class="s3">, </span><span class="s1">encoding=</span><span class="s4">&quot;UTF-8&quot;</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Reads behave JSON output file back in and stores information in 
+    behave model elements. 
+ 
+    :param json_filename:  JSON filename to process. 
+    :return: List of feature objects. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">with </span><span class="s1">codecs.open(json_filename</span><span class="s3">, </span><span class="s4">&quot;rU&quot;</span><span class="s3">, </span><span class="s1">encoding=encoding) </span><span class="s3">as </span><span class="s1">input_file:</span>
+        <span class="s1">json_data = json.load(input_file</span><span class="s3">, </span><span class="s1">encoding=encoding)</span>
+        <span class="s1">json_processor = JsonParser()</span>
+        <span class="s1">features = json_processor.parse_features(json_data)</span>
+        <span class="s3">return </span><span class="s1">features</span>
+
+
+<span class="s0"># ----------------------------------------------------------------------------</span>
+<span class="s0"># CLASSES:</span>
+<span class="s0"># ----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">JsonParser(object):</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.current_scenario_outline = </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">parse_features(self</span><span class="s3">, </span><span class="s1">json_data):</span>
+        <span class="s3">assert </span><span class="s1">isinstance(json_data</span><span class="s3">, </span><span class="s1">list)</span>
+        <span class="s1">features = []</span>
+        <span class="s1">json_features = json_data</span>
+        <span class="s3">for </span><span class="s1">json_feature </span><span class="s3">in </span><span class="s1">json_features:</span>
+            <span class="s1">feature = self.parse_feature(json_feature)</span>
+            <span class="s1">features.append(feature)</span>
+        <span class="s3">return </span><span class="s1">features</span>
+
+    <span class="s3">def </span><span class="s1">parse_feature(self</span><span class="s3">, </span><span class="s1">json_feature):</span>
+        <span class="s1">name = json_feature.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">keyword = json_feature.get(</span><span class="s4">&quot;keyword&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">tags = json_feature.get(</span><span class="s4">&quot;tags&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">description = json_feature.get(</span><span class="s4">&quot;description&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">location = json_feature.get(</span><span class="s4">&quot;location&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">filename</span><span class="s3">, </span><span class="s1">line = location.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+        <span class="s1">feature = model.Feature(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags</span><span class="s3">, </span><span class="s1">description)</span>
+
+        <span class="s1">json_elements = json_feature.get(</span><span class="s4">&quot;elements&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s3">for </span><span class="s1">json_element </span><span class="s3">in </span><span class="s1">json_elements:</span>
+            <span class="s1">self.add_feature_element(feature</span><span class="s3">, </span><span class="s1">json_element)</span>
+        <span class="s3">return </span><span class="s1">feature</span>
+
+
+    <span class="s3">def </span><span class="s1">add_feature_element(self</span><span class="s3">, </span><span class="s1">feature</span><span class="s3">, </span><span class="s1">json_element):</span>
+        <span class="s1">datatype = json_element.get(</span><span class="s4">&quot;type&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">category = datatype.lower()</span>
+        <span class="s3">if </span><span class="s1">category == </span><span class="s4">&quot;background&quot;</span><span class="s1">:</span>
+            <span class="s1">background = self.parse_background(json_element)</span>
+            <span class="s1">feature.background = background</span>
+        <span class="s3">elif </span><span class="s1">category == </span><span class="s4">&quot;scenario&quot;</span><span class="s1">:</span>
+            <span class="s1">scenario = self.parse_scenario(json_element)</span>
+            <span class="s1">feature.add_scenario(scenario)</span>
+        <span class="s3">elif </span><span class="s1">category == </span><span class="s4">&quot;scenario_outline&quot;</span><span class="s1">:</span>
+            <span class="s1">scenario_outline = self.parse_scenario_outline(json_element)</span>
+            <span class="s1">feature.add_scenario(scenario_outline)</span>
+            <span class="s1">self.current_scenario_outline = scenario_outline</span>
+        <span class="s0"># elif category == &quot;examples&quot;:</span>
+        <span class="s0">#     examples = self.parse_examples(json_element)</span>
+        <span class="s0">#     self.current_scenario_outline.examples = examples</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">KeyError(</span><span class="s4">&quot;Invalid feature-element keyword: %s&quot; </span><span class="s1">% category)</span>
+
+
+    <span class="s3">def </span><span class="s1">parse_background(self</span><span class="s3">, </span><span class="s1">json_element):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        self.add_feature_element({ 
+            'keyword': background.keyword, 
+            'location': background.location, 
+            'steps': [], 
+        }) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">keyword = json_element.get(</span><span class="s4">&quot;keyword&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">name = json_element.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">location = json_element.get(</span><span class="s4">&quot;location&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">json_steps = json_element.get(</span><span class="s4">&quot;steps&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">steps = self.parse_steps(json_steps)</span>
+        <span class="s1">filename</span><span class="s3">, </span><span class="s1">line = location.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+        <span class="s1">background = model.Background(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">steps)</span>
+        <span class="s3">return </span><span class="s1">background</span>
+
+    <span class="s3">def </span><span class="s1">parse_scenario(self</span><span class="s3">, </span><span class="s1">json_element):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        self.add_feature_element({ 
+            'keyword': scenario.keyword, 
+            'name': scenario.name, 
+            'tags': scenario.tags, 
+            'location': scenario.location, 
+            'steps': [], 
+        }) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">keyword = json_element.get(</span><span class="s4">&quot;keyword&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">name = json_element.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">description = json_element.get(</span><span class="s4">&quot;description&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">tags = json_element.get(</span><span class="s4">&quot;tags&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">location = json_element.get(</span><span class="s4">&quot;location&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">json_steps = json_element.get(</span><span class="s4">&quot;steps&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">steps = self.parse_steps(json_steps)</span>
+        <span class="s1">filename</span><span class="s3">, </span><span class="s1">line = location.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+        <span class="s1">scenario = model.Scenario(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">tags</span><span class="s3">, </span><span class="s1">steps)</span>
+        <span class="s1">scenario.description = description</span>
+        <span class="s3">return </span><span class="s1">scenario</span>
+
+    <span class="s3">def </span><span class="s1">parse_scenario_outline(self</span><span class="s3">, </span><span class="s1">json_element):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        self.add_feature_element({ 
+            'keyword': scenario_outline.keyword, 
+            'name': scenario_outline.name, 
+            'tags': scenario_outline.tags, 
+            'location': scenario_outline.location, 
+            'steps': [], 
+            'examples': [], 
+        }) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">keyword = json_element.get(</span><span class="s4">&quot;keyword&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">name = json_element.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">description = json_element.get(</span><span class="s4">&quot;description&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">tags = json_element.get(</span><span class="s4">&quot;tags&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">location = json_element.get(</span><span class="s4">&quot;location&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">json_steps = json_element.get(</span><span class="s4">&quot;steps&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">json_examples = json_element.get(</span><span class="s4">&quot;examples&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">steps = self.parse_steps(json_steps)</span>
+        <span class="s1">examples = []</span>
+        <span class="s3">if </span><span class="s1">json_examples:</span>
+            <span class="s0"># pylint: disable=redefined-variable-type</span>
+            <span class="s1">examples = self.parse_examples(json_examples)</span>
+        <span class="s1">filename</span><span class="s3">, </span><span class="s1">line = location.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+        <span class="s1">scenario_outline = model.ScenarioOutline(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">,</span>
+                                                 <span class="s1">tags=tags</span><span class="s3">, </span><span class="s1">steps=steps</span><span class="s3">,</span>
+                                                 <span class="s1">examples=examples)</span>
+        <span class="s1">scenario_outline.description = description</span>
+        <span class="s3">return </span><span class="s1">scenario_outline</span>
+
+    <span class="s3">def </span><span class="s1">parse_steps(self</span><span class="s3">, </span><span class="s1">json_steps):</span>
+        <span class="s1">steps = []</span>
+        <span class="s3">for </span><span class="s1">json_step </span><span class="s3">in </span><span class="s1">json_steps:</span>
+            <span class="s1">step = self.parse_step(json_step)</span>
+            <span class="s1">steps.append(step)</span>
+        <span class="s3">return </span><span class="s1">steps</span>
+
+    <span class="s3">def </span><span class="s1">parse_step(self</span><span class="s3">, </span><span class="s1">json_element):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        s = { 
+            'keyword': step.keyword, 
+            'step_type': step.step_type, 
+            'name': step.name, 
+            'location': step.location, 
+        } 
+ 
+        if step.text: 
+            s['text'] = step.text 
+        if step.table: 
+            s['table'] = self.make_table(step.table) 
+        element = self.current_feature_element 
+        element['steps'].append(s) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">keyword = json_element.get(</span><span class="s4">&quot;keyword&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">name = json_element.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">step_type = json_element.get(</span><span class="s4">&quot;step_type&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">location = json_element.get(</span><span class="s4">&quot;location&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">text = json_element.get(</span><span class="s4">&quot;text&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">isinstance(text</span><span class="s3">, </span><span class="s1">list):</span>
+            <span class="s1">text = </span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">.join(text)</span>
+        <span class="s1">table = </span><span class="s3">None</span>
+        <span class="s1">json_table = json_element.get(</span><span class="s4">&quot;table&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">json_table:</span>
+            <span class="s1">table = self.parse_table(json_table)</span>
+        <span class="s1">filename</span><span class="s3">, </span><span class="s1">line = location.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+        <span class="s1">step = model.Step(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">step_type</span><span class="s3">, </span><span class="s1">name)</span>
+        <span class="s1">step.text = text</span>
+        <span class="s1">step.table = table</span>
+        <span class="s1">json_result = json_element.get(</span><span class="s4">&quot;result&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">json_result:</span>
+            <span class="s1">self.add_step_result(step</span><span class="s3">, </span><span class="s1">json_result)</span>
+        <span class="s3">return </span><span class="s1">step</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">add_step_result(step</span><span class="s3">, </span><span class="s1">json_result):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        steps = self.current_feature_element['steps'] 
+        steps[self._step_index]['result'] = { 
+            'status': result.status.name, 
+            'duration': result.duration, 
+        } 
+        &quot;&quot;&quot;</span>
+        <span class="s1">status_name = json_result.get(</span><span class="s4">&quot;status&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">duration = json_result.get(</span><span class="s4">&quot;duration&quot;</span><span class="s3">, </span><span class="s5">0</span><span class="s1">)</span>
+        <span class="s1">error_message = json_result.get(</span><span class="s4">&quot;error_message&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">isinstance(error_message</span><span class="s3">, </span><span class="s1">list):</span>
+            <span class="s1">error_message = </span><span class="s4">&quot;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">.join(error_message)</span>
+        <span class="s1">step.status = Status.from_name(status_name)</span>
+        <span class="s1">step.duration = duration</span>
+        <span class="s1">step.error_message = error_message</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">parse_table(json_table):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        table_data = { 
+            'headings': table.headings, 
+            'rows': [ list(row) for row in table.rows ] 
+        } 
+        return table_data 
+        &quot;&quot;&quot;</span>
+        <span class="s1">headings = json_table.get(</span><span class="s4">&quot;headings&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">rows = json_table.get(</span><span class="s4">&quot;rows&quot;</span><span class="s3">, </span><span class="s1">[])</span>
+        <span class="s1">table = model.Table(headings</span><span class="s3">, </span><span class="s1">rows=rows)</span>
+        <span class="s3">return </span><span class="s1">table</span>
+
+
+    <span class="s3">def </span><span class="s1">parse_examples(self</span><span class="s3">, </span><span class="s1">json_element):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        e = { 
+            'keyword': examples.keyword, 
+            'name': examples.name, 
+            'location': examples.location, 
+        } 
+ 
+        if examples.table: 
+            e['table'] = self.make_table(examples.table) 
+ 
+        element = self.current_feature_element 
+        element['examples'].append(e) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">keyword = json_element.get(</span><span class="s4">&quot;keyword&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">name = json_element.get(</span><span class="s4">&quot;name&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+        <span class="s1">location = json_element.get(</span><span class="s4">&quot;location&quot;</span><span class="s3">, </span><span class="s4">u&quot;&quot;</span><span class="s1">)</span>
+
+        <span class="s1">table = </span><span class="s3">None</span>
+        <span class="s1">json_table = json_element.get(</span><span class="s4">&quot;table&quot;</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">json_table:</span>
+            <span class="s1">table = self.parse_table(json_table)</span>
+        <span class="s1">filename</span><span class="s3">, </span><span class="s1">line = location.split(</span><span class="s4">&quot;:&quot;</span><span class="s1">)</span>
+        <span class="s1">examples = model.Examples(filename</span><span class="s3">, </span><span class="s1">line</span><span class="s3">, </span><span class="s1">keyword</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">table)</span>
+        <span class="s3">return </span><span class="s1">examples</span>
+</pre>
+</body>
+</html>

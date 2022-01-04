@@ -1,0 +1,198 @@
+<html>
+<head>
+<title>openlayers.js</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #a9b7c6;}
+.s1 { color: #6a8759;}
+.s2 { color: #cc7832;}
+.s3 { color: #4646f1;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+openlayers.js</font>
+</center></td></tr></table>
+<pre><span class="s0">{% load l10n %}</span>
+<span class="s0">OpenLayers.Projection.addTransform(</span><span class="s1">&quot;EPSG:4326&quot;</span><span class="s0">, </span><span class="s1">&quot;EPSG:3857&quot;</span><span class="s0">, OpenLayers.Layer.SphericalMercator.projectForward);</span>
+<span class="s0">{% block vars %}</span><span class="s2">var </span><span class="s0">{{ module }} = {};</span>
+<span class="s0">{{ module }}.map = </span><span class="s2">null</span><span class="s0">; {{ module }}.controls = </span><span class="s2">null</span><span class="s0">; {{ module }}.panel = </span><span class="s2">null</span><span class="s0">; {{ module }}.re = </span><span class="s2">new </span><span class="s0">RegExp(</span><span class="s1">&quot;^SRID=</span><span class="s3">\\</span><span class="s1">d+;(.+)&quot;</span><span class="s0">, </span><span class="s1">&quot;i&quot;</span><span class="s0">); {{ module }}.layers = {};</span>
+<span class="s0">{{ module }}.modifiable = {{ modifiable|yesno:</span><span class="s1">&quot;true,false&quot; </span><span class="s0">}};</span>
+<span class="s0">{{ module }}.wkt_f = </span><span class="s2">new </span><span class="s0">OpenLayers.Format.WKT();</span>
+<span class="s0">{{ module }}.is_collection = {{ is_collection|yesno:</span><span class="s1">&quot;true,false&quot; </span><span class="s0">}};</span>
+<span class="s0">{{ module }}.collection_type = </span><span class="s1">'{{ collection_type }}'</span><span class="s0">;</span>
+<span class="s0">{{ module }}.is_generic = {{ is_generic|yesno:</span><span class="s1">&quot;true,false&quot; </span><span class="s0">}};</span>
+<span class="s0">{{ module }}.is_linestring = {{ is_linestring|yesno:</span><span class="s1">&quot;true,false&quot; </span><span class="s0">}};</span>
+<span class="s0">{{ module }}.is_polygon = {{ is_polygon|yesno:</span><span class="s1">&quot;true,false&quot; </span><span class="s0">}};</span>
+<span class="s0">{{ module }}.is_point = {{ is_point|yesno:</span><span class="s1">&quot;true,false&quot; </span><span class="s0">}};</span>
+<span class="s0">{% endblock %}</span>
+<span class="s0">{{ module }}.get_ewkt = </span><span class="s2">function</span><span class="s0">(feat){</span>
+    <span class="s2">return </span><span class="s1">'SRID={{ srid|unlocalize }};' </span><span class="s0">+ {{ module }}.wkt_f.write(feat);</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.read_wkt = </span><span class="s2">function</span><span class="s0">(wkt){</span>
+    <span class="s4">// OpenLayers cannot handle EWKT -- we make sure to strip it out.</span>
+    <span class="s4">// EWKT is only exposed to OL if there's a validation error in the admin.</span>
+    <span class="s2">var </span><span class="s0">match = {{ module }}.re.exec(wkt);</span>
+    <span class="s2">if </span><span class="s0">(match){wkt = match[</span><span class="s5">1</span><span class="s0">];}</span>
+    <span class="s2">return </span><span class="s0">{{ module }}.wkt_f.read(wkt);</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.write_wkt = </span><span class="s2">function</span><span class="s0">(feat){</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.is_collection){ {{ module }}.num_geom = feat.geometry.components.length;}</span>
+    <span class="s2">else </span><span class="s0">{ {{ module }}.num_geom = </span><span class="s5">1</span><span class="s0">;}</span>
+    <span class="s0">document.getElementById(</span><span class="s1">'{{ id }}'</span><span class="s0">).value = {{ module }}.get_ewkt(feat);</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.add_wkt = </span><span class="s2">function</span><span class="s0">(event){</span>
+    <span class="s4">// This function will sync the contents of the `vector` layer with the</span>
+    <span class="s4">// WKT in the text field.</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.is_collection){</span>
+        <span class="s2">var </span><span class="s0">feat = </span><span class="s2">new </span><span class="s0">OpenLayers.Feature.Vector(</span><span class="s2">new </span><span class="s0">OpenLayers.Geometry.{{ geom_type }}());</span>
+        <span class="s2">for </span><span class="s0">(</span><span class="s2">var </span><span class="s0">i = </span><span class="s5">0</span><span class="s0">; i &lt; {{ module }}.layers.vector.features.length; i++){</span>
+            <span class="s0">feat.geometry.addComponents([{{ module }}.layers.vector.features[i].geometry]);</span>
+        <span class="s0">}</span>
+        <span class="s0">{{ module }}.write_wkt(feat);</span>
+    <span class="s0">} </span><span class="s2">else </span><span class="s0">{</span>
+        <span class="s4">// Make sure to remove any previously added features.</span>
+        <span class="s2">if </span><span class="s0">({{ module }}.layers.vector.features.length &gt; </span><span class="s5">1</span><span class="s0">){</span>
+            <span class="s0">old_feats = [{{ module }}.layers.vector.features[</span><span class="s5">0</span><span class="s0">]];</span>
+            <span class="s0">{{ module }}.layers.vector.removeFeatures(old_feats);</span>
+            <span class="s0">{{ module }}.layers.vector.destroyFeatures(old_feats);</span>
+        <span class="s0">}</span>
+        <span class="s0">{{ module }}.write_wkt(event.feature);</span>
+    <span class="s0">}</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.modify_wkt = </span><span class="s2">function</span><span class="s0">(event){</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.is_collection){</span>
+        <span class="s2">if </span><span class="s0">({{ module }}.is_point){</span>
+            <span class="s0">{{ module }}.add_wkt(event);</span>
+            <span class="s2">return</span><span class="s0">;</span>
+        <span class="s0">} </span><span class="s2">else </span><span class="s0">{</span>
+            <span class="s4">// When modifying the selected components are added to the</span>
+            <span class="s4">// vector layer so we only increment to the `num_geom` value.</span>
+            <span class="s2">var </span><span class="s0">feat = </span><span class="s2">new </span><span class="s0">OpenLayers.Feature.Vector(</span><span class="s2">new </span><span class="s0">OpenLayers.Geometry.{{ geom_type }}());</span>
+            <span class="s2">for </span><span class="s0">(</span><span class="s2">var </span><span class="s0">i = </span><span class="s5">0</span><span class="s0">; i &lt; {{ module }}.num_geom; i++){</span>
+                <span class="s0">feat.geometry.addComponents([{{ module }}.layers.vector.features[i].geometry]);</span>
+            <span class="s0">}</span>
+            <span class="s0">{{ module }}.write_wkt(feat);</span>
+        <span class="s0">}</span>
+    <span class="s0">} </span><span class="s2">else </span><span class="s0">{</span>
+        <span class="s0">{{ module }}.write_wkt(event.feature);</span>
+    <span class="s0">}</span>
+<span class="s0">};</span>
+<span class="s4">// Function to clear vector features and purge wkt from div</span>
+<span class="s0">{{ module }}.deleteFeatures = </span><span class="s2">function</span><span class="s0">(){</span>
+    <span class="s0">{{ module }}.layers.vector.removeFeatures({{ module }}.layers.vector.features);</span>
+    <span class="s0">{{ module }}.layers.vector.destroyFeatures();</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.clearFeatures = </span><span class="s2">function </span><span class="s0">(){</span>
+    <span class="s0">{{ module }}.deleteFeatures();</span>
+    <span class="s0">document.getElementById(</span><span class="s1">'{{ id }}'</span><span class="s0">).value = </span><span class="s1">''</span><span class="s0">;</span>
+    <span class="s0">{% localize off %}</span>
+    <span class="s0">{{ module }}.map.setCenter(</span><span class="s2">new </span><span class="s0">OpenLayers.LonLat({{ default_lon }}, {{ default_lat }}), {{ default_zoom }});</span>
+    <span class="s0">{% endlocalize %}</span>
+<span class="s0">};</span>
+<span class="s4">// Add Select control</span>
+<span class="s0">{{ module }}.addSelectControl = </span><span class="s2">function</span><span class="s0">(){</span>
+    <span class="s2">var </span><span class="s0">select = </span><span class="s2">new </span><span class="s0">OpenLayers.Control.SelectFeature({{ module }}.layers.vector, {</span><span class="s1">'toggle' </span><span class="s0">: </span><span class="s2">true</span><span class="s0">, </span><span class="s1">'clickout' </span><span class="s0">: </span><span class="s2">true</span><span class="s0">});</span>
+    <span class="s0">{{ module }}.map.addControl(select);</span>
+    <span class="s0">select.activate();</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.enableDrawing = </span><span class="s2">function</span><span class="s0">(){</span>
+    <span class="s0">{{ module }}.map.getControlsByClass(</span><span class="s1">'OpenLayers.Control.DrawFeature'</span><span class="s0">)[</span><span class="s5">0</span><span class="s0">].activate();</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.enableEditing = </span><span class="s2">function</span><span class="s0">(){</span>
+    <span class="s0">{{ module }}.map.getControlsByClass(</span><span class="s1">'OpenLayers.Control.ModifyFeature'</span><span class="s0">)[</span><span class="s5">0</span><span class="s0">].activate();</span>
+<span class="s0">};</span>
+<span class="s4">// Create an array of controls based on geometry type</span>
+<span class="s0">{{ module }}.getControls = </span><span class="s2">function</span><span class="s0">(lyr){</span>
+    <span class="s0">{{ module }}.panel = </span><span class="s2">new </span><span class="s0">OpenLayers.Control.Panel({</span><span class="s1">'displayClass'</span><span class="s0">: </span><span class="s1">'olControlEditingToolbar'</span><span class="s0">});</span>
+    <span class="s0">{{ module }}.controls = [</span><span class="s2">new </span><span class="s0">OpenLayers.Control.Navigation()];</span>
+    <span class="s2">if </span><span class="s0">(!{{ module }}.modifiable &amp;&amp; lyr.features.length) </span><span class="s2">return</span><span class="s0">;</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.is_linestring || {{ module }}.is_generic){</span>
+        <span class="s0">{{ module }}.controls.push(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.DrawFeature(lyr, OpenLayers.Handler.Path, {</span><span class="s1">'displayClass'</span><span class="s0">: </span><span class="s1">'olControlDrawFeaturePath'</span><span class="s0">}));</span>
+    <span class="s0">}</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.is_polygon || {{ module }}.is_generic){</span>
+        <span class="s0">{{ module }}.controls.push(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.DrawFeature(lyr, OpenLayers.Handler.Polygon, {</span><span class="s1">'displayClass'</span><span class="s0">: </span><span class="s1">'olControlDrawFeaturePolygon'</span><span class="s0">}));</span>
+    <span class="s0">}</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.is_point || {{ module }}.is_generic){</span>
+        <span class="s0">{{ module }}.controls.push(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.DrawFeature(lyr, OpenLayers.Handler.Point, {</span><span class="s1">'displayClass'</span><span class="s0">: </span><span class="s1">'olControlDrawFeaturePoint'</span><span class="s0">}));</span>
+    <span class="s0">}</span>
+    <span class="s2">if </span><span class="s0">({{ module }}.modifiable){</span>
+        <span class="s0">{{ module }}.controls.push(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.ModifyFeature(lyr, {</span><span class="s1">'displayClass'</span><span class="s0">: </span><span class="s1">'olControlModifyFeature'</span><span class="s0">}));</span>
+    <span class="s0">}</span>
+<span class="s0">};</span>
+<span class="s0">{{ module }}.init = </span><span class="s2">function</span><span class="s0">(){</span>
+    <span class="s0">{% block map_options %}</span><span class="s4">// The options hash, w/ zoom, resolution, and projection settings.</span>
+    <span class="s2">var </span><span class="s0">options = {</span>
+<span class="s0">{% autoescape off %}{% </span><span class="s2">for </span><span class="s0">item </span><span class="s2">in </span><span class="s0">map_options.items %}      </span><span class="s1">'{{ item.0 }}' </span><span class="s0">: {{ item.</span><span class="s5">1 </span><span class="s0">}}{% </span><span class="s2">if </span><span class="s0">not forloop.last %},{% endif %}</span>
+<span class="s0">{% endfor %}{% endautoescape %}    };{% endblock %}</span>
+    <span class="s4">// The admin map for this geometry field.</span>
+    <span class="s0">{% block map_creation %}</span>
+    <span class="s0">{{ module }}.map = </span><span class="s2">new </span><span class="s0">OpenLayers.Map(</span><span class="s1">'{{ id }}_map'</span><span class="s0">, options);</span>
+    <span class="s4">// Base Layer</span>
+    <span class="s0">{{ module }}.layers.base = {% block base_layer %}</span><span class="s2">new </span><span class="s0">OpenLayers.Layer.WMS(</span><span class="s1">&quot;{{ wms_name }}&quot;</span><span class="s0">, </span><span class="s1">&quot;{{ wms_url }}&quot;</span><span class="s0">, {layers: </span><span class="s1">'{{ wms_layer }}'</span><span class="s0">{{ wms_options|safe }}});{% endblock %}</span>
+    <span class="s0">{{ module }}.map.addLayer({{ module }}.layers.base);</span>
+    <span class="s0">{% endblock %}</span>
+    <span class="s0">{% block extra_layers %}{% endblock %}</span>
+    <span class="s0">{% </span><span class="s2">if </span><span class="s0">is_linestring %}OpenLayers.Feature.Vector.style[</span><span class="s1">&quot;default&quot;</span><span class="s0">][</span><span class="s1">&quot;strokeWidth&quot;</span><span class="s0">] = </span><span class="s5">3</span><span class="s0">; </span><span class="s4">// Default too thin for linestrings. {% endif %}</span>
+    <span class="s0">{{ module }}.layers.vector = </span><span class="s2">new </span><span class="s0">OpenLayers.Layer.Vector(</span><span class="s1">&quot; {{ field_name }}&quot;</span><span class="s0">);</span>
+    <span class="s0">{{ module }}.map.addLayer({{ module }}.layers.vector);</span>
+    <span class="s4">// Read WKT from the text field.</span>
+    <span class="s2">var </span><span class="s0">wkt = document.getElementById(</span><span class="s1">'{{ id }}'</span><span class="s0">).value;</span>
+    <span class="s2">if </span><span class="s0">(wkt){</span>
+        <span class="s4">// After reading into geometry, immediately write back to</span>
+        <span class="s4">// WKT &lt;textarea&gt; as EWKT (so that SRID is included).</span>
+        <span class="s2">var </span><span class="s0">admin_geom = {{ module }}.read_wkt(wkt);</span>
+        <span class="s0">{{ module }}.write_wkt(admin_geom);</span>
+        <span class="s2">if </span><span class="s0">({{ module }}.is_collection){</span>
+            <span class="s4">// If geometry collection, add each component individually so they may be</span>
+            <span class="s4">// edited individually.</span>
+            <span class="s2">for </span><span class="s0">(</span><span class="s2">var </span><span class="s0">i = </span><span class="s5">0</span><span class="s0">; i &lt; {{ module }}.num_geom; i++){</span>
+                <span class="s0">{{ module }}.layers.vector.addFeatures([</span><span class="s2">new </span><span class="s0">OpenLayers.Feature.Vector(admin_geom.geometry.components[i].clone())]);</span>
+            <span class="s0">}</span>
+        <span class="s0">} </span><span class="s2">else </span><span class="s0">{</span>
+            <span class="s0">{{ module }}.layers.vector.addFeatures([admin_geom]);</span>
+        <span class="s0">}</span>
+        <span class="s4">// Zooming to the bounds.</span>
+        <span class="s0">{{ module }}.map.zoomToExtent(admin_geom.geometry.getBounds());</span>
+        <span class="s2">if </span><span class="s0">({{ module }}.is_point){</span>
+            <span class="s0">{{ module }}.map.zoomTo({{ point_zoom }});</span>
+        <span class="s0">}</span>
+    <span class="s0">} </span><span class="s2">else </span><span class="s0">{</span>
+        <span class="s0">{% localize off %}</span>
+        <span class="s0">{{ module }}.map.setCenter(</span><span class="s2">new </span><span class="s0">OpenLayers.LonLat({{ default_lon }}, {{ default_lat }}), {{ default_zoom }});</span>
+        <span class="s0">{% endlocalize %}</span>
+    <span class="s0">}</span>
+    <span class="s4">// This allows editing of the geographic fields -- the modified WKT is</span>
+    <span class="s4">// written back to the content field (as EWKT, so that the ORM will know</span>
+    <span class="s4">// to transform back to original SRID).</span>
+    <span class="s0">{{ module }}.layers.vector.events.on({</span><span class="s1">&quot;featuremodified&quot; </span><span class="s0">: {{ module }}.modify_wkt});</span>
+    <span class="s0">{{ module }}.layers.vector.events.on({</span><span class="s1">&quot;featureadded&quot; </span><span class="s0">: {{ module }}.add_wkt});</span>
+    <span class="s0">{% block controls %}</span>
+    <span class="s4">// Map controls:</span>
+    <span class="s4">// Add geometry specific panel of toolbar controls</span>
+    <span class="s0">{{ module }}.getControls({{ module }}.layers.vector);</span>
+    <span class="s0">{{ module }}.panel.addControls({{ module }}.controls);</span>
+    <span class="s0">{{ module }}.map.addControl({{ module }}.panel);</span>
+    <span class="s0">{{ module }}.addSelectControl();</span>
+    <span class="s4">// Then add optional visual controls</span>
+    <span class="s0">{% </span><span class="s2">if </span><span class="s0">mouse_position %}{{ module }}.map.addControl(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.MousePosition());{% endif %}</span>
+    <span class="s0">{% </span><span class="s2">if </span><span class="s0">scale_text %}{{ module }}.map.addControl(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.Scale());{% endif %}</span>
+    <span class="s0">{% </span><span class="s2">if </span><span class="s0">layerswitcher %}{{ module }}.map.addControl(</span><span class="s2">new </span><span class="s0">OpenLayers.Control.LayerSwitcher());{% endif %}</span>
+    <span class="s4">// Then add optional behavior controls</span>
+    <span class="s0">{% </span><span class="s2">if </span><span class="s0">not scrollable %}{{ module }}.map.getControlsByClass(</span><span class="s1">'OpenLayers.Control.Navigation'</span><span class="s0">)[</span><span class="s5">0</span><span class="s0">].disableZoomWheel();{% endif %}</span>
+    <span class="s0">{% endblock %}</span>
+    <span class="s2">if </span><span class="s0">(wkt){</span>
+        <span class="s2">if </span><span class="s0">({{ module }}.modifiable){</span>
+            <span class="s0">{{ module }}.enableEditing();</span>
+        <span class="s0">}</span>
+    <span class="s0">} </span><span class="s2">else </span><span class="s0">{</span>
+        <span class="s0">{{ module }}.enableDrawing();</span>
+    <span class="s0">}</span>
+<span class="s0">};</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,666 @@
+<html>
+<head>
+<title>sql.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sql.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#</span>
+<span class="s0"># Copyright (C) 2009-2020 the sqlparse authors and contributors</span>
+<span class="s0"># &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of python-sqlparse and is released under</span>
+<span class="s0"># the BSD License: https://opensource.org/licenses/BSD-3-Clause</span>
+
+<span class="s2">&quot;&quot;&quot;This module contains classes representing syntactical elements of SQL.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">re</span>
+
+<span class="s3">from </span><span class="s1">sqlparse </span><span class="s3">import </span><span class="s1">tokens </span><span class="s3">as </span><span class="s1">T</span>
+<span class="s3">from </span><span class="s1">sqlparse.utils </span><span class="s3">import </span><span class="s1">imt</span><span class="s3">, </span><span class="s1">remove_quotes</span>
+
+
+<span class="s3">class </span><span class="s1">NameAliasMixin:</span>
+    <span class="s2">&quot;&quot;&quot;Implements get_real_name and get_alias.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">get_real_name(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the real name (object name) of this identifier.&quot;&quot;&quot;</span>
+        <span class="s0"># a.b</span>
+        <span class="s1">dot_idx</span><span class="s3">, </span><span class="s1">_ = self.token_next_by(m=(T.Punctuation</span><span class="s3">, </span><span class="s4">'.'</span><span class="s1">))</span>
+        <span class="s3">return </span><span class="s1">self._get_first_name(dot_idx</span><span class="s3">, </span><span class="s1">real_name=</span><span class="s3">True</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">get_alias(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the alias for this identifier or ``None``.&quot;&quot;&quot;</span>
+
+        <span class="s0"># &quot;name AS alias&quot;</span>
+        <span class="s1">kw_idx</span><span class="s3">, </span><span class="s1">kw = self.token_next_by(m=(T.Keyword</span><span class="s3">, </span><span class="s4">'AS'</span><span class="s1">))</span>
+        <span class="s3">if </span><span class="s1">kw </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">self._get_first_name(kw_idx + </span><span class="s5">1</span><span class="s3">, </span><span class="s1">keywords=</span><span class="s3">True</span><span class="s1">)</span>
+
+        <span class="s0"># &quot;name alias&quot; or &quot;complicated column expression alias&quot;</span>
+        <span class="s1">_</span><span class="s3">, </span><span class="s1">ws = self.token_next_by(t=T.Whitespace)</span>
+        <span class="s3">if </span><span class="s1">len(self.tokens) &gt; </span><span class="s5">2 </span><span class="s3">and </span><span class="s1">ws </span><span class="s3">is not None</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">self._get_first_name(reverse=</span><span class="s3">True</span><span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Token:</span>
+    <span class="s2">&quot;&quot;&quot;Base class for all other classes in this module. 
+ 
+    It represents a single token and has two instance attributes: 
+    ``value`` is the unchanged value of the token and ``ttype`` is 
+    the type of the token. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">__slots__ = (</span><span class="s4">'value'</span><span class="s3">, </span><span class="s4">'ttype'</span><span class="s3">, </span><span class="s4">'parent'</span><span class="s3">, </span><span class="s4">'normalized'</span><span class="s3">, </span><span class="s4">'is_keyword'</span><span class="s3">,</span>
+                 <span class="s4">'is_group'</span><span class="s3">, </span><span class="s4">'is_whitespace'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">ttype</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s1">value = str(value)</span>
+        <span class="s1">self.value = value</span>
+        <span class="s1">self.ttype = ttype</span>
+        <span class="s1">self.parent = </span><span class="s3">None</span>
+        <span class="s1">self.is_group = </span><span class="s3">False</span>
+        <span class="s1">self.is_keyword = ttype </span><span class="s3">in </span><span class="s1">T.Keyword</span>
+        <span class="s1">self.is_whitespace = self.ttype </span><span class="s3">in </span><span class="s1">T.Whitespace</span>
+        <span class="s1">self.normalized = value.upper() </span><span class="s3">if </span><span class="s1">self.is_keyword </span><span class="s3">else </span><span class="s1">value</span>
+
+    <span class="s3">def </span><span class="s1">__str__(self):</span>
+        <span class="s3">return </span><span class="s1">self.value</span>
+
+    <span class="s0"># Pending tokenlist __len__ bug fix</span>
+    <span class="s0"># def __len__(self):</span>
+    <span class="s0">#     return len(self.value)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s1">cls = self._get_repr_name()</span>
+        <span class="s1">value = self._get_repr_value()</span>
+
+        <span class="s1">q = </span><span class="s4">'&quot;' </span><span class="s3">if </span><span class="s1">value.startswith(</span><span class="s4">&quot;'&quot;</span><span class="s1">) </span><span class="s3">and </span><span class="s1">value.endswith(</span><span class="s4">&quot;'&quot;</span><span class="s1">) </span><span class="s3">else </span><span class="s4">&quot;'&quot;</span>
+        <span class="s3">return </span><span class="s4">&quot;&lt;{cls} {q}{value}{q} at 0x{id:2X}&gt;&quot;</span><span class="s1">.format(</span>
+            <span class="s1">id=id(self)</span><span class="s3">, </span><span class="s1">**locals())</span>
+
+    <span class="s3">def </span><span class="s1">_get_repr_name(self):</span>
+        <span class="s3">return </span><span class="s1">str(self.ttype).split(</span><span class="s4">'.'</span><span class="s1">)[-</span><span class="s5">1</span><span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">_get_repr_value(self):</span>
+        <span class="s1">raw = str(self)</span>
+        <span class="s3">if </span><span class="s1">len(raw) &gt; </span><span class="s5">7</span><span class="s1">:</span>
+            <span class="s1">raw = raw[:</span><span class="s5">6</span><span class="s1">] + </span><span class="s4">'...'</span>
+        <span class="s3">return </span><span class="s1">re.sub(</span><span class="s4">r'\s+'</span><span class="s3">, </span><span class="s4">' '</span><span class="s3">, </span><span class="s1">raw)</span>
+
+    <span class="s3">def </span><span class="s1">flatten(self):</span>
+        <span class="s2">&quot;&quot;&quot;Resolve subgroups.&quot;&quot;&quot;</span>
+        <span class="s3">yield </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">match(self</span><span class="s3">, </span><span class="s1">ttype</span><span class="s3">, </span><span class="s1">values</span><span class="s3">, </span><span class="s1">regex=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Checks whether the token matches the given arguments. 
+ 
+        *ttype* is a token type. If this token doesn't match the given token 
+        type. 
+        *values* is a list of possible values for this token. The values 
+        are OR'ed together so if only one of the values matches ``True`` 
+        is returned. Except for keyword tokens the comparison is 
+        case-sensitive. For convenience it's OK to pass in a single string. 
+        If *regex* is ``True`` (default is ``False``) the given values are 
+        treated as regular expressions. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">type_matched = self.ttype </span><span class="s3">is </span><span class="s1">ttype</span>
+        <span class="s3">if not </span><span class="s1">type_matched </span><span class="s3">or </span><span class="s1">values </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">type_matched</span>
+
+        <span class="s3">if </span><span class="s1">isinstance(values</span><span class="s3">, </span><span class="s1">str):</span>
+            <span class="s1">values = (values</span><span class="s3">,</span><span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">regex:</span>
+            <span class="s0"># TODO: Add test for regex with is_keyboard = false</span>
+            <span class="s1">flag = re.IGNORECASE </span><span class="s3">if </span><span class="s1">self.is_keyword </span><span class="s3">else </span><span class="s5">0</span>
+            <span class="s1">values = (re.compile(v</span><span class="s3">, </span><span class="s1">flag) </span><span class="s3">for </span><span class="s1">v </span><span class="s3">in </span><span class="s1">values)</span>
+
+            <span class="s3">for </span><span class="s1">pattern </span><span class="s3">in </span><span class="s1">values:</span>
+                <span class="s3">if </span><span class="s1">pattern.search(self.normalized):</span>
+                    <span class="s3">return True</span>
+            <span class="s3">return False</span>
+
+        <span class="s3">if </span><span class="s1">self.is_keyword:</span>
+            <span class="s1">values = (v.upper() </span><span class="s3">for </span><span class="s1">v </span><span class="s3">in </span><span class="s1">values)</span>
+
+        <span class="s3">return </span><span class="s1">self.normalized </span><span class="s3">in </span><span class="s1">values</span>
+
+    <span class="s3">def </span><span class="s1">within(self</span><span class="s3">, </span><span class="s1">group_cls):</span>
+        <span class="s2">&quot;&quot;&quot;Returns ``True`` if this token is within *group_cls*. 
+ 
+        Use this method for example to check if an identifier is within 
+        a function: ``t.within(sql.Function)``. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">parent = self.parent</span>
+        <span class="s3">while </span><span class="s1">parent:</span>
+            <span class="s3">if </span><span class="s1">isinstance(parent</span><span class="s3">, </span><span class="s1">group_cls):</span>
+                <span class="s3">return True</span>
+            <span class="s1">parent = parent.parent</span>
+        <span class="s3">return False</span>
+
+    <span class="s3">def </span><span class="s1">is_child_of(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s2">&quot;&quot;&quot;Returns ``True`` if this token is a direct child of *other*.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self.parent == other</span>
+
+    <span class="s3">def </span><span class="s1">has_ancestor(self</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s2">&quot;&quot;&quot;Returns ``True`` if *other* is in this tokens ancestry.&quot;&quot;&quot;</span>
+        <span class="s1">parent = self.parent</span>
+        <span class="s3">while </span><span class="s1">parent:</span>
+            <span class="s3">if </span><span class="s1">parent == other:</span>
+                <span class="s3">return True</span>
+            <span class="s1">parent = parent.parent</span>
+        <span class="s3">return False</span>
+
+
+<span class="s3">class </span><span class="s1">TokenList(Token):</span>
+    <span class="s2">&quot;&quot;&quot;A group of tokens. 
+ 
+    It has an additional instance attribute ``tokens`` which holds a 
+    list of child-tokens. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">__slots__ = </span><span class="s4">'tokens'</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">tokens=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.tokens = tokens </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">[setattr(token</span><span class="s3">, </span><span class="s4">'parent'</span><span class="s3">, </span><span class="s1">self) </span><span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.tokens]</span>
+        <span class="s1">super().__init__(</span><span class="s3">None, </span><span class="s1">str(self))</span>
+        <span class="s1">self.is_group = </span><span class="s3">True</span>
+
+    <span class="s3">def </span><span class="s1">__str__(self):</span>
+        <span class="s3">return </span><span class="s4">''</span><span class="s1">.join(token.value </span><span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.flatten())</span>
+
+    <span class="s0"># weird bug</span>
+    <span class="s0"># def __len__(self):</span>
+    <span class="s0">#     return len(self.tokens)</span>
+
+    <span class="s3">def </span><span class="s1">__iter__(self):</span>
+        <span class="s3">return </span><span class="s1">iter(self.tokens)</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__(self</span><span class="s3">, </span><span class="s1">item):</span>
+        <span class="s3">return </span><span class="s1">self.tokens[item]</span>
+
+    <span class="s3">def </span><span class="s1">_get_repr_name(self):</span>
+        <span class="s3">return </span><span class="s1">type(self).__name__</span>
+
+    <span class="s3">def </span><span class="s1">_pprint_tree(self</span><span class="s3">, </span><span class="s1">max_depth=</span><span class="s3">None, </span><span class="s1">depth=</span><span class="s5">0</span><span class="s3">, </span><span class="s1">f=</span><span class="s3">None, </span><span class="s1">_pre=</span><span class="s4">''</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Pretty-print the object tree.&quot;&quot;&quot;</span>
+        <span class="s1">token_count = len(self.tokens)</span>
+        <span class="s3">for </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">token </span><span class="s3">in </span><span class="s1">enumerate(self.tokens):</span>
+            <span class="s1">cls = token._get_repr_name()</span>
+            <span class="s1">value = token._get_repr_value()</span>
+
+            <span class="s1">last = idx == (token_count - </span><span class="s5">1</span><span class="s1">)</span>
+            <span class="s1">pre = </span><span class="s4">'`- ' </span><span class="s3">if </span><span class="s1">last </span><span class="s3">else </span><span class="s4">'|- '</span>
+
+            <span class="s1">q = </span><span class="s4">'&quot;' </span><span class="s3">if </span><span class="s1">value.startswith(</span><span class="s4">&quot;'&quot;</span><span class="s1">) </span><span class="s3">and </span><span class="s1">value.endswith(</span><span class="s4">&quot;'&quot;</span><span class="s1">) </span><span class="s3">else </span><span class="s4">&quot;'&quot;</span>
+            <span class="s1">print(</span><span class="s4">&quot;{_pre}{pre}{idx} {cls} {q}{value}{q}&quot;</span>
+                  <span class="s1">.format(**locals())</span><span class="s3">, </span><span class="s1">file=f)</span>
+
+            <span class="s3">if </span><span class="s1">token.is_group </span><span class="s3">and </span><span class="s1">(max_depth </span><span class="s3">is None or </span><span class="s1">depth &lt; max_depth):</span>
+                <span class="s1">parent_pre = </span><span class="s4">'   ' </span><span class="s3">if </span><span class="s1">last </span><span class="s3">else </span><span class="s4">'|  '</span>
+                <span class="s1">token._pprint_tree(max_depth</span><span class="s3">, </span><span class="s1">depth + </span><span class="s5">1</span><span class="s3">, </span><span class="s1">f</span><span class="s3">, </span><span class="s1">_pre + parent_pre)</span>
+
+    <span class="s3">def </span><span class="s1">get_token_at_offset(self</span><span class="s3">, </span><span class="s1">offset):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the token that is on position offset.&quot;&quot;&quot;</span>
+        <span class="s1">idx = </span><span class="s5">0</span>
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.flatten():</span>
+            <span class="s1">end = idx + len(token.value)</span>
+            <span class="s3">if </span><span class="s1">idx &lt;= offset &lt; end:</span>
+                <span class="s3">return </span><span class="s1">token</span>
+            <span class="s1">idx = end</span>
+
+    <span class="s3">def </span><span class="s1">flatten(self):</span>
+        <span class="s2">&quot;&quot;&quot;Generator yielding ungrouped tokens. 
+ 
+        This method is recursively called for all child tokens. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.tokens:</span>
+            <span class="s3">if </span><span class="s1">token.is_group:</span>
+                <span class="s3">yield from </span><span class="s1">token.flatten()</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s3">yield </span><span class="s1">token</span>
+
+    <span class="s3">def </span><span class="s1">get_sublists(self):</span>
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.tokens:</span>
+            <span class="s3">if </span><span class="s1">token.is_group:</span>
+                <span class="s3">yield </span><span class="s1">token</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">_groupable_tokens(self):</span>
+        <span class="s3">return </span><span class="s1">self.tokens</span>
+
+    <span class="s3">def </span><span class="s1">_token_matching(self</span><span class="s3">, </span><span class="s1">funcs</span><span class="s3">, </span><span class="s1">start=</span><span class="s5">0</span><span class="s3">, </span><span class="s1">end=</span><span class="s3">None, </span><span class="s1">reverse=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;next token that match functions&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">start </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return None</span>
+
+        <span class="s3">if not </span><span class="s1">isinstance(funcs</span><span class="s3">, </span><span class="s1">(list</span><span class="s3">, </span><span class="s1">tuple)):</span>
+            <span class="s1">funcs = (funcs</span><span class="s3">,</span><span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">reverse:</span>
+            <span class="s3">assert </span><span class="s1">end </span><span class="s3">is None</span>
+            <span class="s3">for </span><span class="s1">idx </span><span class="s3">in </span><span class="s1">range(start - </span><span class="s5">2</span><span class="s3">, </span><span class="s1">-</span><span class="s5">1</span><span class="s3">, </span><span class="s1">-</span><span class="s5">1</span><span class="s1">):</span>
+                <span class="s1">token = self.tokens[idx]</span>
+                <span class="s3">for </span><span class="s1">func </span><span class="s3">in </span><span class="s1">funcs:</span>
+                    <span class="s3">if </span><span class="s1">func(token):</span>
+                        <span class="s3">return </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">token</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">for </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">token </span><span class="s3">in </span><span class="s1">enumerate(self.tokens[start:end]</span><span class="s3">, </span><span class="s1">start=start):</span>
+                <span class="s3">for </span><span class="s1">func </span><span class="s3">in </span><span class="s1">funcs:</span>
+                    <span class="s3">if </span><span class="s1">func(token):</span>
+                        <span class="s3">return </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">token</span>
+        <span class="s3">return None, None</span>
+
+    <span class="s3">def </span><span class="s1">token_first(self</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">True, </span><span class="s1">skip_cm=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the first child token. 
+ 
+        If *skip_ws* is ``True`` (the default), whitespace 
+        tokens are ignored. 
+ 
+        if *skip_cm* is ``True`` (default: ``False``), comments are 
+        ignored too. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># this on is inconsistent, using Comment instead of T.Comment...</span>
+        <span class="s3">def </span><span class="s1">matcher(tk):</span>
+            <span class="s3">return not </span><span class="s1">((skip_ws </span><span class="s3">and </span><span class="s1">tk.is_whitespace)</span>
+                        <span class="s3">or </span><span class="s1">(skip_cm </span><span class="s3">and </span><span class="s1">imt(tk</span><span class="s3">, </span><span class="s1">t=T.Comment</span><span class="s3">, </span><span class="s1">i=Comment)))</span>
+        <span class="s3">return </span><span class="s1">self._token_matching(matcher)[</span><span class="s5">1</span><span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">token_next_by(self</span><span class="s3">, </span><span class="s1">i=</span><span class="s3">None, </span><span class="s1">m=</span><span class="s3">None, </span><span class="s1">t=</span><span class="s3">None, </span><span class="s1">idx=-</span><span class="s5">1</span><span class="s3">, </span><span class="s1">end=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">idx += </span><span class="s5">1</span>
+        <span class="s3">return </span><span class="s1">self._token_matching(</span><span class="s3">lambda </span><span class="s1">tk: imt(tk</span><span class="s3">, </span><span class="s1">i</span><span class="s3">, </span><span class="s1">m</span><span class="s3">, </span><span class="s1">t)</span><span class="s3">, </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">end)</span>
+
+    <span class="s3">def </span><span class="s1">token_not_matching(self</span><span class="s3">, </span><span class="s1">funcs</span><span class="s3">, </span><span class="s1">idx):</span>
+        <span class="s1">funcs = (funcs</span><span class="s3">,</span><span class="s1">) </span><span class="s3">if not </span><span class="s1">isinstance(funcs</span><span class="s3">, </span><span class="s1">(list</span><span class="s3">, </span><span class="s1">tuple)) </span><span class="s3">else </span><span class="s1">funcs</span>
+        <span class="s1">funcs = [</span><span class="s3">lambda </span><span class="s1">tk: </span><span class="s3">not </span><span class="s1">func(tk) </span><span class="s3">for </span><span class="s1">func </span><span class="s3">in </span><span class="s1">funcs]</span>
+        <span class="s3">return </span><span class="s1">self._token_matching(funcs</span><span class="s3">, </span><span class="s1">idx)</span>
+
+    <span class="s3">def </span><span class="s1">token_matching(self</span><span class="s3">, </span><span class="s1">funcs</span><span class="s3">, </span><span class="s1">idx):</span>
+        <span class="s3">return </span><span class="s1">self._token_matching(funcs</span><span class="s3">, </span><span class="s1">idx)[</span><span class="s5">1</span><span class="s1">]</span>
+
+    <span class="s3">def </span><span class="s1">token_prev(self</span><span class="s3">, </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">True, </span><span class="s1">skip_cm=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the previous token relative to *idx*. 
+ 
+        If *skip_ws* is ``True`` (the default) whitespace tokens are ignored. 
+        If *skip_cm* is ``True`` comments are ignored. 
+        ``None`` is returned if there's no previous token. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self.token_next(idx</span><span class="s3">, </span><span class="s1">skip_ws</span><span class="s3">, </span><span class="s1">skip_cm</span><span class="s3">, </span><span class="s1">_reverse=</span><span class="s3">True</span><span class="s1">)</span>
+
+    <span class="s0"># TODO: May need to re-add default value to idx</span>
+    <span class="s3">def </span><span class="s1">token_next(self</span><span class="s3">, </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">True, </span><span class="s1">skip_cm=</span><span class="s3">False, </span><span class="s1">_reverse=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the next token relative to *idx*. 
+ 
+        If *skip_ws* is ``True`` (the default) whitespace tokens are ignored. 
+        If *skip_cm* is ``True`` comments are ignored. 
+        ``None`` is returned if there's no next token. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">idx </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return None, None</span>
+        <span class="s1">idx += </span><span class="s5">1  </span><span class="s0"># alot of code usage current pre-compensates for this</span>
+
+        <span class="s3">def </span><span class="s1">matcher(tk):</span>
+            <span class="s3">return not </span><span class="s1">((skip_ws </span><span class="s3">and </span><span class="s1">tk.is_whitespace)</span>
+                        <span class="s3">or </span><span class="s1">(skip_cm </span><span class="s3">and </span><span class="s1">imt(tk</span><span class="s3">, </span><span class="s1">t=T.Comment</span><span class="s3">, </span><span class="s1">i=Comment)))</span>
+        <span class="s3">return </span><span class="s1">self._token_matching(matcher</span><span class="s3">, </span><span class="s1">idx</span><span class="s3">, </span><span class="s1">reverse=_reverse)</span>
+
+    <span class="s3">def </span><span class="s1">token_index(self</span><span class="s3">, </span><span class="s1">token</span><span class="s3">, </span><span class="s1">start=</span><span class="s5">0</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Return list index of token.&quot;&quot;&quot;</span>
+        <span class="s1">start = start </span><span class="s3">if </span><span class="s1">isinstance(start</span><span class="s3">, </span><span class="s1">int) </span><span class="s3">else </span><span class="s1">self.token_index(start)</span>
+        <span class="s3">return </span><span class="s1">start + self.tokens[start:].index(token)</span>
+
+    <span class="s3">def </span><span class="s1">group_tokens(self</span><span class="s3">, </span><span class="s1">grp_cls</span><span class="s3">, </span><span class="s1">start</span><span class="s3">, </span><span class="s1">end</span><span class="s3">, </span><span class="s1">include_end=</span><span class="s3">True,</span>
+                     <span class="s1">extend=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Replace tokens by an instance of *grp_cls*.&quot;&quot;&quot;</span>
+        <span class="s1">start_idx = start</span>
+        <span class="s1">start = self.tokens[start_idx]</span>
+
+        <span class="s1">end_idx = end + include_end</span>
+
+        <span class="s0"># will be needed later for new group_clauses</span>
+        <span class="s0"># while skip_ws and tokens and tokens[-1].is_whitespace:</span>
+        <span class="s0">#     tokens = tokens[:-1]</span>
+
+        <span class="s3">if </span><span class="s1">extend </span><span class="s3">and </span><span class="s1">isinstance(start</span><span class="s3">, </span><span class="s1">grp_cls):</span>
+            <span class="s1">subtokens = self.tokens[start_idx + </span><span class="s5">1</span><span class="s1">:end_idx]</span>
+
+            <span class="s1">grp = start</span>
+            <span class="s1">grp.tokens.extend(subtokens)</span>
+            <span class="s3">del </span><span class="s1">self.tokens[start_idx + </span><span class="s5">1</span><span class="s1">:end_idx]</span>
+            <span class="s1">grp.value = str(start)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">subtokens = self.tokens[start_idx:end_idx]</span>
+            <span class="s1">grp = grp_cls(subtokens)</span>
+            <span class="s1">self.tokens[start_idx:end_idx] = [grp]</span>
+            <span class="s1">grp.parent = self</span>
+
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">subtokens:</span>
+            <span class="s1">token.parent = grp</span>
+
+        <span class="s3">return </span><span class="s1">grp</span>
+
+    <span class="s3">def </span><span class="s1">insert_before(self</span><span class="s3">, </span><span class="s1">where</span><span class="s3">, </span><span class="s1">token):</span>
+        <span class="s2">&quot;&quot;&quot;Inserts *token* before *where*.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">isinstance(where</span><span class="s3">, </span><span class="s1">int):</span>
+            <span class="s1">where = self.token_index(where)</span>
+        <span class="s1">token.parent = self</span>
+        <span class="s1">self.tokens.insert(where</span><span class="s3">, </span><span class="s1">token)</span>
+
+    <span class="s3">def </span><span class="s1">insert_after(self</span><span class="s3">, </span><span class="s1">where</span><span class="s3">, </span><span class="s1">token</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Inserts *token* after *where*.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">isinstance(where</span><span class="s3">, </span><span class="s1">int):</span>
+            <span class="s1">where = self.token_index(where)</span>
+        <span class="s1">nidx</span><span class="s3">, </span><span class="s1">next_ = self.token_next(where</span><span class="s3">, </span><span class="s1">skip_ws=skip_ws)</span>
+        <span class="s1">token.parent = self</span>
+        <span class="s3">if </span><span class="s1">next_ </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">self.tokens.append(token)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.tokens.insert(nidx</span><span class="s3">, </span><span class="s1">token)</span>
+
+    <span class="s3">def </span><span class="s1">has_alias(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns ``True`` if an alias is present.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self.get_alias() </span><span class="s3">is not None</span>
+
+    <span class="s3">def </span><span class="s1">get_alias(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the alias for this identifier or ``None``.&quot;&quot;&quot;</span>
+        <span class="s3">return None</span>
+
+    <span class="s3">def </span><span class="s1">get_name(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the name of this identifier. 
+ 
+        This is either it's alias or it's real name. The returned valued can 
+        be considered as the name under which the object corresponding to 
+        this identifier is known within the current statement. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self.get_alias() </span><span class="s3">or </span><span class="s1">self.get_real_name()</span>
+
+    <span class="s3">def </span><span class="s1">get_real_name(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the real name (object name) of this identifier.&quot;&quot;&quot;</span>
+        <span class="s3">return None</span>
+
+    <span class="s3">def </span><span class="s1">get_parent_name(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return name of the parent object if any. 
+ 
+        A parent object is identified by the first occurring dot. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">dot_idx</span><span class="s3">, </span><span class="s1">_ = self.token_next_by(m=(T.Punctuation</span><span class="s3">, </span><span class="s4">'.'</span><span class="s1">))</span>
+        <span class="s1">_</span><span class="s3">, </span><span class="s1">prev_ = self.token_prev(dot_idx)</span>
+        <span class="s3">return </span><span class="s1">remove_quotes(prev_.value) </span><span class="s3">if </span><span class="s1">prev_ </span><span class="s3">is not None else None</span>
+
+    <span class="s3">def </span><span class="s1">_get_first_name(self</span><span class="s3">, </span><span class="s1">idx=</span><span class="s3">None, </span><span class="s1">reverse=</span><span class="s3">False, </span><span class="s1">keywords=</span><span class="s3">False,</span>
+                        <span class="s1">real_name=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the name of the first token with a name&quot;&quot;&quot;</span>
+
+        <span class="s1">tokens = self.tokens[idx:] </span><span class="s3">if </span><span class="s1">idx </span><span class="s3">else </span><span class="s1">self.tokens</span>
+        <span class="s1">tokens = reversed(tokens) </span><span class="s3">if </span><span class="s1">reverse </span><span class="s3">else </span><span class="s1">tokens</span>
+        <span class="s1">types = [T.Name</span><span class="s3">, </span><span class="s1">T.Wildcard</span><span class="s3">, </span><span class="s1">T.String.Symbol]</span>
+
+        <span class="s3">if </span><span class="s1">keywords:</span>
+            <span class="s1">types.append(T.Keyword)</span>
+
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">tokens:</span>
+            <span class="s3">if </span><span class="s1">token.ttype </span><span class="s3">in </span><span class="s1">types:</span>
+                <span class="s3">return </span><span class="s1">remove_quotes(token.value)</span>
+            <span class="s3">elif </span><span class="s1">isinstance(token</span><span class="s3">, </span><span class="s1">(Identifier</span><span class="s3">, </span><span class="s1">Function)):</span>
+                <span class="s3">return </span><span class="s1">token.get_real_name() </span><span class="s3">if </span><span class="s1">real_name </span><span class="s3">else </span><span class="s1">token.get_name()</span>
+
+
+<span class="s3">class </span><span class="s1">Statement(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Represents a SQL statement.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">get_type(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the type of a statement. 
+ 
+        The returned value is a string holding an upper-cased reprint of 
+        the first DML or DDL keyword. If the first token in this group 
+        isn't a DML or DDL keyword &quot;UNKNOWN&quot; is returned. 
+ 
+        Whitespaces and comments at the beginning of the statement 
+        are ignored. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">first_token = self.token_first(skip_cm=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">first_token </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s0"># An &quot;empty&quot; statement that either has not tokens at all</span>
+            <span class="s0"># or only whitespace tokens.</span>
+            <span class="s3">return </span><span class="s4">'UNKNOWN'</span>
+
+        <span class="s3">elif </span><span class="s1">first_token.ttype </span><span class="s3">in </span><span class="s1">(T.Keyword.DML</span><span class="s3">, </span><span class="s1">T.Keyword.DDL):</span>
+            <span class="s3">return </span><span class="s1">first_token.normalized</span>
+
+        <span class="s3">elif </span><span class="s1">first_token.ttype == T.Keyword.CTE:</span>
+            <span class="s0"># The WITH keyword should be followed by either an Identifier or</span>
+            <span class="s0"># an IdentifierList containing the CTE definitions;  the actual</span>
+            <span class="s0"># DML keyword (e.g. SELECT, INSERT) will follow next.</span>
+            <span class="s1">fidx = self.token_index(first_token)</span>
+            <span class="s1">tidx</span><span class="s3">, </span><span class="s1">token = self.token_next(fidx</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">True</span><span class="s1">)</span>
+            <span class="s3">if </span><span class="s1">isinstance(token</span><span class="s3">, </span><span class="s1">(Identifier</span><span class="s3">, </span><span class="s1">IdentifierList)):</span>
+                <span class="s1">_</span><span class="s3">, </span><span class="s1">dml_keyword = self.token_next(tidx</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">True</span><span class="s1">)</span>
+
+                <span class="s3">if </span><span class="s1">dml_keyword </span><span class="s3">is not None </span><span class="s1">\</span>
+                        <span class="s3">and </span><span class="s1">dml_keyword.ttype == T.Keyword.DML:</span>
+                    <span class="s3">return </span><span class="s1">dml_keyword.normalized</span>
+
+        <span class="s0"># Hmm, probably invalid syntax, so return unknown.</span>
+        <span class="s3">return </span><span class="s4">'UNKNOWN'</span>
+
+
+<span class="s3">class </span><span class="s1">Identifier(NameAliasMixin</span><span class="s3">, </span><span class="s1">TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Represents an identifier. 
+ 
+    Identifiers may have aliases or typecasts. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">is_wildcard(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return ``True`` if this identifier contains a wildcard.&quot;&quot;&quot;</span>
+        <span class="s1">_</span><span class="s3">, </span><span class="s1">token = self.token_next_by(t=T.Wildcard)</span>
+        <span class="s3">return </span><span class="s1">token </span><span class="s3">is not None</span>
+
+    <span class="s3">def </span><span class="s1">get_typecast(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the typecast or ``None`` of this object as a string.&quot;&quot;&quot;</span>
+        <span class="s1">midx</span><span class="s3">, </span><span class="s1">marker = self.token_next_by(m=(T.Punctuation</span><span class="s3">, </span><span class="s4">'::'</span><span class="s1">))</span>
+        <span class="s1">nidx</span><span class="s3">, </span><span class="s1">next_ = self.token_next(midx</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">False</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">next_.value </span><span class="s3">if </span><span class="s1">next_ </span><span class="s3">else None</span>
+
+    <span class="s3">def </span><span class="s1">get_ordering(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the ordering or ``None`` as uppercase string.&quot;&quot;&quot;</span>
+        <span class="s1">_</span><span class="s3">, </span><span class="s1">ordering = self.token_next_by(t=T.Keyword.Order)</span>
+        <span class="s3">return </span><span class="s1">ordering.normalized </span><span class="s3">if </span><span class="s1">ordering </span><span class="s3">else None</span>
+
+    <span class="s3">def </span><span class="s1">get_array_indices(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns an iterator of index token lists&quot;&quot;&quot;</span>
+
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.tokens:</span>
+            <span class="s3">if </span><span class="s1">isinstance(token</span><span class="s3">, </span><span class="s1">SquareBrackets):</span>
+                <span class="s0"># Use [1:-1] index to discard the square brackets</span>
+                <span class="s3">yield </span><span class="s1">token.tokens[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]</span>
+
+
+<span class="s3">class </span><span class="s1">IdentifierList(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A list of :class:`~sqlparse.sql.Identifier`\'s.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">get_identifiers(self):</span>
+        <span class="s2">&quot;&quot;&quot;Returns the identifiers. 
+ 
+        Whitespaces and punctuations are not included in this generator. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.tokens:</span>
+            <span class="s3">if not </span><span class="s1">(token.is_whitespace </span><span class="s3">or </span><span class="s1">token.match(T.Punctuation</span><span class="s3">, </span><span class="s4">','</span><span class="s1">)):</span>
+                <span class="s3">yield </span><span class="s1">token</span>
+
+
+<span class="s3">class </span><span class="s1">TypedLiteral(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A typed literal, such as &quot;date '2001-09-28'&quot; or &quot;interval '2 hours'&quot;.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = [(T.Name.Builtin</span><span class="s3">, None</span><span class="s1">)</span><span class="s3">, </span><span class="s1">(T.Keyword</span><span class="s3">, </span><span class="s4">&quot;TIMESTAMP&quot;</span><span class="s1">)]</span>
+    <span class="s1">M_CLOSE = T.String.Single</span><span class="s3">, None</span>
+    <span class="s1">M_EXTEND = T.Keyword</span><span class="s3">, </span><span class="s1">(</span><span class="s4">&quot;DAY&quot;</span><span class="s3">, </span><span class="s4">&quot;HOUR&quot;</span><span class="s3">, </span><span class="s4">&quot;MINUTE&quot;</span><span class="s3">, </span><span class="s4">&quot;MONTH&quot;</span><span class="s3">, </span><span class="s4">&quot;SECOND&quot;</span><span class="s3">, </span><span class="s4">&quot;YEAR&quot;</span><span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Parenthesis(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Tokens between parenthesis.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Punctuation</span><span class="s3">, </span><span class="s4">'('</span>
+    <span class="s1">M_CLOSE = T.Punctuation</span><span class="s3">, </span><span class="s4">')'</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">_groupable_tokens(self):</span>
+        <span class="s3">return </span><span class="s1">self.tokens[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]</span>
+
+
+<span class="s3">class </span><span class="s1">SquareBrackets(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Tokens between square brackets&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Punctuation</span><span class="s3">, </span><span class="s4">'['</span>
+    <span class="s1">M_CLOSE = T.Punctuation</span><span class="s3">, </span><span class="s4">']'</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">_groupable_tokens(self):</span>
+        <span class="s3">return </span><span class="s1">self.tokens[</span><span class="s5">1</span><span class="s1">:-</span><span class="s5">1</span><span class="s1">]</span>
+
+
+<span class="s3">class </span><span class="s1">Assignment(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;An assignment like 'var := val;'&quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">If(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;An 'if' clause with possible 'else if' or 'else' parts.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Keyword</span><span class="s3">, </span><span class="s4">'IF'</span>
+    <span class="s1">M_CLOSE = T.Keyword</span><span class="s3">, </span><span class="s4">'END IF'</span>
+
+
+<span class="s3">class </span><span class="s1">For(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A 'FOR' loop.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Keyword</span><span class="s3">, </span><span class="s1">(</span><span class="s4">'FOR'</span><span class="s3">, </span><span class="s4">'FOREACH'</span><span class="s1">)</span>
+    <span class="s1">M_CLOSE = T.Keyword</span><span class="s3">, </span><span class="s4">'END LOOP'</span>
+
+
+<span class="s3">class </span><span class="s1">Comparison(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A comparison used for example in WHERE clauses.&quot;&quot;&quot;</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">left(self):</span>
+        <span class="s3">return </span><span class="s1">self.tokens[</span><span class="s5">0</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">right(self):</span>
+        <span class="s3">return </span><span class="s1">self.tokens[-</span><span class="s5">1</span><span class="s1">]</span>
+
+
+<span class="s3">class </span><span class="s1">Comment(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A comment.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">is_multiline(self):</span>
+        <span class="s3">return </span><span class="s1">self.tokens </span><span class="s3">and </span><span class="s1">self.tokens[</span><span class="s5">0</span><span class="s1">].ttype == T.Comment.Multiline</span>
+
+
+<span class="s3">class </span><span class="s1">Where(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A WHERE clause.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Keyword</span><span class="s3">, </span><span class="s4">'WHERE'</span>
+    <span class="s1">M_CLOSE = T.Keyword</span><span class="s3">, </span><span class="s1">(</span>
+        <span class="s4">'ORDER BY'</span><span class="s3">, </span><span class="s4">'GROUP BY'</span><span class="s3">, </span><span class="s4">'LIMIT'</span><span class="s3">, </span><span class="s4">'UNION'</span><span class="s3">, </span><span class="s4">'UNION ALL'</span><span class="s3">, </span><span class="s4">'EXCEPT'</span><span class="s3">,</span>
+        <span class="s4">'HAVING'</span><span class="s3">, </span><span class="s4">'RETURNING'</span><span class="s3">, </span><span class="s4">'INTO'</span><span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Having(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A HAVING clause.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Keyword</span><span class="s3">, </span><span class="s4">'HAVING'</span>
+    <span class="s1">M_CLOSE = T.Keyword</span><span class="s3">, </span><span class="s1">(</span><span class="s4">'ORDER BY'</span><span class="s3">, </span><span class="s4">'LIMIT'</span><span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">Case(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A CASE statement with one or more WHEN and possibly an ELSE part.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Keyword</span><span class="s3">, </span><span class="s4">'CASE'</span>
+    <span class="s1">M_CLOSE = T.Keyword</span><span class="s3">, </span><span class="s4">'END'</span>
+
+    <span class="s3">def </span><span class="s1">get_cases(self</span><span class="s3">, </span><span class="s1">skip_ws=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Returns a list of 2-tuples (condition, value). 
+ 
+        If an ELSE exists condition is None. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">CONDITION = </span><span class="s5">1</span>
+        <span class="s1">VALUE = </span><span class="s5">2</span>
+
+        <span class="s1">ret = []</span>
+        <span class="s1">mode = CONDITION</span>
+
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">self.tokens:</span>
+            <span class="s0"># Set mode from the current statement</span>
+            <span class="s3">if </span><span class="s1">token.match(T.Keyword</span><span class="s3">, </span><span class="s4">'CASE'</span><span class="s1">):</span>
+                <span class="s3">continue</span>
+
+            <span class="s3">elif </span><span class="s1">skip_ws </span><span class="s3">and </span><span class="s1">token.ttype </span><span class="s3">in </span><span class="s1">T.Whitespace:</span>
+                <span class="s3">continue</span>
+
+            <span class="s3">elif </span><span class="s1">token.match(T.Keyword</span><span class="s3">, </span><span class="s4">'WHEN'</span><span class="s1">):</span>
+                <span class="s1">ret.append(([]</span><span class="s3">, </span><span class="s1">[]))</span>
+                <span class="s1">mode = CONDITION</span>
+
+            <span class="s3">elif </span><span class="s1">token.match(T.Keyword</span><span class="s3">, </span><span class="s4">'THEN'</span><span class="s1">):</span>
+                <span class="s1">mode = VALUE</span>
+
+            <span class="s3">elif </span><span class="s1">token.match(T.Keyword</span><span class="s3">, </span><span class="s4">'ELSE'</span><span class="s1">):</span>
+                <span class="s1">ret.append((</span><span class="s3">None, </span><span class="s1">[]))</span>
+                <span class="s1">mode = VALUE</span>
+
+            <span class="s3">elif </span><span class="s1">token.match(T.Keyword</span><span class="s3">, </span><span class="s4">'END'</span><span class="s1">):</span>
+                <span class="s1">mode = </span><span class="s3">None</span>
+
+            <span class="s0"># First condition without preceding WHEN</span>
+            <span class="s3">if </span><span class="s1">mode </span><span class="s3">and not </span><span class="s1">ret:</span>
+                <span class="s1">ret.append(([]</span><span class="s3">, </span><span class="s1">[]))</span>
+
+            <span class="s0"># Append token depending of the current mode</span>
+            <span class="s3">if </span><span class="s1">mode == CONDITION:</span>
+                <span class="s1">ret[-</span><span class="s5">1</span><span class="s1">][</span><span class="s5">0</span><span class="s1">].append(token)</span>
+
+            <span class="s3">elif </span><span class="s1">mode == VALUE:</span>
+                <span class="s1">ret[-</span><span class="s5">1</span><span class="s1">][</span><span class="s5">1</span><span class="s1">].append(token)</span>
+
+        <span class="s0"># Return cases list</span>
+        <span class="s3">return </span><span class="s1">ret</span>
+
+
+<span class="s3">class </span><span class="s1">Function(NameAliasMixin</span><span class="s3">, </span><span class="s1">TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A function or procedure call.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">get_parameters(self):</span>
+        <span class="s2">&quot;&quot;&quot;Return a list of parameters.&quot;&quot;&quot;</span>
+        <span class="s1">parenthesis = self.tokens[-</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s3">for </span><span class="s1">token </span><span class="s3">in </span><span class="s1">parenthesis.tokens:</span>
+            <span class="s3">if </span><span class="s1">isinstance(token</span><span class="s3">, </span><span class="s1">IdentifierList):</span>
+                <span class="s3">return </span><span class="s1">token.get_identifiers()</span>
+            <span class="s3">elif </span><span class="s1">imt(token</span><span class="s3">, </span><span class="s1">i=(Function</span><span class="s3">, </span><span class="s1">Identifier)</span><span class="s3">, </span><span class="s1">t=T.Literal):</span>
+                <span class="s3">return </span><span class="s1">[token</span><span class="s3">, </span><span class="s1">]</span>
+        <span class="s3">return </span><span class="s1">[]</span>
+
+
+<span class="s3">class </span><span class="s1">Begin(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;A BEGIN/END block.&quot;&quot;&quot;</span>
+    <span class="s1">M_OPEN = T.Keyword</span><span class="s3">, </span><span class="s4">'BEGIN'</span>
+    <span class="s1">M_CLOSE = T.Keyword</span><span class="s3">, </span><span class="s4">'END'</span>
+
+
+<span class="s3">class </span><span class="s1">Operation(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Grouping of operations&quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">Values(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Grouping of values&quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">Command(TokenList):</span>
+    <span class="s2">&quot;&quot;&quot;Grouping of CLI commands.&quot;&quot;&quot;</span>
+</pre>
+</body>
+</html>

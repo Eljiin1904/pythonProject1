@@ -1,0 +1,101 @@
+<html>
+<head>
+<title>creation.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+creation.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">sys</span>
+
+<span class="s0">from </span><span class="s1">psycopg2 </span><span class="s0">import </span><span class="s1">errorcodes</span>
+
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span>
+<span class="s0">from </span><span class="s1">django.db.backends.base.creation </span><span class="s0">import </span><span class="s1">BaseDatabaseCreation</span>
+<span class="s0">from </span><span class="s1">django.db.backends.utils </span><span class="s0">import </span><span class="s1">strip_quotes</span>
+
+
+<span class="s0">class </span><span class="s1">DatabaseCreation(BaseDatabaseCreation):</span>
+
+    <span class="s0">def </span><span class="s1">_quote_name(self</span><span class="s0">, </span><span class="s1">name):</span>
+        <span class="s0">return </span><span class="s1">self.connection.ops.quote_name(name)</span>
+
+    <span class="s0">def </span><span class="s1">_get_database_create_suffix(self</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s0">None, </span><span class="s1">template=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">suffix = </span><span class="s2">&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">encoding:</span>
+            <span class="s1">suffix += </span><span class="s2">&quot; ENCODING '{}'&quot;</span><span class="s1">.format(encoding)</span>
+        <span class="s0">if </span><span class="s1">template:</span>
+            <span class="s1">suffix += </span><span class="s2">&quot; TEMPLATE {}&quot;</span><span class="s1">.format(self._quote_name(template))</span>
+        <span class="s0">return </span><span class="s1">suffix </span><span class="s0">and </span><span class="s2">&quot;WITH&quot; </span><span class="s1">+ suffix</span>
+
+    <span class="s0">def </span><span class="s1">sql_table_creation_suffix(self):</span>
+        <span class="s1">test_settings = self.connection.settings_dict[</span><span class="s2">'TEST'</span><span class="s1">]</span>
+        <span class="s0">if </span><span class="s1">test_settings.get(</span><span class="s2">'COLLATION'</span><span class="s1">) </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s2">'PostgreSQL does not support collation setting at database '</span>
+                <span class="s2">'creation time.'</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">self._get_database_create_suffix(</span>
+            <span class="s1">encoding=test_settings[</span><span class="s2">'CHARSET'</span><span class="s1">]</span><span class="s0">,</span>
+            <span class="s1">template=test_settings.get(</span><span class="s2">'TEMPLATE'</span><span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">_database_exists(self</span><span class="s0">, </span><span class="s1">cursor</span><span class="s0">, </span><span class="s1">database_name):</span>
+        <span class="s1">cursor.execute(</span><span class="s2">'SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s'</span><span class="s0">, </span><span class="s1">[strip_quotes(database_name)])</span>
+        <span class="s0">return </span><span class="s1">cursor.fetchone() </span><span class="s0">is not None</span>
+
+    <span class="s0">def </span><span class="s1">_execute_create_test_db(self</span><span class="s0">, </span><span class="s1">cursor</span><span class="s0">, </span><span class="s1">parameters</span><span class="s0">, </span><span class="s1">keepdb=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">keepdb </span><span class="s0">and </span><span class="s1">self._database_exists(cursor</span><span class="s0">, </span><span class="s1">parameters[</span><span class="s2">'dbname'</span><span class="s1">]):</span>
+                <span class="s3"># If the database should be kept and it already exists, don't</span>
+                <span class="s3"># try to create a new one.</span>
+                <span class="s0">return</span>
+            <span class="s1">super()._execute_create_test_db(cursor</span><span class="s0">, </span><span class="s1">parameters</span><span class="s0">, </span><span class="s1">keepdb)</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s0">if </span><span class="s1">getattr(e.__cause__</span><span class="s0">, </span><span class="s2">'pgcode'</span><span class="s0">, </span><span class="s2">''</span><span class="s1">) != errorcodes.DUPLICATE_DATABASE:</span>
+                <span class="s3"># All errors except &quot;database already exists&quot; cancel tests.</span>
+                <span class="s1">self.log(</span><span class="s2">'Got an error creating the test database: %s' </span><span class="s1">% e)</span>
+                <span class="s1">sys.exit(</span><span class="s4">2</span><span class="s1">)</span>
+            <span class="s0">elif not </span><span class="s1">keepdb:</span>
+                <span class="s3"># If the database should be kept, ignore &quot;database already</span>
+                <span class="s3"># exists&quot;.</span>
+                <span class="s0">raise</span>
+
+    <span class="s0">def </span><span class="s1">_clone_test_db(self</span><span class="s0">, </span><span class="s1">suffix</span><span class="s0">, </span><span class="s1">verbosity</span><span class="s0">, </span><span class="s1">keepdb=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s3"># CREATE DATABASE ... WITH TEMPLATE ... requires closing connections</span>
+        <span class="s3"># to the template database.</span>
+        <span class="s1">self.connection.close()</span>
+
+        <span class="s1">source_database_name = self.connection.settings_dict[</span><span class="s2">'NAME'</span><span class="s1">]</span>
+        <span class="s1">target_database_name = self.get_test_db_clone_settings(suffix)[</span><span class="s2">'NAME'</span><span class="s1">]</span>
+        <span class="s1">test_db_params = {</span>
+            <span class="s2">'dbname'</span><span class="s1">: self._quote_name(target_database_name)</span><span class="s0">,</span>
+            <span class="s2">'suffix'</span><span class="s1">: self._get_database_create_suffix(template=source_database_name)</span><span class="s0">,</span>
+        <span class="s1">}</span>
+        <span class="s0">with </span><span class="s1">self._nodb_cursor() </span><span class="s0">as </span><span class="s1">cursor:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self._execute_create_test_db(cursor</span><span class="s0">, </span><span class="s1">test_db_params</span><span class="s0">, </span><span class="s1">keepdb)</span>
+            <span class="s0">except </span><span class="s1">Exception:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">verbosity &gt;= </span><span class="s4">1</span><span class="s1">:</span>
+                        <span class="s1">self.log(</span><span class="s2">'Destroying old test database for alias %s...' </span><span class="s1">% (</span>
+                            <span class="s1">self._get_database_display_str(verbosity</span><span class="s0">, </span><span class="s1">target_database_name)</span><span class="s0">,</span>
+                        <span class="s1">))</span>
+                    <span class="s1">cursor.execute(</span><span class="s2">'DROP DATABASE %(dbname)s' </span><span class="s1">% test_db_params)</span>
+                    <span class="s1">self._execute_create_test_db(cursor</span><span class="s0">, </span><span class="s1">test_db_params</span><span class="s0">, </span><span class="s1">keepdb)</span>
+                <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e:</span>
+                    <span class="s1">self.log(</span><span class="s2">'Got an error cloning the test database: %s' </span><span class="s1">% e)</span>
+                    <span class="s1">sys.exit(</span><span class="s4">2</span><span class="s1">)</span>
+</pre>
+</body>
+</html>

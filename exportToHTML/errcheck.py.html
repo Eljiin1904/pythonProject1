@@ -1,0 +1,105 @@
+<html>
+<head>
+<title>errcheck.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+errcheck.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+ Error checking functions for GEOS ctypes prototype functions. 
+&quot;&quot;&quot;</span>
+<span class="s2">from </span><span class="s1">ctypes </span><span class="s2">import </span><span class="s1">c_void_p</span><span class="s2">, </span><span class="s1">string_at</span>
+
+<span class="s2">from </span><span class="s1">django.contrib.gis.geos.error </span><span class="s2">import </span><span class="s1">GEOSException</span>
+<span class="s2">from </span><span class="s1">django.contrib.gis.geos.libgeos </span><span class="s2">import </span><span class="s1">GEOSFuncFactory</span>
+
+<span class="s3"># Getting the `free` routine used to free the memory allocated for</span>
+<span class="s3"># string pointers returned by GEOS.</span>
+<span class="s1">free = GEOSFuncFactory(</span><span class="s4">'GEOSFree'</span><span class="s1">)</span>
+<span class="s1">free.argtypes = [c_void_p]</span>
+
+
+<span class="s2">def </span><span class="s1">last_arg_byref(args):</span>
+    <span class="s0">&quot;Return the last C argument's value by reference.&quot;</span>
+    <span class="s2">return </span><span class="s1">args[-</span><span class="s5">1</span><span class="s1">]._obj.value</span>
+
+
+<span class="s2">def </span><span class="s1">check_dbl(result</span><span class="s2">, </span><span class="s1">func</span><span class="s2">, </span><span class="s1">cargs):</span>
+    <span class="s0">&quot;Check the status code and returns the double value passed in by reference.&quot;</span>
+    <span class="s3"># Checking the status code</span>
+    <span class="s2">if </span><span class="s1">result != </span><span class="s5">1</span><span class="s1">:</span>
+        <span class="s2">return None</span>
+    <span class="s3"># Double passed in by reference, return its value.</span>
+    <span class="s2">return </span><span class="s1">last_arg_byref(cargs)</span>
+
+
+<span class="s2">def </span><span class="s1">check_geom(result</span><span class="s2">, </span><span class="s1">func</span><span class="s2">, </span><span class="s1">cargs):</span>
+    <span class="s0">&quot;Error checking on routines that return Geometries.&quot;</span>
+    <span class="s2">if not </span><span class="s1">result:</span>
+        <span class="s2">raise </span><span class="s1">GEOSException(</span><span class="s4">'Error encountered checking Geometry returned from GEOS C function &quot;%s&quot;.' </span><span class="s1">% func.__name__)</span>
+    <span class="s2">return </span><span class="s1">result</span>
+
+
+<span class="s2">def </span><span class="s1">check_minus_one(result</span><span class="s2">, </span><span class="s1">func</span><span class="s2">, </span><span class="s1">cargs):</span>
+    <span class="s0">&quot;Error checking on routines that should not return -1.&quot;</span>
+    <span class="s2">if </span><span class="s1">result == -</span><span class="s5">1</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">GEOSException(</span><span class="s4">'Error encountered in GEOS C function &quot;%s&quot;.' </span><span class="s1">% func.__name__)</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">result</span>
+
+
+<span class="s2">def </span><span class="s1">check_predicate(result</span><span class="s2">, </span><span class="s1">func</span><span class="s2">, </span><span class="s1">cargs):</span>
+    <span class="s0">&quot;Error checking for unary/binary predicate functions.&quot;</span>
+    <span class="s2">if </span><span class="s1">result == </span><span class="s5">1</span><span class="s1">:</span>
+        <span class="s2">return True</span>
+    <span class="s2">elif </span><span class="s1">result == </span><span class="s5">0</span><span class="s1">:</span>
+        <span class="s2">return False</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">raise </span><span class="s1">GEOSException(</span><span class="s4">'Error encountered on GEOS C predicate function &quot;%s&quot;.' </span><span class="s1">% func.__name__)</span>
+
+
+<span class="s2">def </span><span class="s1">check_sized_string(result</span><span class="s2">, </span><span class="s1">func</span><span class="s2">, </span><span class="s1">cargs):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Error checking for routines that return explicitly sized strings. 
+ 
+    This frees the memory allocated by GEOS at the result pointer. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">result:</span>
+        <span class="s2">raise </span><span class="s1">GEOSException(</span><span class="s4">'Invalid string pointer returned by GEOS C function &quot;%s&quot;' </span><span class="s1">% func.__name__)</span>
+    <span class="s3"># A c_size_t object is passed in by reference for the second</span>
+    <span class="s3"># argument on these routines, and its needed to determine the</span>
+    <span class="s3"># correct size.</span>
+    <span class="s1">s = string_at(result</span><span class="s2">, </span><span class="s1">last_arg_byref(cargs))</span>
+    <span class="s3"># Freeing the memory allocated within GEOS</span>
+    <span class="s1">free(result)</span>
+    <span class="s2">return </span><span class="s1">s</span>
+
+
+<span class="s2">def </span><span class="s1">check_string(result</span><span class="s2">, </span><span class="s1">func</span><span class="s2">, </span><span class="s1">cargs):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Error checking for routines that return strings. 
+ 
+    This frees the memory allocated by GEOS at the result pointer. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if not </span><span class="s1">result:</span>
+        <span class="s2">raise </span><span class="s1">GEOSException(</span><span class="s4">'Error encountered checking string return value in GEOS C function &quot;%s&quot;.' </span><span class="s1">% func.__name__)</span>
+    <span class="s3"># Getting the string value at the pointer address.</span>
+    <span class="s1">s = string_at(result)</span>
+    <span class="s3"># Freeing the memory allocated within GEOS</span>
+    <span class="s1">free(result)</span>
+    <span class="s2">return </span><span class="s1">s</span>
+</pre>
+</body>
+</html>

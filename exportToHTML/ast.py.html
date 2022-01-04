@@ -1,0 +1,227 @@
+<html>
+<head>
+<title>ast.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+ast.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># mako/ast.py</span>
+<span class="s0"># Copyright 2006-2020 the Mako authors and contributors &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of Mako and is released under</span>
+<span class="s0"># the MIT License: http://www.opensource.org/licenses/mit-license.php</span>
+
+<span class="s2">&quot;&quot;&quot;utilities for analyzing expressions and blocks of Python 
+code, as well as generating Python from AST nodes&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">re</span>
+
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">compat</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">exceptions</span>
+<span class="s3">from </span><span class="s1">mako </span><span class="s3">import </span><span class="s1">pyparser</span>
+
+
+<span class="s3">class </span><span class="s1">PythonCode(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;represents information about a string containing Python code&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">code</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">self.code = code</span>
+
+        <span class="s0"># represents all identifiers which are assigned to at some point in</span>
+        <span class="s0"># the code</span>
+        <span class="s1">self.declared_identifiers = set()</span>
+
+        <span class="s0"># represents all identifiers which are referenced before their</span>
+        <span class="s0"># assignment, if any</span>
+        <span class="s1">self.undeclared_identifiers = set()</span>
+
+        <span class="s0"># note that an identifier can be in both the undeclared and declared</span>
+        <span class="s0"># lists.</span>
+
+        <span class="s0"># using AST to parse instead of using code.co_varnames,</span>
+        <span class="s0"># code.co_names has several advantages:</span>
+        <span class="s0"># - we can locate an identifier as &quot;undeclared&quot; even if</span>
+        <span class="s0"># its declared later in the same block of code</span>
+        <span class="s0"># - AST is less likely to break with version changes</span>
+        <span class="s0"># (for example, the behavior of co_names changed a little bit</span>
+        <span class="s0"># in python version 2.5)</span>
+        <span class="s3">if </span><span class="s1">isinstance(code</span><span class="s3">, </span><span class="s1">compat.string_types):</span>
+            <span class="s1">expr = pyparser.parse(code.lstrip()</span><span class="s3">, </span><span class="s4">&quot;exec&quot;</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">expr = code</span>
+
+        <span class="s1">f = pyparser.FindIdentifiers(self</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+        <span class="s1">f.visit(expr)</span>
+
+
+<span class="s3">class </span><span class="s1">ArgumentList(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;parses a fragment of code as a comma-separated list of expressions&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">code</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">self.codeargs = []</span>
+        <span class="s1">self.args = []</span>
+        <span class="s1">self.declared_identifiers = set()</span>
+        <span class="s1">self.undeclared_identifiers = set()</span>
+        <span class="s3">if </span><span class="s1">isinstance(code</span><span class="s3">, </span><span class="s1">compat.string_types):</span>
+            <span class="s3">if </span><span class="s1">re.match(</span><span class="s4">r&quot;\S&quot;</span><span class="s3">, </span><span class="s1">code) </span><span class="s3">and not </span><span class="s1">re.match(</span><span class="s4">r&quot;,\s*$&quot;</span><span class="s3">, </span><span class="s1">code):</span>
+                <span class="s0"># if theres text and no trailing comma, insure its parsed</span>
+                <span class="s0"># as a tuple by adding a trailing comma</span>
+                <span class="s1">code += </span><span class="s4">&quot;,&quot;</span>
+            <span class="s1">expr = pyparser.parse(code</span><span class="s3">, </span><span class="s4">&quot;exec&quot;</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">expr = code</span>
+
+        <span class="s1">f = pyparser.FindTuple(self</span><span class="s3">, </span><span class="s1">PythonCode</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+        <span class="s1">f.visit(expr)</span>
+
+
+<span class="s3">class </span><span class="s1">PythonFragment(PythonCode):</span>
+
+    <span class="s2">&quot;&quot;&quot;extends PythonCode to provide identifier lookups in partial control 
+    statements 
+ 
+    e.g.:: 
+ 
+        for x in 5: 
+        elif y==9: 
+        except (MyException, e): 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">code</span><span class="s3">, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">m = re.match(</span><span class="s4">r&quot;^(\w+)(?:\s+(.*?))?:\s*(#|$)&quot;</span><span class="s3">, </span><span class="s1">code.strip()</span><span class="s3">, </span><span class="s1">re.S)</span>
+        <span class="s3">if not </span><span class="s1">m:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;Fragment '%s' is not a partial control statement&quot; </span><span class="s1">% code</span><span class="s3">,</span>
+                <span class="s1">**exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">m.group(</span><span class="s5">3</span><span class="s1">):</span>
+            <span class="s1">code = code[: m.start(</span><span class="s5">3</span><span class="s1">)]</span>
+        <span class="s1">(keyword</span><span class="s3">, </span><span class="s1">expr) = m.group(</span><span class="s5">1</span><span class="s3">, </span><span class="s5">2</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">keyword </span><span class="s3">in </span><span class="s1">[</span><span class="s4">&quot;for&quot;</span><span class="s3">, </span><span class="s4">&quot;if&quot;</span><span class="s3">, </span><span class="s4">&quot;while&quot;</span><span class="s1">]:</span>
+            <span class="s1">code = code + </span><span class="s4">&quot;pass&quot;</span>
+        <span class="s3">elif </span><span class="s1">keyword == </span><span class="s4">&quot;try&quot;</span><span class="s1">:</span>
+            <span class="s1">code = code + </span><span class="s4">&quot;pass</span><span class="s3">\n</span><span class="s4">except:pass&quot;</span>
+        <span class="s3">elif </span><span class="s1">keyword == </span><span class="s4">&quot;elif&quot; </span><span class="s3">or </span><span class="s1">keyword == </span><span class="s4">&quot;else&quot;</span><span class="s1">:</span>
+            <span class="s1">code = </span><span class="s4">&quot;if False:pass</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">+ code + </span><span class="s4">&quot;pass&quot;</span>
+        <span class="s3">elif </span><span class="s1">keyword == </span><span class="s4">&quot;except&quot;</span><span class="s1">:</span>
+            <span class="s1">code = </span><span class="s4">&quot;try:pass</span><span class="s3">\n</span><span class="s4">&quot; </span><span class="s1">+ code + </span><span class="s4">&quot;pass&quot;</span>
+        <span class="s3">elif </span><span class="s1">keyword == </span><span class="s4">&quot;with&quot;</span><span class="s1">:</span>
+            <span class="s1">code = code + </span><span class="s4">&quot;pass&quot;</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;Unsupported control keyword: '%s'&quot; </span><span class="s1">% keyword</span><span class="s3">,</span>
+                <span class="s1">**exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s1">super(PythonFragment</span><span class="s3">, </span><span class="s1">self).__init__(code</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+
+
+<span class="s3">class </span><span class="s1">FunctionDecl(object):</span>
+
+    <span class="s2">&quot;&quot;&quot;function declaration&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">code</span><span class="s3">, </span><span class="s1">allow_kwargs=</span><span class="s3">True, </span><span class="s1">**exception_kwargs):</span>
+        <span class="s1">self.code = code</span>
+        <span class="s1">expr = pyparser.parse(code</span><span class="s3">, </span><span class="s4">&quot;exec&quot;</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+
+        <span class="s1">f = pyparser.ParseFunc(self</span><span class="s3">, </span><span class="s1">**exception_kwargs)</span>
+        <span class="s1">f.visit(expr)</span>
+        <span class="s3">if not </span><span class="s1">hasattr(self</span><span class="s3">, </span><span class="s4">&quot;funcname&quot;</span><span class="s1">):</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;Code '%s' is not a function declaration&quot; </span><span class="s1">% code</span><span class="s3">,</span>
+                <span class="s1">**exception_kwargs</span>
+            <span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">allow_kwargs </span><span class="s3">and </span><span class="s1">self.kwargs:</span>
+            <span class="s3">raise </span><span class="s1">exceptions.CompileException(</span>
+                <span class="s4">&quot;'**%s' keyword argument not allowed here&quot;</span>
+                <span class="s1">% self.kwargnames[-</span><span class="s5">1</span><span class="s1">]</span><span class="s3">,</span>
+                <span class="s1">**exception_kwargs</span>
+            <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">get_argument_expressions(self</span><span class="s3">, </span><span class="s1">as_call=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Return the argument declarations of this FunctionDecl as a printable 
+        list. 
+ 
+        By default the return value is appropriate for writing in a ``def``; 
+        set `as_call` to true to build arguments to be passed to the function 
+        instead (assuming locals with the same names as the arguments exist). 
+        &quot;&quot;&quot;</span>
+
+        <span class="s1">namedecls = []</span>
+
+        <span class="s0"># Build in reverse order, since defaults and slurpy args come last</span>
+        <span class="s1">argnames = self.argnames[::-</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s1">kwargnames = self.kwargnames[::-</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s1">defaults = self.defaults[::-</span><span class="s5">1</span><span class="s1">]</span>
+        <span class="s1">kwdefaults = self.kwdefaults[::-</span><span class="s5">1</span><span class="s1">]</span>
+
+        <span class="s0"># Named arguments</span>
+        <span class="s3">if </span><span class="s1">self.kwargs:</span>
+            <span class="s1">namedecls.append(</span><span class="s4">&quot;**&quot; </span><span class="s1">+ kwargnames.pop(</span><span class="s5">0</span><span class="s1">))</span>
+
+        <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">kwargnames:</span>
+            <span class="s0"># Keyword-only arguments must always be used by name, so even if</span>
+            <span class="s0"># this is a call, print out `foo=foo`</span>
+            <span class="s3">if </span><span class="s1">as_call:</span>
+                <span class="s1">namedecls.append(</span><span class="s4">&quot;%s=%s&quot; </span><span class="s1">% (name</span><span class="s3">, </span><span class="s1">name))</span>
+            <span class="s3">elif </span><span class="s1">kwdefaults:</span>
+                <span class="s1">default = kwdefaults.pop(</span><span class="s5">0</span><span class="s1">)</span>
+                <span class="s3">if </span><span class="s1">default </span><span class="s3">is None</span><span class="s1">:</span>
+                    <span class="s0"># The AST always gives kwargs a default, since you can do</span>
+                    <span class="s0"># `def foo(*, a=1, b, c=3)`</span>
+                    <span class="s1">namedecls.append(name)</span>
+                <span class="s3">else</span><span class="s1">:</span>
+                    <span class="s1">namedecls.append(</span>
+                        <span class="s4">&quot;%s=%s&quot;</span>
+                        <span class="s1">% (name</span><span class="s3">, </span><span class="s1">pyparser.ExpressionGenerator(default).value())</span>
+                    <span class="s1">)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">namedecls.append(name)</span>
+
+        <span class="s0"># Positional arguments</span>
+        <span class="s3">if </span><span class="s1">self.varargs:</span>
+            <span class="s1">namedecls.append(</span><span class="s4">&quot;*&quot; </span><span class="s1">+ argnames.pop(</span><span class="s5">0</span><span class="s1">))</span>
+
+        <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">argnames:</span>
+            <span class="s3">if </span><span class="s1">as_call </span><span class="s3">or not </span><span class="s1">defaults:</span>
+                <span class="s1">namedecls.append(name)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">default = defaults.pop(</span><span class="s5">0</span><span class="s1">)</span>
+                <span class="s1">namedecls.append(</span>
+                    <span class="s4">&quot;%s=%s&quot;</span>
+                    <span class="s1">% (name</span><span class="s3">, </span><span class="s1">pyparser.ExpressionGenerator(default).value())</span>
+                <span class="s1">)</span>
+
+        <span class="s1">namedecls.reverse()</span>
+        <span class="s3">return </span><span class="s1">namedecls</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">allargnames(self):</span>
+        <span class="s3">return </span><span class="s1">tuple(self.argnames) + tuple(self.kwargnames)</span>
+
+
+<span class="s3">class </span><span class="s1">FunctionArgs(FunctionDecl):</span>
+
+    <span class="s2">&quot;&quot;&quot;the argument portion of a function declaration&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">code</span><span class="s3">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super(FunctionArgs</span><span class="s3">, </span><span class="s1">self).__init__(</span>
+            <span class="s4">&quot;def ANON(%s):pass&quot; </span><span class="s1">% code</span><span class="s3">, </span><span class="s1">**kwargs</span>
+        <span class="s1">)</span>
+</pre>
+</body>
+</html>

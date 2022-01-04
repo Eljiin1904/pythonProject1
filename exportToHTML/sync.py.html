@@ -1,0 +1,570 @@
+<html>
+<head>
+<title>sync.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #808080;}
+.s4 { color: #629755; font-style: italic;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sync.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">asyncio.coroutines</span>
+<span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">import </span><span class="s1">weakref</span>
+<span class="s0">from </span><span class="s1">concurrent.futures </span><span class="s0">import </span><span class="s1">Future</span><span class="s0">, </span><span class="s1">ThreadPoolExecutor</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Any</span><span class="s0">, </span><span class="s1">Callable</span><span class="s0">, </span><span class="s1">Dict</span><span class="s0">, </span><span class="s1">Optional</span><span class="s0">, </span><span class="s1">overload</span>
+
+<span class="s0">from </span><span class="s1">.compatibility </span><span class="s0">import </span><span class="s1">get_running_loop</span>
+<span class="s0">from </span><span class="s1">.current_thread_executor </span><span class="s0">import </span><span class="s1">CurrentThreadExecutor</span>
+<span class="s0">from </span><span class="s1">.local </span><span class="s0">import </span><span class="s1">Local</span>
+
+<span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s2">3</span><span class="s0">, </span><span class="s2">7</span><span class="s1">):</span>
+    <span class="s0">import </span><span class="s1">contextvars</span>
+<span class="s0">else</span><span class="s1">:</span>
+    <span class="s1">contextvars = </span><span class="s0">None</span>
+
+
+<span class="s0">def </span><span class="s1">_restore_context(context):</span>
+    <span class="s3"># Check for changes in contextvars, and set them to the current</span>
+    <span class="s3"># context for downstream consumers</span>
+    <span class="s0">for </span><span class="s1">cvar </span><span class="s0">in </span><span class="s1">context:</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">cvar.get() != context.get(cvar):</span>
+                <span class="s1">cvar.set(context.get(cvar))</span>
+        <span class="s0">except </span><span class="s1">LookupError:</span>
+            <span class="s1">cvar.set(context.get(cvar))</span>
+
+
+<span class="s0">def </span><span class="s1">_iscoroutinefunction_or_partial(func: Any) -&gt; bool:</span>
+    <span class="s3"># Python &lt; 3.8 does not correctly determine partially wrapped</span>
+    <span class="s3"># coroutine functions are coroutine functions, hence the need for</span>
+    <span class="s3"># this to exist. Code taken from CPython.</span>
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s2">3</span><span class="s0">, </span><span class="s2">8</span><span class="s1">):</span>
+        <span class="s0">return </span><span class="s1">asyncio.iscoroutinefunction(func)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s0">while </span><span class="s1">inspect.ismethod(func):</span>
+            <span class="s1">func = func.__func__</span>
+        <span class="s0">while </span><span class="s1">isinstance(func</span><span class="s0">, </span><span class="s1">functools.partial):</span>
+            <span class="s1">func = func.func</span>
+
+        <span class="s0">return </span><span class="s1">asyncio.iscoroutinefunction(func)</span>
+
+
+<span class="s0">class </span><span class="s1">ThreadSensitiveContext:</span>
+    <span class="s4">&quot;&quot;&quot;Async context manager to manage context for thread sensitive mode 
+ 
+    This context manager controls which thread pool executor is used when in 
+    thread sensitive mode. By default, a single thread pool executor is shared 
+    within a process. 
+ 
+    In Python 3.7+, the ThreadSensitiveContext() context manager may be used to 
+    specify a thread pool per context. 
+ 
+    In Python 3.6, usage of this context manager has no effect. 
+ 
+    This context manager is re-entrant, so only the outer-most call to 
+    ThreadSensitiveContext will set the context. 
+ 
+    Usage: 
+ 
+    &gt;&gt;&gt; import time 
+    &gt;&gt;&gt; async with ThreadSensitiveContext(): 
+    ...     await sync_to_async(time.sleep, 1)() 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self):</span>
+        <span class="s1">self.token = </span><span class="s0">None</span>
+
+    <span class="s0">if </span><span class="s1">contextvars:</span>
+
+        <span class="s0">async def </span><span class="s1">__aenter__(self):</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">SyncToAsync.thread_sensitive_context.get()</span>
+            <span class="s0">except </span><span class="s1">LookupError:</span>
+                <span class="s1">self.token = SyncToAsync.thread_sensitive_context.set(self)</span>
+
+            <span class="s0">return </span><span class="s1">self</span>
+
+        <span class="s0">async def </span><span class="s1">__aexit__(self</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">tb):</span>
+            <span class="s0">if not </span><span class="s1">self.token:</span>
+                <span class="s0">return</span>
+
+            <span class="s1">executor = SyncToAsync.context_to_thread_executor.pop(self</span><span class="s0">, None</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">executor:</span>
+                <span class="s1">executor.shutdown()</span>
+            <span class="s1">SyncToAsync.thread_sensitive_context.reset(self.token)</span>
+
+    <span class="s0">else</span><span class="s1">:</span>
+
+        <span class="s0">async def </span><span class="s1">__aenter__(self):</span>
+            <span class="s0">return </span><span class="s1">self</span>
+
+        <span class="s0">async def </span><span class="s1">__aexit__(self</span><span class="s0">, </span><span class="s1">exc</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">tb):</span>
+            <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">AsyncToSync:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Utility class which turns an awaitable that only works on the thread with 
+    the event loop into a synchronous callable that works in a subthread. 
+ 
+    If the call stack contains an async loop, the code runs there. 
+    Otherwise, the code runs in a new loop in a new thread. 
+ 
+    Either way, this thread then pauses and waits to run any thread_sensitive 
+    code called from further down the call stack using SyncToAsync, before 
+    finally exiting once the async task returns. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3"># Maps launched Tasks to the threads that launched them (for locals impl)</span>
+    <span class="s1">launch_map: </span><span class="s5">&quot;Dict[asyncio.Task[object], threading.Thread]&quot; </span><span class="s1">= {}</span>
+
+    <span class="s3"># Keeps track of which CurrentThreadExecutor to use. This uses an asgiref</span>
+    <span class="s3"># Local, not a threadlocal, so that tasks can work out what their parent used.</span>
+    <span class="s1">executors = Local()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">awaitable</span><span class="s0">, </span><span class="s1">force_new_loop=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s0">if not </span><span class="s1">callable(awaitable) </span><span class="s0">or not </span><span class="s1">_iscoroutinefunction_or_partial(awaitable):</span>
+            <span class="s3"># Python does not have very reliable detection of async functions</span>
+            <span class="s3"># (lots of false negatives) so this is just a warning.</span>
+            <span class="s1">warnings.warn(</span><span class="s5">&quot;async_to_sync was passed a non-async-marked callable&quot;</span><span class="s1">)</span>
+        <span class="s1">self.awaitable = awaitable</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self.__self__ = self.awaitable.__self__</span>
+        <span class="s0">except </span><span class="s1">AttributeError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">if </span><span class="s1">force_new_loop:</span>
+            <span class="s3"># They have asked that we always run in a new sub-loop.</span>
+            <span class="s1">self.main_event_loop = </span><span class="s0">None</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self.main_event_loop = get_running_loop()</span>
+            <span class="s0">except </span><span class="s1">RuntimeError:</span>
+                <span class="s3"># There's no event loop in this thread. Look for the threadlocal if</span>
+                <span class="s3"># we're inside SyncToAsync</span>
+                <span class="s1">main_event_loop_pid = getattr(</span>
+                    <span class="s1">SyncToAsync.threadlocal</span><span class="s0">, </span><span class="s5">&quot;main_event_loop_pid&quot;</span><span class="s0">, None</span>
+                <span class="s1">)</span>
+                <span class="s3"># We make sure the parent loop is from the same process - if</span>
+                <span class="s3"># they've forked, this is not going to be valid any more (#194)</span>
+                <span class="s0">if </span><span class="s1">main_event_loop_pid </span><span class="s0">and </span><span class="s1">main_event_loop_pid == os.getpid():</span>
+                    <span class="s1">self.main_event_loop = getattr(</span>
+                        <span class="s1">SyncToAsync.threadlocal</span><span class="s0">, </span><span class="s5">&quot;main_event_loop&quot;</span><span class="s0">, None</span>
+                    <span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">self.main_event_loop = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s3"># You can't call AsyncToSync from a thread with a running event loop</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">event_loop = get_running_loop()</span>
+        <span class="s0">except </span><span class="s1">RuntimeError:</span>
+            <span class="s0">pass</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">event_loop.is_running():</span>
+                <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                    <span class="s5">&quot;You cannot use AsyncToSync in the same thread as an async event loop - &quot;</span>
+                    <span class="s5">&quot;just await the async function directly.&quot;</span>
+                <span class="s1">)</span>
+
+        <span class="s0">if </span><span class="s1">contextvars </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s3"># Wrapping context in list so it can be reassigned from within</span>
+            <span class="s3"># `main_wrap`.</span>
+            <span class="s1">context = [contextvars.copy_context()]</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">context = </span><span class="s0">None</span>
+
+        <span class="s3"># Make a future for the return information</span>
+        <span class="s1">call_result = Future()</span>
+        <span class="s3"># Get the source thread</span>
+        <span class="s1">source_thread = threading.current_thread()</span>
+        <span class="s3"># Make a CurrentThreadExecutor we'll use to idle in this thread - we</span>
+        <span class="s3"># need one for every sync frame, even if there's one above us in the</span>
+        <span class="s3"># same thread.</span>
+        <span class="s0">if </span><span class="s1">hasattr(self.executors</span><span class="s0">, </span><span class="s5">&quot;current&quot;</span><span class="s1">):</span>
+            <span class="s1">old_current_executor = self.executors.current</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">old_current_executor = </span><span class="s0">None</span>
+        <span class="s1">current_executor = CurrentThreadExecutor()</span>
+        <span class="s1">self.executors.current = current_executor</span>
+        <span class="s3"># Use call_soon_threadsafe to schedule a synchronous callback on the</span>
+        <span class="s3"># main event loop's thread if it's there, otherwise make a new loop</span>
+        <span class="s3"># in this thread.</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">awaitable = self.main_wrap(</span>
+                <span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span><span class="s0">, </span><span class="s1">call_result</span><span class="s0">, </span><span class="s1">source_thread</span><span class="s0">, </span><span class="s1">sys.exc_info()</span><span class="s0">, </span><span class="s1">context</span>
+            <span class="s1">)</span>
+
+            <span class="s0">if not </span><span class="s1">(self.main_event_loop </span><span class="s0">and </span><span class="s1">self.main_event_loop.is_running()):</span>
+                <span class="s3"># Make our own event loop - in a new thread - and run inside that.</span>
+                <span class="s1">loop = asyncio.new_event_loop()</span>
+                <span class="s1">loop_executor = ThreadPoolExecutor(max_workers=</span><span class="s2">1</span><span class="s1">)</span>
+                <span class="s1">loop_future = loop_executor.submit(</span>
+                    <span class="s1">self._run_event_loop</span><span class="s0">, </span><span class="s1">loop</span><span class="s0">, </span><span class="s1">awaitable</span>
+                <span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">current_executor:</span>
+                    <span class="s3"># Run the CurrentThreadExecutor until the future is done</span>
+                    <span class="s1">current_executor.run_until_future(loop_future)</span>
+                <span class="s3"># Wait for future and/or allow for exception propagation</span>
+                <span class="s1">loop_future.result()</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s3"># Call it inside the existing loop</span>
+                <span class="s1">self.main_event_loop.call_soon_threadsafe(</span>
+                    <span class="s1">self.main_event_loop.create_task</span><span class="s0">, </span><span class="s1">awaitable</span>
+                <span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">current_executor:</span>
+                    <span class="s3"># Run the CurrentThreadExecutor until the future is done</span>
+                    <span class="s1">current_executor.run_until_future(call_result)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s3"># Clean up any executor we were running</span>
+            <span class="s0">if </span><span class="s1">hasattr(self.executors</span><span class="s0">, </span><span class="s5">&quot;current&quot;</span><span class="s1">):</span>
+                <span class="s0">del </span><span class="s1">self.executors.current</span>
+            <span class="s0">if </span><span class="s1">old_current_executor:</span>
+                <span class="s1">self.executors.current = old_current_executor</span>
+            <span class="s0">if </span><span class="s1">contextvars </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">_restore_context(context[</span><span class="s2">0</span><span class="s1">])</span>
+
+        <span class="s3"># Wait for results from the future.</span>
+        <span class="s0">return </span><span class="s1">call_result.result()</span>
+
+    <span class="s0">def </span><span class="s1">_run_event_loop(self</span><span class="s0">, </span><span class="s1">loop</span><span class="s0">, </span><span class="s1">coro):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Runs the given event loop (designed to be called in a thread). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">asyncio.set_event_loop(loop)</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">loop.run_until_complete(coro)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s3"># mimic asyncio.run() behavior</span>
+                <span class="s3"># cancel unexhausted async generators</span>
+                <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s2">3</span><span class="s0">, </span><span class="s2">7</span><span class="s0">, </span><span class="s2">0</span><span class="s1">):</span>
+                    <span class="s1">tasks = asyncio.all_tasks(loop)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">tasks = asyncio.Task.all_tasks(loop)</span>
+                <span class="s0">for </span><span class="s1">task </span><span class="s0">in </span><span class="s1">tasks:</span>
+                    <span class="s1">task.cancel()</span>
+
+                <span class="s0">async def </span><span class="s1">gather():</span>
+                    <span class="s0">await </span><span class="s1">asyncio.gather(*tasks</span><span class="s0">, </span><span class="s1">return_exceptions=</span><span class="s0">True</span><span class="s1">)</span>
+
+                <span class="s1">loop.run_until_complete(gather())</span>
+                <span class="s0">for </span><span class="s1">task </span><span class="s0">in </span><span class="s1">tasks:</span>
+                    <span class="s0">if </span><span class="s1">task.cancelled():</span>
+                        <span class="s0">continue</span>
+                    <span class="s0">if </span><span class="s1">task.exception() </span><span class="s0">is not None</span><span class="s1">:</span>
+                        <span class="s1">loop.call_exception_handler(</span>
+                            <span class="s1">{</span>
+                                <span class="s5">&quot;message&quot;</span><span class="s1">: </span><span class="s5">&quot;unhandled exception during loop shutdown&quot;</span><span class="s0">,</span>
+                                <span class="s5">&quot;exception&quot;</span><span class="s1">: task.exception()</span><span class="s0">,</span>
+                                <span class="s5">&quot;task&quot;</span><span class="s1">: task</span><span class="s0">,</span>
+                            <span class="s1">}</span>
+                        <span class="s1">)</span>
+                <span class="s0">if </span><span class="s1">hasattr(loop</span><span class="s0">, </span><span class="s5">&quot;shutdown_asyncgens&quot;</span><span class="s1">):</span>
+                    <span class="s1">loop.run_until_complete(loop.shutdown_asyncgens())</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s1">loop.close()</span>
+                <span class="s1">asyncio.set_event_loop(self.main_event_loop)</span>
+
+    <span class="s0">def </span><span class="s1">__get__(self</span><span class="s0">, </span><span class="s1">parent</span><span class="s0">, </span><span class="s1">objtype):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Include self for methods 
+        &quot;&quot;&quot;</span>
+        <span class="s1">func = functools.partial(self.__call__</span><span class="s0">, </span><span class="s1">parent)</span>
+        <span class="s0">return </span><span class="s1">functools.update_wrapper(func</span><span class="s0">, </span><span class="s1">self.awaitable)</span>
+
+    <span class="s0">async def </span><span class="s1">main_wrap(</span>
+        <span class="s1">self</span><span class="s0">, </span><span class="s1">args</span><span class="s0">, </span><span class="s1">kwargs</span><span class="s0">, </span><span class="s1">call_result</span><span class="s0">, </span><span class="s1">source_thread</span><span class="s0">, </span><span class="s1">exc_info</span><span class="s0">, </span><span class="s1">context</span>
+    <span class="s1">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Wraps the awaitable with something that puts the result into the 
+        result/exception future. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">context </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">_restore_context(context[</span><span class="s2">0</span><span class="s1">])</span>
+
+        <span class="s1">current_task = SyncToAsync.get_current_task()</span>
+        <span class="s1">self.launch_map[current_task] = source_thread</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s3"># If we have an exception, run the function inside the except block</span>
+            <span class="s3"># after raising it so exc_info is correctly populated.</span>
+            <span class="s0">if </span><span class="s1">exc_info[</span><span class="s2">1</span><span class="s1">]:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">exc_info[</span><span class="s2">1</span><span class="s1">]</span>
+                <span class="s0">except </span><span class="s1">BaseException:</span>
+                    <span class="s1">result = </span><span class="s0">await </span><span class="s1">self.awaitable(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">result = </span><span class="s0">await </span><span class="s1">self.awaitable(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">except </span><span class="s1">BaseException </span><span class="s0">as </span><span class="s1">e:</span>
+            <span class="s1">call_result.set_exception(e)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">call_result.set_result(result)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">del </span><span class="s1">self.launch_map[current_task]</span>
+
+            <span class="s0">if </span><span class="s1">context </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">context[</span><span class="s2">0</span><span class="s1">] = contextvars.copy_context()</span>
+
+
+<span class="s0">class </span><span class="s1">SyncToAsync:</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Utility class which turns a synchronous callable into an awaitable that 
+    runs in a threadpool. It also sets a threadlocal inside the thread so 
+    calls to AsyncToSync can escape it. 
+ 
+    If thread_sensitive is passed, the code will run in the same thread as any 
+    outer code. This is needed for underlying Python code that is not 
+    threadsafe (for example, code which handles SQLite database connections). 
+ 
+    If the outermost program is async (i.e. SyncToAsync is outermost), then 
+    this will be a dedicated single sub-thread that all sync code runs in, 
+    one after the other. If the outermost program is sync (i.e. AsyncToSync is 
+    outermost), this will just be the main thread. This is achieved by idling 
+    with a CurrentThreadExecutor while AsyncToSync is blocking its sync parent, 
+    rather than just blocking. 
+ 
+    If executor is passed in, that will be used instead of the loop's default executor. 
+    In order to pass in an executor, thread_sensitive must be set to False, otherwise 
+    a TypeError will be raised. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3"># If they've set ASGI_THREADS, update the default asyncio executor for now</span>
+    <span class="s0">if </span><span class="s5">&quot;ASGI_THREADS&quot; </span><span class="s0">in </span><span class="s1">os.environ:</span>
+        <span class="s1">loop = get_running_loop()</span>
+        <span class="s1">loop.set_default_executor(</span>
+            <span class="s1">ThreadPoolExecutor(max_workers=int(os.environ[</span><span class="s5">&quot;ASGI_THREADS&quot;</span><span class="s1">]))</span>
+        <span class="s1">)</span>
+
+    <span class="s3"># Maps launched threads to the coroutines that spawned them</span>
+    <span class="s1">launch_map: </span><span class="s5">&quot;Dict[threading.Thread, asyncio.Task[object]]&quot; </span><span class="s1">= {}</span>
+
+    <span class="s3"># Storage for main event loop references</span>
+    <span class="s1">threadlocal = threading.local()</span>
+
+    <span class="s3"># Single-thread executor for thread-sensitive code</span>
+    <span class="s1">single_thread_executor = ThreadPoolExecutor(max_workers=</span><span class="s2">1</span><span class="s1">)</span>
+
+    <span class="s3"># Maintain a contextvar for the current execution context. Optionally used</span>
+    <span class="s3"># for thread sensitive mode.</span>
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s2">3</span><span class="s0">, </span><span class="s2">7</span><span class="s1">):</span>
+        <span class="s1">thread_sensitive_context: </span><span class="s5">&quot;contextvars.ContextVar[str]&quot; </span><span class="s1">= (</span>
+            <span class="s1">contextvars.ContextVar(</span><span class="s5">&quot;thread_sensitive_context&quot;</span><span class="s1">)</span>
+        <span class="s1">)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">thread_sensitive_context: </span><span class="s0">None </span><span class="s1">= </span><span class="s0">None</span>
+
+    <span class="s3"># Contextvar that is used to detect if the single thread executor</span>
+    <span class="s3"># would be awaited on while already being used in the same context</span>
+    <span class="s0">if </span><span class="s1">sys.version_info &gt;= (</span><span class="s2">3</span><span class="s0">, </span><span class="s2">7</span><span class="s1">):</span>
+        <span class="s1">deadlock_context: </span><span class="s5">&quot;contextvars.ContextVar[bool]&quot; </span><span class="s1">= contextvars.ContextVar(</span>
+            <span class="s5">&quot;deadlock_context&quot;</span>
+        <span class="s1">)</span>
+    <span class="s0">else</span><span class="s1">:</span>
+        <span class="s1">deadlock_context: </span><span class="s0">None </span><span class="s1">= </span><span class="s0">None</span>
+
+    <span class="s3"># Maintaining a weak reference to the context ensures that thread pools are</span>
+    <span class="s3"># erased once the context goes out of scope. This terminates the thread pool.</span>
+    <span class="s1">context_to_thread_executor: </span><span class="s5">&quot;weakref.WeakKeyDictionary[object, ThreadPoolExecutor]&quot; </span><span class="s1">= (</span>
+        <span class="s1">weakref.WeakKeyDictionary()</span>
+    <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s0">,</span>
+        <span class="s1">func: Callable[...</span><span class="s0">, </span><span class="s1">Any]</span><span class="s0">,</span>
+        <span class="s1">thread_sensitive: bool = </span><span class="s0">True,</span>
+        <span class="s1">executor: Optional[</span><span class="s5">&quot;ThreadPoolExecutor&quot;</span><span class="s1">] = </span><span class="s0">None,</span>
+    <span class="s1">) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s0">if not </span><span class="s1">callable(func) </span><span class="s0">or </span><span class="s1">_iscoroutinefunction_or_partial(func):</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;sync_to_async can only be applied to sync functions.&quot;</span><span class="s1">)</span>
+        <span class="s1">self.func = func</span>
+        <span class="s1">functools.update_wrapper(self</span><span class="s0">, </span><span class="s1">func)</span>
+        <span class="s1">self._thread_sensitive = thread_sensitive</span>
+        <span class="s1">self._is_coroutine = asyncio.coroutines._is_coroutine  </span><span class="s3"># type: ignore</span>
+        <span class="s0">if </span><span class="s1">thread_sensitive </span><span class="s0">and </span><span class="s1">executor </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span><span class="s5">&quot;executor must not be set when thread_sensitive is True&quot;</span><span class="s1">)</span>
+        <span class="s1">self._executor = executor</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">self.__self__ = func.__self__  </span><span class="s3"># type: ignore</span>
+        <span class="s0">except </span><span class="s1">AttributeError:</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">async def </span><span class="s1">__call__(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">loop = get_running_loop()</span>
+
+        <span class="s3"># Work out what thread to run the code in</span>
+        <span class="s0">if </span><span class="s1">self._thread_sensitive:</span>
+            <span class="s0">if </span><span class="s1">hasattr(AsyncToSync.executors</span><span class="s0">, </span><span class="s5">&quot;current&quot;</span><span class="s1">):</span>
+                <span class="s3"># If we have a parent sync thread above somewhere, use that</span>
+                <span class="s1">executor = AsyncToSync.executors.current</span>
+            <span class="s0">elif </span><span class="s1">self.thread_sensitive_context </span><span class="s0">and </span><span class="s1">self.thread_sensitive_context.get(</span>
+                <span class="s0">None</span>
+            <span class="s1">):</span>
+                <span class="s3"># If we have a way of retrieving the current context, attempt</span>
+                <span class="s3"># to use a per-context thread pool executor</span>
+                <span class="s1">thread_sensitive_context = self.thread_sensitive_context.get()</span>
+
+                <span class="s0">if </span><span class="s1">thread_sensitive_context </span><span class="s0">in </span><span class="s1">self.context_to_thread_executor:</span>
+                    <span class="s3"># Re-use thread executor in current context</span>
+                    <span class="s1">executor = self.context_to_thread_executor[thread_sensitive_context]</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s3"># Create new thread executor in current context</span>
+                    <span class="s1">executor = ThreadPoolExecutor(max_workers=</span><span class="s2">1</span><span class="s1">)</span>
+                    <span class="s1">self.context_to_thread_executor[thread_sensitive_context] = executor</span>
+            <span class="s0">elif </span><span class="s1">self.deadlock_context </span><span class="s0">and </span><span class="s1">self.deadlock_context.get(</span><span class="s0">False</span><span class="s1">):</span>
+                <span class="s0">raise </span><span class="s1">RuntimeError(</span>
+                    <span class="s5">&quot;Single thread executor already being used, would deadlock&quot;</span>
+                <span class="s1">)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s3"># Otherwise, we run it in a fixed single thread</span>
+                <span class="s1">executor = self.single_thread_executor</span>
+                <span class="s0">if </span><span class="s1">self.deadlock_context:</span>
+                    <span class="s1">self.deadlock_context.set(</span><span class="s0">True</span><span class="s1">)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s3"># Use the passed in executor, or the loop's default if it is None</span>
+            <span class="s1">executor = self._executor</span>
+
+        <span class="s0">if </span><span class="s1">contextvars </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">context = contextvars.copy_context()</span>
+            <span class="s1">child = functools.partial(self.func</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s1">func = context.run</span>
+            <span class="s1">args = (child</span><span class="s0">,</span><span class="s1">)</span>
+            <span class="s1">kwargs = {}</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">func = self.func</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s3"># Run the code in the right thread</span>
+            <span class="s1">future = loop.run_in_executor(</span>
+                <span class="s1">executor</span><span class="s0">,</span>
+                <span class="s1">functools.partial(</span>
+                    <span class="s1">self.thread_handler</span><span class="s0">,</span>
+                    <span class="s1">loop</span><span class="s0">,</span>
+                    <span class="s1">self.get_current_task()</span><span class="s0">,</span>
+                    <span class="s1">sys.exc_info()</span><span class="s0">,</span>
+                    <span class="s1">func</span><span class="s0">,</span>
+                    <span class="s1">*args</span><span class="s0">,</span>
+                    <span class="s1">**kwargs</span><span class="s0">,</span>
+                <span class="s1">)</span><span class="s0">,</span>
+            <span class="s1">)</span>
+            <span class="s1">ret = </span><span class="s0">await </span><span class="s1">asyncio.wait_for(future</span><span class="s0">, </span><span class="s1">timeout=</span><span class="s0">None</span><span class="s1">)</span>
+
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">contextvars </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">_restore_context(context)</span>
+            <span class="s0">if </span><span class="s1">self.deadlock_context:</span>
+                <span class="s1">self.deadlock_context.set(</span><span class="s0">False</span><span class="s1">)</span>
+
+        <span class="s0">return </span><span class="s1">ret</span>
+
+    <span class="s0">def </span><span class="s1">__get__(self</span><span class="s0">, </span><span class="s1">parent</span><span class="s0">, </span><span class="s1">objtype):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Include self for methods 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">functools.partial(self.__call__</span><span class="s0">, </span><span class="s1">parent)</span>
+
+    <span class="s0">def </span><span class="s1">thread_handler(self</span><span class="s0">, </span><span class="s1">loop</span><span class="s0">, </span><span class="s1">source_task</span><span class="s0">, </span><span class="s1">exc_info</span><span class="s0">, </span><span class="s1">func</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Wraps the sync application with exception handling. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Set the threadlocal for AsyncToSync</span>
+        <span class="s1">self.threadlocal.main_event_loop = loop</span>
+        <span class="s1">self.threadlocal.main_event_loop_pid = os.getpid()</span>
+        <span class="s3"># Set the task mapping (used for the locals module)</span>
+        <span class="s1">current_thread = threading.current_thread()</span>
+        <span class="s0">if </span><span class="s1">AsyncToSync.launch_map.get(source_task) == current_thread:</span>
+            <span class="s3"># Our parent task was launched from this same thread, so don't make</span>
+            <span class="s3"># a launch map entry - let it shortcut over us! (and stop infinite loops)</span>
+            <span class="s1">parent_set = </span><span class="s0">False</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.launch_map[current_thread] = source_task</span>
+            <span class="s1">parent_set = </span><span class="s0">True</span>
+        <span class="s3"># Run the function</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s3"># If we have an exception, run the function inside the except block</span>
+            <span class="s3"># after raising it so exc_info is correctly populated.</span>
+            <span class="s0">if </span><span class="s1">exc_info[</span><span class="s2">1</span><span class="s1">]:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s0">raise </span><span class="s1">exc_info[</span><span class="s2">1</span><span class="s1">]</span>
+                <span class="s0">except </span><span class="s1">BaseException:</span>
+                    <span class="s0">return </span><span class="s1">func(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s0">return </span><span class="s1">func(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+        <span class="s0">finally</span><span class="s1">:</span>
+            <span class="s3"># Only delete the launch_map parent if we set it, otherwise it is</span>
+            <span class="s3"># from someone else.</span>
+            <span class="s0">if </span><span class="s1">parent_set:</span>
+                <span class="s0">del </span><span class="s1">self.launch_map[current_thread]</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s0">def </span><span class="s1">get_current_task():</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Cross-version implementation of asyncio.current_task() 
+ 
+        Returns None if there is no task. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">hasattr(asyncio</span><span class="s0">, </span><span class="s5">&quot;current_task&quot;</span><span class="s1">):</span>
+                <span class="s3"># Python 3.7 and up</span>
+                <span class="s0">return </span><span class="s1">asyncio.current_task()</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s3"># Python 3.6</span>
+                <span class="s0">return </span><span class="s1">asyncio.Task.current_task()</span>
+        <span class="s0">except </span><span class="s1">RuntimeError:</span>
+            <span class="s0">return None</span>
+
+
+<span class="s3"># Lowercase aliases (and decorator friendliness)</span>
+<span class="s1">async_to_sync = AsyncToSync</span>
+
+
+<span class="s1">@overload</span>
+<span class="s0">def </span><span class="s1">sync_to_async(</span>
+    <span class="s1">func: </span><span class="s0">None </span><span class="s1">= </span><span class="s0">None,</span>
+    <span class="s1">thread_sensitive: bool = </span><span class="s0">True,</span>
+    <span class="s1">executor: Optional[</span><span class="s5">&quot;ThreadPoolExecutor&quot;</span><span class="s1">] = </span><span class="s0">None,</span>
+<span class="s1">) -&gt; Callable[[Callable[...</span><span class="s0">, </span><span class="s1">Any]]</span><span class="s0">, </span><span class="s1">SyncToAsync]:</span>
+    <span class="s1">...</span>
+
+
+<span class="s1">@overload</span>
+<span class="s0">def </span><span class="s1">sync_to_async(</span>
+    <span class="s1">func: Callable[...</span><span class="s0">, </span><span class="s1">Any]</span><span class="s0">,</span>
+    <span class="s1">thread_sensitive: bool = </span><span class="s0">True,</span>
+    <span class="s1">executor: Optional[</span><span class="s5">&quot;ThreadPoolExecutor&quot;</span><span class="s1">] = </span><span class="s0">None,</span>
+<span class="s1">) -&gt; SyncToAsync:</span>
+    <span class="s1">...</span>
+
+
+<span class="s0">def </span><span class="s1">sync_to_async(</span>
+    <span class="s1">func=</span><span class="s0">None,</span>
+    <span class="s1">thread_sensitive=</span><span class="s0">True,</span>
+    <span class="s1">executor=</span><span class="s0">None,</span>
+<span class="s1">):</span>
+    <span class="s0">if </span><span class="s1">func </span><span class="s0">is None</span><span class="s1">:</span>
+        <span class="s0">return lambda </span><span class="s1">f: SyncToAsync(</span>
+            <span class="s1">f</span><span class="s0">,</span>
+            <span class="s1">thread_sensitive=thread_sensitive</span><span class="s0">,</span>
+            <span class="s1">executor=executor</span><span class="s0">,</span>
+        <span class="s1">)</span>
+    <span class="s0">return </span><span class="s1">SyncToAsync(</span>
+        <span class="s1">func</span><span class="s0">,</span>
+        <span class="s1">thread_sensitive=thread_sensitive</span><span class="s0">,</span>
+        <span class="s1">executor=executor</span><span class="s0">,</span>
+    <span class="s1">)</span>
+</pre>
+</body>
+</html>

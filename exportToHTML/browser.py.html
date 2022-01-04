@@ -1,0 +1,396 @@
+<html>
+<head>
+<title>browser.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+browser.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Browser module.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">from </span><span class="s1">subprocess </span><span class="s3">import </span><span class="s1">Popen</span>
+<span class="s3">from </span><span class="s1">types </span><span class="s3">import </span><span class="s1">SimpleNamespace</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">Awaitable</span><span class="s3">, </span><span class="s1">Callable</span><span class="s3">, </span><span class="s1">Dict</span><span class="s3">, </span><span class="s1">List</span><span class="s3">, </span><span class="s1">Optional</span>
+
+<span class="s3">from </span><span class="s1">pyee </span><span class="s3">import </span><span class="s1">EventEmitter</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">Connection</span>
+<span class="s3">from </span><span class="s1">pyppeteer.errors </span><span class="s3">import </span><span class="s1">BrowserError</span>
+<span class="s3">from </span><span class="s1">pyppeteer.page </span><span class="s3">import </span><span class="s1">Page</span>
+<span class="s3">from </span><span class="s1">pyppeteer.target </span><span class="s3">import </span><span class="s1">Target</span>
+
+<span class="s1">logger = logging.getLogger(__name__)</span>
+
+
+<span class="s3">class </span><span class="s1">Browser(EventEmitter):</span>
+    <span class="s2">&quot;&quot;&quot;Browser class. 
+ 
+    A Browser object is created when pyppeteer connects to chrome, either 
+    through :func:`~pyppeteer.launcher.launch` or 
+    :func:`~pyppeteer.launcher.connect`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">Events = SimpleNamespace(</span>
+        <span class="s1">TargetCreated=</span><span class="s4">'targetcreated'</span><span class="s3">,</span>
+        <span class="s1">TargetDestroyed=</span><span class="s4">'targetdestroyed'</span><span class="s3">,</span>
+        <span class="s1">TargetChanged=</span><span class="s4">'targetchanged'</span><span class="s3">,</span>
+        <span class="s1">Disconnected=</span><span class="s4">'disconnected'</span><span class="s3">,</span>
+    <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">connection: Connection</span><span class="s3">, </span><span class="s1">contextIds: List[str]</span><span class="s3">,</span>
+                 <span class="s1">ignoreHTTPSErrors: bool</span><span class="s3">, </span><span class="s1">defaultViewport: Optional[Dict]</span><span class="s3">,</span>
+                 <span class="s1">process: Optional[Popen] = </span><span class="s3">None,</span>
+                 <span class="s1">closeCallback: Callable[[]</span><span class="s3">, </span><span class="s1">Awaitable[</span><span class="s3">None</span><span class="s1">]] = </span><span class="s3">None,</span>
+                 <span class="s1">**kwargs: Any) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self._ignoreHTTPSErrors = ignoreHTTPSErrors</span>
+        <span class="s1">self._defaultViewport = defaultViewport</span>
+        <span class="s1">self._process = process</span>
+        <span class="s1">self._screenshotTaskQueue: List = []</span>
+        <span class="s1">self._connection = connection</span>
+        <span class="s1">loop = self._connection._loop</span>
+
+        <span class="s3">def </span><span class="s1">_dummy_callback() -&gt; Awaitable[</span><span class="s3">None</span><span class="s1">]:</span>
+            <span class="s1">fut = loop.create_future()</span>
+            <span class="s1">fut.set_result(</span><span class="s3">None</span><span class="s1">)</span>
+            <span class="s3">return </span><span class="s1">fut</span>
+
+        <span class="s3">if </span><span class="s1">closeCallback:</span>
+            <span class="s1">self._closeCallback = closeCallback</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self._closeCallback = _dummy_callback</span>
+
+        <span class="s1">self._defaultContext = BrowserContext(self</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s1">self._contexts: Dict[str</span><span class="s3">, </span><span class="s1">BrowserContext] = dict()</span>
+        <span class="s3">for </span><span class="s1">contextId </span><span class="s3">in </span><span class="s1">contextIds:</span>
+            <span class="s1">self._contexts[contextId] = BrowserContext(self</span><span class="s3">, </span><span class="s1">contextId)</span>
+
+        <span class="s1">self._targets: Dict[str</span><span class="s3">, </span><span class="s1">Target] = dict()</span>
+        <span class="s1">self._connection.setClosedCallback(</span>
+            <span class="s3">lambda</span><span class="s1">: self.emit(Browser.Events.Disconnected)</span>
+        <span class="s1">)</span>
+        <span class="s1">self._connection.on(</span>
+            <span class="s4">'Target.targetCreated'</span><span class="s3">,</span>
+            <span class="s3">lambda </span><span class="s1">event: loop.create_task(self._targetCreated(event))</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._connection.on(</span>
+            <span class="s4">'Target.targetDestroyed'</span><span class="s3">,</span>
+            <span class="s3">lambda </span><span class="s1">event: loop.create_task(self._targetDestroyed(event))</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s1">self._connection.on(</span>
+            <span class="s4">'Target.targetInfoChanged'</span><span class="s3">,</span>
+            <span class="s3">lambda </span><span class="s1">event: loop.create_task(self._targetInfoChanged(event))</span><span class="s3">,</span>
+        <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">process(self) -&gt; Optional[Popen]:</span>
+        <span class="s2">&quot;&quot;&quot;Return process of this browser. 
+ 
+        If browser instance is created by :func:`pyppeteer.launcher.connect`, 
+        return ``None``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._process</span>
+
+    <span class="s3">async def </span><span class="s1">createIncogniteBrowserContext(self) -&gt; </span><span class="s4">'BrowserContext'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;[Deprecated] Miss spelled method. 
+ 
+        Use :meth:`createIncognitoBrowserContext` method instead. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">logger.warning(</span>
+            <span class="s4">'createIncogniteBrowserContext is deprecated. '</span>
+            <span class="s4">'Use createIncognitoBrowserContext instead.'</span>
+        <span class="s1">)</span>
+        <span class="s3">return await </span><span class="s1">self.createIncognitoBrowserContext()</span>
+
+    <span class="s3">async def </span><span class="s1">createIncognitoBrowserContext(self) -&gt; </span><span class="s4">'BrowserContext'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Create a new incognito browser context. 
+ 
+        This won't share cookies/cache with other browser contexts. 
+ 
+        .. code:: 
+ 
+            browser = await launch() 
+            # Create a new incognito browser context. 
+            context = await browser.createIncognitoBrowserContext() 
+            # Create a new page in a pristine context. 
+            page = await context.newPage() 
+            # Do stuff 
+            await page.goto('https://example.com') 
+            ... 
+        &quot;&quot;&quot;</span>
+        <span class="s1">obj = </span><span class="s3">await </span><span class="s1">self._connection.send(</span><span class="s4">'Target.createBrowserContext'</span><span class="s1">)</span>
+        <span class="s1">browserContextId = obj[</span><span class="s4">'browserContextId'</span><span class="s1">]</span>
+        <span class="s1">context = BrowserContext(self</span><span class="s3">, </span><span class="s1">browserContextId)  </span><span class="s0"># noqa: E501</span>
+        <span class="s1">self._contexts[browserContextId] = context</span>
+        <span class="s3">return </span><span class="s1">context</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">browserContexts(self) -&gt; List[</span><span class="s4">'BrowserContext'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Return a list of all open browser contexts. 
+ 
+        In a newly created browser, this will return a single instance of 
+        ``[BrowserContext]`` 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">[self._defaultContext] + [context </span><span class="s3">for </span><span class="s1">context </span><span class="s3">in </span><span class="s1">self._contexts.values()]  </span><span class="s0"># noqa: E501</span>
+
+    <span class="s3">async def </span><span class="s1">_disposeContext(self</span><span class="s3">, </span><span class="s1">contextId: str) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s3">await </span><span class="s1">self._connection.send(</span><span class="s4">'Target.disposeBrowserContext'</span><span class="s3">, </span><span class="s1">{</span>
+            <span class="s4">'browserContextId'</span><span class="s1">: contextId</span><span class="s3">,</span>
+        <span class="s1">})</span>
+        <span class="s1">self._contexts.pop(contextId</span><span class="s3">, None</span><span class="s1">)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">async def </span><span class="s1">create(connection: Connection</span><span class="s3">, </span><span class="s1">contextIds: List[str]</span><span class="s3">,</span>
+                     <span class="s1">ignoreHTTPSErrors: bool</span><span class="s3">, </span><span class="s1">defaultViewport: Optional[Dict]</span><span class="s3">,</span>
+                     <span class="s1">process: Optional[Popen] = </span><span class="s3">None,</span>
+                     <span class="s1">closeCallback: Callable[[]</span><span class="s3">, </span><span class="s1">Awaitable[</span><span class="s3">None</span><span class="s1">]] = </span><span class="s3">None,</span>
+                     <span class="s1">**kwargs: Any) -&gt; </span><span class="s4">'Browser'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Create browser object.&quot;&quot;&quot;</span>
+        <span class="s1">browser = Browser(connection</span><span class="s3">, </span><span class="s1">contextIds</span><span class="s3">, </span><span class="s1">ignoreHTTPSErrors</span><span class="s3">,</span>
+                          <span class="s1">defaultViewport</span><span class="s3">, </span><span class="s1">process</span><span class="s3">, </span><span class="s1">closeCallback)</span>
+        <span class="s3">await </span><span class="s1">connection.send(</span><span class="s4">'Target.setDiscoverTargets'</span><span class="s3">, </span><span class="s1">{</span><span class="s4">'discover'</span><span class="s1">: </span><span class="s3">True</span><span class="s1">})</span>
+        <span class="s3">return </span><span class="s1">browser</span>
+
+    <span class="s3">async def </span><span class="s1">_targetCreated(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">targetInfo = event[</span><span class="s4">'targetInfo'</span><span class="s1">]</span>
+        <span class="s1">browserContextId = targetInfo.get(</span><span class="s4">'browserContextId'</span><span class="s1">)</span>
+
+        <span class="s3">if </span><span class="s1">browserContextId </span><span class="s3">and </span><span class="s1">browserContextId </span><span class="s3">in </span><span class="s1">self._contexts:</span>
+            <span class="s1">context = self._contexts[browserContextId]</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">context = self._defaultContext</span>
+
+        <span class="s1">target = Target(</span>
+            <span class="s1">targetInfo</span><span class="s3">,</span>
+            <span class="s1">context</span><span class="s3">,</span>
+            <span class="s3">lambda</span><span class="s1">: self._connection.createSession(targetInfo)</span><span class="s3">,</span>
+            <span class="s1">self._ignoreHTTPSErrors</span><span class="s3">,</span>
+            <span class="s1">self._defaultViewport</span><span class="s3">,</span>
+            <span class="s1">self._screenshotTaskQueue</span><span class="s3">,</span>
+            <span class="s1">self._connection._loop</span><span class="s3">,</span>
+        <span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">targetInfo[</span><span class="s4">'targetId'</span><span class="s1">] </span><span class="s3">in </span><span class="s1">self._targets:</span>
+            <span class="s3">raise </span><span class="s1">BrowserError(</span><span class="s4">'target should not exist before create.'</span><span class="s1">)</span>
+        <span class="s1">self._targets[targetInfo[</span><span class="s4">'targetId'</span><span class="s1">]] = target</span>
+        <span class="s3">if await </span><span class="s1">target._initializedPromise:</span>
+            <span class="s1">self.emit(Browser.Events.TargetCreated</span><span class="s3">, </span><span class="s1">target)</span>
+            <span class="s1">context.emit(BrowserContext.Events.TargetCreated</span><span class="s3">, </span><span class="s1">target)</span>
+
+    <span class="s3">async def </span><span class="s1">_targetDestroyed(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">target = self._targets[event[</span><span class="s4">'targetId'</span><span class="s1">]]</span>
+        <span class="s3">del </span><span class="s1">self._targets[event[</span><span class="s4">'targetId'</span><span class="s1">]]</span>
+        <span class="s1">target._closedCallback()</span>
+        <span class="s3">if await </span><span class="s1">target._initializedPromise:</span>
+            <span class="s1">self.emit(Browser.Events.TargetDestroyed</span><span class="s3">, </span><span class="s1">target)</span>
+            <span class="s1">target.browserContext.emit(BrowserContext.Events.TargetDestroyed</span><span class="s3">, </span><span class="s1">target)  </span><span class="s0"># noqa: E501</span>
+        <span class="s1">target._initializedCallback(</span><span class="s3">False</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">_targetInfoChanged(self</span><span class="s3">, </span><span class="s1">event: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">target = self._targets.get(event[</span><span class="s4">'targetInfo'</span><span class="s1">][</span><span class="s4">'targetId'</span><span class="s1">])</span>
+        <span class="s3">if not </span><span class="s1">target:</span>
+            <span class="s3">raise </span><span class="s1">BrowserError(</span><span class="s4">'target should exist before targetInfoChanged'</span><span class="s1">)</span>
+        <span class="s1">previousURL = target.url</span>
+        <span class="s1">wasInitialized = target._isInitialized</span>
+        <span class="s1">target._targetInfoChanged(event[</span><span class="s4">'targetInfo'</span><span class="s1">])</span>
+        <span class="s3">if </span><span class="s1">wasInitialized </span><span class="s3">and </span><span class="s1">previousURL != target.url:</span>
+            <span class="s1">self.emit(Browser.Events.TargetChanged</span><span class="s3">, </span><span class="s1">target)</span>
+            <span class="s1">target.browserContext.emit(BrowserContext.Events.TargetChanged</span><span class="s3">, </span><span class="s1">target)  </span><span class="s0"># noqa: E501</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">wsEndpoint(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Return websocket end point url.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._connection.url</span>
+
+    <span class="s3">async def </span><span class="s1">newPage(self) -&gt; Page:</span>
+        <span class="s2">&quot;&quot;&quot;Make new page on this browser and return its object.&quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self._defaultContext.newPage()</span>
+
+    <span class="s3">async def </span><span class="s1">_createPageInContext(self</span><span class="s3">, </span><span class="s1">contextId: Optional[str]) -&gt; Page:</span>
+        <span class="s1">options = {</span><span class="s4">'url'</span><span class="s1">: </span><span class="s4">'about:blank'</span><span class="s1">}</span>
+        <span class="s3">if </span><span class="s1">contextId:</span>
+            <span class="s1">options[</span><span class="s4">'browserContextId'</span><span class="s1">] = contextId</span>
+
+        <span class="s1">targetId = (</span><span class="s3">await </span><span class="s1">self._connection.send(</span>
+            <span class="s4">'Target.createTarget'</span><span class="s3">, </span><span class="s1">options)).get(</span><span class="s4">'targetId'</span><span class="s1">)</span>
+        <span class="s1">target = self._targets.get(targetId)</span>
+        <span class="s3">if </span><span class="s1">target </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">BrowserError(</span><span class="s4">'Failed to create target for page.'</span><span class="s1">)</span>
+        <span class="s3">if not await </span><span class="s1">target._initializedPromise:</span>
+            <span class="s3">raise </span><span class="s1">BrowserError(</span><span class="s4">'Failed to create target for page.'</span><span class="s1">)</span>
+        <span class="s1">page = </span><span class="s3">await </span><span class="s1">target.page()</span>
+        <span class="s3">if </span><span class="s1">page </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">BrowserError(</span><span class="s4">'Failed to create page.'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">page</span>
+
+    <span class="s3">def </span><span class="s1">targets(self) -&gt; List[Target]:</span>
+        <span class="s2">&quot;&quot;&quot;Get a list of all active targets inside the browser. 
+ 
+        In case of multiple browser contexts, the method will return a list 
+        with all the targets in all browser contexts. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">[target </span><span class="s3">for </span><span class="s1">target </span><span class="s3">in </span><span class="s1">self._targets.values()</span>
+                <span class="s3">if </span><span class="s1">target._isInitialized]</span>
+
+    <span class="s3">async def </span><span class="s1">pages(self) -&gt; List[Page]:</span>
+        <span class="s2">&quot;&quot;&quot;Get all pages of this browser. 
+ 
+        Non visible pages, such as ``&quot;background_page&quot;``, will not be listed 
+        here. You can find then using :meth:`pyppeteer.target.Target.page`. 
+ 
+        In case of multiple browser contexts, this method will return a list 
+        with all the pages in all browser contexts. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># Using asyncio.gather is better for performance</span>
+        <span class="s1">pages: List[Page] = list()</span>
+        <span class="s3">for </span><span class="s1">context </span><span class="s3">in </span><span class="s1">self.browserContexts:</span>
+            <span class="s1">pages.extend(</span><span class="s3">await </span><span class="s1">context.pages())</span>
+        <span class="s3">return </span><span class="s1">pages</span>
+
+    <span class="s3">async def </span><span class="s1">version(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get version of the browser.&quot;&quot;&quot;</span>
+        <span class="s1">version = </span><span class="s3">await </span><span class="s1">self._getVersion()</span>
+        <span class="s3">return </span><span class="s1">version[</span><span class="s4">'product'</span><span class="s1">]</span>
+
+    <span class="s3">async def </span><span class="s1">userAgent(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Return browser's original user agent. 
+ 
+        .. note:: 
+            Pages can override browser user agent with 
+            :meth:`pyppeteer.page.Page.setUserAgent`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">version = </span><span class="s3">await </span><span class="s1">self._getVersion()</span>
+        <span class="s3">return </span><span class="s1">version.get(</span><span class="s4">'userAgent'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">close(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Close connections and terminate browser process.&quot;&quot;&quot;</span>
+        <span class="s3">await </span><span class="s1">self._closeCallback()  </span><span class="s0"># Launcher.killChrome()</span>
+
+    <span class="s3">async def </span><span class="s1">disconnect(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Disconnect browser.&quot;&quot;&quot;</span>
+        <span class="s3">await </span><span class="s1">self._connection.dispose()</span>
+        <span class="s3">for </span><span class="s1">target </span><span class="s3">in </span><span class="s1">self._targets.values():</span>
+            <span class="s3">if not </span><span class="s1">target._isInitialized:</span>
+                <span class="s1">target._initializedCallback(</span><span class="s3">False</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_getVersion(self) -&gt; Awaitable:</span>
+        <span class="s3">return </span><span class="s1">self._connection.send(</span><span class="s4">'Browser.getVersion'</span><span class="s1">)</span>
+
+
+<span class="s3">class </span><span class="s1">BrowserContext(EventEmitter):</span>
+    <span class="s2">&quot;&quot;&quot;BrowserContext provides multiple independent browser sessions. 
+ 
+    When a browser is launched, it has a single BrowserContext used by default. 
+    The method `browser.newPage()` creates a page in the default browser 
+    context. 
+ 
+    If a page opens another page, e.g. with a ``window.open`` call, the popup 
+    will belong to the parent page's browser context. 
+ 
+    Pyppeteer allows creation of &quot;incognito&quot; browser context with 
+    ``browser.createIncognitoBrowserContext()`` method. 
+    &quot;incognito&quot; browser contexts don't write any browser data to disk. 
+ 
+    .. code:: 
+ 
+        # Create new incognito browser context 
+        context = await browser.createIncognitoBrowserContext() 
+        # Create a new page inside context 
+        page = await context.newPage() 
+        # ... do stuff with page ... 
+        await page.goto('https://example.com') 
+        # Dispose context once it's no longer needed 
+        await context.close() 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">Events = SimpleNamespace(</span>
+        <span class="s1">TargetCreated=</span><span class="s4">'targetcreated'</span><span class="s3">,</span>
+        <span class="s1">TargetDestroyed=</span><span class="s4">'targetdestroyed'</span><span class="s3">,</span>
+        <span class="s1">TargetChanged=</span><span class="s4">'targetchanged'</span><span class="s3">,</span>
+    <span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">browser: Browser</span><span class="s3">, </span><span class="s1">contextId: Optional[str]) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self._browser = browser</span>
+        <span class="s1">self._id = contextId</span>
+
+    <span class="s3">def </span><span class="s1">targets(self) -&gt; List[Target]:</span>
+        <span class="s2">&quot;&quot;&quot;Return a list of all active targets inside the browser context.&quot;&quot;&quot;</span>
+        <span class="s1">targets = []</span>
+        <span class="s3">for </span><span class="s1">target </span><span class="s3">in </span><span class="s1">self._browser.targets():</span>
+            <span class="s3">if </span><span class="s1">target.browserContext == self:</span>
+                <span class="s1">targets.append(target)</span>
+        <span class="s3">return </span><span class="s1">targets</span>
+
+    <span class="s3">async def </span><span class="s1">pages(self) -&gt; List[Page]:</span>
+        <span class="s2">&quot;&quot;&quot;Return list of all open pages. 
+ 
+        Non-visible pages, such as ``&quot;background_page&quot;``, will not be listed 
+        here. You can find them using :meth:`pyppeteer.target.Target.page`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># Using asyncio.gather is better for performance</span>
+        <span class="s1">pages = []</span>
+        <span class="s3">for </span><span class="s1">target </span><span class="s3">in </span><span class="s1">self.targets():</span>
+            <span class="s3">if </span><span class="s1">target.type == </span><span class="s4">'page'</span><span class="s1">:</span>
+                <span class="s1">page = </span><span class="s3">await </span><span class="s1">target.page()</span>
+                <span class="s3">if </span><span class="s1">page:</span>
+                    <span class="s1">pages.append(page)</span>
+        <span class="s3">return </span><span class="s1">pages</span>
+
+    <span class="s3">def </span><span class="s1">isIncognite(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;[Deprecated] Miss spelled method. 
+ 
+        Use :meth:`isIncognito` method instead. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">logger.warning(</span>
+            <span class="s4">'isIncognite is deprecated. '</span>
+            <span class="s4">'Use isIncognito instead.'</span>
+        <span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">self.isIncognito()</span>
+
+    <span class="s3">def </span><span class="s1">isIncognito(self) -&gt; bool:</span>
+        <span class="s2">&quot;&quot;&quot;Return whether BrowserContext is incognito. 
+ 
+        The default browser context is the only non-incognito browser context. 
+ 
+        .. note:: 
+            The default browser context cannot be closed. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">bool(self._id)</span>
+
+    <span class="s3">async def </span><span class="s1">newPage(self) -&gt; Page:</span>
+        <span class="s2">&quot;&quot;&quot;Create a new page in the browser context.&quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self._browser._createPageInContext(self._id)</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">browser(self) -&gt; Browser:</span>
+        <span class="s2">&quot;&quot;&quot;Return the browser this browser context belongs to.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._browser</span>
+
+    <span class="s3">async def </span><span class="s1">close(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Close the browser context. 
+ 
+        All the targets that belongs to the browser context will be closed. 
+ 
+        .. note:: 
+            Only incognito browser context can be closed. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self._id </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">BrowserError(</span><span class="s4">'Non-incognito profile cannot be closed'</span><span class="s1">)</span>
+        <span class="s3">await </span><span class="s1">self._browser._disposeContext(self._id)</span>
+</pre>
+</body>
+</html>

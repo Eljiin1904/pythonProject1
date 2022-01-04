@@ -1,0 +1,185 @@
+<html>
+<head>
+<title>subqueries.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+.s5 { color: #808080;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+subqueries.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Query subclasses which provide extra functionality beyond simple data retrieval. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">FieldError</span>
+<span class="s2">from </span><span class="s1">django.db.models.sql.constants </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">CURSOR</span><span class="s2">, </span><span class="s1">GET_ITERATOR_CHUNK_SIZE</span><span class="s2">, </span><span class="s1">NO_RESULTS</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">django.db.models.sql.query </span><span class="s2">import </span><span class="s1">Query</span>
+
+<span class="s1">__all__ = [</span><span class="s3">'DeleteQuery'</span><span class="s2">, </span><span class="s3">'UpdateQuery'</span><span class="s2">, </span><span class="s3">'InsertQuery'</span><span class="s2">, </span><span class="s3">'AggregateQuery'</span><span class="s1">]</span>
+
+
+<span class="s2">class </span><span class="s1">DeleteQuery(Query):</span>
+    <span class="s0">&quot;&quot;&quot;A DELETE SQL query.&quot;&quot;&quot;</span>
+
+    <span class="s1">compiler = </span><span class="s3">'SQLDeleteCompiler'</span>
+
+    <span class="s2">def </span><span class="s1">do_query(self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">, </span><span class="s1">where</span><span class="s2">, </span><span class="s1">using):</span>
+        <span class="s1">self.alias_map = {table: self.alias_map[table]}</span>
+        <span class="s1">self.where = where</span>
+        <span class="s1">cursor = self.get_compiler(using).execute_sql(CURSOR)</span>
+        <span class="s2">if </span><span class="s1">cursor:</span>
+            <span class="s2">with </span><span class="s1">cursor:</span>
+                <span class="s2">return </span><span class="s1">cursor.rowcount</span>
+        <span class="s2">return </span><span class="s4">0</span>
+
+    <span class="s2">def </span><span class="s1">delete_batch(self</span><span class="s2">, </span><span class="s1">pk_list</span><span class="s2">, </span><span class="s1">using):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Set up and execute delete queries for all the objects in pk_list. 
+ 
+        More than one physical query may be executed if there are a 
+        lot of values in pk_list. 
+        &quot;&quot;&quot;</span>
+        <span class="s5"># number of objects deleted</span>
+        <span class="s1">num_deleted = </span><span class="s4">0</span>
+        <span class="s1">field = self.get_meta().pk</span>
+        <span class="s2">for </span><span class="s1">offset </span><span class="s2">in </span><span class="s1">range(</span><span class="s4">0</span><span class="s2">, </span><span class="s1">len(pk_list)</span><span class="s2">, </span><span class="s1">GET_ITERATOR_CHUNK_SIZE):</span>
+            <span class="s1">self.clear_where()</span>
+            <span class="s1">self.add_filter(</span>
+                <span class="s3">f'</span><span class="s2">{</span><span class="s1">field.attname</span><span class="s2">}</span><span class="s3">__in'</span><span class="s2">,</span>
+                <span class="s1">pk_list[offset:offset + GET_ITERATOR_CHUNK_SIZE]</span><span class="s2">,</span>
+            <span class="s1">)</span>
+            <span class="s1">num_deleted += self.do_query(self.get_meta().db_table</span><span class="s2">, </span><span class="s1">self.where</span><span class="s2">, </span><span class="s1">using=using)</span>
+        <span class="s2">return </span><span class="s1">num_deleted</span>
+
+
+<span class="s2">class </span><span class="s1">UpdateQuery(Query):</span>
+    <span class="s0">&quot;&quot;&quot;An UPDATE SQL query.&quot;&quot;&quot;</span>
+
+    <span class="s1">compiler = </span><span class="s3">'SQLUpdateCompiler'</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">self._setup_query()</span>
+
+    <span class="s2">def </span><span class="s1">_setup_query(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Run on initialization and at the end of chaining. Any attributes that 
+        would normally be set in __init__() should go here instead. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.values = []</span>
+        <span class="s1">self.related_ids = </span><span class="s2">None</span>
+        <span class="s1">self.related_updates = {}</span>
+
+    <span class="s2">def </span><span class="s1">clone(self):</span>
+        <span class="s1">obj = super().clone()</span>
+        <span class="s1">obj.related_updates = self.related_updates.copy()</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">def </span><span class="s1">update_batch(self</span><span class="s2">, </span><span class="s1">pk_list</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, </span><span class="s1">using):</span>
+        <span class="s1">self.add_update_values(values)</span>
+        <span class="s2">for </span><span class="s1">offset </span><span class="s2">in </span><span class="s1">range(</span><span class="s4">0</span><span class="s2">, </span><span class="s1">len(pk_list)</span><span class="s2">, </span><span class="s1">GET_ITERATOR_CHUNK_SIZE):</span>
+            <span class="s1">self.clear_where()</span>
+            <span class="s1">self.add_filter(</span><span class="s3">'pk__in'</span><span class="s2">, </span><span class="s1">pk_list[offset: offset + GET_ITERATOR_CHUNK_SIZE])</span>
+            <span class="s1">self.get_compiler(using).execute_sql(NO_RESULTS)</span>
+
+    <span class="s2">def </span><span class="s1">add_update_values(self</span><span class="s2">, </span><span class="s1">values):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Convert a dictionary of field name to value mappings into an update 
+        query. This is the entry point for the public update() method on 
+        querysets. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">values_seq = []</span>
+        <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">val </span><span class="s2">in </span><span class="s1">values.items():</span>
+            <span class="s1">field = self.get_meta().get_field(name)</span>
+            <span class="s1">direct = </span><span class="s2">not </span><span class="s1">(field.auto_created </span><span class="s2">and not </span><span class="s1">field.concrete) </span><span class="s2">or not </span><span class="s1">field.concrete</span>
+            <span class="s1">model = field.model._meta.concrete_model</span>
+            <span class="s2">if not </span><span class="s1">direct </span><span class="s2">or </span><span class="s1">(field.is_relation </span><span class="s2">and </span><span class="s1">field.many_to_many):</span>
+                <span class="s2">raise </span><span class="s1">FieldError(</span>
+                    <span class="s3">'Cannot update model field %r (only non-relations and '</span>
+                    <span class="s3">'foreign keys permitted).' </span><span class="s1">% field</span>
+                <span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">model </span><span class="s2">is not </span><span class="s1">self.get_meta().concrete_model:</span>
+                <span class="s1">self.add_related_update(model</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">val)</span>
+                <span class="s2">continue</span>
+            <span class="s1">values_seq.append((field</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">val))</span>
+        <span class="s2">return </span><span class="s1">self.add_update_fields(values_seq)</span>
+
+    <span class="s2">def </span><span class="s1">add_update_fields(self</span><span class="s2">, </span><span class="s1">values_seq):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Append a sequence of (field, model, value) triples to the internal list 
+        that will be used to generate the UPDATE query. Might be more usefully 
+        called add_update_targets() to hint at the extra information here. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">field</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">val </span><span class="s2">in </span><span class="s1">values_seq:</span>
+            <span class="s2">if </span><span class="s1">hasattr(val</span><span class="s2">, </span><span class="s3">'resolve_expression'</span><span class="s1">):</span>
+                <span class="s5"># Resolve expressions here so that annotations are no longer needed</span>
+                <span class="s1">val = val.resolve_expression(self</span><span class="s2">, </span><span class="s1">allow_joins=</span><span class="s2">False, </span><span class="s1">for_save=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">self.values.append((field</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">val))</span>
+
+    <span class="s2">def </span><span class="s1">add_related_update(self</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">value):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Add (name, value) to an update query for an ancestor model. 
+ 
+        Update are coalesced so that only one update query per ancestor is run. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.related_updates.setdefault(model</span><span class="s2">, </span><span class="s1">[]).append((field</span><span class="s2">, None, </span><span class="s1">value))</span>
+
+    <span class="s2">def </span><span class="s1">get_related_updates(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return a list of query objects: one for each update required to an 
+        ancestor model. Each query will have the same filtering conditions as 
+        the current query but will only update a single table. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self.related_updates:</span>
+            <span class="s2">return </span><span class="s1">[]</span>
+        <span class="s1">result = []</span>
+        <span class="s2">for </span><span class="s1">model</span><span class="s2">, </span><span class="s1">values </span><span class="s2">in </span><span class="s1">self.related_updates.items():</span>
+            <span class="s1">query = UpdateQuery(model)</span>
+            <span class="s1">query.values = values</span>
+            <span class="s2">if </span><span class="s1">self.related_ids </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">query.add_filter(</span><span class="s3">'pk__in'</span><span class="s2">, </span><span class="s1">self.related_ids)</span>
+            <span class="s1">result.append(query)</span>
+        <span class="s2">return </span><span class="s1">result</span>
+
+
+<span class="s2">class </span><span class="s1">InsertQuery(Query):</span>
+    <span class="s1">compiler = </span><span class="s3">'SQLInsertCompiler'</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">ignore_conflicts=</span><span class="s2">False, </span><span class="s1">**kwargs):</span>
+        <span class="s1">super().__init__(*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">self.fields = []</span>
+        <span class="s1">self.objs = []</span>
+        <span class="s1">self.ignore_conflicts = ignore_conflicts</span>
+
+    <span class="s2">def </span><span class="s1">insert_values(self</span><span class="s2">, </span><span class="s1">fields</span><span class="s2">, </span><span class="s1">objs</span><span class="s2">, </span><span class="s1">raw=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s1">self.fields = fields</span>
+        <span class="s1">self.objs = objs</span>
+        <span class="s1">self.raw = raw</span>
+
+
+<span class="s2">class </span><span class="s1">AggregateQuery(Query):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Take another query as a parameter to the FROM clause and only select the 
+    elements in the provided list. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">compiler = </span><span class="s3">'SQLAggregateCompiler'</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">inner_query):</span>
+        <span class="s1">self.inner_query = inner_query</span>
+        <span class="s1">super().__init__(model)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,219 @@
+<html>
+<head>
+<title>generation.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+generation.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;pytest-bdd missing test code generation.&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">itertools</span>
+<span class="s2">import </span><span class="s1">os.path</span>
+
+<span class="s2">import </span><span class="s1">py</span>
+<span class="s2">from </span><span class="s1">mako.lookup </span><span class="s2">import </span><span class="s1">TemplateLookup</span>
+
+<span class="s2">from </span><span class="s1">.feature </span><span class="s2">import </span><span class="s1">get_features</span>
+<span class="s2">from </span><span class="s1">.scenario </span><span class="s2">import </span><span class="s1">find_argumented_step_fixture_name</span><span class="s2">, </span><span class="s1">make_python_docstring</span><span class="s2">, </span><span class="s1">make_python_name</span><span class="s2">, </span><span class="s1">make_string_literal</span>
+<span class="s2">from </span><span class="s1">.steps </span><span class="s2">import </span><span class="s1">get_step_fixture_name</span>
+<span class="s2">from </span><span class="s1">.types </span><span class="s2">import </span><span class="s1">STEP_TYPES</span>
+
+<span class="s1">template_lookup = TemplateLookup(directories=[os.path.join(os.path.dirname(__file__)</span><span class="s2">, </span><span class="s3">&quot;templates&quot;</span><span class="s1">)])</span>
+
+
+<span class="s2">def </span><span class="s1">add_options(parser):</span>
+    <span class="s0">&quot;&quot;&quot;Add pytest-bdd options.&quot;&quot;&quot;</span>
+    <span class="s1">group = parser.getgroup(</span><span class="s3">&quot;bdd&quot;</span><span class="s2">, </span><span class="s3">&quot;Generation&quot;</span><span class="s1">)</span>
+
+    <span class="s1">group._addoption(</span>
+        <span class="s3">&quot;--generate-missing&quot;</span><span class="s2">,</span>
+        <span class="s1">action=</span><span class="s3">&quot;store_true&quot;</span><span class="s2">,</span>
+        <span class="s1">dest=</span><span class="s3">&quot;generate_missing&quot;</span><span class="s2">,</span>
+        <span class="s1">default=</span><span class="s2">False,</span>
+        <span class="s1">help=</span><span class="s3">&quot;Generate missing bdd test code for given feature files and exit.&quot;</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+    <span class="s1">group._addoption(</span>
+        <span class="s3">&quot;--feature&quot;</span><span class="s2">,</span>
+        <span class="s1">metavar=</span><span class="s3">&quot;FILE_OR_DIR&quot;</span><span class="s2">,</span>
+        <span class="s1">action=</span><span class="s3">&quot;append&quot;</span><span class="s2">,</span>
+        <span class="s1">dest=</span><span class="s3">&quot;features&quot;</span><span class="s2">,</span>
+        <span class="s1">help=</span><span class="s3">&quot;Feature file or directory to generate missing code for. Multiple allowed.&quot;</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">cmdline_main(config):</span>
+    <span class="s0">&quot;&quot;&quot;Check config option to show missing code.&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">config.option.generate_missing:</span>
+        <span class="s2">return </span><span class="s1">show_missing_code(config)</span>
+
+
+<span class="s2">def </span><span class="s1">generate_code(features</span><span class="s2">, </span><span class="s1">scenarios</span><span class="s2">, </span><span class="s1">steps):</span>
+    <span class="s0">&quot;&quot;&quot;Generate test code for the given filenames.&quot;&quot;&quot;</span>
+    <span class="s1">grouped_steps = group_steps(steps)</span>
+    <span class="s1">template = template_lookup.get_template(</span><span class="s3">&quot;test.py.mak&quot;</span><span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">template.render(</span>
+        <span class="s1">features=features</span><span class="s2">,</span>
+        <span class="s1">scenarios=scenarios</span><span class="s2">,</span>
+        <span class="s1">steps=grouped_steps</span><span class="s2">,</span>
+        <span class="s1">make_python_name=make_python_name</span><span class="s2">,</span>
+        <span class="s1">make_python_docstring=make_python_docstring</span><span class="s2">,</span>
+        <span class="s1">make_string_literal=make_string_literal</span><span class="s2">,</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">show_missing_code(config):</span>
+    <span class="s0">&quot;&quot;&quot;Wrap pytest session to show missing code.&quot;&quot;&quot;</span>
+    <span class="s2">from </span><span class="s1">_pytest.main </span><span class="s2">import </span><span class="s1">wrap_session</span>
+
+    <span class="s2">return </span><span class="s1">wrap_session(config</span><span class="s2">, </span><span class="s1">_show_missing_code_main)</span>
+
+
+<span class="s2">def </span><span class="s1">print_missing_code(scenarios</span><span class="s2">, </span><span class="s1">steps):</span>
+    <span class="s0">&quot;&quot;&quot;Print missing code with TerminalWriter.&quot;&quot;&quot;</span>
+    <span class="s1">tw = py.io.TerminalWriter()</span>
+    <span class="s1">scenario = step = </span><span class="s2">None</span>
+
+    <span class="s2">for </span><span class="s1">scenario </span><span class="s2">in </span><span class="s1">scenarios:</span>
+        <span class="s1">tw.line()</span>
+        <span class="s1">tw.line(</span>
+            <span class="s3">'Scenario &quot;{scenario.name}&quot; is not bound to any test in the feature &quot;{scenario.feature.name}&quot;'</span>
+            <span class="s3">&quot; in the file {scenario.feature.filename}:{scenario.line_number}&quot;</span><span class="s1">.format(scenario=scenario)</span><span class="s2">,</span>
+            <span class="s1">red=</span><span class="s2">True,</span>
+        <span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">scenario:</span>
+        <span class="s1">tw.sep(</span><span class="s3">&quot;-&quot;</span><span class="s2">, </span><span class="s1">red=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">steps:</span>
+        <span class="s1">tw.line()</span>
+        <span class="s2">if </span><span class="s1">step.scenario </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">tw.line(</span>
+                <span class="s3">&quot;&quot;&quot;Step {step} is not defined in the scenario &quot;{step.scenario.name}&quot; in the feature&quot;&quot;&quot;</span>
+                <span class="s3">&quot;&quot;&quot; &quot;{step.scenario.feature.name}&quot; in the file&quot;&quot;&quot;</span>
+                <span class="s3">&quot;&quot;&quot; {step.scenario.feature.filename}:{step.line_number}&quot;&quot;&quot;</span><span class="s1">.format(step=step)</span><span class="s2">,</span>
+                <span class="s1">red=</span><span class="s2">True,</span>
+            <span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">step.background </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">tw.line(</span>
+                <span class="s3">&quot;&quot;&quot;Step {step} is not defined in the background of the feature&quot;&quot;&quot;</span>
+                <span class="s3">&quot;&quot;&quot; &quot;{step.background.feature.name}&quot; in the file&quot;&quot;&quot;</span>
+                <span class="s3">&quot;&quot;&quot; {step.background.feature.filename}:{step.line_number}&quot;&quot;&quot;</span><span class="s1">.format(step=step)</span><span class="s2">,</span>
+                <span class="s1">red=</span><span class="s2">True,</span>
+            <span class="s1">)</span>
+
+    <span class="s2">if </span><span class="s1">step:</span>
+        <span class="s1">tw.sep(</span><span class="s3">&quot;-&quot;</span><span class="s2">, </span><span class="s1">red=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s1">tw.line(</span><span class="s3">&quot;Please place the code above to the test file(s):&quot;</span><span class="s1">)</span>
+    <span class="s1">tw.line()</span>
+
+    <span class="s1">features = sorted(</span>
+        <span class="s1">{scenario.feature </span><span class="s2">for </span><span class="s1">scenario </span><span class="s2">in </span><span class="s1">scenarios}</span><span class="s2">, </span><span class="s1">key=</span><span class="s2">lambda </span><span class="s1">feature: feature.name </span><span class="s2">or </span><span class="s1">feature.filename</span>
+    <span class="s1">)</span>
+    <span class="s1">code = generate_code(features</span><span class="s2">, </span><span class="s1">scenarios</span><span class="s2">, </span><span class="s1">steps)</span>
+    <span class="s1">tw.write(code)</span>
+
+
+<span class="s2">def </span><span class="s1">_find_step_fixturedef(fixturemanager</span><span class="s2">, </span><span class="s1">item</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">type_):</span>
+    <span class="s0">&quot;&quot;&quot;Find step fixturedef. 
+ 
+    :param request: PyTest Item object. 
+    :param step: `Step`. 
+ 
+    :return: Step function. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">step_fixture_name = get_step_fixture_name(name</span><span class="s2">, </span><span class="s1">type_)</span>
+    <span class="s1">fixturedefs = fixturemanager.getfixturedefs(step_fixture_name</span><span class="s2">, </span><span class="s1">item.nodeid)</span>
+    <span class="s2">if </span><span class="s1">fixturedefs </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">fixturedefs</span>
+
+    <span class="s1">argumented_step_name = find_argumented_step_fixture_name(name</span><span class="s2">, </span><span class="s1">type_</span><span class="s2">, </span><span class="s1">fixturemanager)</span>
+    <span class="s2">if </span><span class="s1">argumented_step_name </span><span class="s2">is not None</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">fixturemanager.getfixturedefs(argumented_step_name</span><span class="s2">, </span><span class="s1">item.nodeid)</span>
+    <span class="s2">return None</span>
+
+
+<span class="s2">def </span><span class="s1">parse_feature_files(paths</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+    <span class="s0">&quot;&quot;&quot;Parse feature files of given paths. 
+ 
+    :param paths: `list` of paths (file or dirs) 
+ 
+    :return: `list` of `tuple` in form: 
+             (`list` of `Feature` objects, `list` of `Scenario` objects, `list` of `Step` objects). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">features = get_features(paths</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+    <span class="s1">scenarios = sorted(</span>
+        <span class="s1">itertools.chain.from_iterable(feature.scenarios.values() </span><span class="s2">for </span><span class="s1">feature </span><span class="s2">in </span><span class="s1">features)</span><span class="s2">,</span>
+        <span class="s1">key=</span><span class="s2">lambda </span><span class="s1">scenario: (scenario.feature.name </span><span class="s2">or </span><span class="s1">scenario.feature.filename</span><span class="s2">, </span><span class="s1">scenario.name)</span><span class="s2">,</span>
+    <span class="s1">)</span>
+    <span class="s1">steps = sorted(</span>
+        <span class="s1">set(itertools.chain.from_iterable(scenario.steps </span><span class="s2">for </span><span class="s1">scenario </span><span class="s2">in </span><span class="s1">scenarios))</span><span class="s2">, </span><span class="s1">key=</span><span class="s2">lambda </span><span class="s1">step: step.name</span>
+    <span class="s1">)</span>
+    <span class="s2">return </span><span class="s1">features</span><span class="s2">, </span><span class="s1">scenarios</span><span class="s2">, </span><span class="s1">steps</span>
+
+
+<span class="s2">def </span><span class="s1">group_steps(steps):</span>
+    <span class="s0">&quot;&quot;&quot;Group steps by type.&quot;&quot;&quot;</span>
+    <span class="s1">steps = sorted(steps</span><span class="s2">, </span><span class="s1">key=</span><span class="s2">lambda </span><span class="s1">step: step.type)</span>
+    <span class="s1">seen_steps = set()</span>
+    <span class="s1">grouped_steps = []</span>
+    <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">itertools.chain.from_iterable(</span>
+        <span class="s1">sorted(group</span><span class="s2">, </span><span class="s1">key=</span><span class="s2">lambda </span><span class="s1">step: step.name) </span><span class="s2">for </span><span class="s1">_</span><span class="s2">, </span><span class="s1">group </span><span class="s2">in </span><span class="s1">itertools.groupby(steps</span><span class="s2">, lambda </span><span class="s1">step: step.type)</span>
+    <span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">step.name </span><span class="s2">not in </span><span class="s1">seen_steps:</span>
+            <span class="s1">grouped_steps.append(step)</span>
+            <span class="s1">seen_steps.add(step.name)</span>
+    <span class="s1">grouped_steps.sort(key=</span><span class="s2">lambda </span><span class="s1">step: STEP_TYPES.index(step.type))</span>
+    <span class="s2">return </span><span class="s1">grouped_steps</span>
+
+
+<span class="s2">def </span><span class="s1">_show_missing_code_main(config</span><span class="s2">, </span><span class="s1">session):</span>
+    <span class="s0">&quot;&quot;&quot;Preparing fixture duplicates for output.&quot;&quot;&quot;</span>
+    <span class="s1">tw = py.io.TerminalWriter()</span>
+    <span class="s1">session.perform_collect()</span>
+
+    <span class="s1">fm = session._fixturemanager</span>
+
+    <span class="s2">if </span><span class="s1">config.option.features </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">tw.line(</span><span class="s3">&quot;The --feature parameter is required.&quot;</span><span class="s2">, </span><span class="s1">red=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">session.exitstatus = </span><span class="s4">100</span>
+        <span class="s2">return</span>
+
+    <span class="s1">features</span><span class="s2">, </span><span class="s1">scenarios</span><span class="s2">, </span><span class="s1">steps = parse_feature_files(config.option.features)</span>
+
+    <span class="s2">for </span><span class="s1">item </span><span class="s2">in </span><span class="s1">session.items:</span>
+        <span class="s1">scenario = getattr(item.obj</span><span class="s2">, </span><span class="s3">&quot;__scenario__&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">scenario:</span>
+            <span class="s2">if </span><span class="s1">scenario </span><span class="s2">in </span><span class="s1">scenarios:</span>
+                <span class="s1">scenarios.remove(scenario)</span>
+            <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">scenario.steps:</span>
+                <span class="s1">fixturedefs = _find_step_fixturedef(fm</span><span class="s2">, </span><span class="s1">item</span><span class="s2">, </span><span class="s1">step.name</span><span class="s2">, </span><span class="s1">step.type)</span>
+                <span class="s2">if </span><span class="s1">fixturedefs:</span>
+                    <span class="s2">try</span><span class="s1">:</span>
+                        <span class="s1">steps.remove(step)</span>
+                    <span class="s2">except </span><span class="s1">ValueError:</span>
+                        <span class="s2">pass</span>
+    <span class="s2">for </span><span class="s1">scenario </span><span class="s2">in </span><span class="s1">scenarios:</span>
+        <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">scenario.steps:</span>
+            <span class="s2">if </span><span class="s1">step.background </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">steps.remove(step)</span>
+    <span class="s1">grouped_steps = group_steps(steps)</span>
+    <span class="s1">print_missing_code(scenarios</span><span class="s2">, </span><span class="s1">grouped_steps)</span>
+
+    <span class="s2">if </span><span class="s1">scenarios </span><span class="s2">or </span><span class="s1">steps:</span>
+        <span class="s1">session.exitstatus = </span><span class="s4">100</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,360 @@
+<html>
+<head>
+<title>datetime.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6a8759;}
+.s4 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+datetime.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">datetime </span><span class="s0">import </span><span class="s1">datetime</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.db.models.expressions </span><span class="s0">import </span><span class="s1">Func</span>
+<span class="s0">from </span><span class="s1">django.db.models.fields </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">DateField</span><span class="s0">, </span><span class="s1">DateTimeField</span><span class="s0">, </span><span class="s1">DurationField</span><span class="s0">, </span><span class="s1">Field</span><span class="s0">, </span><span class="s1">IntegerField</span><span class="s0">, </span><span class="s1">TimeField</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.db.models.lookups </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">Transform</span><span class="s0">, </span><span class="s1">YearExact</span><span class="s0">, </span><span class="s1">YearGt</span><span class="s0">, </span><span class="s1">YearGte</span><span class="s0">, </span><span class="s1">YearLt</span><span class="s0">, </span><span class="s1">YearLte</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">timezone</span>
+
+
+<span class="s0">class </span><span class="s1">TimezoneMixin:</span>
+    <span class="s1">tzinfo = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">get_tzname(self):</span>
+        <span class="s2"># Timezone conversions must happen to the input datetime *before*</span>
+        <span class="s2"># applying a function. 2015-12-31 23:00:00 -02:00 is stored in the</span>
+        <span class="s2"># database as 2016-01-01 01:00:00 +00:00. Any results should be</span>
+        <span class="s2"># based on the input datetime not the stored datetime.</span>
+        <span class="s1">tzname = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">settings.USE_TZ:</span>
+            <span class="s0">if </span><span class="s1">self.tzinfo </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s1">tzname = timezone.get_current_timezone_name()</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">tzname = timezone._get_timezone_name(self.tzinfo)</span>
+        <span class="s0">return </span><span class="s1">tzname</span>
+
+
+<span class="s0">class </span><span class="s1">Extract(TimezoneMixin</span><span class="s0">, </span><span class="s1">Transform):</span>
+    <span class="s1">lookup_name = </span><span class="s0">None</span>
+    <span class="s1">output_field = IntegerField()</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">lookup_name=</span><span class="s0">None, </span><span class="s1">tzinfo=</span><span class="s0">None, </span><span class="s1">**extra):</span>
+        <span class="s0">if </span><span class="s1">self.lookup_name </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">self.lookup_name = lookup_name</span>
+        <span class="s0">if </span><span class="s1">self.lookup_name </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'lookup_name must be provided'</span><span class="s1">)</span>
+        <span class="s1">self.tzinfo = tzinfo</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">sql</span><span class="s0">, </span><span class="s1">params = compiler.compile(self.lhs)</span>
+        <span class="s1">lhs_output_field = self.lhs.output_field</span>
+        <span class="s0">if </span><span class="s1">isinstance(lhs_output_field</span><span class="s0">, </span><span class="s1">DateTimeField):</span>
+            <span class="s1">tzname = self.get_tzname()</span>
+            <span class="s1">sql = connection.ops.datetime_extract_sql(self.lookup_name</span><span class="s0">, </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">tzname)</span>
+        <span class="s0">elif </span><span class="s1">self.tzinfo </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'tzinfo can only be used with DateTimeField.'</span><span class="s1">)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(lhs_output_field</span><span class="s0">, </span><span class="s1">DateField):</span>
+            <span class="s1">sql = connection.ops.date_extract_sql(self.lookup_name</span><span class="s0">, </span><span class="s1">sql)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(lhs_output_field</span><span class="s0">, </span><span class="s1">TimeField):</span>
+            <span class="s1">sql = connection.ops.time_extract_sql(self.lookup_name</span><span class="s0">, </span><span class="s1">sql)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(lhs_output_field</span><span class="s0">, </span><span class="s1">DurationField):</span>
+            <span class="s0">if not </span><span class="s1">connection.features.has_native_duration_field:</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Extract requires native DurationField database support.'</span><span class="s1">)</span>
+            <span class="s1">sql = connection.ops.time_extract_sql(self.lookup_name</span><span class="s0">, </span><span class="s1">sql)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s2"># resolve_expression has already validated the output_field so this</span>
+            <span class="s2"># assert should never be hit.</span>
+            <span class="s0">assert False, </span><span class="s3">&quot;Tried to Extract from an invalid type.&quot;</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">params</span>
+
+    <span class="s0">def </span><span class="s1">resolve_expression(self</span><span class="s0">, </span><span class="s1">query=</span><span class="s0">None, </span><span class="s1">allow_joins=</span><span class="s0">True, </span><span class="s1">reuse=</span><span class="s0">None, </span><span class="s1">summarize=</span><span class="s0">False, </span><span class="s1">for_save=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s1">copy = super().resolve_expression(query</span><span class="s0">, </span><span class="s1">allow_joins</span><span class="s0">, </span><span class="s1">reuse</span><span class="s0">, </span><span class="s1">summarize</span><span class="s0">, </span><span class="s1">for_save)</span>
+        <span class="s1">field = getattr(copy.lhs</span><span class="s0">, </span><span class="s3">'output_field'</span><span class="s0">, None</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">field </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">copy</span>
+        <span class="s0">if not </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">(DateField</span><span class="s0">, </span><span class="s1">DateTimeField</span><span class="s0">, </span><span class="s1">TimeField</span><span class="s0">, </span><span class="s1">DurationField)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">'Extract input expression must be DateField, DateTimeField, '</span>
+                <span class="s3">'TimeField, or DurationField.'</span>
+            <span class="s1">)</span>
+        <span class="s2"># Passing dates to functions expecting datetimes is most likely a mistake.</span>
+        <span class="s0">if </span><span class="s1">type(field) == DateField </span><span class="s0">and </span><span class="s1">copy.lookup_name </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'hour'</span><span class="s0">, </span><span class="s3">'minute'</span><span class="s0">, </span><span class="s3">'second'</span><span class="s1">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;Cannot extract time component '%s' from DateField '%s'.&quot; </span><span class="s1">% (copy.lookup_name</span><span class="s0">, </span><span class="s1">field.name)</span>
+            <span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">(</span>
+            <span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">DurationField) </span><span class="s0">and</span>
+            <span class="s1">copy.lookup_name </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'year'</span><span class="s0">, </span><span class="s3">'iso_year'</span><span class="s0">, </span><span class="s3">'month'</span><span class="s0">, </span><span class="s3">'week'</span><span class="s0">, </span><span class="s3">'week_day'</span><span class="s0">, </span><span class="s3">'iso_week_day'</span><span class="s0">, </span><span class="s3">'quarter'</span><span class="s1">)</span>
+        <span class="s1">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;Cannot extract component '%s' from DurationField '%s'.&quot;</span>
+                <span class="s1">% (copy.lookup_name</span><span class="s0">, </span><span class="s1">field.name)</span>
+            <span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">copy</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractYear(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'year'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractIsoYear(Extract):</span>
+    <span class="s4">&quot;&quot;&quot;Return the ISO-8601 week-numbering year.&quot;&quot;&quot;</span>
+    <span class="s1">lookup_name = </span><span class="s3">'iso_year'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractMonth(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'month'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractDay(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'day'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractWeek(Extract):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Return 1-52 or 53, based on ISO-8601, i.e., Monday is the first of the 
+    week. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">lookup_name = </span><span class="s3">'week'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractWeekDay(Extract):</span>
+    <span class="s4">&quot;&quot;&quot; 
+    Return Sunday=1 through Saturday=7. 
+ 
+    To replicate this in Python: (mydatetime.isoweekday() % 7) + 1 
+    &quot;&quot;&quot;</span>
+    <span class="s1">lookup_name = </span><span class="s3">'week_day'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractIsoWeekDay(Extract):</span>
+    <span class="s4">&quot;&quot;&quot;Return Monday=1 through Sunday=7, based on ISO-8601.&quot;&quot;&quot;</span>
+    <span class="s1">lookup_name = </span><span class="s3">'iso_week_day'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractQuarter(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'quarter'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractHour(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'hour'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractMinute(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'minute'</span>
+
+
+<span class="s0">class </span><span class="s1">ExtractSecond(Extract):</span>
+    <span class="s1">lookup_name = </span><span class="s3">'second'</span>
+
+
+<span class="s1">DateField.register_lookup(ExtractYear)</span>
+<span class="s1">DateField.register_lookup(ExtractMonth)</span>
+<span class="s1">DateField.register_lookup(ExtractDay)</span>
+<span class="s1">DateField.register_lookup(ExtractWeekDay)</span>
+<span class="s1">DateField.register_lookup(ExtractIsoWeekDay)</span>
+<span class="s1">DateField.register_lookup(ExtractWeek)</span>
+<span class="s1">DateField.register_lookup(ExtractIsoYear)</span>
+<span class="s1">DateField.register_lookup(ExtractQuarter)</span>
+
+<span class="s1">TimeField.register_lookup(ExtractHour)</span>
+<span class="s1">TimeField.register_lookup(ExtractMinute)</span>
+<span class="s1">TimeField.register_lookup(ExtractSecond)</span>
+
+<span class="s1">DateTimeField.register_lookup(ExtractHour)</span>
+<span class="s1">DateTimeField.register_lookup(ExtractMinute)</span>
+<span class="s1">DateTimeField.register_lookup(ExtractSecond)</span>
+
+<span class="s1">ExtractYear.register_lookup(YearExact)</span>
+<span class="s1">ExtractYear.register_lookup(YearGt)</span>
+<span class="s1">ExtractYear.register_lookup(YearGte)</span>
+<span class="s1">ExtractYear.register_lookup(YearLt)</span>
+<span class="s1">ExtractYear.register_lookup(YearLte)</span>
+
+<span class="s1">ExtractIsoYear.register_lookup(YearExact)</span>
+<span class="s1">ExtractIsoYear.register_lookup(YearGt)</span>
+<span class="s1">ExtractIsoYear.register_lookup(YearGte)</span>
+<span class="s1">ExtractIsoYear.register_lookup(YearLt)</span>
+<span class="s1">ExtractIsoYear.register_lookup(YearLte)</span>
+
+
+<span class="s0">class </span><span class="s1">Now(Func):</span>
+    <span class="s1">template = </span><span class="s3">'CURRENT_TIMESTAMP'</span>
+    <span class="s1">output_field = DateTimeField()</span>
+
+    <span class="s0">def </span><span class="s1">as_postgresql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">**extra_context):</span>
+        <span class="s2"># PostgreSQL's CURRENT_TIMESTAMP means &quot;the time at the start of the</span>
+        <span class="s2"># transaction&quot;. Use STATEMENT_TIMESTAMP to be cross-compatible with</span>
+        <span class="s2"># other databases.</span>
+        <span class="s0">return </span><span class="s1">self.as_sql(compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">template=</span><span class="s3">'STATEMENT_TIMESTAMP()'</span><span class="s0">, </span><span class="s1">**extra_context)</span>
+
+
+<span class="s0">class </span><span class="s1">TruncBase(TimezoneMixin</span><span class="s0">, </span><span class="s1">Transform):</span>
+    <span class="s1">kind = </span><span class="s0">None</span>
+    <span class="s1">tzinfo = </span><span class="s0">None</span>
+
+    <span class="s2"># RemovedInDjango50Warning: when the deprecation ends, remove is_dst</span>
+    <span class="s2"># argument.</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">output_field=</span><span class="s0">None, </span><span class="s1">tzinfo=</span><span class="s0">None, </span><span class="s1">is_dst=timezone.NOT_PASSED</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s1">self.tzinfo = tzinfo</span>
+        <span class="s1">self.is_dst = is_dst</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">output_field=output_field</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s1">inner_sql</span><span class="s0">, </span><span class="s1">inner_params = compiler.compile(self.lhs)</span>
+        <span class="s1">tzname = </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">isinstance(self.lhs.output_field</span><span class="s0">, </span><span class="s1">DateTimeField):</span>
+            <span class="s1">tzname = self.get_tzname()</span>
+        <span class="s0">elif </span><span class="s1">self.tzinfo </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'tzinfo can only be used with DateTimeField.'</span><span class="s1">)</span>
+        <span class="s0">if </span><span class="s1">isinstance(self.output_field</span><span class="s0">, </span><span class="s1">DateTimeField):</span>
+            <span class="s1">sql = connection.ops.datetime_trunc_sql(self.kind</span><span class="s0">, </span><span class="s1">inner_sql</span><span class="s0">, </span><span class="s1">tzname)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(self.output_field</span><span class="s0">, </span><span class="s1">DateField):</span>
+            <span class="s1">sql = connection.ops.date_trunc_sql(self.kind</span><span class="s0">, </span><span class="s1">inner_sql</span><span class="s0">, </span><span class="s1">tzname)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(self.output_field</span><span class="s0">, </span><span class="s1">TimeField):</span>
+            <span class="s1">sql = connection.ops.time_trunc_sql(self.kind</span><span class="s0">, </span><span class="s1">inner_sql</span><span class="s0">, </span><span class="s1">tzname)</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'Trunc only valid on DateField, TimeField, or DateTimeField.'</span><span class="s1">)</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">inner_params</span>
+
+    <span class="s0">def </span><span class="s1">resolve_expression(self</span><span class="s0">, </span><span class="s1">query=</span><span class="s0">None, </span><span class="s1">allow_joins=</span><span class="s0">True, </span><span class="s1">reuse=</span><span class="s0">None, </span><span class="s1">summarize=</span><span class="s0">False, </span><span class="s1">for_save=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s1">copy = super().resolve_expression(query</span><span class="s0">, </span><span class="s1">allow_joins</span><span class="s0">, </span><span class="s1">reuse</span><span class="s0">, </span><span class="s1">summarize</span><span class="s0">, </span><span class="s1">for_save)</span>
+        <span class="s1">field = copy.lhs.output_field</span>
+        <span class="s2"># DateTimeField is a subclass of DateField so this works for both.</span>
+        <span class="s0">if not </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">(DateField</span><span class="s0">, </span><span class="s1">TimeField)):</span>
+            <span class="s0">raise </span><span class="s1">TypeError(</span>
+                <span class="s3">&quot;%r isn't a DateField, TimeField, or DateTimeField.&quot; </span><span class="s1">% field.name</span>
+            <span class="s1">)</span>
+        <span class="s2"># If self.output_field was None, then accessing the field will trigger</span>
+        <span class="s2"># the resolver to assign it to self.lhs.output_field.</span>
+        <span class="s0">if not </span><span class="s1">isinstance(copy.output_field</span><span class="s0">, </span><span class="s1">(DateField</span><span class="s0">, </span><span class="s1">DateTimeField</span><span class="s0">, </span><span class="s1">TimeField)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">'output_field must be either DateField, TimeField, or DateTimeField'</span><span class="s1">)</span>
+        <span class="s2"># Passing dates or times to functions expecting datetimes is most</span>
+        <span class="s2"># likely a mistake.</span>
+        <span class="s1">class_output_field = self.__class__.output_field </span><span class="s0">if </span><span class="s1">isinstance(self.__class__.output_field</span><span class="s0">, </span><span class="s1">Field) </span><span class="s0">else None</span>
+        <span class="s1">output_field = class_output_field </span><span class="s0">or </span><span class="s1">copy.output_field</span>
+        <span class="s1">has_explicit_output_field = class_output_field </span><span class="s0">or </span><span class="s1">field.__class__ </span><span class="s0">is not </span><span class="s1">copy.output_field.__class__</span>
+        <span class="s0">if </span><span class="s1">type(field) == DateField </span><span class="s0">and </span><span class="s1">(</span>
+                <span class="s1">isinstance(output_field</span><span class="s0">, </span><span class="s1">DateTimeField) </span><span class="s0">or </span><span class="s1">copy.kind </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'hour'</span><span class="s0">, </span><span class="s3">'minute'</span><span class="s0">, </span><span class="s3">'second'</span><span class="s0">, </span><span class="s3">'time'</span><span class="s1">)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Cannot truncate DateField '%s' to %s.&quot; </span><span class="s1">% (</span>
+                <span class="s1">field.name</span><span class="s0">, </span><span class="s1">output_field.__class__.__name__ </span><span class="s0">if </span><span class="s1">has_explicit_output_field </span><span class="s0">else </span><span class="s3">'DateTimeField'</span>
+            <span class="s1">))</span>
+        <span class="s0">elif </span><span class="s1">isinstance(field</span><span class="s0">, </span><span class="s1">TimeField) </span><span class="s0">and </span><span class="s1">(</span>
+                <span class="s1">isinstance(output_field</span><span class="s0">, </span><span class="s1">DateTimeField) </span><span class="s0">or</span>
+                <span class="s1">copy.kind </span><span class="s0">in </span><span class="s1">(</span><span class="s3">'year'</span><span class="s0">, </span><span class="s3">'quarter'</span><span class="s0">, </span><span class="s3">'month'</span><span class="s0">, </span><span class="s3">'week'</span><span class="s0">, </span><span class="s3">'day'</span><span class="s0">, </span><span class="s3">'date'</span><span class="s1">)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s3">&quot;Cannot truncate TimeField '%s' to %s.&quot; </span><span class="s1">% (</span>
+                <span class="s1">field.name</span><span class="s0">, </span><span class="s1">output_field.__class__.__name__ </span><span class="s0">if </span><span class="s1">has_explicit_output_field </span><span class="s0">else </span><span class="s3">'DateTimeField'</span>
+            <span class="s1">))</span>
+        <span class="s0">return </span><span class="s1">copy</span>
+
+    <span class="s0">def </span><span class="s1">convert_value(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">if </span><span class="s1">isinstance(self.output_field</span><span class="s0">, </span><span class="s1">DateTimeField):</span>
+            <span class="s0">if not </span><span class="s1">settings.USE_TZ:</span>
+                <span class="s0">pass</span>
+            <span class="s0">elif </span><span class="s1">value </span><span class="s0">is not None</span><span class="s1">:</span>
+                <span class="s1">value = value.replace(tzinfo=</span><span class="s0">None</span><span class="s1">)</span>
+                <span class="s1">value = timezone.make_aware(value</span><span class="s0">, </span><span class="s1">self.tzinfo</span><span class="s0">, </span><span class="s1">is_dst=self.is_dst)</span>
+            <span class="s0">elif not </span><span class="s1">connection.features.has_zoneinfo_database:</span>
+                <span class="s0">raise </span><span class="s1">ValueError(</span>
+                    <span class="s3">'Database returned an invalid datetime value. Are time '</span>
+                    <span class="s3">'zone definitions for your database installed?'</span>
+                <span class="s1">)</span>
+        <span class="s0">elif </span><span class="s1">isinstance(value</span><span class="s0">, </span><span class="s1">datetime):</span>
+            <span class="s0">if </span><span class="s1">value </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s0">pass</span>
+            <span class="s0">elif </span><span class="s1">isinstance(self.output_field</span><span class="s0">, </span><span class="s1">DateField):</span>
+                <span class="s1">value = value.date()</span>
+            <span class="s0">elif </span><span class="s1">isinstance(self.output_field</span><span class="s0">, </span><span class="s1">TimeField):</span>
+                <span class="s1">value = value.time()</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s0">class </span><span class="s1">Trunc(TruncBase):</span>
+
+    <span class="s2"># RemovedInDjango50Warning: when the deprecation ends, remove is_dst</span>
+    <span class="s2"># argument.</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">kind</span><span class="s0">, </span><span class="s1">output_field=</span><span class="s0">None, </span><span class="s1">tzinfo=</span><span class="s0">None, </span><span class="s1">is_dst=timezone.NOT_PASSED</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s1">self.kind = kind</span>
+        <span class="s1">super().__init__(</span>
+            <span class="s1">expression</span><span class="s0">, </span><span class="s1">output_field=output_field</span><span class="s0">, </span><span class="s1">tzinfo=tzinfo</span><span class="s0">,</span>
+            <span class="s1">is_dst=is_dst</span><span class="s0">, </span><span class="s1">**extra</span>
+        <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">TruncYear(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'year'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncQuarter(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'quarter'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncMonth(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'month'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncWeek(TruncBase):</span>
+    <span class="s4">&quot;&quot;&quot;Truncate to midnight on the Monday of the week.&quot;&quot;&quot;</span>
+    <span class="s1">kind = </span><span class="s3">'week'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncDay(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'day'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncDate(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'date'</span>
+    <span class="s1">lookup_name = </span><span class="s3">'date'</span>
+    <span class="s1">output_field = DateField()</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s2"># Cast to date rather than truncate to date.</span>
+        <span class="s1">lhs</span><span class="s0">, </span><span class="s1">lhs_params = compiler.compile(self.lhs)</span>
+        <span class="s1">tzname = self.get_tzname()</span>
+        <span class="s1">sql = connection.ops.datetime_cast_date_sql(lhs</span><span class="s0">, </span><span class="s1">tzname)</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">lhs_params</span>
+
+
+<span class="s0">class </span><span class="s1">TruncTime(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'time'</span>
+    <span class="s1">lookup_name = </span><span class="s3">'time'</span>
+    <span class="s1">output_field = TimeField()</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s2"># Cast to time rather than truncate to time.</span>
+        <span class="s1">lhs</span><span class="s0">, </span><span class="s1">lhs_params = compiler.compile(self.lhs)</span>
+        <span class="s1">tzname = self.get_tzname()</span>
+        <span class="s1">sql = connection.ops.datetime_cast_time_sql(lhs</span><span class="s0">, </span><span class="s1">tzname)</span>
+        <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">lhs_params</span>
+
+
+<span class="s0">class </span><span class="s1">TruncHour(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'hour'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncMinute(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'minute'</span>
+
+
+<span class="s0">class </span><span class="s1">TruncSecond(TruncBase):</span>
+    <span class="s1">kind = </span><span class="s3">'second'</span>
+
+
+<span class="s1">DateTimeField.register_lookup(TruncDate)</span>
+<span class="s1">DateTimeField.register_lookup(TruncTime)</span>
+</pre>
+</body>
+</html>

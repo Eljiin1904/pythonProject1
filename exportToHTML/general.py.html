@@ -1,0 +1,124 @@
+<html>
+<head>
+<title>general.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+general.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">django.contrib.postgres.fields </span><span class="s0">import </span><span class="s1">ArrayField</span>
+<span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">Aggregate</span><span class="s0">, </span><span class="s1">BooleanField</span><span class="s0">, </span><span class="s1">JSONField</span><span class="s0">, </span><span class="s1">Value</span>
+<span class="s0">from </span><span class="s1">django.utils.deprecation </span><span class="s0">import </span><span class="s1">RemovedInDjango50Warning</span>
+
+<span class="s0">from </span><span class="s1">.mixins </span><span class="s0">import </span><span class="s1">OrderableAggMixin</span>
+
+<span class="s1">__all__ = [</span>
+    <span class="s2">'ArrayAgg'</span><span class="s0">, </span><span class="s2">'BitAnd'</span><span class="s0">, </span><span class="s2">'BitOr'</span><span class="s0">, </span><span class="s2">'BoolAnd'</span><span class="s0">, </span><span class="s2">'BoolOr'</span><span class="s0">, </span><span class="s2">'JSONBAgg'</span><span class="s0">, </span><span class="s2">'StringAgg'</span><span class="s0">,</span>
+<span class="s1">]</span>
+
+
+<span class="s3"># RemovedInDjango50Warning</span>
+<span class="s1">NOT_PROVIDED = object()</span>
+
+
+<span class="s0">class </span><span class="s1">DeprecatedConvertValueMixin:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">default=NOT_PROVIDED</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s0">if </span><span class="s1">default </span><span class="s0">is </span><span class="s1">NOT_PROVIDED:</span>
+            <span class="s1">default = </span><span class="s0">None</span>
+            <span class="s1">self._default_provided = </span><span class="s0">False</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self._default_provided = </span><span class="s0">True</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">default=default</span><span class="s0">, </span><span class="s1">**extra)</span>
+
+    <span class="s0">def </span><span class="s1">convert_value(self</span><span class="s0">, </span><span class="s1">value</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">if </span><span class="s1">value </span><span class="s0">is None and not </span><span class="s1">self._default_provided:</span>
+            <span class="s1">warnings.warn(self.deprecation_msg</span><span class="s0">, </span><span class="s1">category=RemovedInDjango50Warning)</span>
+            <span class="s0">return </span><span class="s1">self.deprecation_value</span>
+        <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s0">class </span><span class="s1">ArrayAgg(DeprecatedConvertValueMixin</span><span class="s0">, </span><span class="s1">OrderableAggMixin</span><span class="s0">, </span><span class="s1">Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'ARRAY_AGG'</span>
+    <span class="s1">template = </span><span class="s2">'%(function)s(%(distinct)s%(expressions)s %(ordering)s)'</span>
+    <span class="s1">allow_distinct = </span><span class="s0">True</span>
+
+    <span class="s3"># RemovedInDjango50Warning</span>
+    <span class="s1">deprecation_value = property(</span><span class="s0">lambda </span><span class="s1">self: [])</span>
+    <span class="s1">deprecation_msg = (</span>
+        <span class="s2">'In Django 5.0, ArrayAgg() will return None instead of an empty list '</span>
+        <span class="s2">'if there are no rows. Pass default=None to opt into the new behavior '</span>
+        <span class="s2">'and silence this warning or default=Value([]) to keep the previous '</span>
+        <span class="s2">'behavior.'</span>
+    <span class="s1">)</span>
+
+    <span class="s1">@property</span>
+    <span class="s0">def </span><span class="s1">output_field(self):</span>
+        <span class="s0">return </span><span class="s1">ArrayField(self.source_expressions[</span><span class="s4">0</span><span class="s1">].output_field)</span>
+
+
+<span class="s0">class </span><span class="s1">BitAnd(Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'BIT_AND'</span>
+
+
+<span class="s0">class </span><span class="s1">BitOr(Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'BIT_OR'</span>
+
+
+<span class="s0">class </span><span class="s1">BoolAnd(Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'BOOL_AND'</span>
+    <span class="s1">output_field = BooleanField()</span>
+
+
+<span class="s0">class </span><span class="s1">BoolOr(Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'BOOL_OR'</span>
+    <span class="s1">output_field = BooleanField()</span>
+
+
+<span class="s0">class </span><span class="s1">JSONBAgg(DeprecatedConvertValueMixin</span><span class="s0">, </span><span class="s1">OrderableAggMixin</span><span class="s0">, </span><span class="s1">Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'JSONB_AGG'</span>
+    <span class="s1">template = </span><span class="s2">'%(function)s(%(distinct)s%(expressions)s %(ordering)s)'</span>
+    <span class="s1">allow_distinct = </span><span class="s0">True</span>
+    <span class="s1">output_field = JSONField()</span>
+
+    <span class="s3"># RemovedInDjango50Warning</span>
+    <span class="s1">deprecation_value = </span><span class="s2">'[]'</span>
+    <span class="s1">deprecation_msg = (</span>
+        <span class="s2">&quot;In Django 5.0, JSONBAgg() will return None instead of an empty list &quot;</span>
+        <span class="s2">&quot;if there are no rows. Pass default=None to opt into the new behavior &quot;</span>
+        <span class="s2">&quot;and silence this warning or default=Value('[]') to keep the previous &quot;</span>
+        <span class="s2">&quot;behavior.&quot;</span>
+    <span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">StringAgg(DeprecatedConvertValueMixin</span><span class="s0">, </span><span class="s1">OrderableAggMixin</span><span class="s0">, </span><span class="s1">Aggregate):</span>
+    <span class="s1">function = </span><span class="s2">'STRING_AGG'</span>
+    <span class="s1">template = </span><span class="s2">'%(function)s(%(distinct)s%(expressions)s %(ordering)s)'</span>
+    <span class="s1">allow_distinct = </span><span class="s0">True</span>
+
+    <span class="s3"># RemovedInDjango50Warning</span>
+    <span class="s1">deprecation_value = </span><span class="s2">''</span>
+    <span class="s1">deprecation_msg = (</span>
+        <span class="s2">&quot;In Django 5.0, StringAgg() will return None instead of an empty &quot;</span>
+        <span class="s2">&quot;string if there are no rows. Pass default=None to opt into the new &quot;</span>
+        <span class="s2">&quot;behavior and silence this warning or default=Value('') to keep the &quot;</span>
+        <span class="s2">&quot;previous behavior.&quot;</span>
+    <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">expression</span><span class="s0">, </span><span class="s1">delimiter</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s1">delimiter_expr = Value(str(delimiter))</span>
+        <span class="s1">super().__init__(expression</span><span class="s0">, </span><span class="s1">delimiter_expr</span><span class="s0">, </span><span class="s1">**extra)</span>
+</pre>
+</body>
+</html>

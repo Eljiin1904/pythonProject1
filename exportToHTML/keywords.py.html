@@ -1,0 +1,978 @@
+<html>
+<head>
+<title>keywords.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+keywords.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#</span>
+<span class="s0"># Copyright (C) 2009-2020 the sqlparse authors and contributors</span>
+<span class="s0"># &lt;see AUTHORS file&gt;</span>
+<span class="s0">#</span>
+<span class="s0"># This module is part of python-sqlparse and is released under</span>
+<span class="s0"># the BSD License: https://opensource.org/licenses/BSD-3-Clause</span>
+
+<span class="s2">import </span><span class="s1">re</span>
+
+<span class="s2">from </span><span class="s1">sqlparse </span><span class="s2">import </span><span class="s1">tokens</span>
+
+
+<span class="s2">def </span><span class="s1">is_keyword(value):</span>
+    <span class="s1">val = value.upper()</span>
+    <span class="s2">return </span><span class="s1">(KEYWORDS_COMMON.get(val)</span>
+            <span class="s2">or </span><span class="s1">KEYWORDS_ORACLE.get(val)</span>
+            <span class="s2">or </span><span class="s1">KEYWORDS_PLPGSQL.get(val)</span>
+            <span class="s2">or </span><span class="s1">KEYWORDS_HQL.get(val)</span>
+            <span class="s2">or </span><span class="s1">KEYWORDS.get(val</span><span class="s2">, </span><span class="s1">tokens.Name))</span><span class="s2">, </span><span class="s1">value</span>
+
+
+<span class="s1">SQL_REGEX = {</span>
+    <span class="s3">'root'</span><span class="s1">: [</span>
+        <span class="s1">(</span><span class="s3">r'(--|# )\+.*?(\r\n|\r|\n|$)'</span><span class="s2">, </span><span class="s1">tokens.Comment.Single.Hint)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'/\*\+[\s\S]*?\*/'</span><span class="s2">, </span><span class="s1">tokens.Comment.Multiline.Hint)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r'(--|# ).*?(\r\n|\r|\n|$)'</span><span class="s2">, </span><span class="s1">tokens.Comment.Single)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'/\*[\s\S]*?\*/'</span><span class="s2">, </span><span class="s1">tokens.Comment.Multiline)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r'(\r\n|\r|\n)'</span><span class="s2">, </span><span class="s1">tokens.Newline)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'\s+?'</span><span class="s2">, </span><span class="s1">tokens.Whitespace)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r':='</span><span class="s2">, </span><span class="s1">tokens.Assignment)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'::'</span><span class="s2">, </span><span class="s1">tokens.Punctuation)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r'\*'</span><span class="s2">, </span><span class="s1">tokens.Wildcard)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r&quot;`(``|[^`])*`&quot;</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r&quot;´(´´|[^´])*´&quot;</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'((?&lt;!\S)\$(?:[_A-ZÀ-Ü]\w*)?\$)[\s\S]*?\1'</span><span class="s2">, </span><span class="s1">tokens.Literal)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r'\?'</span><span class="s2">, </span><span class="s1">tokens.Name.Placeholder)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'%(\(\w+\))?s'</span><span class="s2">, </span><span class="s1">tokens.Name.Placeholder)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(?&lt;!\w)[$:?]\w+'</span><span class="s2">, </span><span class="s1">tokens.Name.Placeholder)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r'\\\w+'</span><span class="s2">, </span><span class="s1">tokens.Command)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(NOT\s+)?(IN)\b'</span><span class="s2">, </span><span class="s1">tokens.Operator.Comparison)</span><span class="s2">,</span>
+        <span class="s0"># FIXME(andi): VALUES shouldn't be listed here</span>
+        <span class="s0"># see https://github.com/andialbrecht/sqlparse/pull/64</span>
+        <span class="s0"># AS and IN are special, it may be followed by a parenthesis, but</span>
+        <span class="s0"># are never functions, see issue183 and issue507</span>
+        <span class="s1">(</span><span class="s3">r'(CASE|IN|VALUES|USING|FROM|AS)\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+
+        <span class="s1">(</span><span class="s3">r'(@|##|#)[A-ZÀ-Ü]\w+'</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,</span>
+
+        <span class="s0"># see issue #39</span>
+        <span class="s0"># Spaces around period `schema . name` are valid identifier</span>
+        <span class="s0"># TODO: Spaces before period not implemented</span>
+        <span class="s1">(</span><span class="s3">r'[A-ZÀ-Ü]\w*(?=\s*\.)'</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,  </span><span class="s0"># 'Name'   .</span>
+        <span class="s0"># FIXME(atronah): never match,</span>
+        <span class="s0"># because `re.match` doesn't work with look-behind regexp feature</span>
+        <span class="s1">(</span><span class="s3">r'(?&lt;=\.)[A-ZÀ-Ü]\w*'</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,  </span><span class="s0"># .'Name'</span>
+        <span class="s1">(</span><span class="s3">r'[A-ZÀ-Ü]\w*(?=\()'</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,  </span><span class="s0"># side effect: change kw to func</span>
+        <span class="s1">(</span><span class="s3">r'-?0x[\dA-F]+'</span><span class="s2">, </span><span class="s1">tokens.Number.Hexadecimal)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'-?\d+(\.\d+)?E-?\d+'</span><span class="s2">, </span><span class="s1">tokens.Number.Float)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(?![_A-ZÀ-Ü])-?(\d+(\.\d*)|\.\d+)(?![_A-ZÀ-Ü])'</span><span class="s2">,</span>
+         <span class="s1">tokens.Number.Float)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(?![_A-ZÀ-Ü])-?\d+(?![_A-ZÀ-Ü])'</span><span class="s2">, </span><span class="s1">tokens.Number.Integer)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r&quot;'(''|\\\\|\\'|[^'])*'&quot;</span><span class="s2">, </span><span class="s1">tokens.String.Single)</span><span class="s2">,</span>
+        <span class="s0"># not a real string literal in ANSI SQL:</span>
+        <span class="s1">(</span><span class="s3">r'&quot;(&quot;&quot;|\\\\|\\&quot;|[^&quot;])*&quot;'</span><span class="s2">, </span><span class="s1">tokens.String.Symbol)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(&quot;&quot;|&quot;.*?[^\\]&quot;)'</span><span class="s2">, </span><span class="s1">tokens.String.Symbol)</span><span class="s2">,</span>
+        <span class="s0"># sqlite names can be escaped with [square brackets]. left bracket</span>
+        <span class="s0"># cannot be preceded by word character or a right bracket --</span>
+        <span class="s0"># otherwise it's probably an array index</span>
+        <span class="s1">(</span><span class="s3">r'(?&lt;![\w\])])(\[[^\]\[]+\])'</span><span class="s2">, </span><span class="s1">tokens.Name)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'((LEFT\s+|RIGHT\s+|FULL\s+)?(INNER\s+|OUTER\s+|STRAIGHT\s+)?'</span>
+         <span class="s3">r'|(CROSS\s+|NATURAL\s+)?)?JOIN\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'END(\s+IF|\s+LOOP|\s+WHILE)?\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'NOT\s+NULL\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'NULLS\s+(FIRST|LAST)\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'UNION\s+ALL\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'CREATE(\s+OR\s+REPLACE)?\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword.DDL)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'DOUBLE\s+PRECISION\b'</span><span class="s2">, </span><span class="s1">tokens.Name.Builtin)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'GROUP\s+BY\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'ORDER\s+BY\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'HANDLER\s+FOR\b'</span><span class="s2">, </span><span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(LATERAL\s+VIEW\s+)'</span>
+         <span class="s3">r'(EXPLODE|INLINE|PARSE_URL_TUPLE|POSEXPLODE|STACK)\b'</span><span class="s2">,</span>
+         <span class="s1">tokens.Keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r&quot;(AT|WITH')\s+TIME\s+ZONE\s+'[^']+'&quot;</span><span class="s2">, </span><span class="s1">tokens.Keyword.TZCast)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'(NOT\s+)?(LIKE|ILIKE|RLIKE)\b'</span><span class="s2">, </span><span class="s1">tokens.Operator.Comparison)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'[0-9_A-ZÀ-Ü][_$#\w]*'</span><span class="s2">, </span><span class="s1">is_keyword)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'[;:()\[\],\.]'</span><span class="s2">, </span><span class="s1">tokens.Punctuation)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'[&lt;&gt;=~!]+'</span><span class="s2">, </span><span class="s1">tokens.Operator.Comparison)</span><span class="s2">,</span>
+        <span class="s1">(</span><span class="s3">r'[+/@#%^&amp;|^-]+'</span><span class="s2">, </span><span class="s1">tokens.Operator)</span><span class="s2">,</span>
+    <span class="s1">]}</span>
+
+<span class="s1">FLAGS = re.IGNORECASE | re.UNICODE</span>
+<span class="s1">SQL_REGEX = [(re.compile(rx</span><span class="s2">, </span><span class="s1">FLAGS).match</span><span class="s2">, </span><span class="s1">tt) </span><span class="s2">for </span><span class="s1">rx</span><span class="s2">, </span><span class="s1">tt </span><span class="s2">in </span><span class="s1">SQL_REGEX[</span><span class="s3">'root'</span><span class="s1">]]</span>
+
+<span class="s1">KEYWORDS = {</span>
+    <span class="s3">'ABORT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ABS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ABSOLUTE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ACCESS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ADA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ADD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ADMIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AFTER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AGGREGATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ALIAS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ALL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ALLOCATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ANALYSE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ANALYZE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ANY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ARRAYLEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ARE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ASC'</span><span class="s1">: tokens.Keyword.Order</span><span class="s2">,</span>
+    <span class="s3">'ASENSITIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ASSERTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ASSIGNMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ASYMMETRIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ATOMIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AUDIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AUTHORIZATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AUTO_INCREMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AVG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'BACKWARD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BEFORE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BEGIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BETWEEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BITVAR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BIT_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BOTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BREADTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s0"># 'C': tokens.Keyword,  # most likely this is an alias</span>
+    <span class="s3">'CACHE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CALL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CALLED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CARDINALITY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CASCADE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CASCADED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CAST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CATALOG_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHAIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTERISTICS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER_SET_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER_SET_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER_SET_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHAR_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARSET'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHECK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHECKED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHECKPOINT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CLASS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CLASS_ORIGIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CLOB'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CLOSE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CLUSTER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COALESCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COBOL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLATION_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLATION_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLATION_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLECT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLUMN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLUMN_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMPRESS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMMAND_FUNCTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMMAND_FUNCTION_CODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMMIT'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'COMMITTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMPLETION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONCURRENTLY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONDITION_NUMBER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONNECT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONNECTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONNECTION_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONSTRAINT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONSTRAINTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONSTRAINT_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONSTRAINT_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONSTRAINT_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONSTRUCTOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONTAINS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONTINUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONVERSION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONVERT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COPY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CORRESPONDING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COUNT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CREATEDB'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CREATEUSER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CROSS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CUBE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT_DATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT_PATH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT_ROLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT_TIME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT_TIMESTAMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURRENT_USER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURSOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CURSOR_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CYCLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'DATA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DATABASE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DATETIME_INTERVAL_CODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DATETIME_INTERVAL_PRECISION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DAY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEALLOCATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DECLARE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEFAULT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEFAULTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEFERRABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEFERRED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEFINED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEFINER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DELIMITER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DELIMITERS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DEREF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DESC'</span><span class="s1">: tokens.Keyword.Order</span><span class="s2">,</span>
+    <span class="s3">'DESCRIBE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DESCRIPTOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DESTROY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DESTRUCTOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DETERMINISTIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DIAGNOSTICS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DICTIONARY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DISABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DISCONNECT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DISPATCH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DOMAIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DYNAMIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DYNAMIC_FUNCTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DYNAMIC_FUNCTION_CODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'EACH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ENABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ENCODING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ENCRYPTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'END-EXEC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ENGINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EQUALS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ESCAPE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EVERY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXCEPT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXCEPTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXCLUDING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXCLUSIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXEC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXECUTE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXISTING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXISTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXPLAIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXTERNAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXTRACT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'FALSE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FETCH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FINAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FIRST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FORCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FOREACH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FOREIGN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FORTRAN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FORWARD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FOUND'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FREE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FREEZE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FULL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FUNCTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s0"># 'G': tokens.Keyword,</span>
+    <span class="s3">'GENERAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GENERATED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GET'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GLOBAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GOTO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GRANT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GRANTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GROUPING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'HAVING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'HIERARCHY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'HOLD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'HOUR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'HOST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'IDENTIFIED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IDENTITY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IGNORE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ILIKE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IMMEDIATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IMMUTABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'IMPLEMENTATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IMPLICIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INCLUDING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INCREMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INDEX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'INDITCATOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INFIX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INHERITS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INITIAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INITIALIZE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INITIALLY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INOUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INPUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INSENSITIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INSTANTIABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INSTEAD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INTERSECT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INTO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INVOKER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ISNULL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ISOLATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ITERATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s0"># 'K': tokens.Keyword,</span>
+    <span class="s3">'KEY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'KEY_MEMBER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'KEY_TYPE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'LANCOMPILER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LANGUAGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LARGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LAST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LATERAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LEADING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LESS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LEVEL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LIMIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LISTEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOAD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCALTIME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCALTIMESTAMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCATOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOWER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s0"># 'M': tokens.Keyword,</span>
+    <span class="s3">'MAP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MATCH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXEXTENTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXVALUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MESSAGE_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MESSAGE_OCTET_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MESSAGE_TEXT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'METHOD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MINUTE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MINUS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MINVALUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MOD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MODIFIES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MODIFY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MONTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MORE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MOVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MUMPS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'NAMES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NATIONAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NATURAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NCHAR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NCLOB'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NEW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NEXT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOAUDIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOCOMPRESS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOCREATEDB'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOCREATEUSER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NONE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOTFOUND'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOTHING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOTIFY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOTNULL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOWAIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NULL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NULLABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NULLIF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'OBJECT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OCTET_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OFF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OFFLINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OFFSET'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OIDS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OLD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ONLINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ONLY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OPEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OPERATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OPERATOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OPTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OPTIONS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ORDINALITY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OUTPUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OVERLAPS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OVERLAY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OVERRIDING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OWNER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'QUARTER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'PAD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETERS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER_MODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER_ORDINAL_POSITION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER_SPECIFIC_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER_SPECIFIC_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARAMETER_SPECIFIC_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARTIAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PASCAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PCTFREE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PENDANT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PLACING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PLI'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'POSITION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'POSTFIX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRECISION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PREFIX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PREORDER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PREPARE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRESERVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRIMARY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRIOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRIVILEGES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PROCEDURAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PROCEDURE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PUBLIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'RAISE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RAW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'READ'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'READS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RECHECK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RECURSIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REFERENCES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REFERENCING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REINDEX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RELATIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RENAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REPEATABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESET'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESOURCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESTART'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESTRICT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESULT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RETURN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RETURNED_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RETURNED_OCTET_LENGTH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RETURNED_SQLSTATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RETURNING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RETURNS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REVOKE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RIGHT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROLLBACK'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'ROLLUP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROUTINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROUTINE_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROUTINE_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROUTINE_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROWS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROW_COUNT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RULE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'SAVE_POINT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SCALE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SCHEMA_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SCOPE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SCROLL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SEARCH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SECOND'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SECURITY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SELF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SENSITIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SEQUENCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SERIALIZABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SERVER_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SESSION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SESSION_USER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SETOF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SETS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SHARE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SHOW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SIMILAR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SIMPLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SIZE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SOME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SOURCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SPACE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SPECIFIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SPECIFICTYPE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SPECIFIC_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQLBUF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQLCODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQLERROR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQLEXCEPTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQLSTATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQLWARNING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'START'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s0"># 'STATE': tokens.Keyword,</span>
+    <span class="s3">'STATEMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STATIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STATISTICS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STDIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STDOUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STORAGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STRICT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STRUCTURE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STYPE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUBCLASS_ORIGIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUBLIST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUBSTRING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUCCESSFUL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SYMMETRIC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SYNONYM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SYSID'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SYSTEM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SYSTEM_USER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'TABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TABLE_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TEMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TEMPLATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TEMPORARY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TERMINATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'THAN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TIMESTAMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TIMEZONE_HOUR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TIMEZONE_MINUTE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TOAST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRAILING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSACTIONS_COMMITTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSACTIONS_ROLLED_BACK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSATION_ACTIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSFORM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSFORMS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSLATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSLATION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TREAT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRIGGER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRIGGER_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRIGGER_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRIGGER_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRIM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRUNCATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRUSTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TYPE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'UID'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNCOMMITTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNDER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNENCRYPTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNIQUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNKNOWN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNLISTEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNNAMED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNNEST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNTIL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UPPER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USAGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USER_DEFINED_TYPE_CATALOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USER_DEFINED_TYPE_NAME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USER_DEFINED_TYPE_SCHEMA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'USING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'VACUUM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VALID'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VALIDATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VALIDATOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VALUES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VARIABLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VERBOSE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VERSION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VIEW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VOLATILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'WEEK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WHENEVER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WITH'</span><span class="s1">: tokens.Keyword.CTE</span><span class="s2">,</span>
+    <span class="s3">'WITHOUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WORK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WRITE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'YEAR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'ZONE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s0"># Name.Builtin</span>
+    <span class="s3">'ARRAY'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'BIGINT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'BINARY'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'BIT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'BLOB'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'BOOLEAN'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'CHAR'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'DATE'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'DEC'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'DECIMAL'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'FILE_TYPE'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'FLOAT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'INT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'INT8'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'INTEGER'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'INTERVAL'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'LONG'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'NATURALN'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'NVARCHAR'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'NUMBER'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'NUMERIC'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'PLS_INTEGER'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'POSITIVE'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'POSITIVEN'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'REAL'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'ROWID'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'ROWLABEL'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'ROWNUM'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SERIAL'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SERIAL8'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SIGNED'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SIGNTYPE'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SIMPLE_DOUBLE'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SIMPLE_FLOAT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SIMPLE_INTEGER'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SMALLINT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SYS_REFCURSOR'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'SYSDATE'</span><span class="s1">: tokens.Name</span><span class="s2">,</span>
+    <span class="s3">'TEXT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'TINYINT'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'UNSIGNED'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'UROWID'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'UTL_FILE'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'VARCHAR'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'VARCHAR2'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+    <span class="s3">'VARYING'</span><span class="s1">: tokens.Name.Builtin</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">KEYWORDS_COMMON = {</span>
+    <span class="s3">'SELECT'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'INSERT'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'DELETE'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'UPDATE'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'UPSERT'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'REPLACE'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'MERGE'</span><span class="s1">: tokens.Keyword.DML</span><span class="s2">,</span>
+    <span class="s3">'DROP'</span><span class="s1">: tokens.Keyword.DDL</span><span class="s2">,</span>
+    <span class="s3">'CREATE'</span><span class="s1">: tokens.Keyword.DDL</span><span class="s2">,</span>
+    <span class="s3">'ALTER'</span><span class="s1">: tokens.Keyword.DDL</span><span class="s2">,</span>
+
+    <span class="s3">'WHERE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FROM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INNER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'JOIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STRAIGHT_JOIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AND'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LIKE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ON'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SET'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'BY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'GROUP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ORDER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LEFT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OUTER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FULL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'IF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'END'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'THEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOOP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'AS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ELSE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WHILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'CASE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WHEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DISTINCT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s1">KEYWORDS_ORACLE = {</span>
+    <span class="s3">'ARCHIVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ARCHIVELOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'BACKUP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BECOME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BLOCK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BODY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'CANCEL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHANGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COMPILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONTENTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONTROLFILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'DATAFILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DBA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DISMOUNT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DOUBLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DUMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'ELSIF'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EVENTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXCEPTIONS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXPLAIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXTENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXTERNALLY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'FLUSH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FREELIST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FREELISTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s0"># groups seems too common as table name</span>
+    <span class="s0"># 'GROUPS': tokens.Keyword,</span>
+
+    <span class="s3">'INDICATOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INITRANS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INSTANCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'LAYER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LINK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LISTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOGFILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'MANAGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MANUAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXDATAFILES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXINSTANCES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXLOGFILES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXLOGHISTORY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXLOGMEMBERS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXTRANS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MINEXTENTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MODULE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MOUNT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'NOARCHIVELOG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOCACHE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOCYCLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOMAXVALUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOMINVALUE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOORDER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NORESETLOGS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NORMAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOSORT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'OPTIMAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OWN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'PACKAGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARALLEL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PCTINCREASE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PCTUSED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PLAN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRIVATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PROFILE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'QUOTA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'RECOVER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESETLOGS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESTRICTED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REUSE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ROLES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'SAVEPOINT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SCN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SECTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SEGMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SHARED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SNAPSHOT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SORT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STATEMENT_ID'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STOP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SWITCH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'TABLES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TABLESPACE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'THREAD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TIME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRACING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRANSACTION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRIGGERS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'UNLIMITED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNLOCK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s0"># PostgreSQL Syntax</span>
+<span class="s1">KEYWORDS_PLPGSQL = {</span>
+    <span class="s3">'CONFLICT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'WINDOW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARTITION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OVER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PERFORM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOTICE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PLPGSQL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INHERIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INDEXES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ON_ERROR_STOP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'BYTEA'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BIGSERIAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BIT VARYING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BOX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CHARACTER VARYING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CIDR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CIRCLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DOUBLE PRECISION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INET'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'JSON'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'JSONB'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LSEG'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MACADDR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MONEY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PATH'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PG_LSN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'POINT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'POLYGON'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SMALLSERIAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TSQUERY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TSVECTOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TXID_SNAPSHOT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UUID'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'XML'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'FOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'IN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOOP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+<span class="s1">}</span>
+
+<span class="s0"># Hive Syntax</span>
+<span class="s1">KEYWORDS_HQL = {</span>
+    <span class="s3">'EXPLODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DIRECTORY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DISTRIBUTE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INCLUDE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LOCATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'OVERWRITE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'POSEXPLODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'ARRAY_CONTAINS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'COLLECT_LIST'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONCAT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'CONDITION'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DATE_ADD'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DATE_SUB'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DECODE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'DBMS_OUTPUT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'ELEMENTS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXCHANGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'EXTENDED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FLOOR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FOLLOWING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FROM_UNIXTIME'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'FTP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'HOUR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INLINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'INSTR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LEN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXELEMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAXINDEX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAX_PART_DATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAX_PART_INT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MAX_PART_STRING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MINELEMENT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MININDEX'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MIN_PART_DATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MIN_PART_INT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'MIN_PART_STRING'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NOW'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NVL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'NVL2'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PARSE_URL_TUPLE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PART_LOC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PART_COUNT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PART_COUNT_BY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PRINT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'PUT_LINE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RANGE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REDUCE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'REGEXP_REPLACE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RESIGNAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'RTRIM'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SIGN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SIGNAL'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SPLIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SQRT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STACK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'STR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUBSTR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'SUMMARY'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TBLPROPERTIES'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TIMESTAMP_ISO'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TO_CHAR'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TO_DATE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TO_TIMESTAMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'TRUNC'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNBOUNDED'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNIQUEJOIN'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UNIX_TIMESTAMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'UTC_TIMESTAMP'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'VIEWS'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+
+    <span class="s3">'EXIT'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'BREAK'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+    <span class="s3">'LEAVE'</span><span class="s1">: tokens.Keyword</span><span class="s2">,</span>
+<span class="s1">}</span>
+</pre>
+</body>
+</html>

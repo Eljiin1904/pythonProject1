@@ -1,0 +1,805 @@
+<html>
+<head>
+<title>xpath.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+xpath.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+    cssselect.xpath 
+    =============== 
+ 
+    Translation of parsed CSS selectors to XPath expressions. 
+ 
+ 
+    :copyright: (c) 2007-2012 Ian Bicking and contributors. 
+                See AUTHORS for more details. 
+    :license: BSD, see LICENSE for more details. 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">import </span><span class="s1">re</span>
+
+<span class="s3">from </span><span class="s1">cssselect.parser </span><span class="s3">import </span><span class="s1">parse</span><span class="s3">, </span><span class="s1">parse_series</span><span class="s3">, </span><span class="s1">SelectorError</span>
+
+
+<span class="s3">if </span><span class="s1">sys.version_info[</span><span class="s4">0</span><span class="s1">] &lt; </span><span class="s4">3</span><span class="s1">:</span>
+    <span class="s1">_basestring = basestring</span>
+    <span class="s1">_unicode = unicode</span>
+<span class="s3">else</span><span class="s1">:</span>
+    <span class="s1">_basestring = str</span>
+    <span class="s1">_unicode = str</span>
+
+
+<span class="s3">def </span><span class="s1">_unicode_safe_getattr(obj</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">default=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s0"># getattr() with a non-ASCII name fails on Python 2.x</span>
+    <span class="s1">name = name.encode(</span><span class="s5">'ascii'</span><span class="s3">, </span><span class="s5">'replace'</span><span class="s1">).decode(</span><span class="s5">'ascii'</span><span class="s1">)</span>
+    <span class="s3">return </span><span class="s1">getattr(obj</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">default)</span>
+
+
+<span class="s3">class </span><span class="s1">ExpressionError(SelectorError</span><span class="s3">, </span><span class="s1">RuntimeError):</span>
+    <span class="s2">&quot;&quot;&quot;Unknown or unsupported selector (eg. pseudo-class).&quot;&quot;&quot;</span>
+
+
+<span class="s0">#### XPath Helpers</span>
+
+<span class="s3">class </span><span class="s1">XPathExpr(object):</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">path=</span><span class="s5">''</span><span class="s3">, </span><span class="s1">element=</span><span class="s5">'*'</span><span class="s3">, </span><span class="s1">condition=</span><span class="s5">''</span><span class="s3">, </span><span class="s1">star_prefix=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s1">self.path = path</span>
+        <span class="s1">self.element = element</span>
+        <span class="s1">self.condition = condition</span>
+
+    <span class="s3">def </span><span class="s1">__str__(self):</span>
+        <span class="s1">path =  _unicode(self.path) + _unicode(self.element)</span>
+        <span class="s3">if </span><span class="s1">self.condition:</span>
+            <span class="s1">path += </span><span class="s5">'[%s]' </span><span class="s1">% self.condition</span>
+        <span class="s3">return </span><span class="s1">path</span>
+
+    <span class="s3">def </span><span class="s1">__repr__(self):</span>
+        <span class="s3">return </span><span class="s5">'%s[%s]' </span><span class="s1">% (self.__class__.__name__</span><span class="s3">, </span><span class="s1">self)</span>
+
+    <span class="s3">def </span><span class="s1">add_condition(self</span><span class="s3">, </span><span class="s1">condition):</span>
+        <span class="s3">if </span><span class="s1">self.condition:</span>
+            <span class="s1">self.condition = </span><span class="s5">'%s and (%s)' </span><span class="s1">% (self.condition</span><span class="s3">, </span><span class="s1">condition)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">self.condition = condition</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">add_name_test(self):</span>
+        <span class="s3">if </span><span class="s1">self.element == </span><span class="s5">'*'</span><span class="s1">:</span>
+            <span class="s0"># We weren't doing a test anyway</span>
+            <span class="s3">return</span>
+        <span class="s1">self.add_condition(</span>
+            <span class="s5">&quot;name() = %s&quot; </span><span class="s1">% GenericTranslator.xpath_literal(self.element))</span>
+        <span class="s1">self.element = </span><span class="s5">'*'</span>
+
+    <span class="s3">def </span><span class="s1">add_star_prefix(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Append '*/' to the path to keep the context constrained 
+        to a single parent. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.path += </span><span class="s5">'*/'</span>
+
+    <span class="s3">def </span><span class="s1">join(self</span><span class="s3">, </span><span class="s1">combiner</span><span class="s3">, </span><span class="s1">other):</span>
+        <span class="s1">path = _unicode(self) + combiner</span>
+        <span class="s0"># Any &quot;star prefix&quot; is redundant when joining.</span>
+        <span class="s3">if </span><span class="s1">other.path != </span><span class="s5">'*/'</span><span class="s1">:</span>
+            <span class="s1">path += other.path</span>
+        <span class="s1">self.path = path</span>
+        <span class="s1">self.element = other.element</span>
+        <span class="s1">self.condition = other.condition</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+
+<span class="s1">split_at_single_quotes = re.compile(</span><span class="s5">&quot;('+)&quot;</span><span class="s1">).split</span>
+
+<span class="s0"># The spec is actually more permissive than that, but don’t bother.</span>
+<span class="s0"># This is just for the fast path.</span>
+<span class="s0"># http://www.w3.org/TR/REC-xml/#NT-NameStartChar</span>
+<span class="s1">is_safe_name = re.compile(</span><span class="s5">'^[a-zA-Z_][a-zA-Z0-9_.-]*$'</span><span class="s1">).match</span>
+
+<span class="s0"># Test that the string is not empty and does not contain whitespace</span>
+<span class="s1">is_non_whitespace = re.compile(</span><span class="s5">r'^[^ \t\r\n\f]+$'</span><span class="s1">).match</span>
+
+
+<span class="s0">#### Translation</span>
+
+<span class="s3">class </span><span class="s1">GenericTranslator(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Translator for &quot;generic&quot; XML documents. 
+ 
+    Everything is case-sensitive, no assumption is made on the meaning 
+    of element names and attribute names. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">####</span>
+    <span class="s0">####  HERE BE DRAGONS</span>
+    <span class="s0">####</span>
+    <span class="s0">####  You are welcome to hook into this to change some behavior,</span>
+    <span class="s0">####  but do so at your own risks.</span>
+    <span class="s0">####  Until it has received a lot more work and review,</span>
+    <span class="s0">####  I reserve the right to change this API in backward-incompatible ways</span>
+    <span class="s0">####  with any minor version of cssselect.</span>
+    <span class="s0">####  See https://github.com/scrapy/cssselect/pull/22</span>
+    <span class="s0">####  -- Simon Sapin.</span>
+    <span class="s0">####</span>
+
+    <span class="s1">combinator_mapping = {</span>
+        <span class="s5">' '</span><span class="s1">: </span><span class="s5">'descendant'</span><span class="s3">,</span>
+        <span class="s5">'&gt;'</span><span class="s1">: </span><span class="s5">'child'</span><span class="s3">,</span>
+        <span class="s5">'+'</span><span class="s1">: </span><span class="s5">'direct_adjacent'</span><span class="s3">,</span>
+        <span class="s5">'~'</span><span class="s1">: </span><span class="s5">'indirect_adjacent'</span><span class="s3">,</span>
+    <span class="s1">}</span>
+
+    <span class="s1">attribute_operator_mapping = {</span>
+       <span class="s5">'exists'</span><span class="s1">: </span><span class="s5">'exists'</span><span class="s3">,</span>
+        <span class="s5">'='</span><span class="s1">: </span><span class="s5">'equals'</span><span class="s3">,</span>
+        <span class="s5">'~='</span><span class="s1">: </span><span class="s5">'includes'</span><span class="s3">,</span>
+        <span class="s5">'|='</span><span class="s1">: </span><span class="s5">'dashmatch'</span><span class="s3">,</span>
+        <span class="s5">'^='</span><span class="s1">: </span><span class="s5">'prefixmatch'</span><span class="s3">,</span>
+        <span class="s5">'$='</span><span class="s1">: </span><span class="s5">'suffixmatch'</span><span class="s3">,</span>
+        <span class="s5">'*='</span><span class="s1">: </span><span class="s5">'substringmatch'</span><span class="s3">,</span>
+        <span class="s5">'!='</span><span class="s1">: </span><span class="s5">'different'</span><span class="s3">,  </span><span class="s0"># XXX Not in Level 3 but meh</span>
+    <span class="s1">}</span>
+
+    <span class="s0">#: The attribute used for ID selectors depends on the document language:</span>
+    <span class="s0">#: http://www.w3.org/TR/selectors/#id-selectors</span>
+    <span class="s1">id_attribute = </span><span class="s5">'id'</span>
+
+    <span class="s0">#: The attribute used for ``:lang()`` depends on the document language:</span>
+    <span class="s0">#: http://www.w3.org/TR/selectors/#lang-pseudo</span>
+    <span class="s1">lang_attribute = </span><span class="s5">'xml:lang'</span>
+
+    <span class="s0">#: The case sensitivity of document language element names,</span>
+    <span class="s0">#: attribute names, and attribute values in selectors depends</span>
+    <span class="s0">#: on the document language.</span>
+    <span class="s0">#: http://www.w3.org/TR/selectors/#casesens</span>
+    <span class="s0">#:</span>
+    <span class="s0">#: When a document language defines one of these as case-insensitive,</span>
+    <span class="s0">#: cssselect assumes that the document parser makes the parsed values</span>
+    <span class="s0">#: lower-case. Making the selector lower-case too makes the comparaison</span>
+    <span class="s0">#: case-insensitive.</span>
+    <span class="s0">#:</span>
+    <span class="s0">#: In HTML, element names and attributes names (but not attribute values)</span>
+    <span class="s0">#: are case-insensitive. All of lxml.html, html5lib, BeautifulSoup4</span>
+    <span class="s0">#: and HTMLParser make them lower-case in their parse result, so</span>
+    <span class="s0">#: the assumption holds.</span>
+    <span class="s1">lower_case_element_names = </span><span class="s3">False</span>
+    <span class="s1">lower_case_attribute_names = </span><span class="s3">False</span>
+    <span class="s1">lower_case_attribute_values = </span><span class="s3">False</span>
+
+    <span class="s0"># class used to represent and xpath expression</span>
+    <span class="s1">xpathexpr_cls = XPathExpr</span>
+
+    <span class="s3">def </span><span class="s1">css_to_xpath(self</span><span class="s3">, </span><span class="s1">css</span><span class="s3">, </span><span class="s1">prefix=</span><span class="s5">'descendant-or-self::'</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a *group of selectors* to XPath. 
+ 
+        Pseudo-elements are not supported here since XPath only knows 
+        about &quot;real&quot; elements. 
+ 
+        :param css: 
+            A *group of selectors* as an Unicode string. 
+        :param prefix: 
+            This string is prepended to the XPath expression for each selector. 
+            The default makes selectors scoped to the context node’s subtree. 
+        :raises: 
+            :class:`SelectorSyntaxError` on invalid selectors, 
+            :class:`ExpressionError` on unknown/unsupported selectors, 
+            including pseudo-elements. 
+        :returns: 
+            The equivalent XPath 1.0 expression as an Unicode string. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s5">' | '</span><span class="s1">.join(self.selector_to_xpath(selector</span><span class="s3">, </span><span class="s1">prefix</span><span class="s3">,</span>
+                                                 <span class="s1">translate_pseudo_elements=</span><span class="s3">True</span><span class="s1">)</span>
+                          <span class="s3">for </span><span class="s1">selector </span><span class="s3">in </span><span class="s1">parse(css))</span>
+
+    <span class="s3">def </span><span class="s1">selector_to_xpath(self</span><span class="s3">, </span><span class="s1">selector</span><span class="s3">, </span><span class="s1">prefix=</span><span class="s5">'descendant-or-self::'</span><span class="s3">,</span>
+                          <span class="s1">translate_pseudo_elements=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a parsed selector to XPath. 
+ 
+ 
+        :param selector: 
+            A parsed :class:`Selector` object. 
+        :param prefix: 
+            This string is prepended to the resulting XPath expression. 
+            The default makes selectors scoped to the context node’s subtree. 
+        :param translate_pseudo_elements: 
+            Unless this is set to ``True`` (as :meth:`css_to_xpath` does), 
+            the :attr:`~Selector.pseudo_element` attribute of the selector 
+            is ignored. 
+            It is the caller's responsibility to reject selectors 
+            with pseudo-elements, or to account for them somehow. 
+        :raises: 
+            :class:`ExpressionError` on unknown/unsupported selectors. 
+        :returns: 
+            The equivalent XPath 1.0 expression as an Unicode string. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">tree = getattr(selector</span><span class="s3">, </span><span class="s5">'parsed_tree'</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">tree:</span>
+            <span class="s3">raise </span><span class="s1">TypeError(</span><span class="s5">'Expected a parsed selector, got %r' </span><span class="s1">% (selector</span><span class="s3">,</span><span class="s1">))</span>
+        <span class="s1">xpath = self.xpath(tree)</span>
+        <span class="s3">assert </span><span class="s1">isinstance(xpath</span><span class="s3">, </span><span class="s1">self.xpathexpr_cls)  </span><span class="s0"># help debug a missing 'return'</span>
+        <span class="s3">if </span><span class="s1">translate_pseudo_elements </span><span class="s3">and </span><span class="s1">selector.pseudo_element:</span>
+            <span class="s1">xpath = self.xpath_pseudo_element(xpath</span><span class="s3">, </span><span class="s1">selector.pseudo_element)</span>
+        <span class="s3">return </span><span class="s1">(prefix </span><span class="s3">or </span><span class="s5">''</span><span class="s1">) + _unicode(xpath)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_pseudo_element(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">pseudo_element):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a pseudo-element. 
+ 
+        Defaults to not supporting pseudo-elements at all, 
+        but can be overridden by sub-classes. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s3">raise </span><span class="s1">ExpressionError(</span><span class="s5">'Pseudo-elements are not supported.'</span><span class="s1">)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">xpath_literal(s):</span>
+        <span class="s1">s = _unicode(s)</span>
+        <span class="s3">if </span><span class="s5">&quot;'&quot; </span><span class="s3">not in </span><span class="s1">s:</span>
+            <span class="s1">s = </span><span class="s5">&quot;'%s'&quot; </span><span class="s1">% s</span>
+        <span class="s3">elif </span><span class="s5">'&quot;' </span><span class="s3">not in </span><span class="s1">s:</span>
+            <span class="s1">s = </span><span class="s5">'&quot;%s&quot;' </span><span class="s1">% s</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">s = </span><span class="s5">&quot;concat(%s)&quot; </span><span class="s1">% </span><span class="s5">','</span><span class="s1">.join([</span>
+                <span class="s1">((</span><span class="s5">&quot;'&quot; </span><span class="s3">in </span><span class="s1">part) </span><span class="s3">and </span><span class="s5">'&quot;%s&quot;' </span><span class="s3">or </span><span class="s5">&quot;'%s'&quot;</span><span class="s1">) % part</span>
+                <span class="s3">for </span><span class="s1">part </span><span class="s3">in </span><span class="s1">split_at_single_quotes(s) </span><span class="s3">if </span><span class="s1">part</span>
+                <span class="s1">])</span>
+        <span class="s3">return </span><span class="s1">s</span>
+
+    <span class="s3">def </span><span class="s1">xpath(self</span><span class="s3">, </span><span class="s1">parsed_selector):</span>
+        <span class="s2">&quot;&quot;&quot;Translate any parsed selector object.&quot;&quot;&quot;</span>
+        <span class="s1">type_name = type(parsed_selector).__name__</span>
+        <span class="s1">method = getattr(self</span><span class="s3">, </span><span class="s5">'xpath_%s' </span><span class="s1">% type_name.lower()</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">method </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span><span class="s5">'%s is not supported.' </span><span class="s1">%  type_name)</span>
+        <span class="s3">return </span><span class="s1">method(parsed_selector)</span>
+
+
+    <span class="s0"># Dispatched by parsed object type</span>
+
+    <span class="s3">def </span><span class="s1">xpath_combinedselector(self</span><span class="s3">, </span><span class="s1">combined):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a combined selector.&quot;&quot;&quot;</span>
+        <span class="s1">combinator = self.combinator_mapping[combined.combinator]</span>
+        <span class="s1">method = getattr(self</span><span class="s3">, </span><span class="s5">'xpath_%s_combinator' </span><span class="s1">% combinator)</span>
+        <span class="s3">return </span><span class="s1">method(self.xpath(combined.selector)</span><span class="s3">,</span>
+                      <span class="s1">self.xpath(combined.subselector))</span>
+
+    <span class="s3">def </span><span class="s1">xpath_negation(self</span><span class="s3">, </span><span class="s1">negation):</span>
+        <span class="s1">xpath = self.xpath(negation.selector)</span>
+        <span class="s1">sub_xpath = self.xpath(negation.subselector)</span>
+        <span class="s1">sub_xpath.add_name_test()</span>
+        <span class="s3">if </span><span class="s1">sub_xpath.condition:</span>
+            <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'not(%s)' </span><span class="s1">% sub_xpath.condition)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'0'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_function(self</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a functional pseudo-class.&quot;&quot;&quot;</span>
+        <span class="s1">method = </span><span class="s5">'xpath_%s_function' </span><span class="s1">% function.name.replace(</span><span class="s5">'-'</span><span class="s3">, </span><span class="s5">'_'</span><span class="s1">)</span>
+        <span class="s1">method = _unicode_safe_getattr(self</span><span class="s3">, </span><span class="s1">method</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">method:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;The pseudo-class :%s() is unknown&quot; </span><span class="s1">% function.name)</span>
+        <span class="s3">return </span><span class="s1">method(self.xpath(function.selector)</span><span class="s3">, </span><span class="s1">function)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_pseudo(self</span><span class="s3">, </span><span class="s1">pseudo):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a pseudo-class.&quot;&quot;&quot;</span>
+        <span class="s1">method = </span><span class="s5">'xpath_%s_pseudo' </span><span class="s1">% pseudo.ident.replace(</span><span class="s5">'-'</span><span class="s3">, </span><span class="s5">'_'</span><span class="s1">)</span>
+        <span class="s1">method = _unicode_safe_getattr(self</span><span class="s3">, </span><span class="s1">method</span><span class="s3">, None</span><span class="s1">)</span>
+        <span class="s3">if not </span><span class="s1">method:</span>
+            <span class="s0"># TODO: better error message for pseudo-elements?</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;The pseudo-class :%s is unknown&quot; </span><span class="s1">% pseudo.ident)</span>
+        <span class="s3">return </span><span class="s1">method(self.xpath(pseudo.selector))</span>
+
+
+    <span class="s3">def </span><span class="s1">xpath_attrib(self</span><span class="s3">, </span><span class="s1">selector):</span>
+        <span class="s2">&quot;&quot;&quot;Translate an attribute selector.&quot;&quot;&quot;</span>
+        <span class="s1">operator = self.attribute_operator_mapping[selector.operator]</span>
+        <span class="s1">method = getattr(self</span><span class="s3">, </span><span class="s5">'xpath_attrib_%s' </span><span class="s1">% operator)</span>
+        <span class="s3">if </span><span class="s1">self.lower_case_attribute_names:</span>
+            <span class="s1">name = selector.attrib.lower()</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">name = selector.attrib</span>
+        <span class="s1">safe = is_safe_name(name)</span>
+        <span class="s3">if </span><span class="s1">selector.namespace:</span>
+            <span class="s1">name = </span><span class="s5">'%s:%s' </span><span class="s1">% (selector.namespace</span><span class="s3">, </span><span class="s1">name)</span>
+            <span class="s1">safe = safe </span><span class="s3">and </span><span class="s1">is_safe_name(selector.namespace)</span>
+        <span class="s3">if </span><span class="s1">safe:</span>
+            <span class="s1">attrib = </span><span class="s5">'@' </span><span class="s1">+ name</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">attrib = </span><span class="s5">'attribute::*[name() = %s]' </span><span class="s1">% self.xpath_literal(name)</span>
+        <span class="s3">if </span><span class="s1">selector.value </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s1">value = </span><span class="s3">None</span>
+        <span class="s3">elif </span><span class="s1">self.lower_case_attribute_values:</span>
+            <span class="s1">value = selector.value.value.lower()</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">value = selector.value.value</span>
+        <span class="s3">return </span><span class="s1">method(self.xpath(selector.selector)</span><span class="s3">, </span><span class="s1">attrib</span><span class="s3">, </span><span class="s1">value)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_class(self</span><span class="s3">, </span><span class="s1">class_selector):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a class selector.&quot;&quot;&quot;</span>
+        <span class="s0"># .foo is defined as [class~=foo] in the spec.</span>
+        <span class="s1">xpath = self.xpath(class_selector.selector)</span>
+        <span class="s3">return </span><span class="s1">self.xpath_attrib_includes(</span>
+            <span class="s1">xpath</span><span class="s3">, </span><span class="s5">'@class'</span><span class="s3">, </span><span class="s1">class_selector.class_name)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_hash(self</span><span class="s3">, </span><span class="s1">id_selector):</span>
+        <span class="s2">&quot;&quot;&quot;Translate an ID selector.&quot;&quot;&quot;</span>
+        <span class="s1">xpath = self.xpath(id_selector.selector)</span>
+        <span class="s3">return </span><span class="s1">self.xpath_attrib_equals(xpath</span><span class="s3">, </span><span class="s5">'@id'</span><span class="s3">, </span><span class="s1">id_selector.id)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_element(self</span><span class="s3">, </span><span class="s1">selector):</span>
+        <span class="s2">&quot;&quot;&quot;Translate a type or universal selector.&quot;&quot;&quot;</span>
+        <span class="s1">element = selector.element</span>
+        <span class="s3">if not </span><span class="s1">element:</span>
+            <span class="s1">element = </span><span class="s5">'*'</span>
+            <span class="s1">safe = </span><span class="s3">True</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">safe = is_safe_name(element)</span>
+            <span class="s3">if </span><span class="s1">self.lower_case_element_names:</span>
+                <span class="s1">element = element.lower()</span>
+        <span class="s3">if </span><span class="s1">selector.namespace:</span>
+            <span class="s0"># Namespace prefixes are case-sensitive.</span>
+            <span class="s0"># http://www.w3.org/TR/css3-namespace/#prefixes</span>
+            <span class="s1">element = </span><span class="s5">'%s:%s' </span><span class="s1">% (selector.namespace</span><span class="s3">, </span><span class="s1">element)</span>
+            <span class="s1">safe = safe </span><span class="s3">and </span><span class="s1">is_safe_name(selector.namespace)</span>
+        <span class="s1">xpath = self.xpathexpr_cls(element=element)</span>
+        <span class="s3">if not </span><span class="s1">safe:</span>
+            <span class="s1">xpath.add_name_test()</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+
+    <span class="s0"># CombinedSelector: dispatch by combinator</span>
+
+    <span class="s3">def </span><span class="s1">xpath_descendant_combinator(self</span><span class="s3">, </span><span class="s1">left</span><span class="s3">, </span><span class="s1">right):</span>
+        <span class="s2">&quot;&quot;&quot;right is a child, grand-child or further descendant of left&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">left.join(</span><span class="s5">'/descendant-or-self::*/'</span><span class="s3">, </span><span class="s1">right)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_child_combinator(self</span><span class="s3">, </span><span class="s1">left</span><span class="s3">, </span><span class="s1">right):</span>
+        <span class="s2">&quot;&quot;&quot;right is an immediate child of left&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">left.join(</span><span class="s5">'/'</span><span class="s3">, </span><span class="s1">right)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_direct_adjacent_combinator(self</span><span class="s3">, </span><span class="s1">left</span><span class="s3">, </span><span class="s1">right):</span>
+        <span class="s2">&quot;&quot;&quot;right is a sibling immediately after left&quot;&quot;&quot;</span>
+        <span class="s1">xpath = left.join(</span><span class="s5">'/following-sibling::'</span><span class="s3">, </span><span class="s1">right)</span>
+        <span class="s1">xpath.add_name_test()</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'position() = 1'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_indirect_adjacent_combinator(self</span><span class="s3">, </span><span class="s1">left</span><span class="s3">, </span><span class="s1">right):</span>
+        <span class="s2">&quot;&quot;&quot;right is a sibling after left, immediately or not&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">left.join(</span><span class="s5">'/following-sibling::'</span><span class="s3">, </span><span class="s1">right)</span>
+
+
+    <span class="s0"># Function: dispatch by function/pseudo-class name</span>
+
+    <span class="s3">def </span><span class="s1">xpath_nth_child_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function</span><span class="s3">, </span><span class="s1">last=</span><span class="s3">False,</span>
+                                 <span class="s1">add_name_test=</span><span class="s3">True</span><span class="s1">):</span>
+        <span class="s3">try</span><span class="s1">:</span>
+            <span class="s1">a</span><span class="s3">, </span><span class="s1">b = parse_series(function.arguments)</span>
+        <span class="s3">except </span><span class="s1">ValueError:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span><span class="s5">&quot;Invalid series: '%r'&quot; </span><span class="s1">% function.arguments)</span>
+
+        <span class="s0"># From https://www.w3.org/TR/css3-selectors/#structural-pseudos:</span>
+        <span class="s0">#</span>
+        <span class="s0"># :nth-child(an+b)</span>
+        <span class="s0">#       an+b-1 siblings before</span>
+        <span class="s0">#</span>
+        <span class="s0"># :nth-last-child(an+b)</span>
+        <span class="s0">#       an+b-1 siblings after</span>
+        <span class="s0">#</span>
+        <span class="s0"># :nth-of-type(an+b)</span>
+        <span class="s0">#       an+b-1 siblings with the same expanded element name before</span>
+        <span class="s0">#</span>
+        <span class="s0"># :nth-last-of-type(an+b)</span>
+        <span class="s0">#       an+b-1 siblings with the same expanded element name after</span>
+        <span class="s0">#</span>
+        <span class="s0"># So,</span>
+        <span class="s0"># for :nth-child and :nth-of-type</span>
+        <span class="s0">#</span>
+        <span class="s0">#    count(preceding-sibling::&lt;nodetest&gt;) = an+b-1</span>
+        <span class="s0">#</span>
+        <span class="s0"># for :nth-last-child and :nth-last-of-type</span>
+        <span class="s0">#</span>
+        <span class="s0">#    count(following-sibling::&lt;nodetest&gt;) = an+b-1</span>
+        <span class="s0">#</span>
+        <span class="s0"># therefore,</span>
+        <span class="s0">#    count(...) - (b-1) ≡ 0 (mod a)</span>
+        <span class="s0">#</span>
+        <span class="s0"># if a == 0:</span>
+        <span class="s0"># ~~~~~~~~~~</span>
+        <span class="s0">#    count(...) = b-1</span>
+        <span class="s0">#</span>
+        <span class="s0"># if a &lt; 0:</span>
+        <span class="s0"># ~~~~~~~~~</span>
+        <span class="s0">#    count(...) - b +1 &lt;= 0</span>
+        <span class="s0"># -&gt; count(...) &lt;= b-1</span>
+        <span class="s0">#</span>
+        <span class="s0"># if a &gt; 0:</span>
+        <span class="s0"># ~~~~~~~~~</span>
+        <span class="s0">#    count(...) - b +1 &gt;= 0</span>
+        <span class="s0"># -&gt; count(...) &gt;= b-1</span>
+
+        <span class="s0"># work with b-1 instead</span>
+        <span class="s1">b_min_1 = b - </span><span class="s4">1</span>
+
+        <span class="s0"># early-exit condition 1:</span>
+        <span class="s0"># ~~~~~~~~~~~~~~~~~~~~~~~</span>
+        <span class="s0"># for a == 1, nth-*(an+b) means n+b-1 siblings before/after,</span>
+        <span class="s0"># and since n ∈ {0, 1, 2, ...}, if b-1&lt;=0,</span>
+        <span class="s0"># there is always an &quot;n&quot; matching any number of siblings (maybe none)</span>
+        <span class="s3">if </span><span class="s1">a == </span><span class="s4">1 </span><span class="s3">and </span><span class="s1">b_min_1 &lt;=</span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">xpath</span>
+
+        <span class="s0"># early-exit condition 2:</span>
+        <span class="s0"># ~~~~~~~~~~~~~~~~~~~~~~~</span>
+        <span class="s0"># an+b-1 siblings with a&lt;0 and (b-1)&lt;0 is not possible</span>
+        <span class="s3">if </span><span class="s1">a &lt; </span><span class="s4">0 </span><span class="s3">and </span><span class="s1">b_min_1 &lt; </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'0'</span><span class="s1">)</span>
+
+        <span class="s0"># `add_name_test` boolean is inverted and somewhat counter-intuitive:</span>
+        <span class="s0">#</span>
+        <span class="s0"># nth_of_type() calls nth_child(add_name_test=False)</span>
+        <span class="s3">if </span><span class="s1">add_name_test:</span>
+            <span class="s1">nodetest = </span><span class="s5">'*'</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">nodetest  = </span><span class="s5">'%s' </span><span class="s1">% xpath.element</span>
+
+        <span class="s0"># count siblings before or after the element</span>
+        <span class="s3">if not </span><span class="s1">last:</span>
+            <span class="s1">siblings_count = </span><span class="s5">'count(preceding-sibling::%s)' </span><span class="s1">% nodetest</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">siblings_count = </span><span class="s5">'count(following-sibling::%s)' </span><span class="s1">% nodetest</span>
+
+        <span class="s0"># special case of fixed position: nth-*(0n+b)</span>
+        <span class="s0"># if a == 0:</span>
+        <span class="s0"># ~~~~~~~~~~</span>
+        <span class="s0">#    count(***-sibling::***) = b-1</span>
+        <span class="s3">if </span><span class="s1">a == </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'%s = %s' </span><span class="s1">% (siblings_count</span><span class="s3">, </span><span class="s1">b_min_1))</span>
+
+        <span class="s1">expr = []</span>
+
+        <span class="s3">if </span><span class="s1">a &gt; </span><span class="s4">0</span><span class="s1">:</span>
+            <span class="s0"># siblings count, an+b-1, is always &gt;= 0,</span>
+            <span class="s0"># so if a&gt;0, and (b-1)&lt;=0, an &quot;n&quot; exists to satisfy this,</span>
+            <span class="s0"># therefore, the predicate is only interesting if (b-1)&gt;0</span>
+            <span class="s3">if </span><span class="s1">b_min_1 &gt; </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s1">expr.append(</span><span class="s5">'%s &gt;= %s' </span><span class="s1">% (siblings_count</span><span class="s3">, </span><span class="s1">b_min_1))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s0"># if a&lt;0, and (b-1)&lt;0, no &quot;n&quot; satisfies this,</span>
+            <span class="s0"># this is tested above as an early exist condition</span>
+            <span class="s0"># otherwise,</span>
+            <span class="s1">expr.append(</span><span class="s5">'%s &lt;= %s' </span><span class="s1">% (siblings_count</span><span class="s3">, </span><span class="s1">b_min_1))</span>
+
+        <span class="s0"># operations modulo 1 or -1 are simpler, one only needs to verify:</span>
+        <span class="s0">#</span>
+        <span class="s0"># - either:</span>
+        <span class="s0"># count(***-sibling::***) - (b-1) = n = 0, 1, 2, 3, etc.,</span>
+        <span class="s0">#   i.e. count(***-sibling::***) &gt;= (b-1)</span>
+        <span class="s0">#</span>
+        <span class="s0"># - or:</span>
+        <span class="s0"># count(***-sibling::***) - (b-1) = -n = 0, -1, -2, -3, etc.,</span>
+        <span class="s0">#   i.e. count(***-sibling::***) &lt;= (b-1)</span>
+        <span class="s0"># we we just did above.</span>
+        <span class="s0">#</span>
+        <span class="s3">if </span><span class="s1">abs(a) != </span><span class="s4">1</span><span class="s1">:</span>
+            <span class="s0"># count(***-sibling::***) - (b-1) ≡ 0 (mod a)</span>
+            <span class="s1">left = siblings_count</span>
+
+            <span class="s0"># apply &quot;modulo a&quot; on 2nd term, -(b-1),</span>
+            <span class="s0"># to simplify things like &quot;(... +6) % -3&quot;,</span>
+            <span class="s0"># and also make it positive with |a|</span>
+            <span class="s1">b_neg = (-b_min_1) % abs(a)</span>
+
+            <span class="s3">if </span><span class="s1">b_neg != </span><span class="s4">0</span><span class="s1">:</span>
+                <span class="s1">b_neg = </span><span class="s5">'+%s' </span><span class="s1">% b_neg</span>
+                <span class="s1">left = </span><span class="s5">'(%s %s)' </span><span class="s1">% (left</span><span class="s3">, </span><span class="s1">b_neg)</span>
+
+            <span class="s1">expr.append(</span><span class="s5">'%s mod %s = 0' </span><span class="s1">% (left</span><span class="s3">, </span><span class="s1">a))</span>
+
+        <span class="s1">xpath.add_condition(</span><span class="s5">' and '</span><span class="s1">.join(expr))</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_nth_last_child_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s3">return </span><span class="s1">self.xpath_nth_child_function(xpath</span><span class="s3">, </span><span class="s1">function</span><span class="s3">, </span><span class="s1">last=</span><span class="s3">True</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_nth_of_type_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s3">if </span><span class="s1">xpath.element == </span><span class="s5">'*'</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;*:nth-of-type() is not implemented&quot;</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">self.xpath_nth_child_function(xpath</span><span class="s3">, </span><span class="s1">function</span><span class="s3">,</span>
+                                             <span class="s1">add_name_test=</span><span class="s3">False</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_nth_last_of_type_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s3">if </span><span class="s1">xpath.element == </span><span class="s5">'*'</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;*:nth-of-type() is not implemented&quot;</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">self.xpath_nth_child_function(xpath</span><span class="s3">, </span><span class="s1">function</span><span class="s3">, </span><span class="s1">last=</span><span class="s3">True,</span>
+                                             <span class="s1">add_name_test=</span><span class="s3">False</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_contains_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s0"># Defined there, removed in later drafts:</span>
+        <span class="s0"># http://www.w3.org/TR/2001/CR-css3-selectors-20011113/#content-selectors</span>
+        <span class="s3">if </span><span class="s1">function.argument_types() </span><span class="s3">not in </span><span class="s1">([</span><span class="s5">'STRING'</span><span class="s1">]</span><span class="s3">, </span><span class="s1">[</span><span class="s5">'IDENT'</span><span class="s1">]):</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;Expected a single string or ident for :contains(), got %r&quot;</span>
+                <span class="s1">% function.arguments)</span>
+        <span class="s1">value = function.arguments[</span><span class="s4">0</span><span class="s1">].value</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span>
+            <span class="s5">'contains(., %s)' </span><span class="s1">% self.xpath_literal(value))</span>
+
+    <span class="s3">def </span><span class="s1">xpath_lang_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s3">if </span><span class="s1">function.argument_types() </span><span class="s3">not in </span><span class="s1">([</span><span class="s5">'STRING'</span><span class="s1">]</span><span class="s3">, </span><span class="s1">[</span><span class="s5">'IDENT'</span><span class="s1">]):</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;Expected a single string or ident for :lang(), got %r&quot;</span>
+                <span class="s1">% function.arguments)</span>
+        <span class="s1">value = function.arguments[</span><span class="s4">0</span><span class="s1">].value</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span>
+            <span class="s5">&quot;lang(%s)&quot; </span><span class="s1">% (self.xpath_literal(value)))</span>
+
+
+    <span class="s0"># Pseudo: dispatch by pseudo-class name</span>
+
+    <span class="s3">def </span><span class="s1">xpath_root_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">&quot;not(parent::*)&quot;</span><span class="s1">)</span>
+
+    <span class="s0"># CSS immediate children (CSS &quot;:scope &gt; div&quot; to XPath &quot;child::div&quot; or &quot;./div&quot;)</span>
+    <span class="s0"># Works only at the start of a selector</span>
+    <span class="s0"># Needed to get immediate children of a processed selector in Scrapy</span>
+    <span class="s0"># for product in response.css('.product'):</span>
+    <span class="s0">#     description = product.css(':scope &gt; div::text').get()</span>
+    <span class="s3">def </span><span class="s1">xpath_scope_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">&quot;1&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_first_child_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'count(preceding-sibling::*) = 0'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_last_child_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'count(following-sibling::*) = 0'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_first_of_type_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">if </span><span class="s1">xpath.element == </span><span class="s5">'*'</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;*:first-of-type is not implemented&quot;</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'count(preceding-sibling::%s) = 0' </span><span class="s1">% xpath.element)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_last_of_type_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">if </span><span class="s1">xpath.element == </span><span class="s5">'*'</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;*:last-of-type is not implemented&quot;</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'count(following-sibling::%s) = 0' </span><span class="s1">% xpath.element)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_only_child_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'count(parent::*/child::*) = 1'</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_only_of_type_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">if </span><span class="s1">xpath.element == </span><span class="s5">'*'</span><span class="s1">:</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;*:only-of-type is not implemented&quot;</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">'count(parent::*/child::%s) = 1' </span><span class="s1">% xpath.element)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_empty_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">&quot;not(*) and not(string-length())&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">pseudo_never_matches(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s2">&quot;&quot;&quot;Common implementation for pseudo-classes that never match.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">&quot;0&quot;</span><span class="s1">)</span>
+
+    <span class="s1">xpath_link_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_visited_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_hover_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_active_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_focus_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_target_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_enabled_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_disabled_pseudo = pseudo_never_matches</span>
+    <span class="s1">xpath_checked_pseudo = pseudo_never_matches</span>
+
+    <span class="s0"># Attrib: dispatch by attribute operator</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_exists(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s3">assert not </span><span class="s1">value</span>
+        <span class="s1">xpath.add_condition(name)</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_equals(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s1">xpath.add_condition(</span><span class="s5">'%s = %s' </span><span class="s1">% (name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)))</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_different(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s0"># FIXME: this seems like a weird hack...</span>
+        <span class="s3">if </span><span class="s1">value:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'not(%s) or %s != %s'</span>
+                                <span class="s1">% (name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'%s != %s'</span>
+                                <span class="s1">% (name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)))</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_includes(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s3">if </span><span class="s1">is_non_whitespace(value):</span>
+            <span class="s1">xpath.add_condition(</span>
+                <span class="s5">&quot;%s and contains(concat(' ', normalize-space(%s), ' '), %s)&quot;</span>
+                <span class="s1">% (name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">self.xpath_literal(</span><span class="s5">' '</span><span class="s1">+value+</span><span class="s5">' '</span><span class="s1">)))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'0'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_dashmatch(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s0"># Weird, but true...</span>
+        <span class="s1">xpath.add_condition(</span><span class="s5">'%s and (%s = %s or starts-with(%s, %s))' </span><span class="s1">% (</span>
+            <span class="s1">name</span><span class="s3">,</span>
+            <span class="s1">name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)</span><span class="s3">,</span>
+            <span class="s1">name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value + </span><span class="s5">'-'</span><span class="s1">)))</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_prefixmatch(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s3">if </span><span class="s1">value:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'%s and starts-with(%s, %s)' </span><span class="s1">% (</span>
+                <span class="s1">name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'0'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_suffixmatch(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s3">if </span><span class="s1">value:</span>
+            <span class="s0"># Oddly there is a starts-with in XPath 1.0, but not ends-with</span>
+            <span class="s1">xpath.add_condition(</span>
+                <span class="s5">'%s and substring(%s, string-length(%s)-%s) = %s'</span>
+                <span class="s1">% (name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">len(value)-</span><span class="s4">1</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'0'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+    <span class="s3">def </span><span class="s1">xpath_attrib_substringmatch(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value):</span>
+        <span class="s3">if </span><span class="s1">value:</span>
+            <span class="s0"># Attribute selectors are case sensitive</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'%s and contains(%s, %s)' </span><span class="s1">% (</span>
+                <span class="s1">name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">self.xpath_literal(value)))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">xpath.add_condition(</span><span class="s5">'0'</span><span class="s1">)</span>
+        <span class="s3">return </span><span class="s1">xpath</span>
+
+
+<span class="s3">class </span><span class="s1">HTMLTranslator(GenericTranslator):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Translator for (X)HTML documents. 
+ 
+    Has a more useful implementation of some pseudo-classes based on 
+    HTML-specific element names and attribute names, as described in 
+    the `HTML5 specification`_. It assumes no-quirks mode. 
+    The API is the same as :class:`GenericTranslator`. 
+ 
+    .. _HTML5 specification: http://www.w3.org/TR/html5/links.html#selectors 
+ 
+    :param xhtml: 
+        If false (the default), element names and attribute names 
+        are case-insensitive. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">lang_attribute = </span><span class="s5">'lang'</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">xhtml=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s1">self.xhtml = xhtml  </span><span class="s0"># Might be useful for sub-classes?</span>
+        <span class="s3">if not </span><span class="s1">xhtml:</span>
+            <span class="s0"># See their definition in GenericTranslator.</span>
+            <span class="s1">self.lower_case_element_names = </span><span class="s3">True</span>
+            <span class="s1">self.lower_case_attribute_names = </span><span class="s3">True</span>
+
+    <span class="s3">def </span><span class="s1">xpath_checked_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s0"># FIXME: is this really all the elements?</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span>
+            <span class="s5">&quot;(@selected and name(.) = 'option') or &quot;</span>
+            <span class="s5">&quot;(@checked &quot;</span>
+                <span class="s5">&quot;and (name(.) = 'input' or name(.) = 'command')&quot;</span>
+                <span class="s5">&quot;and (@type = 'checkbox' or @type = 'radio'))&quot;</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">xpath_lang_function(self</span><span class="s3">, </span><span class="s1">xpath</span><span class="s3">, </span><span class="s1">function):</span>
+        <span class="s3">if </span><span class="s1">function.argument_types() </span><span class="s3">not in </span><span class="s1">([</span><span class="s5">'STRING'</span><span class="s1">]</span><span class="s3">, </span><span class="s1">[</span><span class="s5">'IDENT'</span><span class="s1">]):</span>
+            <span class="s3">raise </span><span class="s1">ExpressionError(</span>
+                <span class="s5">&quot;Expected a single string or ident for :lang(), got %r&quot;</span>
+                <span class="s1">% function.arguments)</span>
+        <span class="s1">value = function.arguments[</span><span class="s4">0</span><span class="s1">].value</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span>
+            <span class="s5">&quot;ancestor-or-self::*[@lang][1][starts-with(concat(&quot;</span>
+                <span class="s0"># XPath 1.0 has no lower-case function...</span>
+                <span class="s5">&quot;translate(@%s, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', &quot;</span>
+                               <span class="s5">&quot;'abcdefghijklmnopqrstuvwxyz'), &quot;</span>
+                <span class="s5">&quot;'-'), %s)]&quot;</span>
+            <span class="s1">% (self.lang_attribute</span><span class="s3">, </span><span class="s1">self.xpath_literal(value.lower() + </span><span class="s5">'-'</span><span class="s1">)))</span>
+
+    <span class="s3">def </span><span class="s1">xpath_link_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">&quot;@href and &quot;</span>
+            <span class="s5">&quot;(name(.) = 'a' or name(.) = 'link' or name(.) = 'area')&quot;</span><span class="s1">)</span>
+
+    <span class="s0"># Links are never visited, the implementation for :visited is the same</span>
+    <span class="s0"># as in GenericTranslator</span>
+
+    <span class="s3">def </span><span class="s1">xpath_disabled_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s0"># http://www.w3.org/TR/html5/section-index.html#attributes-1</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">''' 
+        ( 
+            @disabled and 
+            ( 
+                (name(.) = 'input' and @type != 'hidden') or 
+                name(.) = 'button' or 
+                name(.) = 'select' or 
+                name(.) = 'textarea' or 
+                name(.) = 'command' or 
+                name(.) = 'fieldset' or 
+                name(.) = 'optgroup' or 
+                name(.) = 'option' 
+            ) 
+        ) or ( 
+            ( 
+                (name(.) = 'input' and @type != 'hidden') or 
+                name(.) = 'button' or 
+                name(.) = 'select' or 
+                name(.) = 'textarea' 
+            ) 
+            and ancestor::fieldset[@disabled] 
+        ) 
+        '''</span><span class="s1">)</span>
+        <span class="s0"># FIXME: in the second half, add &quot;and is not a descendant of that</span>
+        <span class="s0"># fieldset element's first legend element child, if any.&quot;</span>
+
+    <span class="s3">def </span><span class="s1">xpath_enabled_pseudo(self</span><span class="s3">, </span><span class="s1">xpath):</span>
+        <span class="s0"># http://www.w3.org/TR/html5/section-index.html#attributes-1</span>
+        <span class="s3">return </span><span class="s1">xpath.add_condition(</span><span class="s5">''' 
+        ( 
+            @href and ( 
+                name(.) = 'a' or 
+                name(.) = 'link' or 
+                name(.) = 'area' 
+            ) 
+        ) or ( 
+            ( 
+                name(.) = 'command' or 
+                name(.) = 'fieldset' or 
+                name(.) = 'optgroup' 
+            ) 
+            and not(@disabled) 
+        ) or ( 
+            ( 
+                (name(.) = 'input' and @type != 'hidden') or 
+                name(.) = 'button' or 
+                name(.) = 'select' or 
+                name(.) = 'textarea' or 
+                name(.) = 'keygen' 
+            ) 
+            and not (@disabled or ancestor::fieldset[@disabled]) 
+        ) or ( 
+            name(.) = 'option' and not( 
+                @disabled or ancestor::optgroup[@disabled] 
+            ) 
+        ) 
+        '''</span><span class="s1">)</span>
+        <span class="s0"># FIXME: ... or &quot;li elements that are children of menu elements,</span>
+        <span class="s0"># and that have a child element that defines a command, if the first</span>
+        <span class="s0"># such element's Disabled State facet is false (not disabled)&quot;.</span>
+        <span class="s0"># FIXME: after ancestor::fieldset[@disabled], add &quot;and is not a</span>
+        <span class="s0"># descendant of that fieldset element's first legend element child,</span>
+        <span class="s0"># if any.&quot;</span>
+</pre>
+</body>
+</html>

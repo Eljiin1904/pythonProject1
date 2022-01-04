@@ -1,0 +1,167 @@
+<html>
+<head>
+<title>test_highlevel_serve_listeners.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6897bb;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+test_highlevel_serve_listeners.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">pytest</span>
+
+<span class="s0">from </span><span class="s1">functools </span><span class="s0">import </span><span class="s1">partial</span>
+<span class="s0">import </span><span class="s1">errno</span>
+
+<span class="s0">import </span><span class="s1">attr</span>
+
+<span class="s0">import </span><span class="s1">trio</span>
+<span class="s0">from </span><span class="s1">trio.testing </span><span class="s0">import </span><span class="s1">memory_stream_pair</span><span class="s0">, </span><span class="s1">wait_all_tasks_blocked</span>
+
+
+<span class="s1">@attr.s(hash=</span><span class="s0">False, </span><span class="s1">eq=</span><span class="s0">False</span><span class="s1">)</span>
+<span class="s0">class </span><span class="s1">MemoryListener(trio.abc.Listener):</span>
+    <span class="s1">closed = attr.ib(default=</span><span class="s0">False</span><span class="s1">)</span>
+    <span class="s1">accepted_streams = attr.ib(factory=list)</span>
+    <span class="s1">queued_streams = attr.ib(factory=(</span><span class="s0">lambda</span><span class="s1">: trio.open_memory_channel(</span><span class="s2">1</span><span class="s1">)))</span>
+    <span class="s1">accept_hook = attr.ib(default=</span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">connect(self):</span>
+        <span class="s0">assert not </span><span class="s1">self.closed</span>
+        <span class="s1">client</span><span class="s0">, </span><span class="s1">server = memory_stream_pair()</span>
+        <span class="s0">await </span><span class="s1">self.queued_streams[</span><span class="s2">0</span><span class="s1">].send(server)</span>
+        <span class="s0">return </span><span class="s1">client</span>
+
+    <span class="s0">async def </span><span class="s1">accept(self):</span>
+        <span class="s0">await </span><span class="s1">trio.lowlevel.checkpoint()</span>
+        <span class="s0">assert not </span><span class="s1">self.closed</span>
+        <span class="s0">if </span><span class="s1">self.accept_hook </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s0">await </span><span class="s1">self.accept_hook()</span>
+        <span class="s1">stream = </span><span class="s0">await </span><span class="s1">self.queued_streams[</span><span class="s2">1</span><span class="s1">].receive()</span>
+        <span class="s1">self.accepted_streams.append(stream)</span>
+        <span class="s0">return </span><span class="s1">stream</span>
+
+    <span class="s0">async def </span><span class="s1">aclose(self):</span>
+        <span class="s1">self.closed = </span><span class="s0">True</span>
+        <span class="s0">await </span><span class="s1">trio.lowlevel.checkpoint()</span>
+
+
+<span class="s0">async def </span><span class="s1">test_serve_listeners_basic():</span>
+    <span class="s1">listeners = [MemoryListener()</span><span class="s0">, </span><span class="s1">MemoryListener()]</span>
+
+    <span class="s1">record = []</span>
+
+    <span class="s0">def </span><span class="s1">close_hook():</span>
+        <span class="s3"># Make sure this is a forceful close</span>
+        <span class="s0">assert </span><span class="s1">trio.current_effective_deadline() == float(</span><span class="s4">&quot;-inf&quot;</span><span class="s1">)</span>
+        <span class="s1">record.append(</span><span class="s4">&quot;closed&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">handler(stream):</span>
+        <span class="s0">await </span><span class="s1">stream.send_all(</span><span class="s5">b&quot;123&quot;</span><span class="s1">)</span>
+        <span class="s0">assert await </span><span class="s1">stream.receive_some(</span><span class="s2">10</span><span class="s1">) == </span><span class="s5">b&quot;456&quot;</span>
+        <span class="s1">stream.send_stream.close_hook = close_hook</span>
+        <span class="s1">stream.receive_stream.close_hook = close_hook</span>
+
+    <span class="s0">async def </span><span class="s1">client(listener):</span>
+        <span class="s1">s = </span><span class="s0">await </span><span class="s1">listener.connect()</span>
+        <span class="s0">assert await </span><span class="s1">s.receive_some(</span><span class="s2">10</span><span class="s1">) == </span><span class="s5">b&quot;123&quot;</span>
+        <span class="s0">await </span><span class="s1">s.send_all(</span><span class="s5">b&quot;456&quot;</span><span class="s1">)</span>
+
+    <span class="s0">async def </span><span class="s1">do_tests(parent_nursery):</span>
+        <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s0">for </span><span class="s1">listener </span><span class="s0">in </span><span class="s1">listeners:</span>
+                <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s2">3</span><span class="s1">):</span>
+                    <span class="s1">nursery.start_soon(client</span><span class="s0">, </span><span class="s1">listener)</span>
+
+        <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+
+        <span class="s3"># verifies that all 6 streams x 2 directions each were closed ok</span>
+        <span class="s0">assert </span><span class="s1">len(record) == </span><span class="s2">12</span>
+
+        <span class="s1">parent_nursery.cancel_scope.cancel()</span>
+
+    <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+        <span class="s1">l2 = </span><span class="s0">await </span><span class="s1">nursery.start(trio.serve_listeners</span><span class="s0">, </span><span class="s1">handler</span><span class="s0">, </span><span class="s1">listeners)</span>
+        <span class="s0">assert </span><span class="s1">l2 == listeners</span>
+        <span class="s3"># This is just split into another function because gh-136 isn't</span>
+        <span class="s3"># implemented yet</span>
+        <span class="s1">nursery.start_soon(do_tests</span><span class="s0">, </span><span class="s1">nursery)</span>
+
+    <span class="s0">for </span><span class="s1">listener </span><span class="s0">in </span><span class="s1">listeners:</span>
+        <span class="s0">assert </span><span class="s1">listener.closed</span>
+
+
+<span class="s0">async def </span><span class="s1">test_serve_listeners_accept_unrecognized_error():</span>
+    <span class="s0">for </span><span class="s1">error </span><span class="s0">in </span><span class="s1">[KeyError()</span><span class="s0">, </span><span class="s1">OSError(errno.ECONNABORTED</span><span class="s0">, </span><span class="s4">&quot;ECONNABORTED&quot;</span><span class="s1">)]:</span>
+        <span class="s1">listener = MemoryListener()</span>
+
+        <span class="s0">async def </span><span class="s1">raise_error():</span>
+            <span class="s0">raise </span><span class="s1">error</span>
+
+        <span class="s1">listener.accept_hook = raise_error</span>
+
+        <span class="s0">with </span><span class="s1">pytest.raises(type(error)) </span><span class="s0">as </span><span class="s1">excinfo:</span>
+            <span class="s0">await </span><span class="s1">trio.serve_listeners(</span><span class="s0">None, </span><span class="s1">[listener])</span>
+        <span class="s0">assert </span><span class="s1">excinfo.value </span><span class="s0">is </span><span class="s1">error</span>
+
+
+<span class="s0">async def </span><span class="s1">test_serve_listeners_accept_capacity_error(autojump_clock</span><span class="s0">, </span><span class="s1">caplog):</span>
+    <span class="s1">listener = MemoryListener()</span>
+
+    <span class="s0">async def </span><span class="s1">raise_EMFILE():</span>
+        <span class="s0">raise </span><span class="s1">OSError(errno.EMFILE</span><span class="s0">, </span><span class="s4">&quot;out of file descriptors&quot;</span><span class="s1">)</span>
+
+    <span class="s1">listener.accept_hook = raise_EMFILE</span>
+
+    <span class="s3"># It retries every 100 ms, so in 950 ms it will retry at 0, 100, ..., 900</span>
+    <span class="s3"># = 10 times total</span>
+    <span class="s0">with </span><span class="s1">trio.move_on_after(</span><span class="s2">0.950</span><span class="s1">):</span>
+        <span class="s0">await </span><span class="s1">trio.serve_listeners(</span><span class="s0">None, </span><span class="s1">[listener])</span>
+
+    <span class="s0">assert </span><span class="s1">len(caplog.records) == </span><span class="s2">10</span>
+    <span class="s0">for </span><span class="s1">record </span><span class="s0">in </span><span class="s1">caplog.records:</span>
+        <span class="s0">assert </span><span class="s4">&quot;retrying&quot; </span><span class="s0">in </span><span class="s1">record.msg</span>
+        <span class="s0">assert </span><span class="s1">record.exc_info[</span><span class="s2">1</span><span class="s1">].errno == errno.EMFILE</span>
+
+
+<span class="s0">async def </span><span class="s1">test_serve_listeners_connection_nursery(autojump_clock):</span>
+    <span class="s1">listener = MemoryListener()</span>
+
+    <span class="s0">async def </span><span class="s1">handler(stream):</span>
+        <span class="s0">await </span><span class="s1">trio.sleep(</span><span class="s2">1</span><span class="s1">)</span>
+
+    <span class="s0">class </span><span class="s1">Done(Exception):</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">async def </span><span class="s1">connection_watcher(*</span><span class="s0">, </span><span class="s1">task_status=trio.TASK_STATUS_IGNORED):</span>
+        <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">task_status.started(nursery)</span>
+            <span class="s0">await </span><span class="s1">wait_all_tasks_blocked()</span>
+            <span class="s0">assert </span><span class="s1">len(nursery.child_tasks) == </span><span class="s2">10</span>
+            <span class="s0">raise </span><span class="s1">Done</span>
+
+    <span class="s0">with </span><span class="s1">pytest.raises(Done):</span>
+        <span class="s0">async with </span><span class="s1">trio.open_nursery() </span><span class="s0">as </span><span class="s1">nursery:</span>
+            <span class="s1">handler_nursery = </span><span class="s0">await </span><span class="s1">nursery.start(connection_watcher)</span>
+            <span class="s0">await </span><span class="s1">nursery.start(</span>
+                <span class="s1">partial(</span>
+                    <span class="s1">trio.serve_listeners</span><span class="s0">,</span>
+                    <span class="s1">handler</span><span class="s0">,</span>
+                    <span class="s1">[listener]</span><span class="s0">,</span>
+                    <span class="s1">handler_nursery=handler_nursery</span><span class="s0">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+            <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range(</span><span class="s2">10</span><span class="s1">):</span>
+                <span class="s1">nursery.start_soon(listener.connect)</span>
+</pre>
+</body>
+</html>

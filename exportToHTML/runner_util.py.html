@@ -1,0 +1,523 @@
+<html>
+<head>
+<title>runner_util.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+runner_util.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot; 
+Contains utility functions and classes for Runners. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">from </span><span class="s1">bisect </span><span class="s3">import </span><span class="s1">bisect</span>
+<span class="s3">import </span><span class="s1">glob</span>
+<span class="s3">import </span><span class="s1">os.path</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">from </span><span class="s1">six </span><span class="s3">import </span><span class="s1">string_types</span>
+<span class="s3">from </span><span class="s1">behave </span><span class="s3">import </span><span class="s1">parser</span>
+<span class="s3">from </span><span class="s1">behave.model_core </span><span class="s3">import </span><span class="s1">FileLocation</span>
+<span class="s3">from </span><span class="s1">behave.textutil </span><span class="s3">import </span><span class="s1">ensure_stream_with_encoder</span>
+<span class="s0"># LAZY: from behave.step_registry import setup_step_decorators</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># EXCEPTIONS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">FileNotFoundError(LookupError):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">InvalidFileLocationError(LookupError):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">InvalidFilenameError(ValueError):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># CLASS: FileLocationParser</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">FileLocationParser(object):</span>
+    <span class="s1">pattern = re.compile(</span><span class="s4">r&quot;^\s*(?P&lt;filename&gt;.*):(?P&lt;line&gt;\d+)\s*$&quot;</span><span class="s3">, </span><span class="s1">re.UNICODE)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">parse(cls</span><span class="s3">, </span><span class="s1">text):</span>
+        <span class="s1">match = cls.pattern.match(text)</span>
+        <span class="s3">if </span><span class="s1">match:</span>
+            <span class="s1">filename = match.group(</span><span class="s4">&quot;filename&quot;</span><span class="s1">).strip()</span>
+            <span class="s1">line = int(match.group(</span><span class="s4">&quot;line&quot;</span><span class="s1">))</span>
+            <span class="s3">return </span><span class="s1">FileLocation(filename</span><span class="s3">, </span><span class="s1">line)</span>
+        <span class="s0"># -- NORMAL PATH/FILENAME:</span>
+        <span class="s1">filename = text.strip()</span>
+        <span class="s3">return </span><span class="s1">FileLocation(filename)</span>
+
+    <span class="s0"># @classmethod</span>
+    <span class="s0"># def compare(cls, location1, location2):</span>
+    <span class="s0">#     loc1 = cls.parse(location1)</span>
+    <span class="s0">#     loc2 = cls.parse(location2)</span>
+    <span class="s0">#     return cmp(loc1, loc2)</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># CLASSES:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">class </span><span class="s1">FeatureScenarioLocationCollector(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Collects FileLocation objects for a feature. 
+    This is used to select a subset of scenarios in a feature that should run. 
+ 
+    USE CASE: 
+        behave feature/foo.feature:10 
+        behave @selected_features.txt 
+        behave @rerun_failed_scenarios.txt 
+ 
+    With features configuration files, like: 
+ 
+        # -- file:rerun_failed_scenarios.txt 
+        feature/foo.feature:10 
+        feature/foo.feature:25 
+        feature/bar.feature 
+        # -- EOF 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">feature=</span><span class="s3">None, </span><span class="s1">location=</span><span class="s3">None, </span><span class="s1">filename=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s3">if not </span><span class="s1">filename </span><span class="s3">and </span><span class="s1">location:</span>
+            <span class="s1">filename = location.filename</span>
+        <span class="s1">self.feature = feature</span>
+        <span class="s1">self.filename = filename</span>
+        <span class="s1">self.use_all_scenarios = </span><span class="s3">False</span>
+        <span class="s1">self.scenario_lines = set()</span>
+        <span class="s1">self.all_scenarios = set()</span>
+        <span class="s1">self.selected_scenarios = set()</span>
+        <span class="s3">if </span><span class="s1">location:</span>
+            <span class="s1">self.add_location(location)</span>
+
+    <span class="s3">def </span><span class="s1">clear(self):</span>
+        <span class="s1">self.feature = </span><span class="s3">None</span>
+        <span class="s1">self.filename = </span><span class="s3">None</span>
+        <span class="s1">self.use_all_scenarios = </span><span class="s3">False</span>
+        <span class="s1">self.scenario_lines = set()</span>
+        <span class="s1">self.all_scenarios = set()</span>
+        <span class="s1">self.selected_scenarios = set()</span>
+
+    <span class="s3">def </span><span class="s1">add_location(self</span><span class="s3">, </span><span class="s1">location):</span>
+        <span class="s3">if not </span><span class="s1">self.filename:</span>
+            <span class="s1">self.filename = location.filename</span>
+            <span class="s0"># if self.feature and False:</span>
+            <span class="s0">#     self.filename = self.feature.filename</span>
+        <span class="s0"># -- NORMAL CASE:</span>
+        <span class="s3">assert </span><span class="s1">self.filename == location.filename</span><span class="s3">, </span><span class="s1">\</span>
+            <span class="s4">&quot;%s &lt;=&gt; %s&quot; </span><span class="s1">% (self.filename</span><span class="s3">, </span><span class="s1">location.filename)</span>
+        <span class="s3">if </span><span class="s1">location.line:</span>
+            <span class="s1">self.scenario_lines.add(location.line)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s0"># -- LOCATION WITHOUT LINE NUMBER:</span>
+            <span class="s0"># Selects all scenarios in a feature.</span>
+            <span class="s1">self.use_all_scenarios = </span><span class="s3">True</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">select_scenario_line_for(line</span><span class="s3">, </span><span class="s1">scenario_lines):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Select scenario line for any given line. 
+ 
+        ALGORITHM: scenario.line &lt;= line &lt; next_scenario.line 
+ 
+        :param line:  A line number in the file (as number). 
+        :param scenario_lines: Sorted list of scenario lines. 
+        :return: Scenario.line (first line) for the given line. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">scenario_lines:</span>
+            <span class="s3">return </span><span class="s5">0    </span><span class="s0"># -- Select all scenarios.</span>
+        <span class="s1">pos = bisect(scenario_lines</span><span class="s3">, </span><span class="s1">line) - </span><span class="s5">1</span>
+        <span class="s3">if </span><span class="s1">pos &lt; </span><span class="s5">0</span><span class="s1">:</span>
+            <span class="s1">pos = </span><span class="s5">0</span>
+        <span class="s3">return </span><span class="s1">scenario_lines[pos]</span>
+
+    <span class="s3">def </span><span class="s1">discover_selected_scenarios(self</span><span class="s3">, </span><span class="s1">strict=</span><span class="s3">False</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Discovers selected scenarios based on the provided file locations. 
+        In addition: 
+          * discover all scenarios 
+          * auto-correct BAD LINE-NUMBERS 
+ 
+        :param strict:  If true, raises exception if file location is invalid. 
+        :return: List of selected scenarios of this feature (as set). 
+        :raises InvalidFileLocationError: 
+            If file location is no exactly correct and strict is true. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">assert </span><span class="s1">self.feature</span>
+        <span class="s3">if not </span><span class="s1">self.all_scenarios:</span>
+            <span class="s1">self.all_scenarios = self.feature.walk_scenarios()</span>
+
+        <span class="s0"># -- STEP: Check if lines are correct.</span>
+        <span class="s1">existing_lines = [scenario.line </span><span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.all_scenarios]</span>
+        <span class="s1">selected_lines = list(self.scenario_lines)</span>
+        <span class="s3">for </span><span class="s1">line </span><span class="s3">in </span><span class="s1">selected_lines:</span>
+            <span class="s1">new_line = self.select_scenario_line_for(line</span><span class="s3">, </span><span class="s1">existing_lines)</span>
+            <span class="s3">if </span><span class="s1">new_line != line:</span>
+                <span class="s0"># -- AUTO-CORRECT BAD-LINE:</span>
+                <span class="s1">self.scenario_lines.remove(line)</span>
+                <span class="s1">self.scenario_lines.add(new_line)</span>
+                <span class="s3">if </span><span class="s1">strict:</span>
+                    <span class="s1">msg = </span><span class="s4">&quot;Scenario location '...:%d' should be: '%s:%d'&quot; </span><span class="s1">% \</span>
+                          <span class="s1">(line</span><span class="s3">, </span><span class="s1">self.filename</span><span class="s3">, </span><span class="s1">new_line)</span>
+                    <span class="s3">raise </span><span class="s1">InvalidFileLocationError(msg)</span>
+
+        <span class="s0"># -- STEP: Determine selected scenarios and store them.</span>
+        <span class="s1">scenario_lines = set(self.scenario_lines)</span>
+        <span class="s1">selected_scenarios = set()</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">self.all_scenarios:</span>
+            <span class="s3">if </span><span class="s1">scenario.line </span><span class="s3">in </span><span class="s1">scenario_lines:</span>
+                <span class="s1">selected_scenarios.add(scenario)</span>
+                <span class="s1">scenario_lines.remove(scenario.line)</span>
+        <span class="s0"># -- CHECK ALL ARE RESOLVED:</span>
+        <span class="s3">assert not </span><span class="s1">scenario_lines</span>
+        <span class="s3">return </span><span class="s1">selected_scenarios</span>
+
+    <span class="s3">def </span><span class="s1">build_feature(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Determines which scenarios in the feature are selected and marks the 
+        remaining scenarios as skipped. Scenarios with the following tags 
+        are excluded from skipped-marking: 
+ 
+          * @setup 
+          * @teardown 
+ 
+        If no file locations are stored, the unmodified feature is returned. 
+ 
+        :return: Feature object to use. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">use_all_scenarios = </span><span class="s3">not </span><span class="s1">self.scenario_lines </span><span class="s3">or </span><span class="s1">self.use_all_scenarios</span>
+        <span class="s3">if not </span><span class="s1">self.feature </span><span class="s3">or </span><span class="s1">use_all_scenarios:</span>
+            <span class="s3">return </span><span class="s1">self.feature</span>
+
+        <span class="s0"># -- CASE: Select subset of all scenarios of this feature.</span>
+        <span class="s0">#    Mark other scenarios as skipped (except in a few cases).</span>
+        <span class="s1">self.all_scenarios = self.feature.walk_scenarios()</span>
+        <span class="s1">self.selected_scenarios = self.discover_selected_scenarios()</span>
+        <span class="s1">unselected_scenarios = set(self.all_scenarios) - self.selected_scenarios</span>
+        <span class="s3">for </span><span class="s1">scenario </span><span class="s3">in </span><span class="s1">unselected_scenarios:</span>
+            <span class="s3">if </span><span class="s4">&quot;setup&quot; </span><span class="s3">in </span><span class="s1">scenario.tags </span><span class="s3">or </span><span class="s4">&quot;teardown&quot; </span><span class="s3">in </span><span class="s1">scenario.tags:</span>
+                <span class="s3">continue</span>
+            <span class="s1">scenario.mark_skipped()</span>
+        <span class="s3">return </span><span class="s1">self.feature</span>
+
+
+<span class="s3">class </span><span class="s1">FeatureListParser(object):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Read textual file, ala '@features.txt'. This file contains: 
+ 
+      * a feature filename or FileLocation on each line 
+      * empty lines (skipped) 
+      * comment lines (skipped) 
+      * wildcards are expanded to select 0..N filenames or directories 
+ 
+    Relative path names are evaluated relative to the listfile directory. 
+    A leading '@' (AT) character is removed from the listfile name. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s3">def </span><span class="s1">parse(text</span><span class="s3">, </span><span class="s1">here=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parse contents of a features list file as text. 
+ 
+        :param text: Contents of a features list(file). 
+        :param here: Current working directory to use (optional). 
+        :return: List of FileLocation objects 
+        &quot;&quot;&quot;</span>
+        <span class="s1">locations = []</span>
+        <span class="s3">for </span><span class="s1">line </span><span class="s3">in </span><span class="s1">text.splitlines():</span>
+            <span class="s1">filename = line.strip()</span>
+            <span class="s3">if not </span><span class="s1">filename:</span>
+                <span class="s3">continue    </span><span class="s0"># SKIP: Over empty line(s).</span>
+            <span class="s3">elif </span><span class="s1">filename.startswith(</span><span class="s4">'#'</span><span class="s1">):</span>
+                <span class="s3">continue    </span><span class="s0"># SKIP: Over comment line(s).</span>
+
+            <span class="s3">if </span><span class="s1">here </span><span class="s3">and not </span><span class="s1">os.path.isabs(filename):</span>
+                <span class="s1">filename = os.path.join(here</span><span class="s3">, </span><span class="s1">line)</span>
+            <span class="s1">filename = os.path.normpath(filename)</span>
+            <span class="s3">if </span><span class="s1">glob.has_magic(filename):</span>
+                <span class="s0"># -- WITH WILDCARDS:</span>
+                <span class="s3">for </span><span class="s1">filename2 </span><span class="s3">in </span><span class="s1">glob.iglob(filename):</span>
+                    <span class="s1">location = FileLocationParser.parse(filename2)</span>
+                    <span class="s1">locations.append(location)</span>
+            <span class="s3">else</span><span class="s1">:</span>
+                <span class="s1">location = FileLocationParser.parse(filename)</span>
+                <span class="s1">locations.append(location)</span>
+        <span class="s3">return </span><span class="s1">locations</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s3">def </span><span class="s1">parse_file(cls</span><span class="s3">, </span><span class="s1">filename):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Read textual file, ala '@features.txt'. 
+ 
+        :param filename:  Name of feature list file. 
+        :return: List of feature file locations. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">filename.startswith(</span><span class="s4">'@'</span><span class="s1">):</span>
+            <span class="s1">filename = filename[</span><span class="s5">1</span><span class="s1">:]</span>
+        <span class="s3">if not </span><span class="s1">os.path.isfile(filename):</span>
+            <span class="s3">raise </span><span class="s1">FileNotFoundError(filename)</span>
+        <span class="s1">here = os.path.dirname(filename) </span><span class="s3">or </span><span class="s4">&quot;.&quot;</span>
+        <span class="s0"># -- MAYBE BETTER:</span>
+        <span class="s0"># contents = codecs.open(filename, &quot;utf-8&quot;).read()</span>
+        <span class="s1">contents = open(filename).read()</span>
+        <span class="s3">return </span><span class="s1">cls.parse(contents</span><span class="s3">, </span><span class="s1">here)</span>
+
+
+<span class="s3">class </span><span class="s1">PathManager(object):</span>
+    <span class="s2">&quot;&quot;&quot;Context manager to add paths to sys.path (python search path) 
+    within a scope. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">paths=</span><span class="s3">None</span><span class="s1">):</span>
+        <span class="s1">self.initial_paths = paths </span><span class="s3">or </span><span class="s1">[]</span>
+        <span class="s1">self.paths = </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">__enter__(self):</span>
+        <span class="s1">self.paths = list(self.initial_paths)</span>
+        <span class="s1">sys.path = self.paths + sys.path</span>
+
+    <span class="s3">def </span><span class="s1">__exit__(self</span><span class="s3">, </span><span class="s1">*crap):</span>
+        <span class="s3">for </span><span class="s1">path </span><span class="s3">in </span><span class="s1">self.paths:</span>
+            <span class="s1">sys.path.remove(path)</span>
+        <span class="s1">self.paths = </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">add(self</span><span class="s3">, </span><span class="s1">path):</span>
+        <span class="s3">if </span><span class="s1">self.paths </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s0"># -- CALLED OUTSIDE OF CONTEXT:</span>
+            <span class="s1">self.initial_paths.append(path)</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s1">sys.path.insert(</span><span class="s5">0</span><span class="s3">, </span><span class="s1">path)</span>
+            <span class="s1">self.paths.append(path)</span>
+
+
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s0"># FUNCTIONS:</span>
+<span class="s0"># -----------------------------------------------------------------------------</span>
+<span class="s3">def </span><span class="s1">parse_features(feature_files</span><span class="s3">, </span><span class="s1">language=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Parse feature files and return list of Feature model objects. 
+    Handles: 
+ 
+      * feature file names, ala &quot;alice.feature&quot; 
+      * feature file locations, ala: &quot;alice.feature:10&quot; 
+ 
+    :param feature_files: List of feature file names to parse. 
+    :param language:      Default language to use. 
+    :return: List of feature objects. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">scenario_collector = FeatureScenarioLocationCollector()</span>
+    <span class="s1">features = []</span>
+    <span class="s3">for </span><span class="s1">location </span><span class="s3">in </span><span class="s1">feature_files:</span>
+        <span class="s3">if not </span><span class="s1">isinstance(location</span><span class="s3">, </span><span class="s1">FileLocation):</span>
+            <span class="s3">assert </span><span class="s1">isinstance(location</span><span class="s3">, </span><span class="s1">string_types)</span>
+            <span class="s1">location = FileLocation(os.path.normpath(location))</span>
+
+        <span class="s3">if </span><span class="s1">location.filename == scenario_collector.filename:</span>
+            <span class="s1">scenario_collector.add_location(location)</span>
+            <span class="s3">continue</span>
+        <span class="s3">elif </span><span class="s1">scenario_collector.feature:</span>
+            <span class="s0"># -- ADD CURRENT FEATURE: As collection of scenarios.</span>
+            <span class="s1">current_feature = scenario_collector.build_feature()</span>
+            <span class="s1">features.append(current_feature)</span>
+            <span class="s1">scenario_collector.clear()</span>
+
+        <span class="s0"># -- NEW FEATURE:</span>
+        <span class="s3">assert </span><span class="s1">isinstance(location</span><span class="s3">, </span><span class="s1">FileLocation)</span>
+        <span class="s1">filename = os.path.abspath(location.filename)</span>
+        <span class="s1">feature = parser.parse_file(filename</span><span class="s3">, </span><span class="s1">language=language)</span>
+        <span class="s3">if </span><span class="s1">feature:</span>
+            <span class="s0"># -- VALID FEATURE:</span>
+            <span class="s0"># SKIP CORNER-CASE: Feature file without any feature(s).</span>
+            <span class="s1">scenario_collector.feature = feature</span>
+            <span class="s1">scenario_collector.add_location(location)</span>
+    <span class="s0"># -- FINALLY:</span>
+    <span class="s3">if </span><span class="s1">scenario_collector.feature:</span>
+        <span class="s1">current_feature = scenario_collector.build_feature()</span>
+        <span class="s1">features.append(current_feature)</span>
+    <span class="s3">return </span><span class="s1">features</span>
+
+
+<span class="s3">def </span><span class="s1">collect_feature_locations(paths</span><span class="s3">, </span><span class="s1">strict=</span><span class="s3">True</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Collect feature file names by processing list of paths (from command line). 
+    A path can be a: 
+ 
+      * filename (ending with &quot;.feature&quot;) 
+      * location, ala &quot;{filename}:{line_number}&quot; 
+      * features configuration filename, ala &quot;@features.txt&quot; 
+      * directory, to discover and collect all &quot;*.feature&quot; files below. 
+ 
+    :param paths:  Paths to process. 
+    :return: Feature file locations to use (as list of FileLocations). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">locations = []</span>
+    <span class="s3">for </span><span class="s1">path </span><span class="s3">in </span><span class="s1">paths:</span>
+        <span class="s3">if </span><span class="s1">os.path.isdir(path):</span>
+            <span class="s3">for </span><span class="s1">dirpath</span><span class="s3">, </span><span class="s1">dirnames</span><span class="s3">, </span><span class="s1">filenames </span><span class="s3">in </span><span class="s1">os.walk(path):</span>
+                <span class="s1">dirnames.sort()</span>
+                <span class="s3">for </span><span class="s1">filename </span><span class="s3">in </span><span class="s1">sorted(filenames):</span>
+                    <span class="s3">if </span><span class="s1">filename.endswith(</span><span class="s4">&quot;.feature&quot;</span><span class="s1">):</span>
+                        <span class="s1">location = FileLocation(os.path.join(dirpath</span><span class="s3">, </span><span class="s1">filename))</span>
+                        <span class="s1">locations.append(location)</span>
+        <span class="s3">elif </span><span class="s1">path.startswith(</span><span class="s4">'@'</span><span class="s1">):</span>
+            <span class="s0"># -- USE: behave @list_of_features.txt</span>
+            <span class="s1">locations.extend(FeatureListParser.parse_file(path[</span><span class="s5">1</span><span class="s1">:]))</span>
+        <span class="s3">else</span><span class="s1">:</span>
+            <span class="s0"># -- OTHERWISE: Normal filename or location (schema: filename:line)</span>
+            <span class="s1">location = FileLocationParser.parse(path)</span>
+            <span class="s3">if not </span><span class="s1">location.filename.endswith(</span><span class="s4">&quot;.feature&quot;</span><span class="s1">):</span>
+                <span class="s3">raise </span><span class="s1">InvalidFilenameError(location.filename)</span>
+            <span class="s3">elif </span><span class="s1">location.exists():</span>
+                <span class="s1">locations.append(location)</span>
+            <span class="s3">elif </span><span class="s1">strict:</span>
+                <span class="s3">raise </span><span class="s1">FileNotFoundError(path)</span>
+    <span class="s3">return </span><span class="s1">locations</span>
+
+
+<span class="s3">def </span><span class="s1">exec_file(filename</span><span class="s3">, </span><span class="s1">globals_=</span><span class="s3">None, </span><span class="s1">locals_=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s3">if </span><span class="s1">globals_ </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s1">globals_ = {}</span>
+    <span class="s3">if </span><span class="s1">locals_ </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s1">locals_ = globals_</span>
+    <span class="s1">locals_[</span><span class="s4">&quot;__file__&quot;</span><span class="s1">] = filename</span>
+    <span class="s3">with </span><span class="s1">open(filename</span><span class="s3">, </span><span class="s4">&quot;rb&quot;</span><span class="s1">) </span><span class="s3">as </span><span class="s1">f:</span>
+        <span class="s0"># pylint: disable=exec-used</span>
+        <span class="s1">filename2 = os.path.relpath(filename</span><span class="s3">, </span><span class="s1">os.getcwd())</span>
+        <span class="s1">code = compile(f.read()</span><span class="s3">, </span><span class="s1">filename2</span><span class="s3">, </span><span class="s4">&quot;exec&quot;</span><span class="s3">, </span><span class="s1">dont_inherit=</span><span class="s3">True</span><span class="s1">)</span>
+        <span class="s1">exec(code</span><span class="s3">, </span><span class="s1">globals_</span><span class="s3">, </span><span class="s1">locals_)</span>
+
+
+<span class="s3">def </span><span class="s1">load_step_modules(step_paths):</span>
+    <span class="s2">&quot;&quot;&quot;Load step modules with step definitions from step_paths directories.&quot;&quot;&quot;</span>
+    <span class="s3">from </span><span class="s1">behave </span><span class="s3">import </span><span class="s1">matchers</span>
+    <span class="s3">from </span><span class="s1">behave.step_registry </span><span class="s3">import </span><span class="s1">setup_step_decorators</span>
+    <span class="s1">step_globals = {</span>
+        <span class="s4">&quot;use_step_matcher&quot;</span><span class="s1">: matchers.use_step_matcher</span><span class="s3">,</span>
+        <span class="s4">&quot;step_matcher&quot;</span><span class="s1">:     matchers.step_matcher</span><span class="s3">, </span><span class="s0"># -- DEPRECATING</span>
+    <span class="s1">}</span>
+    <span class="s1">setup_step_decorators(step_globals)</span>
+
+    <span class="s0"># -- Allow steps to import other stuff from the steps dir</span>
+    <span class="s0"># NOTE: Default matcher can be overridden in &quot;environment.py&quot; hook.</span>
+    <span class="s3">with </span><span class="s1">PathManager(step_paths):</span>
+        <span class="s1">default_matcher = matchers.current_matcher</span>
+        <span class="s3">for </span><span class="s1">path </span><span class="s3">in </span><span class="s1">step_paths:</span>
+            <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">sorted(os.listdir(path)):</span>
+                <span class="s3">if </span><span class="s1">name.endswith(</span><span class="s4">&quot;.py&quot;</span><span class="s1">):</span>
+                    <span class="s0"># -- LOAD STEP DEFINITION:</span>
+                    <span class="s0"># Reset to default matcher after each step-definition.</span>
+                    <span class="s0"># A step-definition may change the matcher 0..N times.</span>
+                    <span class="s0"># ENSURE: Each step definition has clean globals.</span>
+                    <span class="s0"># try:</span>
+                    <span class="s1">step_module_globals = step_globals.copy()</span>
+                    <span class="s1">exec_file(os.path.join(path</span><span class="s3">, </span><span class="s1">name)</span><span class="s3">, </span><span class="s1">step_module_globals)</span>
+                    <span class="s1">matchers.current_matcher = default_matcher</span>
+
+
+<span class="s3">def </span><span class="s1">make_undefined_step_snippet(step</span><span class="s3">, </span><span class="s1">language=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Helper function to create an undefined-step snippet for a step. 
+ 
+    :param step: Step to use (as Step object or string). 
+    :param language: i18n language, optionally needed for step text parsing. 
+    :return: Undefined-step snippet (as string). 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">isinstance(step</span><span class="s3">, </span><span class="s1">string_types):</span>
+        <span class="s1">step_text = step</span>
+        <span class="s1">steps = parser.parse_steps(step_text</span><span class="s3">, </span><span class="s1">language=language)</span>
+        <span class="s1">step = steps[</span><span class="s5">0</span><span class="s1">]</span>
+        <span class="s3">assert </span><span class="s1">step</span><span class="s3">, </span><span class="s4">&quot;ParseError: %s&quot; </span><span class="s1">% step_text</span>
+
+    <span class="s1">prefix = </span><span class="s4">u&quot;u&quot;</span>
+    <span class="s1">single_quote = </span><span class="s4">&quot;'&quot;</span>
+    <span class="s3">if </span><span class="s1">single_quote </span><span class="s3">in </span><span class="s1">step.name:</span>
+        <span class="s1">step.name = step.name.replace(single_quote</span><span class="s3">, </span><span class="s4">r&quot;\'&quot;</span><span class="s1">)</span>
+
+    <span class="s1">schema = </span><span class="s4">u&quot;@%s(%s'%s')</span><span class="s3">\n</span><span class="s4">def step_impl(context):</span><span class="s3">\n</span><span class="s4">&quot;</span>
+    <span class="s1">schema += </span><span class="s4">u&quot;    raise NotImplementedError(%s'STEP: %s %s')</span><span class="s3">\n\n</span><span class="s4">&quot;</span>
+    <span class="s1">snippet = schema % (step.step_type</span><span class="s3">, </span><span class="s1">prefix</span><span class="s3">, </span><span class="s1">step.name</span><span class="s3">,</span>
+                        <span class="s1">prefix</span><span class="s3">, </span><span class="s1">step.step_type.title()</span><span class="s3">, </span><span class="s1">step.name)</span>
+    <span class="s3">return </span><span class="s1">snippet</span>
+
+
+<span class="s3">def </span><span class="s1">make_undefined_step_snippets(undefined_steps</span><span class="s3">, </span><span class="s1">make_snippet=</span><span class="s3">None</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot;Creates a list of undefined step snippets. 
+    Note that duplicated steps are removed internally. 
+ 
+    :param undefined_steps: List of undefined steps (as Step object or string). 
+    :param make_snippet:    Function that generates snippet (optional) 
+    :return: List of undefined step snippets (as list of strings) 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">make_snippet </span><span class="s3">is None</span><span class="s1">:</span>
+        <span class="s1">make_snippet = make_undefined_step_snippet</span>
+
+    <span class="s0"># -- NOTE: Remove any duplicated undefined steps.</span>
+    <span class="s1">step_snippets = []</span>
+    <span class="s1">collected_steps = set()</span>
+    <span class="s3">for </span><span class="s1">undefined_step </span><span class="s3">in </span><span class="s1">undefined_steps:</span>
+        <span class="s3">if </span><span class="s1">undefined_step </span><span class="s3">in </span><span class="s1">collected_steps:</span>
+            <span class="s3">continue</span>
+        <span class="s1">collected_steps.add(undefined_step)</span>
+        <span class="s1">step_snippet = make_snippet(undefined_step)</span>
+        <span class="s1">step_snippets.append(step_snippet)</span>
+    <span class="s3">return </span><span class="s1">step_snippets</span>
+
+
+<span class="s3">def </span><span class="s1">print_undefined_step_snippets(undefined_steps</span><span class="s3">, </span><span class="s1">stream=</span><span class="s3">None, </span><span class="s1">colored=</span><span class="s3">True</span><span class="s1">):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Print snippets for the undefined steps that were discovered. 
+ 
+    :param undefined_steps:  List of undefined steps (as list&lt;string&gt;). 
+    :param stream:      Output stream to use (default: sys.stderr). 
+    :param colored:     Indicates if coloring should be used (default: True) 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if not </span><span class="s1">undefined_steps:</span>
+        <span class="s3">return</span>
+    <span class="s3">if not </span><span class="s1">stream:</span>
+        <span class="s1">stream = sys.stderr</span>
+
+    <span class="s1">msg = </span><span class="s4">u&quot;</span><span class="s3">\n</span><span class="s4">You can implement step definitions for undefined steps with &quot;</span>
+    <span class="s1">msg += </span><span class="s4">u&quot;these snippets:</span><span class="s3">\n\n</span><span class="s4">&quot;</span>
+    <span class="s1">msg += </span><span class="s4">u&quot;</span><span class="s3">\n</span><span class="s4">&quot;</span><span class="s1">.join(make_undefined_step_snippets(undefined_steps))</span>
+
+    <span class="s3">if </span><span class="s1">colored:</span>
+        <span class="s0"># -- OOPS: Unclear if stream supports ANSI coloring.</span>
+        <span class="s3">from </span><span class="s1">behave.formatter.ansi_escapes </span><span class="s3">import </span><span class="s1">escapes</span>
+        <span class="s1">msg = escapes[</span><span class="s4">'undefined'</span><span class="s1">] + msg + escapes[</span><span class="s4">'reset'</span><span class="s1">]</span>
+
+    <span class="s1">stream = ensure_stream_with_encoder(stream)</span>
+    <span class="s1">stream.write(msg)</span>
+    <span class="s1">stream.flush()</span>
+
+<span class="s3">def </span><span class="s1">reset_runtime():</span>
+    <span class="s2">&quot;&quot;&quot;Reset runtime environment. 
+    Best effort to reset module data to initial state. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">from </span><span class="s1">behave </span><span class="s3">import </span><span class="s1">step_registry</span>
+    <span class="s3">from </span><span class="s1">behave </span><span class="s3">import </span><span class="s1">matchers</span>
+    <span class="s0"># -- RESET 1: behave.step_registry</span>
+    <span class="s1">step_registry.registry = step_registry.StepRegistry()</span>
+    <span class="s1">step_registry.setup_step_decorators(</span><span class="s3">None, </span><span class="s1">step_registry.registry)</span>
+    <span class="s0"># -- RESET 2: behave.matchers</span>
+    <span class="s1">matchers.ParseMatcher.custom_types = {}</span>
+    <span class="s1">matchers.current_matcher = matchers.ParseMatcher</span>
+</pre>
+</body>
+</html>

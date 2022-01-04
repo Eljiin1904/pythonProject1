@@ -1,0 +1,499 @@
+<html>
+<head>
+<title>filters.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+filters.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+This encapsulates the logic for displaying filters in the Django admin. 
+Filters are specified in models with the &quot;list_filter&quot; option. 
+ 
+Each filter subclass knows how to display a filter for a field that passes a 
+certain test -- e.g. being a DateField or ForeignKey. 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">datetime</span>
+
+<span class="s2">from </span><span class="s1">django.contrib.admin.options </span><span class="s2">import </span><span class="s1">IncorrectLookupParameters</span>
+<span class="s2">from </span><span class="s1">django.contrib.admin.utils </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">get_model_from_relation</span><span class="s2">, </span><span class="s1">prepare_lookup_value</span><span class="s2">, </span><span class="s1">reverse_field_path</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">ImproperlyConfigured</span><span class="s2">, </span><span class="s1">ValidationError</span>
+<span class="s2">from </span><span class="s1">django.db </span><span class="s2">import </span><span class="s1">models</span>
+<span class="s2">from </span><span class="s1">django.utils </span><span class="s2">import </span><span class="s1">timezone</span>
+<span class="s2">from </span><span class="s1">django.utils.translation </span><span class="s2">import </span><span class="s1">gettext_lazy </span><span class="s2">as </span><span class="s1">_</span>
+
+
+<span class="s2">class </span><span class="s1">ListFilter:</span>
+    <span class="s1">title = </span><span class="s2">None  </span><span class="s3"># Human-readable title to appear in the right sidebar.</span>
+    <span class="s1">template = </span><span class="s4">'admin/filter.html'</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin):</span>
+        <span class="s3"># This dictionary will eventually contain the request's query string</span>
+        <span class="s3"># parameters actually used by this filter.</span>
+        <span class="s1">self.used_parameters = {}</span>
+        <span class="s2">if </span><span class="s1">self.title </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s4">&quot;The list filter '%s' does not specify a 'title'.&quot;</span>
+                <span class="s1">% self.__class__.__name__</span>
+            <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">has_output(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return True if some choices would be output for this filter. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'subclasses of ListFilter must provide a has_output() method'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return choices ready to be output in the template. 
+ 
+        `changelist` is the ChangeList to be displayed. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'subclasses of ListFilter must provide a choices() method'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">queryset(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">queryset):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return the filtered queryset. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'subclasses of ListFilter must provide a queryset() method'</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return the list of parameter names that are expected from the 
+        request's query string and that will be used by this filter. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span><span class="s4">'subclasses of ListFilter must provide an expected_parameters() method'</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">SimpleListFilter(ListFilter):</span>
+    <span class="s3"># The parameter that should be used in the query string for that filter.</span>
+    <span class="s1">parameter_name = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin):</span>
+        <span class="s1">super().__init__(request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin)</span>
+        <span class="s2">if </span><span class="s1">self.parameter_name </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s4">&quot;The list filter '%s' does not specify a 'parameter_name'.&quot;</span>
+                <span class="s1">% self.__class__.__name__</span>
+            <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">self.parameter_name </span><span class="s2">in </span><span class="s1">params:</span>
+            <span class="s1">value = params.pop(self.parameter_name)</span>
+            <span class="s1">self.used_parameters[self.parameter_name] = value</span>
+        <span class="s1">lookup_choices = self.lookups(request</span><span class="s2">, </span><span class="s1">model_admin)</span>
+        <span class="s2">if </span><span class="s1">lookup_choices </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">lookup_choices = ()</span>
+        <span class="s1">self.lookup_choices = list(lookup_choices)</span>
+
+    <span class="s2">def </span><span class="s1">has_output(self):</span>
+        <span class="s2">return </span><span class="s1">len(self.lookup_choices) &gt; </span><span class="s5">0</span>
+
+    <span class="s2">def </span><span class="s1">value(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return the value (in string format) provided in the request's 
+        query string for this filter, if any, or None if the value wasn't 
+        provided. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.used_parameters.get(self.parameter_name)</span>
+
+    <span class="s2">def </span><span class="s1">lookups(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Must be overridden to return a list of tuples (value, verbose value) 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError(</span>
+            <span class="s4">'The SimpleListFilter.lookups() method must be overridden to '</span>
+            <span class="s4">'return a list of tuples (value, verbose value).'</span>
+        <span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s2">return </span><span class="s1">[self.parameter_name]</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s2">yield </span><span class="s1">{</span>
+            <span class="s4">'selected'</span><span class="s1">: self.value() </span><span class="s2">is None,</span>
+            <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string(remove=[self.parameter_name])</span><span class="s2">,</span>
+            <span class="s4">'display'</span><span class="s1">: _(</span><span class="s4">'All'</span><span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">}</span>
+        <span class="s2">for </span><span class="s1">lookup</span><span class="s2">, </span><span class="s1">title </span><span class="s2">in </span><span class="s1">self.lookup_choices:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.value() == str(lookup)</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.parameter_name: lookup})</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: title</span><span class="s2">,</span>
+            <span class="s1">}</span>
+
+
+<span class="s2">class </span><span class="s1">FieldListFilter(ListFilter):</span>
+    <span class="s1">_field_list_filters = []</span>
+    <span class="s1">_take_priority_index = </span><span class="s5">0</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s1">self.field = field</span>
+        <span class="s1">self.field_path = field_path</span>
+        <span class="s1">self.title = getattr(field</span><span class="s2">, </span><span class="s4">'verbose_name'</span><span class="s2">, </span><span class="s1">field_path)</span>
+        <span class="s1">super().__init__(request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin)</span>
+        <span class="s2">for </span><span class="s1">p </span><span class="s2">in </span><span class="s1">self.expected_parameters():</span>
+            <span class="s2">if </span><span class="s1">p </span><span class="s2">in </span><span class="s1">params:</span>
+                <span class="s1">value = params.pop(p)</span>
+                <span class="s1">self.used_parameters[p] = prepare_lookup_value(p</span><span class="s2">, </span><span class="s1">value)</span>
+
+    <span class="s2">def </span><span class="s1">has_output(self):</span>
+        <span class="s2">return True</span>
+
+    <span class="s2">def </span><span class="s1">queryset(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">queryset):</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">queryset.filter(**self.used_parameters)</span>
+        <span class="s2">except </span><span class="s1">(ValueError</span><span class="s2">, </span><span class="s1">ValidationError) </span><span class="s2">as </span><span class="s1">e:</span>
+            <span class="s3"># Fields may raise a ValueError or ValidationError when converting</span>
+            <span class="s3"># the parameters to the correct type.</span>
+            <span class="s2">raise </span><span class="s1">IncorrectLookupParameters(e)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">register(cls</span><span class="s2">, </span><span class="s1">test</span><span class="s2">, </span><span class="s1">list_filter_class</span><span class="s2">, </span><span class="s1">take_priority=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s2">if </span><span class="s1">take_priority:</span>
+            <span class="s3"># This is to allow overriding the default filters for certain types</span>
+            <span class="s3"># of fields with some custom filters. The first found in the list</span>
+            <span class="s3"># is used in priority.</span>
+            <span class="s1">cls._field_list_filters.insert(</span>
+                <span class="s1">cls._take_priority_index</span><span class="s2">, </span><span class="s1">(test</span><span class="s2">, </span><span class="s1">list_filter_class))</span>
+            <span class="s1">cls._take_priority_index += </span><span class="s5">1</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">cls._field_list_filters.append((test</span><span class="s2">, </span><span class="s1">list_filter_class))</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">create(cls</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s2">for </span><span class="s1">test</span><span class="s2">, </span><span class="s1">list_filter_class </span><span class="s2">in </span><span class="s1">cls._field_list_filters:</span>
+            <span class="s2">if </span><span class="s1">test(field):</span>
+                <span class="s2">return </span><span class="s1">list_filter_class(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path=field_path)</span>
+
+
+<span class="s2">class </span><span class="s1">RelatedFieldListFilter(FieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s1">other_model = get_model_from_relation(field)</span>
+        <span class="s1">self.lookup_kwarg = </span><span class="s4">'%s__%s__exact' </span><span class="s1">% (field_path</span><span class="s2">, </span><span class="s1">field.target_field.name)</span>
+        <span class="s1">self.lookup_kwarg_isnull = </span><span class="s4">'%s__isnull' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_val = params.get(self.lookup_kwarg)</span>
+        <span class="s1">self.lookup_val_isnull = params.get(self.lookup_kwarg_isnull)</span>
+        <span class="s1">super().__init__(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path)</span>
+        <span class="s1">self.lookup_choices = self.field_choices(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin)</span>
+        <span class="s2">if </span><span class="s1">hasattr(field</span><span class="s2">, </span><span class="s4">'verbose_name'</span><span class="s1">):</span>
+            <span class="s1">self.lookup_title = field.verbose_name</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.lookup_title = other_model._meta.verbose_name</span>
+        <span class="s1">self.title = self.lookup_title</span>
+        <span class="s1">self.empty_value_display = model_admin.get_empty_value_display()</span>
+
+    <span class="s1">@property</span>
+    <span class="s2">def </span><span class="s1">include_empty_choice(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return True if a &quot;(None)&quot; choice should be included, which filters 
+        out everything except empty relationships. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">return </span><span class="s1">self.field.null </span><span class="s2">or </span><span class="s1">(self.field.is_relation </span><span class="s2">and </span><span class="s1">self.field.many_to_many)</span>
+
+    <span class="s2">def </span><span class="s1">has_output(self):</span>
+        <span class="s2">if </span><span class="s1">self.include_empty_choice:</span>
+            <span class="s1">extra = </span><span class="s5">1</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">extra = </span><span class="s5">0</span>
+        <span class="s2">return </span><span class="s1">len(self.lookup_choices) + extra &gt; </span><span class="s5">1</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s2">return </span><span class="s1">[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_isnull]</span>
+
+    <span class="s2">def </span><span class="s1">field_admin_ordering(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return the model admin's ordering for related field, if provided. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">related_admin = model_admin.admin_site._registry.get(field.remote_field.model)</span>
+        <span class="s2">if </span><span class="s1">related_admin </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">related_admin.get_ordering(request)</span>
+        <span class="s2">return </span><span class="s1">()</span>
+
+    <span class="s2">def </span><span class="s1">field_choices(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin):</span>
+        <span class="s1">ordering = self.field_admin_ordering(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin)</span>
+        <span class="s2">return </span><span class="s1">field.get_choices(include_blank=</span><span class="s2">False, </span><span class="s1">ordering=ordering)</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s2">yield </span><span class="s1">{</span>
+            <span class="s4">'selected'</span><span class="s1">: self.lookup_val </span><span class="s2">is None and not </span><span class="s1">self.lookup_val_isnull</span><span class="s2">,</span>
+            <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string(remove=[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_isnull])</span><span class="s2">,</span>
+            <span class="s4">'display'</span><span class="s1">: _(</span><span class="s4">'All'</span><span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">}</span>
+        <span class="s2">for </span><span class="s1">pk_val</span><span class="s2">, </span><span class="s1">val </span><span class="s2">in </span><span class="s1">self.lookup_choices:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.lookup_val == str(pk_val)</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg: pk_val}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg_isnull])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: val</span><span class="s2">,</span>
+            <span class="s1">}</span>
+        <span class="s2">if </span><span class="s1">self.include_empty_choice:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: bool(self.lookup_val_isnull)</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg_isnull: </span><span class="s4">'True'</span><span class="s1">}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: self.empty_value_display</span><span class="s2">,</span>
+            <span class="s1">}</span>
+
+
+<span class="s1">FieldListFilter.register(</span><span class="s2">lambda </span><span class="s1">f: f.remote_field</span><span class="s2">, </span><span class="s1">RelatedFieldListFilter)</span>
+
+
+<span class="s2">class </span><span class="s1">BooleanFieldListFilter(FieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s1">self.lookup_kwarg = </span><span class="s4">'%s__exact' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_kwarg2 = </span><span class="s4">'%s__isnull' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_val = params.get(self.lookup_kwarg)</span>
+        <span class="s1">self.lookup_val2 = params.get(self.lookup_kwarg2)</span>
+        <span class="s1">super().__init__(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path)</span>
+        <span class="s2">if </span><span class="s1">(self.used_parameters </span><span class="s2">and </span><span class="s1">self.lookup_kwarg </span><span class="s2">in </span><span class="s1">self.used_parameters </span><span class="s2">and</span>
+                <span class="s1">self.used_parameters[self.lookup_kwarg] </span><span class="s2">in </span><span class="s1">(</span><span class="s4">'1'</span><span class="s2">, </span><span class="s4">'0'</span><span class="s1">)):</span>
+            <span class="s1">self.used_parameters[self.lookup_kwarg] = bool(int(self.used_parameters[self.lookup_kwarg]))</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s2">return </span><span class="s1">[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg2]</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s1">field_choices = dict(self.field.flatchoices)</span>
+        <span class="s2">for </span><span class="s1">lookup</span><span class="s2">, </span><span class="s1">title </span><span class="s2">in </span><span class="s1">(</span>
+            <span class="s1">(</span><span class="s2">None, </span><span class="s1">_(</span><span class="s4">'All'</span><span class="s1">))</span><span class="s2">,</span>
+            <span class="s1">(</span><span class="s4">'1'</span><span class="s2">, </span><span class="s1">field_choices.get(</span><span class="s2">True, </span><span class="s1">_(</span><span class="s4">'Yes'</span><span class="s1">)))</span><span class="s2">,</span>
+            <span class="s1">(</span><span class="s4">'0'</span><span class="s2">, </span><span class="s1">field_choices.get(</span><span class="s2">False, </span><span class="s1">_(</span><span class="s4">'No'</span><span class="s1">)))</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.lookup_val == lookup </span><span class="s2">and not </span><span class="s1">self.lookup_val2</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg: lookup}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg2])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: title</span><span class="s2">,</span>
+            <span class="s1">}</span>
+        <span class="s2">if </span><span class="s1">self.field.null:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.lookup_val2 == </span><span class="s4">'True'</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg2: </span><span class="s4">'True'</span><span class="s1">}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: field_choices.get(</span><span class="s2">None, </span><span class="s1">_(</span><span class="s4">'Unknown'</span><span class="s1">))</span><span class="s2">,</span>
+            <span class="s1">}</span>
+
+
+<span class="s1">FieldListFilter.register(</span><span class="s2">lambda </span><span class="s1">f: isinstance(f</span><span class="s2">, </span><span class="s1">models.BooleanField)</span><span class="s2">, </span><span class="s1">BooleanFieldListFilter)</span>
+
+
+<span class="s2">class </span><span class="s1">ChoicesFieldListFilter(FieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s1">self.lookup_kwarg = </span><span class="s4">'%s__exact' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_kwarg_isnull = </span><span class="s4">'%s__isnull' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_val = params.get(self.lookup_kwarg)</span>
+        <span class="s1">self.lookup_val_isnull = params.get(self.lookup_kwarg_isnull)</span>
+        <span class="s1">super().__init__(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path)</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s2">return </span><span class="s1">[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_isnull]</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s2">yield </span><span class="s1">{</span>
+            <span class="s4">'selected'</span><span class="s1">: self.lookup_val </span><span class="s2">is None,</span>
+            <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string(remove=[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_isnull])</span><span class="s2">,</span>
+            <span class="s4">'display'</span><span class="s1">: _(</span><span class="s4">'All'</span><span class="s1">)</span>
+        <span class="s1">}</span>
+        <span class="s1">none_title = </span><span class="s4">''</span>
+        <span class="s2">for </span><span class="s1">lookup</span><span class="s2">, </span><span class="s1">title </span><span class="s2">in </span><span class="s1">self.field.flatchoices:</span>
+            <span class="s2">if </span><span class="s1">lookup </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">none_title = title</span>
+                <span class="s2">continue</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: str(lookup) == self.lookup_val</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg: lookup}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg_isnull])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: title</span><span class="s2">,</span>
+            <span class="s1">}</span>
+        <span class="s2">if </span><span class="s1">none_title:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: bool(self.lookup_val_isnull)</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg_isnull: </span><span class="s4">'True'</span><span class="s1">}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: none_title</span><span class="s2">,</span>
+            <span class="s1">}</span>
+
+
+<span class="s1">FieldListFilter.register(</span><span class="s2">lambda </span><span class="s1">f: bool(f.choices)</span><span class="s2">, </span><span class="s1">ChoicesFieldListFilter)</span>
+
+
+<span class="s2">class </span><span class="s1">DateFieldListFilter(FieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s1">self.field_generic = </span><span class="s4">'%s__' </span><span class="s1">% field_path</span>
+        <span class="s1">self.date_params = {k: v </span><span class="s2">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">params.items() </span><span class="s2">if </span><span class="s1">k.startswith(self.field_generic)}</span>
+
+        <span class="s1">now = timezone.now()</span>
+        <span class="s3"># When time zone support is enabled, convert &quot;now&quot; to the user's time</span>
+        <span class="s3"># zone so Django's definition of &quot;Today&quot; matches what the user expects.</span>
+        <span class="s2">if </span><span class="s1">timezone.is_aware(now):</span>
+            <span class="s1">now = timezone.localtime(now)</span>
+
+        <span class="s2">if </span><span class="s1">isinstance(field</span><span class="s2">, </span><span class="s1">models.DateTimeField):</span>
+            <span class="s1">today = now.replace(hour=</span><span class="s5">0</span><span class="s2">, </span><span class="s1">minute=</span><span class="s5">0</span><span class="s2">, </span><span class="s1">second=</span><span class="s5">0</span><span class="s2">, </span><span class="s1">microsecond=</span><span class="s5">0</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:       </span><span class="s3"># field is a models.DateField</span>
+            <span class="s1">today = now.date()</span>
+        <span class="s1">tomorrow = today + datetime.timedelta(days=</span><span class="s5">1</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">today.month == </span><span class="s5">12</span><span class="s1">:</span>
+            <span class="s1">next_month = today.replace(year=today.year + </span><span class="s5">1</span><span class="s2">, </span><span class="s1">month=</span><span class="s5">1</span><span class="s2">, </span><span class="s1">day=</span><span class="s5">1</span><span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">next_month = today.replace(month=today.month + </span><span class="s5">1</span><span class="s2">, </span><span class="s1">day=</span><span class="s5">1</span><span class="s1">)</span>
+        <span class="s1">next_year = today.replace(year=today.year + </span><span class="s5">1</span><span class="s2">, </span><span class="s1">month=</span><span class="s5">1</span><span class="s2">, </span><span class="s1">day=</span><span class="s5">1</span><span class="s1">)</span>
+
+        <span class="s1">self.lookup_kwarg_since = </span><span class="s4">'%s__gte' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_kwarg_until = </span><span class="s4">'%s__lt' </span><span class="s1">% field_path</span>
+        <span class="s1">self.links = (</span>
+            <span class="s1">(_(</span><span class="s4">'Any date'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{})</span><span class="s2">,</span>
+            <span class="s1">(_(</span><span class="s4">'Today'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{</span>
+                <span class="s1">self.lookup_kwarg_since: str(today)</span><span class="s2">,</span>
+                <span class="s1">self.lookup_kwarg_until: str(tomorrow)</span><span class="s2">,</span>
+            <span class="s1">})</span><span class="s2">,</span>
+            <span class="s1">(_(</span><span class="s4">'Past 7 days'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{</span>
+                <span class="s1">self.lookup_kwarg_since: str(today - datetime.timedelta(days=</span><span class="s5">7</span><span class="s1">))</span><span class="s2">,</span>
+                <span class="s1">self.lookup_kwarg_until: str(tomorrow)</span><span class="s2">,</span>
+            <span class="s1">})</span><span class="s2">,</span>
+            <span class="s1">(_(</span><span class="s4">'This month'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{</span>
+                <span class="s1">self.lookup_kwarg_since: str(today.replace(day=</span><span class="s5">1</span><span class="s1">))</span><span class="s2">,</span>
+                <span class="s1">self.lookup_kwarg_until: str(next_month)</span><span class="s2">,</span>
+            <span class="s1">})</span><span class="s2">,</span>
+            <span class="s1">(_(</span><span class="s4">'This year'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{</span>
+                <span class="s1">self.lookup_kwarg_since: str(today.replace(month=</span><span class="s5">1</span><span class="s2">, </span><span class="s1">day=</span><span class="s5">1</span><span class="s1">))</span><span class="s2">,</span>
+                <span class="s1">self.lookup_kwarg_until: str(next_year)</span><span class="s2">,</span>
+            <span class="s1">})</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">field.null:</span>
+            <span class="s1">self.lookup_kwarg_isnull = </span><span class="s4">'%s__isnull' </span><span class="s1">% field_path</span>
+            <span class="s1">self.links += (</span>
+                <span class="s1">(_(</span><span class="s4">'No date'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{self.field_generic + </span><span class="s4">'isnull'</span><span class="s1">: </span><span class="s4">'True'</span><span class="s1">})</span><span class="s2">,</span>
+                <span class="s1">(_(</span><span class="s4">'Has date'</span><span class="s1">)</span><span class="s2">, </span><span class="s1">{self.field_generic + </span><span class="s4">'isnull'</span><span class="s1">: </span><span class="s4">'False'</span><span class="s1">})</span><span class="s2">,</span>
+            <span class="s1">)</span>
+        <span class="s1">super().__init__(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path)</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s1">params = [self.lookup_kwarg_since</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_until]</span>
+        <span class="s2">if </span><span class="s1">self.field.null:</span>
+            <span class="s1">params.append(self.lookup_kwarg_isnull)</span>
+        <span class="s2">return </span><span class="s1">params</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s2">for </span><span class="s1">title</span><span class="s2">, </span><span class="s1">param_dict </span><span class="s2">in </span><span class="s1">self.links:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.date_params == param_dict</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string(param_dict</span><span class="s2">, </span><span class="s1">[self.field_generic])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: title</span><span class="s2">,</span>
+            <span class="s1">}</span>
+
+
+<span class="s1">FieldListFilter.register(</span>
+    <span class="s2">lambda </span><span class="s1">f: isinstance(f</span><span class="s2">, </span><span class="s1">models.DateField)</span><span class="s2">, </span><span class="s1">DateFieldListFilter)</span>
+
+
+<span class="s3"># This should be registered last, because it's a last resort. For example,</span>
+<span class="s3"># if a field is eligible to use the BooleanFieldListFilter, that'd be much</span>
+<span class="s3"># more appropriate, and the AllValuesFieldListFilter won't get used for it.</span>
+<span class="s2">class </span><span class="s1">AllValuesFieldListFilter(FieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s1">self.lookup_kwarg = field_path</span>
+        <span class="s1">self.lookup_kwarg_isnull = </span><span class="s4">'%s__isnull' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_val = params.get(self.lookup_kwarg)</span>
+        <span class="s1">self.lookup_val_isnull = params.get(self.lookup_kwarg_isnull)</span>
+        <span class="s1">self.empty_value_display = model_admin.get_empty_value_display()</span>
+        <span class="s1">parent_model</span><span class="s2">, </span><span class="s1">reverse_path = reverse_field_path(model</span><span class="s2">, </span><span class="s1">field_path)</span>
+        <span class="s3"># Obey parent ModelAdmin queryset when deciding which options to show</span>
+        <span class="s2">if </span><span class="s1">model == parent_model:</span>
+            <span class="s1">queryset = model_admin.get_queryset(request)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">queryset = parent_model._default_manager.all()</span>
+        <span class="s1">self.lookup_choices = queryset.distinct().order_by(field.name).values_list(field.name</span><span class="s2">, </span><span class="s1">flat=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">super().__init__(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path)</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s2">return </span><span class="s1">[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_isnull]</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s2">yield </span><span class="s1">{</span>
+            <span class="s4">'selected'</span><span class="s1">: self.lookup_val </span><span class="s2">is None and </span><span class="s1">self.lookup_val_isnull </span><span class="s2">is None,</span>
+            <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string(remove=[self.lookup_kwarg</span><span class="s2">, </span><span class="s1">self.lookup_kwarg_isnull])</span><span class="s2">,</span>
+            <span class="s4">'display'</span><span class="s1">: _(</span><span class="s4">'All'</span><span class="s1">)</span><span class="s2">,</span>
+        <span class="s1">}</span>
+        <span class="s1">include_none = </span><span class="s2">False</span>
+        <span class="s2">for </span><span class="s1">val </span><span class="s2">in </span><span class="s1">self.lookup_choices:</span>
+            <span class="s2">if </span><span class="s1">val </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">include_none = </span><span class="s2">True</span>
+                <span class="s2">continue</span>
+            <span class="s1">val = str(val)</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.lookup_val == val</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg: val}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg_isnull])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: val</span><span class="s2">,</span>
+            <span class="s1">}</span>
+        <span class="s2">if </span><span class="s1">include_none:</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: bool(self.lookup_val_isnull)</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg_isnull: </span><span class="s4">'True'</span><span class="s1">}</span><span class="s2">, </span><span class="s1">[self.lookup_kwarg])</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: self.empty_value_display</span><span class="s2">,</span>
+            <span class="s1">}</span>
+
+
+<span class="s1">FieldListFilter.register(</span><span class="s2">lambda </span><span class="s1">f: </span><span class="s2">True, </span><span class="s1">AllValuesFieldListFilter)</span>
+
+
+<span class="s2">class </span><span class="s1">RelatedOnlyFieldListFilter(RelatedFieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">field_choices(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin):</span>
+        <span class="s1">pk_qs = model_admin.get_queryset(request).distinct().values_list(</span><span class="s4">'%s__pk' </span><span class="s1">% self.field_path</span><span class="s2">, </span><span class="s1">flat=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">ordering = self.field_admin_ordering(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">model_admin)</span>
+        <span class="s2">return </span><span class="s1">field.get_choices(include_blank=</span><span class="s2">False, </span><span class="s1">limit_choices_to={</span><span class="s4">'pk__in'</span><span class="s1">: pk_qs}</span><span class="s2">, </span><span class="s1">ordering=ordering)</span>
+
+
+<span class="s2">class </span><span class="s1">EmptyFieldListFilter(FieldListFilter):</span>
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path):</span>
+        <span class="s2">if not </span><span class="s1">field.empty_strings_allowed </span><span class="s2">and not </span><span class="s1">field.null:</span>
+            <span class="s2">raise </span><span class="s1">ImproperlyConfigured(</span>
+                <span class="s4">&quot;The list filter '%s' cannot be used with field '%s' which &quot;</span>
+                <span class="s4">&quot;doesn't allow empty strings and nulls.&quot; </span><span class="s1">% (</span>
+                    <span class="s1">self.__class__.__name__</span><span class="s2">,</span>
+                    <span class="s1">field.name</span><span class="s2">,</span>
+                <span class="s1">)</span>
+            <span class="s1">)</span>
+        <span class="s1">self.lookup_kwarg = </span><span class="s4">'%s__isempty' </span><span class="s1">% field_path</span>
+        <span class="s1">self.lookup_val = params.get(self.lookup_kwarg)</span>
+        <span class="s1">super().__init__(field</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">model_admin</span><span class="s2">, </span><span class="s1">field_path)</span>
+
+    <span class="s2">def </span><span class="s1">queryset(self</span><span class="s2">, </span><span class="s1">request</span><span class="s2">, </span><span class="s1">queryset):</span>
+        <span class="s2">if </span><span class="s1">self.lookup_kwarg </span><span class="s2">not in </span><span class="s1">self.used_parameters:</span>
+            <span class="s2">return </span><span class="s1">queryset</span>
+        <span class="s2">if </span><span class="s1">self.lookup_val </span><span class="s2">not in </span><span class="s1">(</span><span class="s4">'0'</span><span class="s2">, </span><span class="s4">'1'</span><span class="s1">):</span>
+            <span class="s2">raise </span><span class="s1">IncorrectLookupParameters</span>
+
+        <span class="s1">lookup_conditions = []</span>
+        <span class="s2">if </span><span class="s1">self.field.empty_strings_allowed:</span>
+            <span class="s1">lookup_conditions.append((self.field_path</span><span class="s2">, </span><span class="s4">''</span><span class="s1">))</span>
+        <span class="s2">if </span><span class="s1">self.field.null:</span>
+            <span class="s1">lookup_conditions.append((</span><span class="s4">f'</span><span class="s2">{</span><span class="s1">self.field_path</span><span class="s2">}</span><span class="s4">__isnull'</span><span class="s2">, True</span><span class="s1">))</span>
+        <span class="s1">lookup_condition = models.Q(*lookup_conditions</span><span class="s2">, </span><span class="s1">_connector=models.Q.OR)</span>
+        <span class="s2">if </span><span class="s1">self.lookup_val == </span><span class="s4">'1'</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">queryset.filter(lookup_condition)</span>
+        <span class="s2">return </span><span class="s1">queryset.exclude(lookup_condition)</span>
+
+    <span class="s2">def </span><span class="s1">expected_parameters(self):</span>
+        <span class="s2">return </span><span class="s1">[self.lookup_kwarg]</span>
+
+    <span class="s2">def </span><span class="s1">choices(self</span><span class="s2">, </span><span class="s1">changelist):</span>
+        <span class="s2">for </span><span class="s1">lookup</span><span class="s2">, </span><span class="s1">title </span><span class="s2">in </span><span class="s1">(</span>
+            <span class="s1">(</span><span class="s2">None, </span><span class="s1">_(</span><span class="s4">'All'</span><span class="s1">))</span><span class="s2">,</span>
+            <span class="s1">(</span><span class="s4">'1'</span><span class="s2">, </span><span class="s1">_(</span><span class="s4">'Empty'</span><span class="s1">))</span><span class="s2">,</span>
+            <span class="s1">(</span><span class="s4">'0'</span><span class="s2">, </span><span class="s1">_(</span><span class="s4">'Not empty'</span><span class="s1">))</span><span class="s2">,</span>
+        <span class="s1">):</span>
+            <span class="s2">yield </span><span class="s1">{</span>
+                <span class="s4">'selected'</span><span class="s1">: self.lookup_val == lookup</span><span class="s2">,</span>
+                <span class="s4">'query_string'</span><span class="s1">: changelist.get_query_string({self.lookup_kwarg: lookup})</span><span class="s2">,</span>
+                <span class="s4">'display'</span><span class="s1">: title</span><span class="s2">,</span>
+            <span class="s1">}</span>
+</pre>
+</body>
+</html>

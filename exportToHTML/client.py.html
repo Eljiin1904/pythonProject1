@@ -1,0 +1,695 @@
+<html>
+<head>
+<title>client.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+client.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+:mod:`websockets.legacy.client` defines the WebSocket client APIs. 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">asyncio</span>
+<span class="s2">import </span><span class="s1">collections.abc</span>
+<span class="s2">import </span><span class="s1">functools</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">warnings</span>
+<span class="s2">from </span><span class="s1">types </span><span class="s2">import </span><span class="s1">TracebackType</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">Any</span><span class="s2">, </span><span class="s1">Callable</span><span class="s2">, </span><span class="s1">Generator</span><span class="s2">, </span><span class="s1">List</span><span class="s2">, </span><span class="s1">Optional</span><span class="s2">, </span><span class="s1">Sequence</span><span class="s2">, </span><span class="s1">Tuple</span><span class="s2">, </span><span class="s1">Type</span><span class="s2">, </span><span class="s1">cast</span>
+
+<span class="s2">from </span><span class="s1">..datastructures </span><span class="s2">import </span><span class="s1">Headers</span><span class="s2">, </span><span class="s1">HeadersLike</span>
+<span class="s2">from </span><span class="s1">..exceptions </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">InvalidHandshake</span><span class="s2">,</span>
+    <span class="s1">InvalidHeader</span><span class="s2">,</span>
+    <span class="s1">InvalidMessage</span><span class="s2">,</span>
+    <span class="s1">InvalidStatusCode</span><span class="s2">,</span>
+    <span class="s1">NegotiationError</span><span class="s2">,</span>
+    <span class="s1">RedirectHandshake</span><span class="s2">,</span>
+    <span class="s1">SecurityError</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">..extensions.base </span><span class="s2">import </span><span class="s1">ClientExtensionFactory</span><span class="s2">, </span><span class="s1">Extension</span>
+<span class="s2">from </span><span class="s1">..extensions.permessage_deflate </span><span class="s2">import </span><span class="s1">enable_client_permessage_deflate</span>
+<span class="s2">from </span><span class="s1">..headers </span><span class="s2">import </span><span class="s1">(</span>
+    <span class="s1">build_authorization_basic</span><span class="s2">,</span>
+    <span class="s1">build_extension</span><span class="s2">,</span>
+    <span class="s1">build_subprotocol</span><span class="s2">,</span>
+    <span class="s1">parse_extension</span><span class="s2">,</span>
+    <span class="s1">parse_subprotocol</span><span class="s2">,</span>
+<span class="s1">)</span>
+<span class="s2">from </span><span class="s1">..http </span><span class="s2">import </span><span class="s1">USER_AGENT</span><span class="s2">, </span><span class="s1">build_host</span>
+<span class="s2">from </span><span class="s1">..typing </span><span class="s2">import </span><span class="s1">ExtensionHeader</span><span class="s2">, </span><span class="s1">Origin</span><span class="s2">, </span><span class="s1">Subprotocol</span>
+<span class="s2">from </span><span class="s1">..uri </span><span class="s2">import </span><span class="s1">WebSocketURI</span><span class="s2">, </span><span class="s1">parse_uri</span>
+<span class="s2">from </span><span class="s1">.handshake </span><span class="s2">import </span><span class="s1">build_request</span><span class="s2">, </span><span class="s1">check_response</span>
+<span class="s2">from </span><span class="s1">.http </span><span class="s2">import </span><span class="s1">read_response</span>
+<span class="s2">from </span><span class="s1">.protocol </span><span class="s2">import </span><span class="s1">WebSocketCommonProtocol</span>
+
+
+<span class="s1">__all__ = [</span><span class="s3">&quot;connect&quot;</span><span class="s2">, </span><span class="s3">&quot;unix_connect&quot;</span><span class="s2">, </span><span class="s3">&quot;WebSocketClientProtocol&quot;</span><span class="s1">]</span>
+
+<span class="s1">logger = logging.getLogger(</span><span class="s3">&quot;websockets.server&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">WebSocketClientProtocol(WebSocketCommonProtocol):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    :class:`~asyncio.Protocol` subclass implementing a WebSocket client. 
+ 
+    :class:`WebSocketClientProtocol`: 
+ 
+    * performs the opening handshake to establish the connection; 
+    * provides :meth:`recv` and :meth:`send` coroutines for receiving and 
+      sending messages; 
+    * deals with control frames automatically; 
+    * performs the closing handshake to terminate the connection. 
+ 
+    :class:`WebSocketClientProtocol` supports asynchronous iteration:: 
+ 
+        async for message in websocket: 
+            await process(message) 
+ 
+    The iterator yields incoming messages. It exits normally when the 
+    connection is closed with the close code 1000 (OK) or 1001 (going away). 
+    It raises a :exc:`~websockets.exceptions.ConnectionClosedError` exception 
+    when the connection is closed with any other code. 
+ 
+    Once the connection is open, a `Ping frame`_ is sent every 
+    ``ping_interval`` seconds. This serves as a keepalive. It helps keeping 
+    the connection open, especially in the presence of proxies with short 
+    timeouts on inactive connections. Set ``ping_interval`` to ``None`` to 
+    disable this behavior. 
+ 
+    .. _Ping frame: https://tools.ietf.org/html/rfc6455#section-5.5.2 
+ 
+    If the corresponding `Pong frame`_ isn't received within ``ping_timeout`` 
+    seconds, the connection is considered unusable and is closed with 
+    code 1011. This ensures that the remote endpoint remains responsive. Set 
+    ``ping_timeout`` to ``None`` to disable this behavior. 
+ 
+    .. _Pong frame: https://tools.ietf.org/html/rfc6455#section-5.5.3 
+ 
+    The ``close_timeout`` parameter defines a maximum wait time for completing 
+    the closing handshake and terminating the TCP connection. For legacy 
+    reasons, :meth:`close` completes in at most ``5 * close_timeout`` seconds. 
+ 
+    ``close_timeout`` needs to be a parameter of the protocol because 
+    websockets usually calls :meth:`close` implicitly upon exit when 
+    :func:`connect` is used as a context manager. 
+ 
+    To apply a timeout to any other API, wrap it in :func:`~asyncio.wait_for`. 
+ 
+    The ``max_size`` parameter enforces the maximum size for incoming messages 
+    in bytes. The default value is 1 MiB. ``None`` disables the limit. If a 
+    message larger than the maximum size is received, :meth:`recv` will 
+    raise :exc:`~websockets.exceptions.ConnectionClosedError` and the 
+    connection will be closed with code 1009. 
+ 
+    The ``max_queue`` parameter sets the maximum length of the queue that 
+    holds incoming messages. The default value is ``32``. ``None`` disables 
+    the limit. Messages are added to an in-memory queue when they're received; 
+    then :meth:`recv` pops from that queue. In order to prevent excessive 
+    memory consumption when messages are received faster than they can be 
+    processed, the queue must be bounded. If the queue fills up, the protocol 
+    stops processing incoming data until :meth:`recv` is called. In this 
+    situation, various receive buffers (at least in :mod:`asyncio` and in the 
+    OS) will fill up, then the TCP receive window will shrink, slowing down 
+    transmission to avoid packet loss. 
+ 
+    Since Python can use up to 4 bytes of memory to represent a single 
+    character, each connection may use up to ``4 * max_size * max_queue`` 
+    bytes of memory to store incoming messages. By default, this is 128 MiB. 
+    You may want to lower the limits, depending on your application's 
+    requirements. 
+ 
+    The ``read_limit`` argument sets the high-water limit of the buffer for 
+    incoming bytes. The low-water limit is half the high-water limit. The 
+    default value is 64 KiB, half of asyncio's default (based on the current 
+    implementation of :class:`~asyncio.StreamReader`). 
+ 
+    The ``write_limit`` argument sets the high-water limit of the buffer for 
+    outgoing bytes. The low-water limit is a quarter of the high-water limit. 
+    The default value is 64 KiB, equal to asyncio's default (based on the 
+    current implementation of ``FlowControlMixin``). 
+ 
+    As soon as the HTTP request and response in the opening handshake are 
+    processed: 
+ 
+    * the request path is available in the :attr:`path` attribute; 
+    * the request and response HTTP headers are available in the 
+      :attr:`request_headers` and :attr:`response_headers` attributes, 
+      which are :class:`~websockets.http.Headers` instances. 
+ 
+    If a subprotocol was negotiated, it's available in the :attr:`subprotocol` 
+    attribute. 
+ 
+    Once the connection is closed, the code is available in the 
+    :attr:`close_code` attribute and the reason in :attr:`close_reason`. 
+ 
+    All attributes must be treated as read-only. 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">is_client = </span><span class="s2">True</span>
+    <span class="s1">side = </span><span class="s3">&quot;client&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">*</span><span class="s2">,</span>
+        <span class="s1">origin: Optional[Origin] = </span><span class="s2">None,</span>
+        <span class="s1">extensions: Optional[Sequence[ClientExtensionFactory]] = </span><span class="s2">None,</span>
+        <span class="s1">subprotocols: Optional[Sequence[Subprotocol]] = </span><span class="s2">None,</span>
+        <span class="s1">extra_headers: Optional[HeadersLike] = </span><span class="s2">None,</span>
+        <span class="s1">**kwargs: Any</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s1">self.origin = origin</span>
+        <span class="s1">self.available_extensions = extensions</span>
+        <span class="s1">self.available_subprotocols = subprotocols</span>
+        <span class="s1">self.extra_headers = extra_headers</span>
+        <span class="s1">super().__init__(**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">write_http_request(self</span><span class="s2">, </span><span class="s1">path: str</span><span class="s2">, </span><span class="s1">headers: Headers) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Write request line and headers to the HTTP request. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self.path = path</span>
+        <span class="s1">self.request_headers = headers</span>
+
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &gt; GET %s HTTP/1.1&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">path)</span>
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &gt; %r&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">headers)</span>
+
+        <span class="s4"># Since the path and headers only contain ASCII characters,</span>
+        <span class="s4"># we can keep this simple.</span>
+        <span class="s1">request = </span><span class="s3">f&quot;GET </span><span class="s2">{</span><span class="s1">path</span><span class="s2">} </span><span class="s3">HTTP/1.1</span><span class="s2">\r\n</span><span class="s3">&quot;</span>
+        <span class="s1">request += str(headers)</span>
+
+        <span class="s1">self.transport.write(request.encode())</span>
+
+    <span class="s2">async def </span><span class="s1">read_http_response(self) -&gt; Tuple[int</span><span class="s2">, </span><span class="s1">Headers]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Read status line and headers from the HTTP response. 
+ 
+        If the response contains a body, it may be read from ``self.reader`` 
+        after this coroutine returns. 
+ 
+        :raises ~websockets.exceptions.InvalidMessage: if the HTTP message is 
+            malformed or isn't an HTTP/1.1 GET response 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s1">status_code</span><span class="s2">, </span><span class="s1">reason</span><span class="s2">, </span><span class="s1">headers = </span><span class="s2">await </span><span class="s1">read_response(self.reader)</span>
+        <span class="s4"># Remove this branch when dropping support for Python &lt; 3.8</span>
+        <span class="s4"># because CancelledError no longer inherits Exception.</span>
+        <span class="s2">except </span><span class="s1">asyncio.CancelledError:  </span><span class="s4"># pragma: no cover</span>
+            <span class="s2">raise</span>
+        <span class="s2">except </span><span class="s1">Exception </span><span class="s2">as </span><span class="s1">exc:</span>
+            <span class="s2">raise </span><span class="s1">InvalidMessage(</span><span class="s3">&quot;did not receive a valid HTTP response&quot;</span><span class="s1">) </span><span class="s2">from </span><span class="s1">exc</span>
+
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &lt; HTTP/1.1 %d %s&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">status_code</span><span class="s2">, </span><span class="s1">reason)</span>
+        <span class="s1">logger.debug(</span><span class="s3">&quot;%s &lt; %r&quot;</span><span class="s2">, </span><span class="s1">self.side</span><span class="s2">, </span><span class="s1">headers)</span>
+
+        <span class="s1">self.response_headers = headers</span>
+
+        <span class="s2">return </span><span class="s1">status_code</span><span class="s2">, </span><span class="s1">self.response_headers</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">process_extensions(</span>
+        <span class="s1">headers: Headers</span><span class="s2">,</span>
+        <span class="s1">available_extensions: Optional[Sequence[ClientExtensionFactory]]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; List[Extension]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Handle the Sec-WebSocket-Extensions HTTP response header. 
+ 
+        Check that each extension is supported, as well as its parameters. 
+ 
+        Return the list of accepted extensions. 
+ 
+        Raise :exc:`~websockets.exceptions.InvalidHandshake` to abort the 
+        connection. 
+ 
+        :rfc:`6455` leaves the rules up to the specification of each 
+        :extension. 
+ 
+        To provide this level of flexibility, for each extension accepted by 
+        the server, we check for a match with each extension available in the 
+        client configuration. If no match is found, an exception is raised. 
+ 
+        If several variants of the same extension are accepted by the server, 
+        it may be configured several times, which won't make sense in general. 
+        Extensions must implement their own requirements. For this purpose, 
+        the list of previously accepted extensions is provided. 
+ 
+        Other requirements, for example related to mandatory extensions or the 
+        order of extensions, may be implemented by overriding this method. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">accepted_extensions: List[Extension] = []</span>
+
+        <span class="s1">header_values = headers.get_all(</span><span class="s3">&quot;Sec-WebSocket-Extensions&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">header_values:</span>
+
+            <span class="s2">if </span><span class="s1">available_extensions </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">InvalidHandshake(</span><span class="s3">&quot;no extensions supported&quot;</span><span class="s1">)</span>
+
+            <span class="s1">parsed_header_values: List[ExtensionHeader] = sum(</span>
+                <span class="s1">[parse_extension(header_value) </span><span class="s2">for </span><span class="s1">header_value </span><span class="s2">in </span><span class="s1">header_values]</span><span class="s2">, </span><span class="s1">[]</span>
+            <span class="s1">)</span>
+
+            <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">response_params </span><span class="s2">in </span><span class="s1">parsed_header_values:</span>
+
+                <span class="s2">for </span><span class="s1">extension_factory </span><span class="s2">in </span><span class="s1">available_extensions:</span>
+
+                    <span class="s4"># Skip non-matching extensions based on their name.</span>
+                    <span class="s2">if </span><span class="s1">extension_factory.name != name:</span>
+                        <span class="s2">continue</span>
+
+                    <span class="s4"># Skip non-matching extensions based on their params.</span>
+                    <span class="s2">try</span><span class="s1">:</span>
+                        <span class="s1">extension = extension_factory.process_response_params(</span>
+                            <span class="s1">response_params</span><span class="s2">, </span><span class="s1">accepted_extensions</span>
+                        <span class="s1">)</span>
+                    <span class="s2">except </span><span class="s1">NegotiationError:</span>
+                        <span class="s2">continue</span>
+
+                    <span class="s4"># Add matching extension to the final list.</span>
+                    <span class="s1">accepted_extensions.append(extension)</span>
+
+                    <span class="s4"># Break out of the loop once we have a match.</span>
+                    <span class="s2">break</span>
+
+                <span class="s4"># If we didn't break from the loop, no extension in our list</span>
+                <span class="s4"># matched what the server sent. Fail the connection.</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">raise </span><span class="s1">NegotiationError(</span>
+                        <span class="s3">f&quot;Unsupported extension: &quot;</span>
+                        <span class="s3">f&quot;name = </span><span class="s2">{</span><span class="s1">name</span><span class="s2">}</span><span class="s3">, params = </span><span class="s2">{</span><span class="s1">response_params</span><span class="s2">}</span><span class="s3">&quot;</span>
+                    <span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">accepted_extensions</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">process_subprotocol(</span>
+        <span class="s1">headers: Headers</span><span class="s2">, </span><span class="s1">available_subprotocols: Optional[Sequence[Subprotocol]]</span>
+    <span class="s1">) -&gt; Optional[Subprotocol]:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Handle the Sec-WebSocket-Protocol HTTP response header. 
+ 
+        Check that it contains exactly one supported subprotocol. 
+ 
+        Return the selected subprotocol. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">subprotocol: Optional[Subprotocol] = </span><span class="s2">None</span>
+
+        <span class="s1">header_values = headers.get_all(</span><span class="s3">&quot;Sec-WebSocket-Protocol&quot;</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">header_values:</span>
+
+            <span class="s2">if </span><span class="s1">available_subprotocols </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">raise </span><span class="s1">InvalidHandshake(</span><span class="s3">&quot;no subprotocols supported&quot;</span><span class="s1">)</span>
+
+            <span class="s1">parsed_header_values: Sequence[Subprotocol] = sum(</span>
+                <span class="s1">[parse_subprotocol(header_value) </span><span class="s2">for </span><span class="s1">header_value </span><span class="s2">in </span><span class="s1">header_values]</span><span class="s2">, </span><span class="s1">[]</span>
+            <span class="s1">)</span>
+
+            <span class="s2">if </span><span class="s1">len(parsed_header_values) &gt; </span><span class="s5">1</span><span class="s1">:</span>
+                <span class="s1">subprotocols = </span><span class="s3">&quot;, &quot;</span><span class="s1">.join(parsed_header_values)</span>
+                <span class="s2">raise </span><span class="s1">InvalidHandshake(</span><span class="s3">f&quot;multiple subprotocols: </span><span class="s2">{</span><span class="s1">subprotocols</span><span class="s2">}</span><span class="s3">&quot;</span><span class="s1">)</span>
+
+            <span class="s1">subprotocol = parsed_header_values[</span><span class="s5">0</span><span class="s1">]</span>
+
+            <span class="s2">if </span><span class="s1">subprotocol </span><span class="s2">not in </span><span class="s1">available_subprotocols:</span>
+                <span class="s2">raise </span><span class="s1">NegotiationError(</span><span class="s3">f&quot;unsupported subprotocol: </span><span class="s2">{</span><span class="s1">subprotocol</span><span class="s2">}</span><span class="s3">&quot;</span><span class="s1">)</span>
+
+        <span class="s2">return </span><span class="s1">subprotocol</span>
+
+    <span class="s2">async def </span><span class="s1">handshake(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">wsuri: WebSocketURI</span><span class="s2">,</span>
+        <span class="s1">origin: Optional[Origin] = </span><span class="s2">None,</span>
+        <span class="s1">available_extensions: Optional[Sequence[ClientExtensionFactory]] = </span><span class="s2">None,</span>
+        <span class="s1">available_subprotocols: Optional[Sequence[Subprotocol]] = </span><span class="s2">None,</span>
+        <span class="s1">extra_headers: Optional[HeadersLike] = </span><span class="s2">None,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Perform the client side of the opening handshake. 
+ 
+        :param origin: sets the Origin HTTP header 
+        :param available_extensions: list of supported extensions in the order 
+            in which they should be used 
+        :param available_subprotocols: list of supported subprotocols in order 
+            of decreasing preference 
+        :param extra_headers: sets additional HTTP request headers; it must be 
+            a :class:`~websockets.http.Headers` instance, a 
+            :class:`~collections.abc.Mapping`, or an iterable of ``(name, 
+            value)`` pairs 
+        :raises ~websockets.exceptions.InvalidHandshake: if the handshake 
+            fails 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">request_headers = Headers()</span>
+
+        <span class="s1">request_headers[</span><span class="s3">&quot;Host&quot;</span><span class="s1">] = build_host(wsuri.host</span><span class="s2">, </span><span class="s1">wsuri.port</span><span class="s2">, </span><span class="s1">wsuri.secure)</span>
+
+        <span class="s2">if </span><span class="s1">wsuri.user_info:</span>
+            <span class="s1">request_headers[</span><span class="s3">&quot;Authorization&quot;</span><span class="s1">] = build_authorization_basic(</span>
+                <span class="s1">*wsuri.user_info</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">origin </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">request_headers[</span><span class="s3">&quot;Origin&quot;</span><span class="s1">] = origin</span>
+
+        <span class="s1">key = build_request(request_headers)</span>
+
+        <span class="s2">if </span><span class="s1">available_extensions </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">extensions_header = build_extension(</span>
+                <span class="s1">[</span>
+                    <span class="s1">(extension_factory.name</span><span class="s2">, </span><span class="s1">extension_factory.get_request_params())</span>
+                    <span class="s2">for </span><span class="s1">extension_factory </span><span class="s2">in </span><span class="s1">available_extensions</span>
+                <span class="s1">]</span>
+            <span class="s1">)</span>
+            <span class="s1">request_headers[</span><span class="s3">&quot;Sec-WebSocket-Extensions&quot;</span><span class="s1">] = extensions_header</span>
+
+        <span class="s2">if </span><span class="s1">available_subprotocols </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">protocol_header = build_subprotocol(available_subprotocols)</span>
+            <span class="s1">request_headers[</span><span class="s3">&quot;Sec-WebSocket-Protocol&quot;</span><span class="s1">] = protocol_header</span>
+
+        <span class="s2">if </span><span class="s1">extra_headers </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">if </span><span class="s1">isinstance(extra_headers</span><span class="s2">, </span><span class="s1">Headers):</span>
+                <span class="s1">extra_headers = extra_headers.raw_items()</span>
+            <span class="s2">elif </span><span class="s1">isinstance(extra_headers</span><span class="s2">, </span><span class="s1">collections.abc.Mapping):</span>
+                <span class="s1">extra_headers = extra_headers.items()</span>
+            <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">extra_headers:</span>
+                <span class="s1">request_headers[name] = value</span>
+
+        <span class="s1">request_headers.setdefault(</span><span class="s3">&quot;User-Agent&quot;</span><span class="s2">, </span><span class="s1">USER_AGENT)</span>
+
+        <span class="s1">self.write_http_request(wsuri.resource_name</span><span class="s2">, </span><span class="s1">request_headers)</span>
+
+        <span class="s1">status_code</span><span class="s2">, </span><span class="s1">response_headers = </span><span class="s2">await </span><span class="s1">self.read_http_response()</span>
+        <span class="s2">if </span><span class="s1">status_code </span><span class="s2">in </span><span class="s1">(</span><span class="s5">301</span><span class="s2">, </span><span class="s5">302</span><span class="s2">, </span><span class="s5">303</span><span class="s2">, </span><span class="s5">307</span><span class="s2">, </span><span class="s5">308</span><span class="s1">):</span>
+            <span class="s2">if </span><span class="s3">&quot;Location&quot; </span><span class="s2">not in </span><span class="s1">response_headers:</span>
+                <span class="s2">raise </span><span class="s1">InvalidHeader(</span><span class="s3">&quot;Location&quot;</span><span class="s1">)</span>
+            <span class="s2">raise </span><span class="s1">RedirectHandshake(response_headers[</span><span class="s3">&quot;Location&quot;</span><span class="s1">])</span>
+        <span class="s2">elif </span><span class="s1">status_code != </span><span class="s5">101</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">InvalidStatusCode(status_code)</span>
+
+        <span class="s1">check_response(response_headers</span><span class="s2">, </span><span class="s1">key)</span>
+
+        <span class="s1">self.extensions = self.process_extensions(</span>
+            <span class="s1">response_headers</span><span class="s2">, </span><span class="s1">available_extensions</span>
+        <span class="s1">)</span>
+
+        <span class="s1">self.subprotocol = self.process_subprotocol(</span>
+            <span class="s1">response_headers</span><span class="s2">, </span><span class="s1">available_subprotocols</span>
+        <span class="s1">)</span>
+
+        <span class="s1">self.connection_open()</span>
+
+
+<span class="s2">class </span><span class="s1">Connect:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Connect to the WebSocket server at the given ``uri``. 
+ 
+    Awaiting :func:`connect` yields a :class:`WebSocketClientProtocol` which 
+    can then be used to send and receive messages. 
+ 
+    :func:`connect` can also be used as a asynchronous context manager:: 
+ 
+        async with connect(...) as websocket: 
+            ... 
+ 
+    In that case, the connection is closed when exiting the context. 
+ 
+    :func:`connect` is a wrapper around the event loop's 
+    :meth:`~asyncio.loop.create_connection` method. Unknown keyword arguments 
+    are passed to :meth:`~asyncio.loop.create_connection`. 
+ 
+    For example, you can set the ``ssl`` keyword argument to a 
+    :class:`~ssl.SSLContext` to enforce some TLS settings. When connecting to 
+    a ``wss://`` URI, if this argument isn't provided explicitly, 
+    :func:`ssl.create_default_context` is called to create a context. 
+ 
+    You can connect to a different host and port from those found in ``uri`` 
+    by setting ``host`` and ``port`` keyword arguments. This only changes the 
+    destination of the TCP connection. The host name from ``uri`` is still 
+    used in the TLS handshake for secure connections and in the ``Host`` HTTP 
+    header. 
+ 
+    ``create_protocol`` defaults to :class:`WebSocketClientProtocol`. It may 
+    be replaced by a wrapper or a subclass to customize the protocol that 
+    manages the connection. 
+ 
+    The behavior of ``ping_interval``, ``ping_timeout``, ``close_timeout``, 
+    ``max_size``, ``max_queue``, ``read_limit``, and ``write_limit`` is 
+    described in :class:`WebSocketClientProtocol`. 
+ 
+    :func:`connect` also accepts the following optional arguments: 
+ 
+    * ``compression`` is a shortcut to configure compression extensions; 
+      by default it enables the &quot;permessage-deflate&quot; extension; set it to 
+      ``None`` to disable compression. 
+    * ``origin`` sets the Origin HTTP header. 
+    * ``extensions`` is a list of supported extensions in order of 
+      decreasing preference. 
+    * ``subprotocols`` is a list of supported subprotocols in order of 
+      decreasing preference. 
+    * ``extra_headers`` sets additional HTTP request headers; it can be a 
+      :class:`~websockets.http.Headers` instance, a 
+      :class:`~collections.abc.Mapping`, or an iterable of ``(name, value)`` 
+      pairs. 
+ 
+    :raises ~websockets.uri.InvalidURI: if ``uri`` is invalid 
+    :raises ~websockets.handshake.InvalidHandshake: if the opening handshake 
+        fails 
+ 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">MAX_REDIRECTS_ALLOWED = </span><span class="s5">10</span>
+
+    <span class="s2">def </span><span class="s1">__init__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">uri: str</span><span class="s2">,</span>
+        <span class="s1">*</span><span class="s2">,</span>
+        <span class="s1">create_protocol: Optional[Callable[[Any]</span><span class="s2">, </span><span class="s1">WebSocketClientProtocol]] = </span><span class="s2">None,</span>
+        <span class="s1">ping_interval: Optional[float] = </span><span class="s5">20</span><span class="s2">,</span>
+        <span class="s1">ping_timeout: Optional[float] = </span><span class="s5">20</span><span class="s2">,</span>
+        <span class="s1">close_timeout: Optional[float] = </span><span class="s2">None,</span>
+        <span class="s1">max_size: Optional[int] = </span><span class="s5">2 </span><span class="s1">** </span><span class="s5">20</span><span class="s2">,</span>
+        <span class="s1">max_queue: Optional[int] = </span><span class="s5">2 </span><span class="s1">** </span><span class="s5">5</span><span class="s2">,</span>
+        <span class="s1">read_limit: int = </span><span class="s5">2 </span><span class="s1">** </span><span class="s5">16</span><span class="s2">,</span>
+        <span class="s1">write_limit: int = </span><span class="s5">2 </span><span class="s1">** </span><span class="s5">16</span><span class="s2">,</span>
+        <span class="s1">loop: Optional[asyncio.AbstractEventLoop] = </span><span class="s2">None,</span>
+        <span class="s1">compression: Optional[str] = </span><span class="s3">&quot;deflate&quot;</span><span class="s2">,</span>
+        <span class="s1">origin: Optional[Origin] = </span><span class="s2">None,</span>
+        <span class="s1">extensions: Optional[Sequence[ClientExtensionFactory]] = </span><span class="s2">None,</span>
+        <span class="s1">subprotocols: Optional[Sequence[Subprotocol]] = </span><span class="s2">None,</span>
+        <span class="s1">extra_headers: Optional[HeadersLike] = </span><span class="s2">None,</span>
+        <span class="s1">**kwargs: Any</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s4"># Backwards compatibility: close_timeout used to be called timeout.</span>
+        <span class="s1">timeout: Optional[float] = kwargs.pop(</span><span class="s3">&quot;timeout&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">timeout </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">timeout = </span><span class="s5">10</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">warnings.warn(</span><span class="s3">&quot;rename timeout to close_timeout&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning)</span>
+        <span class="s4"># If both are specified, timeout is ignored.</span>
+        <span class="s2">if </span><span class="s1">close_timeout </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">close_timeout = timeout</span>
+
+        <span class="s4"># Backwards compatibility: create_protocol used to be called klass.</span>
+        <span class="s1">klass: Optional[Type[WebSocketClientProtocol]] = kwargs.pop(</span><span class="s3">&quot;klass&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s2">if </span><span class="s1">klass </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">klass = WebSocketClientProtocol</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">warnings.warn(</span><span class="s3">&quot;rename klass to create_protocol&quot;</span><span class="s2">, </span><span class="s1">DeprecationWarning)</span>
+        <span class="s4"># If both are specified, klass is ignored.</span>
+        <span class="s2">if </span><span class="s1">create_protocol </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">create_protocol = klass</span>
+
+        <span class="s4"># Backwards compatibility: recv() used to return None on closed connections</span>
+        <span class="s1">legacy_recv: bool = kwargs.pop(</span><span class="s3">&quot;legacy_recv&quot;</span><span class="s2">, False</span><span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">loop </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s1">loop = asyncio.get_event_loop()</span>
+
+        <span class="s1">wsuri = parse_uri(uri)</span>
+        <span class="s2">if </span><span class="s1">wsuri.secure:</span>
+            <span class="s1">kwargs.setdefault(</span><span class="s3">&quot;ssl&quot;</span><span class="s2">, True</span><span class="s1">)</span>
+        <span class="s2">elif </span><span class="s1">kwargs.get(</span><span class="s3">&quot;ssl&quot;</span><span class="s1">) </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span>
+                <span class="s3">&quot;connect() received a ssl argument for a ws:// URI, &quot;</span>
+                <span class="s3">&quot;use a wss:// URI to enable TLS&quot;</span>
+            <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">compression == </span><span class="s3">&quot;deflate&quot;</span><span class="s1">:</span>
+            <span class="s1">extensions = enable_client_permessage_deflate(extensions)</span>
+        <span class="s2">elif </span><span class="s1">compression </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError(</span><span class="s3">f&quot;unsupported compression: </span><span class="s2">{</span><span class="s1">compression</span><span class="s2">}</span><span class="s3">&quot;</span><span class="s1">)</span>
+
+        <span class="s1">factory = functools.partial(</span>
+            <span class="s1">create_protocol</span><span class="s2">,</span>
+            <span class="s1">ping_interval=ping_interval</span><span class="s2">,</span>
+            <span class="s1">ping_timeout=ping_timeout</span><span class="s2">,</span>
+            <span class="s1">close_timeout=close_timeout</span><span class="s2">,</span>
+            <span class="s1">max_size=max_size</span><span class="s2">,</span>
+            <span class="s1">max_queue=max_queue</span><span class="s2">,</span>
+            <span class="s1">read_limit=read_limit</span><span class="s2">,</span>
+            <span class="s1">write_limit=write_limit</span><span class="s2">,</span>
+            <span class="s1">loop=loop</span><span class="s2">,</span>
+            <span class="s1">host=wsuri.host</span><span class="s2">,</span>
+            <span class="s1">port=wsuri.port</span><span class="s2">,</span>
+            <span class="s1">secure=wsuri.secure</span><span class="s2">,</span>
+            <span class="s1">legacy_recv=legacy_recv</span><span class="s2">,</span>
+            <span class="s1">origin=origin</span><span class="s2">,</span>
+            <span class="s1">extensions=extensions</span><span class="s2">,</span>
+            <span class="s1">subprotocols=subprotocols</span><span class="s2">,</span>
+            <span class="s1">extra_headers=extra_headers</span><span class="s2">,</span>
+        <span class="s1">)</span>
+
+        <span class="s2">if </span><span class="s1">kwargs.pop(</span><span class="s3">&quot;unix&quot;</span><span class="s2">, False</span><span class="s1">):</span>
+            <span class="s1">path: Optional[str] = kwargs.pop(</span><span class="s3">&quot;path&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+            <span class="s1">create_connection = functools.partial(</span>
+                <span class="s1">loop.create_unix_connection</span><span class="s2">, </span><span class="s1">factory</span><span class="s2">, </span><span class="s1">path</span><span class="s2">, </span><span class="s1">**kwargs</span>
+            <span class="s1">)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">host: Optional[str]</span>
+            <span class="s1">port: Optional[int]</span>
+            <span class="s2">if </span><span class="s1">kwargs.get(</span><span class="s3">&quot;sock&quot;</span><span class="s1">) </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s1">host</span><span class="s2">, </span><span class="s1">port = wsuri.host</span><span class="s2">, </span><span class="s1">wsuri.port</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s4"># If sock is given, host and port shouldn't be specified.</span>
+                <span class="s1">host</span><span class="s2">, </span><span class="s1">port = </span><span class="s2">None, None</span>
+            <span class="s4"># If host and port are given, override values from the URI.</span>
+            <span class="s1">host = kwargs.pop(</span><span class="s3">&quot;host&quot;</span><span class="s2">, </span><span class="s1">host)</span>
+            <span class="s1">port = kwargs.pop(</span><span class="s3">&quot;port&quot;</span><span class="s2">, </span><span class="s1">port)</span>
+            <span class="s1">create_connection = functools.partial(</span>
+                <span class="s1">loop.create_connection</span><span class="s2">, </span><span class="s1">factory</span><span class="s2">, </span><span class="s1">host</span><span class="s2">, </span><span class="s1">port</span><span class="s2">, </span><span class="s1">**kwargs</span>
+            <span class="s1">)</span>
+
+        <span class="s4"># This is a coroutine function.</span>
+        <span class="s1">self._create_connection = create_connection</span>
+        <span class="s1">self._wsuri = wsuri</span>
+
+    <span class="s2">def </span><span class="s1">handle_redirect(self</span><span class="s2">, </span><span class="s1">uri: str) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s4"># Update the state of this instance to connect to a new URI.</span>
+        <span class="s1">old_wsuri = self._wsuri</span>
+        <span class="s1">new_wsuri = parse_uri(uri)</span>
+
+        <span class="s4"># Forbid TLS downgrade.</span>
+        <span class="s2">if </span><span class="s1">old_wsuri.secure </span><span class="s2">and not </span><span class="s1">new_wsuri.secure:</span>
+            <span class="s2">raise </span><span class="s1">SecurityError(</span><span class="s3">&quot;redirect from WSS to WS&quot;</span><span class="s1">)</span>
+
+        <span class="s1">same_origin = (</span>
+            <span class="s1">old_wsuri.host == new_wsuri.host </span><span class="s2">and </span><span class="s1">old_wsuri.port == new_wsuri.port</span>
+        <span class="s1">)</span>
+
+        <span class="s4"># Rewrite the host and port arguments for cross-origin redirects.</span>
+        <span class="s4"># This preserves connection overrides with the host and port</span>
+        <span class="s4"># arguments if the redirect points to the same host and port.</span>
+        <span class="s2">if not </span><span class="s1">same_origin:</span>
+            <span class="s4"># Replace the host and port argument passed to the protocol factory.</span>
+            <span class="s1">factory = self._create_connection.args[</span><span class="s5">0</span><span class="s1">]</span>
+            <span class="s1">factory = functools.partial(</span>
+                <span class="s1">factory.func</span><span class="s2">,</span>
+                <span class="s1">*factory.args</span><span class="s2">,</span>
+                <span class="s1">**dict(factory.keywords</span><span class="s2">, </span><span class="s1">host=new_wsuri.host</span><span class="s2">, </span><span class="s1">port=new_wsuri.port)</span><span class="s2">,</span>
+            <span class="s1">)</span>
+            <span class="s4"># Replace the host and port argument passed to create_connection.</span>
+            <span class="s1">self._create_connection = functools.partial(</span>
+                <span class="s1">self._create_connection.func</span><span class="s2">,</span>
+                <span class="s1">*(factory</span><span class="s2">, </span><span class="s1">new_wsuri.host</span><span class="s2">, </span><span class="s1">new_wsuri.port)</span><span class="s2">,</span>
+                <span class="s1">**self._create_connection.keywords</span><span class="s2">,</span>
+            <span class="s1">)</span>
+
+        <span class="s4"># Set the new WebSocket URI. This suffices for same-origin redirects.</span>
+        <span class="s1">self._wsuri = new_wsuri</span>
+
+    <span class="s4"># async with connect(...)</span>
+
+    <span class="s2">async def </span><span class="s1">__aenter__(self) -&gt; WebSocketClientProtocol:</span>
+        <span class="s2">return await </span><span class="s1">self</span>
+
+    <span class="s2">async def </span><span class="s1">__aexit__(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">exc_type: Optional[Type[BaseException]]</span><span class="s2">,</span>
+        <span class="s1">exc_value: Optional[BaseException]</span><span class="s2">,</span>
+        <span class="s1">traceback: Optional[TracebackType]</span><span class="s2">,</span>
+    <span class="s1">) -&gt; </span><span class="s2">None</span><span class="s1">:</span>
+        <span class="s2">await </span><span class="s1">self.protocol.close()</span>
+
+    <span class="s4"># await connect(...)</span>
+
+    <span class="s2">def </span><span class="s1">__await__(self) -&gt; Generator[Any</span><span class="s2">, None, </span><span class="s1">WebSocketClientProtocol]:</span>
+        <span class="s4"># Create a suitable iterator by calling __await__ on a coroutine.</span>
+        <span class="s2">return </span><span class="s1">self.__await_impl__().__await__()</span>
+
+    <span class="s2">async def </span><span class="s1">__await_impl__(self) -&gt; WebSocketClientProtocol:</span>
+        <span class="s2">for </span><span class="s1">redirects </span><span class="s2">in </span><span class="s1">range(self.MAX_REDIRECTS_ALLOWED):</span>
+            <span class="s1">transport</span><span class="s2">, </span><span class="s1">protocol = </span><span class="s2">await </span><span class="s1">self._create_connection()</span>
+            <span class="s4"># https://github.com/python/typeshed/pull/2756</span>
+            <span class="s1">transport = cast(asyncio.Transport</span><span class="s2">, </span><span class="s1">transport)</span>
+            <span class="s1">protocol = cast(WebSocketClientProtocol</span><span class="s2">, </span><span class="s1">protocol)</span>
+
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s2">await </span><span class="s1">protocol.handshake(</span>
+                        <span class="s1">self._wsuri</span><span class="s2">,</span>
+                        <span class="s1">origin=protocol.origin</span><span class="s2">,</span>
+                        <span class="s1">available_extensions=protocol.available_extensions</span><span class="s2">,</span>
+                        <span class="s1">available_subprotocols=protocol.available_subprotocols</span><span class="s2">,</span>
+                        <span class="s1">extra_headers=protocol.extra_headers</span><span class="s2">,</span>
+                    <span class="s1">)</span>
+                <span class="s2">except </span><span class="s1">Exception:</span>
+                    <span class="s1">protocol.fail_connection()</span>
+                    <span class="s2">await </span><span class="s1">protocol.wait_closed()</span>
+                    <span class="s2">raise</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">self.protocol = protocol</span>
+                    <span class="s2">return </span><span class="s1">protocol</span>
+            <span class="s2">except </span><span class="s1">RedirectHandshake </span><span class="s2">as </span><span class="s1">exc:</span>
+                <span class="s1">self.handle_redirect(exc.uri)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">raise </span><span class="s1">SecurityError(</span><span class="s3">&quot;too many redirects&quot;</span><span class="s1">)</span>
+
+    <span class="s4"># yield from connect(...)</span>
+
+    <span class="s1">__iter__ = __await__</span>
+
+
+<span class="s1">connect = Connect</span>
+
+
+<span class="s2">def </span><span class="s1">unix_connect(</span>
+    <span class="s1">path: Optional[str]</span><span class="s2">, </span><span class="s1">uri: str = </span><span class="s3">&quot;ws://localhost/&quot;</span><span class="s2">, </span><span class="s1">**kwargs: Any</span>
+<span class="s1">) -&gt; Connect:</span>
+    <span class="s0">&quot;&quot;&quot; 
+    Similar to :func:`connect`, but for connecting to a Unix socket. 
+ 
+    This function calls the event loop's 
+    :meth:`~asyncio.loop.create_unix_connection` method. 
+ 
+    It is only available on Unix. 
+ 
+    It's mainly useful for debugging servers listening on Unix sockets. 
+ 
+    :param path: file system path to the Unix socket 
+    :param uri: WebSocket URI 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">connect(uri=uri</span><span class="s2">, </span><span class="s1">path=path</span><span class="s2">, </span><span class="s1">unix=</span><span class="s2">True, </span><span class="s1">**kwargs)</span>
+</pre>
+</body>
+</html>

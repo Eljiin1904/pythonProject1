@@ -1,0 +1,140 @@
+<html>
+<head>
+<title>target.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #808080;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #cc7832;}
+.s4 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+target.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#!/usr/bin/env python3</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+
+<span class="s2">&quot;&quot;&quot;Target module.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">asyncio</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">Callable</span><span class="s3">, </span><span class="s1">Coroutine</span><span class="s3">, </span><span class="s1">Dict</span><span class="s3">, </span><span class="s1">List</span><span class="s3">, </span><span class="s1">Optional</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">TYPE_CHECKING</span>
+
+<span class="s3">from </span><span class="s1">pyppeteer.connection </span><span class="s3">import </span><span class="s1">CDPSession</span>
+<span class="s3">from </span><span class="s1">pyppeteer.page </span><span class="s3">import </span><span class="s1">Page</span>
+
+<span class="s3">if </span><span class="s1">TYPE_CHECKING:</span>
+    <span class="s3">from </span><span class="s1">pyppeteer.browser </span><span class="s3">import </span><span class="s1">Browser</span><span class="s3">, </span><span class="s1">BrowserContext  </span><span class="s0"># noqa: F401</span>
+
+
+<span class="s3">class </span><span class="s1">Target(object):</span>
+    <span class="s2">&quot;&quot;&quot;Browser's target class.&quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__(self</span><span class="s3">, </span><span class="s1">targetInfo: Dict</span><span class="s3">, </span><span class="s1">browserContext: </span><span class="s4">'BrowserContext'</span><span class="s3">,</span>
+                 <span class="s1">sessionFactory: Callable[[]</span><span class="s3">, </span><span class="s1">Coroutine[Any</span><span class="s3">, </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">CDPSession]]</span><span class="s3">,</span>
+                 <span class="s1">ignoreHTTPSErrors: bool</span><span class="s3">, </span><span class="s1">defaultViewport: Optional[Dict]</span><span class="s3">,</span>
+                 <span class="s1">screenshotTaskQueue: List</span><span class="s3">, </span><span class="s1">loop: asyncio.AbstractEventLoop</span>
+                 <span class="s1">) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._targetInfo = targetInfo</span>
+        <span class="s1">self._browserContext = browserContext</span>
+        <span class="s1">self._targetId = targetInfo.get(</span><span class="s4">'targetId'</span><span class="s3">, </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s1">self._sessionFactory = sessionFactory</span>
+        <span class="s1">self._ignoreHTTPSErrors = ignoreHTTPSErrors</span>
+        <span class="s1">self._defaultViewport = defaultViewport</span>
+        <span class="s1">self._screenshotTaskQueue = screenshotTaskQueue</span>
+        <span class="s1">self._loop = loop</span>
+        <span class="s1">self._page: Optional[Page] = </span><span class="s3">None</span>
+
+        <span class="s1">self._initializedPromise = self._loop.create_future()</span>
+        <span class="s1">self._isClosedPromise = self._loop.create_future()</span>
+        <span class="s1">self._isInitialized = (self._targetInfo[</span><span class="s4">'type'</span><span class="s1">] != </span><span class="s4">'page'</span>
+                               <span class="s3">or </span><span class="s1">self._targetInfo[</span><span class="s4">'url'</span><span class="s1">] != </span><span class="s4">''</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">self._isInitialized:</span>
+            <span class="s1">self._initializedCallback(</span><span class="s3">True</span><span class="s1">)</span>
+
+    <span class="s3">def </span><span class="s1">_initializedCallback(self</span><span class="s3">, </span><span class="s1">bl: bool) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s0"># TODO: this may cause error on page close</span>
+        <span class="s3">if </span><span class="s1">self._initializedPromise.done():</span>
+            <span class="s1">self._initializedPromise = self._loop.create_future()</span>
+        <span class="s1">self._initializedPromise.set_result(bl)</span>
+
+    <span class="s3">def </span><span class="s1">_closedCallback(self) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._isClosedPromise.set_result(</span><span class="s3">None</span><span class="s1">)</span>
+
+    <span class="s3">async def </span><span class="s1">createCDPSession(self) -&gt; CDPSession:</span>
+        <span class="s2">&quot;&quot;&quot;Create a Chrome Devtools Protocol session attached to the target.&quot;&quot;&quot;</span>
+        <span class="s3">return await </span><span class="s1">self._sessionFactory()</span>
+
+    <span class="s3">async def </span><span class="s1">page(self) -&gt; Optional[Page]:</span>
+        <span class="s2">&quot;&quot;&quot;Get page of this target. 
+ 
+        If the target is not of type &quot;page&quot; or &quot;background_page&quot;, return 
+        ``None``. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">(self._targetInfo[</span><span class="s4">'type'</span><span class="s1">] </span><span class="s3">in </span><span class="s1">[</span><span class="s4">'page'</span><span class="s3">, </span><span class="s4">'background_page'</span><span class="s1">] </span><span class="s3">and</span>
+                <span class="s1">self._page </span><span class="s3">is None</span><span class="s1">):</span>
+            <span class="s1">client = </span><span class="s3">await </span><span class="s1">self._sessionFactory()</span>
+            <span class="s1">new_page = </span><span class="s3">await </span><span class="s1">Page.create(</span>
+                <span class="s1">client</span><span class="s3">, </span><span class="s1">self</span><span class="s3">,</span>
+                <span class="s1">self._ignoreHTTPSErrors</span><span class="s3">,</span>
+                <span class="s1">self._defaultViewport</span><span class="s3">,</span>
+                <span class="s1">self._screenshotTaskQueue</span><span class="s3">,</span>
+            <span class="s1">)</span>
+            <span class="s1">self._page = new_page</span>
+            <span class="s3">return </span><span class="s1">new_page</span>
+        <span class="s3">return </span><span class="s1">self._page</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">url(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get url of this target.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._targetInfo[</span><span class="s4">'url'</span><span class="s1">]</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">type(self) -&gt; str:</span>
+        <span class="s2">&quot;&quot;&quot;Get type of this target. 
+ 
+        Type can be ``'page'``, ``'background_page'``, ``'service_worker'``, 
+        ``'browser'``, or ``'other'``. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">_type = self._targetInfo[</span><span class="s4">'type'</span><span class="s1">]</span>
+        <span class="s3">if </span><span class="s1">_type </span><span class="s3">in </span><span class="s1">[</span><span class="s4">'page'</span><span class="s3">, </span><span class="s4">'background_page'</span><span class="s3">, </span><span class="s4">'service_worker'</span><span class="s3">, </span><span class="s4">'browser'</span><span class="s1">]:</span>
+            <span class="s3">return </span><span class="s1">_type</span>
+        <span class="s3">return </span><span class="s4">'other'</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">browser(self) -&gt; </span><span class="s4">'Browser'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Get the browser the target belongs to.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._browserContext.browser</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">browserContext(self) -&gt; </span><span class="s4">'BrowserContext'</span><span class="s1">:</span>
+        <span class="s2">&quot;&quot;&quot;Return the browser context the target belongs to.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self._browserContext</span>
+
+    <span class="s1">@property</span>
+    <span class="s3">def </span><span class="s1">opener(self) -&gt; Optional[</span><span class="s4">'Target'</span><span class="s1">]:</span>
+        <span class="s2">&quot;&quot;&quot;Get the target that opened this target. 
+ 
+        Top-level targets return ``None``. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">openerId = self._targetInfo.get(</span><span class="s4">'openerId'</span><span class="s1">)</span>
+        <span class="s3">if </span><span class="s1">openerId </span><span class="s3">is None</span><span class="s1">:</span>
+            <span class="s3">return None</span>
+        <span class="s3">return </span><span class="s1">self.browser._targets.get(openerId)</span>
+
+    <span class="s3">def </span><span class="s1">_targetInfoChanged(self</span><span class="s3">, </span><span class="s1">targetInfo: Dict) -&gt; </span><span class="s3">None</span><span class="s1">:</span>
+        <span class="s1">self._targetInfo = targetInfo</span>
+
+        <span class="s3">if not </span><span class="s1">self._isInitialized </span><span class="s3">and </span><span class="s1">(self._targetInfo[</span><span class="s4">'type'</span><span class="s1">] != </span><span class="s4">'page' </span><span class="s3">or</span>
+                                        <span class="s1">self._targetInfo[</span><span class="s4">'url'</span><span class="s1">] != </span><span class="s4">''</span><span class="s1">):</span>
+            <span class="s1">self._isInitialized = </span><span class="s3">True</span>
+            <span class="s1">self._initializedCallback(</span><span class="s3">True</span><span class="s1">)</span>
+            <span class="s3">return</span>
+</pre>
+</body>
+</html>

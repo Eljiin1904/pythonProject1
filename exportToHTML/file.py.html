@@ -1,0 +1,222 @@
+<html>
+<head>
+<title>file.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #629755; font-style: italic;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+file.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">datetime</span>
+<span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">shutil</span>
+<span class="s0">import </span><span class="s1">tempfile</span>
+
+<span class="s0">from </span><span class="s1">django.conf </span><span class="s0">import </span><span class="s1">settings</span>
+<span class="s0">from </span><span class="s1">django.contrib.sessions.backends.base </span><span class="s0">import </span><span class="s1">(</span>
+    <span class="s1">VALID_KEY_CHARS</span><span class="s0">, </span><span class="s1">CreateError</span><span class="s0">, </span><span class="s1">SessionBase</span><span class="s0">, </span><span class="s1">UpdateError</span><span class="s0">,</span>
+<span class="s1">)</span>
+<span class="s0">from </span><span class="s1">django.contrib.sessions.exceptions </span><span class="s0">import </span><span class="s1">InvalidSessionKey</span>
+<span class="s0">from </span><span class="s1">django.core.exceptions </span><span class="s0">import </span><span class="s1">ImproperlyConfigured</span><span class="s0">, </span><span class="s1">SuspiciousOperation</span>
+<span class="s0">from </span><span class="s1">django.utils </span><span class="s0">import </span><span class="s1">timezone</span>
+
+
+<span class="s0">class </span><span class="s1">SessionStore(SessionBase):</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Implement a file based session store. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">session_key=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.storage_path = self._get_storage_path()</span>
+        <span class="s1">self.file_prefix = settings.SESSION_COOKIE_NAME</span>
+        <span class="s1">super().__init__(session_key)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">_get_storage_path(cls):</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">cls._storage_path</span>
+        <span class="s0">except </span><span class="s1">AttributeError:</span>
+            <span class="s1">storage_path = getattr(settings</span><span class="s0">, </span><span class="s3">'SESSION_FILE_PATH'</span><span class="s0">, None</span><span class="s1">) </span><span class="s0">or </span><span class="s1">tempfile.gettempdir()</span>
+            <span class="s4"># Make sure the storage path is valid.</span>
+            <span class="s0">if not </span><span class="s1">os.path.isdir(storage_path):</span>
+                <span class="s0">raise </span><span class="s1">ImproperlyConfigured(</span>
+                    <span class="s3">&quot;The session storage path %r doesn't exist. Please set your&quot;</span>
+                    <span class="s3">&quot; SESSION_FILE_PATH setting to an existing directory in which&quot;</span>
+                    <span class="s3">&quot; Django can store session data.&quot; </span><span class="s1">% storage_path)</span>
+
+            <span class="s1">cls._storage_path = storage_path</span>
+            <span class="s0">return </span><span class="s1">storage_path</span>
+
+    <span class="s0">def </span><span class="s1">_key_to_file(self</span><span class="s0">, </span><span class="s1">session_key=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Get the file associated with this session key. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">session_key </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">session_key = self._get_or_create_session_key()</span>
+
+        <span class="s4"># Make sure we're not vulnerable to directory traversal. Session keys</span>
+        <span class="s4"># should always be md5s, so they should never contain directory</span>
+        <span class="s4"># components.</span>
+        <span class="s0">if not </span><span class="s1">set(session_key).issubset(VALID_KEY_CHARS):</span>
+            <span class="s0">raise </span><span class="s1">InvalidSessionKey(</span>
+                <span class="s3">&quot;Invalid characters in session key&quot;</span><span class="s1">)</span>
+
+        <span class="s0">return </span><span class="s1">os.path.join(self.storage_path</span><span class="s0">, </span><span class="s1">self.file_prefix + session_key)</span>
+
+    <span class="s0">def </span><span class="s1">_last_modification(self):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the modification time of the file storing the session's content. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">modification = os.stat(self._key_to_file()).st_mtime</span>
+        <span class="s1">tz = timezone.utc </span><span class="s0">if </span><span class="s1">settings.USE_TZ </span><span class="s0">else None</span>
+        <span class="s0">return </span><span class="s1">datetime.datetime.fromtimestamp(modification</span><span class="s0">, </span><span class="s1">tz=tz)</span>
+
+    <span class="s0">def </span><span class="s1">_expiry_date(self</span><span class="s0">, </span><span class="s1">session_data):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Return the expiry time of the file storing the session's content. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">session_data.get(</span><span class="s3">'_session_expiry'</span><span class="s1">) </span><span class="s0">or </span><span class="s1">(</span>
+            <span class="s1">self._last_modification() + datetime.timedelta(seconds=self.get_session_cookie_age())</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">load(self):</span>
+        <span class="s1">session_data = {}</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s0">with </span><span class="s1">open(self._key_to_file()</span><span class="s0">, </span><span class="s1">encoding=</span><span class="s3">'ascii'</span><span class="s1">) </span><span class="s0">as </span><span class="s1">session_file:</span>
+                <span class="s1">file_data = session_file.read()</span>
+            <span class="s4"># Don't fail if there is no data in the session file.</span>
+            <span class="s4"># We may have opened the empty placeholder file.</span>
+            <span class="s0">if </span><span class="s1">file_data:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">session_data = self.decode(file_data)</span>
+                <span class="s0">except </span><span class="s1">(EOFError</span><span class="s0">, </span><span class="s1">SuspiciousOperation) </span><span class="s0">as </span><span class="s1">e:</span>
+                    <span class="s0">if </span><span class="s1">isinstance(e</span><span class="s0">, </span><span class="s1">SuspiciousOperation):</span>
+                        <span class="s1">logger = logging.getLogger(</span><span class="s3">'django.security.%s' </span><span class="s1">% e.__class__.__name__)</span>
+                        <span class="s1">logger.warning(str(e))</span>
+                    <span class="s1">self.create()</span>
+
+                <span class="s4"># Remove expired sessions.</span>
+                <span class="s1">expiry_age = self.get_expiry_age(expiry=self._expiry_date(session_data))</span>
+                <span class="s0">if </span><span class="s1">expiry_age &lt;= </span><span class="s5">0</span><span class="s1">:</span>
+                    <span class="s1">session_data = {}</span>
+                    <span class="s1">self.delete()</span>
+                    <span class="s1">self.create()</span>
+        <span class="s0">except </span><span class="s1">(OSError</span><span class="s0">, </span><span class="s1">SuspiciousOperation):</span>
+            <span class="s1">self._session_key = </span><span class="s0">None</span>
+        <span class="s0">return </span><span class="s1">session_data</span>
+
+    <span class="s0">def </span><span class="s1">create(self):</span>
+        <span class="s0">while True</span><span class="s1">:</span>
+            <span class="s1">self._session_key = self._get_new_session_key()</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s1">self.save(must_create=</span><span class="s0">True</span><span class="s1">)</span>
+            <span class="s0">except </span><span class="s1">CreateError:</span>
+                <span class="s0">continue</span>
+            <span class="s1">self.modified = </span><span class="s0">True</span>
+            <span class="s0">return</span>
+
+    <span class="s0">def </span><span class="s1">save(self</span><span class="s0">, </span><span class="s1">must_create=</span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">self.session_key </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s1">self.create()</span>
+        <span class="s4"># Get the session data now, before we start messing</span>
+        <span class="s4"># with the file it is stored within.</span>
+        <span class="s1">session_data = self._get_session(no_load=must_create)</span>
+
+        <span class="s1">session_file_name = self._key_to_file()</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s4"># Make sure the file exists.  If it does not already exist, an</span>
+            <span class="s4"># empty placeholder file is created.</span>
+            <span class="s1">flags = os.O_WRONLY | getattr(os</span><span class="s0">, </span><span class="s3">'O_BINARY'</span><span class="s0">, </span><span class="s5">0</span><span class="s1">)</span>
+            <span class="s0">if </span><span class="s1">must_create:</span>
+                <span class="s1">flags |= os.O_EXCL | os.O_CREAT</span>
+            <span class="s1">fd = os.open(session_file_name</span><span class="s0">, </span><span class="s1">flags)</span>
+            <span class="s1">os.close(fd)</span>
+        <span class="s0">except </span><span class="s1">FileNotFoundError:</span>
+            <span class="s0">if not </span><span class="s1">must_create:</span>
+                <span class="s0">raise </span><span class="s1">UpdateError</span>
+        <span class="s0">except </span><span class="s1">FileExistsError:</span>
+            <span class="s0">if </span><span class="s1">must_create:</span>
+                <span class="s0">raise </span><span class="s1">CreateError</span>
+
+        <span class="s4"># Write the session file without interfering with other threads</span>
+        <span class="s4"># or processes.  By writing to an atomically generated temporary</span>
+        <span class="s4"># file and then using the atomic os.rename() to make the complete</span>
+        <span class="s4"># file visible, we avoid having to lock the session file, while</span>
+        <span class="s4"># still maintaining its integrity.</span>
+        <span class="s4">#</span>
+        <span class="s4"># Note: Locking the session file was explored, but rejected in part</span>
+        <span class="s4"># because in order to be atomic and cross-platform, it required a</span>
+        <span class="s4"># long-lived lock file for each session, doubling the number of</span>
+        <span class="s4"># files in the session storage directory at any given time.  This</span>
+        <span class="s4"># rename solution is cleaner and avoids any additional overhead</span>
+        <span class="s4"># when reading the session data, which is the more common case</span>
+        <span class="s4"># unless SESSION_SAVE_EVERY_REQUEST = True.</span>
+        <span class="s4">#</span>
+        <span class="s4"># See ticket #8616.</span>
+        <span class="s1">dir</span><span class="s0">, </span><span class="s1">prefix = os.path.split(session_file_name)</span>
+
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">output_file_fd</span><span class="s0">, </span><span class="s1">output_file_name = tempfile.mkstemp(dir=dir</span><span class="s0">, </span><span class="s1">prefix=prefix + </span><span class="s3">'_out_'</span><span class="s1">)</span>
+            <span class="s1">renamed = </span><span class="s0">False</span>
+            <span class="s0">try</span><span class="s1">:</span>
+                <span class="s0">try</span><span class="s1">:</span>
+                    <span class="s1">os.write(output_file_fd</span><span class="s0">, </span><span class="s1">self.encode(session_data).encode())</span>
+                <span class="s0">finally</span><span class="s1">:</span>
+                    <span class="s1">os.close(output_file_fd)</span>
+
+                <span class="s4"># This will atomically rename the file (os.rename) if the OS</span>
+                <span class="s4"># supports it. Otherwise this will result in a shutil.copy2</span>
+                <span class="s4"># and os.unlink (for example on Windows). See #9084.</span>
+                <span class="s1">shutil.move(output_file_name</span><span class="s0">, </span><span class="s1">session_file_name)</span>
+                <span class="s1">renamed = </span><span class="s0">True</span>
+            <span class="s0">finally</span><span class="s1">:</span>
+                <span class="s0">if not </span><span class="s1">renamed:</span>
+                    <span class="s1">os.unlink(output_file_name)</span>
+        <span class="s0">except </span><span class="s1">(EOFError</span><span class="s0">, </span><span class="s1">OSError):</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">exists(self</span><span class="s0">, </span><span class="s1">session_key):</span>
+        <span class="s0">return </span><span class="s1">os.path.exists(self._key_to_file(session_key))</span>
+
+    <span class="s0">def </span><span class="s1">delete(self</span><span class="s0">, </span><span class="s1">session_key=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s0">if </span><span class="s1">session_key </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s0">if </span><span class="s1">self.session_key </span><span class="s0">is None</span><span class="s1">:</span>
+                <span class="s0">return</span>
+            <span class="s1">session_key = self.session_key</span>
+        <span class="s0">try</span><span class="s1">:</span>
+            <span class="s1">os.unlink(self._key_to_file(session_key))</span>
+        <span class="s0">except </span><span class="s1">OSError:</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">clean(self):</span>
+        <span class="s0">pass</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s0">def </span><span class="s1">clear_expired(cls):</span>
+        <span class="s1">storage_path = cls._get_storage_path()</span>
+        <span class="s1">file_prefix = settings.SESSION_COOKIE_NAME</span>
+
+        <span class="s0">for </span><span class="s1">session_file </span><span class="s0">in </span><span class="s1">os.listdir(storage_path):</span>
+            <span class="s0">if not </span><span class="s1">session_file.startswith(file_prefix):</span>
+                <span class="s0">continue</span>
+            <span class="s1">session_key = session_file[len(file_prefix):]</span>
+            <span class="s1">session = cls(session_key)</span>
+            <span class="s4"># When an expired session is loaded, its file is removed, and a</span>
+            <span class="s4"># new file is immediately created. Prevent this by disabling</span>
+            <span class="s4"># the create() method.</span>
+            <span class="s1">session.create = </span><span class="s0">lambda</span><span class="s1">: </span><span class="s0">None</span>
+            <span class="s1">session.load()</span>
+</pre>
+</body>
+</html>

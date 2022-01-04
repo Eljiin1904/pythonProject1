@@ -1,0 +1,287 @@
+<html>
+<head>
+<title>where.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #808080;}
+.s4 { color: #6a8759;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+where.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Code to manage the creation and SQL rendering of 'where' constraints. 
+&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">django.core.exceptions </span><span class="s2">import </span><span class="s1">EmptyResultSet</span>
+<span class="s2">from </span><span class="s1">django.utils </span><span class="s2">import </span><span class="s1">tree</span>
+<span class="s2">from </span><span class="s1">django.utils.functional </span><span class="s2">import </span><span class="s1">cached_property</span>
+
+<span class="s3"># Connection types</span>
+<span class="s1">AND = </span><span class="s4">'AND'</span>
+<span class="s1">OR = </span><span class="s4">'OR'</span>
+
+
+<span class="s2">class </span><span class="s1">WhereNode(tree.Node):</span>
+    <span class="s0">&quot;&quot;&quot; 
+    An SQL WHERE clause. 
+ 
+    The class is tied to the Query class that created it (in order to create 
+    the correct SQL). 
+ 
+    A child is usually an expression producing boolean values. Most likely the 
+    expression is a Lookup instance. 
+ 
+    However, a child could also be any class with as_sql() and either 
+    relabeled_clone() method or relabel_aliases() and clone() methods and 
+    contains_aggregate attribute. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">default = AND</span>
+    <span class="s1">resolved = </span><span class="s2">False</span>
+    <span class="s1">conditional = </span><span class="s2">True</span>
+
+    <span class="s2">def </span><span class="s1">split_having(self</span><span class="s2">, </span><span class="s1">negated=</span><span class="s2">False</span><span class="s1">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return two possibly None nodes: one for those parts of self that 
+        should be included in the WHERE clause and one for those parts of 
+        self that must be included in the HAVING clause. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self.contains_aggregate:</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s2">, None</span>
+        <span class="s1">in_negated = negated ^ self.negated</span>
+        <span class="s3"># If the effective connector is OR and this node contains an aggregate,</span>
+        <span class="s3"># then we need to push the whole branch to HAVING clause.</span>
+        <span class="s1">may_need_split = (</span>
+            <span class="s1">(in_negated </span><span class="s2">and </span><span class="s1">self.connector == AND) </span><span class="s2">or</span>
+            <span class="s1">(</span><span class="s2">not </span><span class="s1">in_negated </span><span class="s2">and </span><span class="s1">self.connector == OR))</span>
+        <span class="s2">if </span><span class="s1">may_need_split </span><span class="s2">and </span><span class="s1">self.contains_aggregate:</span>
+            <span class="s2">return None, </span><span class="s1">self</span>
+        <span class="s1">where_parts = []</span>
+        <span class="s1">having_parts = []</span>
+        <span class="s2">for </span><span class="s1">c </span><span class="s2">in </span><span class="s1">self.children:</span>
+            <span class="s2">if </span><span class="s1">hasattr(c</span><span class="s2">, </span><span class="s4">'split_having'</span><span class="s1">):</span>
+                <span class="s1">where_part</span><span class="s2">, </span><span class="s1">having_part = c.split_having(in_negated)</span>
+                <span class="s2">if </span><span class="s1">where_part </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s1">where_parts.append(where_part)</span>
+                <span class="s2">if </span><span class="s1">having_part </span><span class="s2">is not None</span><span class="s1">:</span>
+                    <span class="s1">having_parts.append(having_part)</span>
+            <span class="s2">elif </span><span class="s1">c.contains_aggregate:</span>
+                <span class="s1">having_parts.append(c)</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">where_parts.append(c)</span>
+        <span class="s1">having_node = self.__class__(having_parts</span><span class="s2">, </span><span class="s1">self.connector</span><span class="s2">, </span><span class="s1">self.negated) </span><span class="s2">if </span><span class="s1">having_parts </span><span class="s2">else None</span>
+        <span class="s1">where_node = self.__class__(where_parts</span><span class="s2">, </span><span class="s1">self.connector</span><span class="s2">, </span><span class="s1">self.negated) </span><span class="s2">if </span><span class="s1">where_parts </span><span class="s2">else None</span>
+        <span class="s2">return </span><span class="s1">where_node</span><span class="s2">, </span><span class="s1">having_node</span>
+
+    <span class="s2">def </span><span class="s1">as_sql(self</span><span class="s2">, </span><span class="s1">compiler</span><span class="s2">, </span><span class="s1">connection):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Return the SQL version of the where clause and the value to be 
+        substituted in. Return '', [] if this node matches everything, 
+        None, [] if this node is empty, and raise EmptyResultSet if this 
+        node can't match anything. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">result = []</span>
+        <span class="s1">result_params = []</span>
+        <span class="s2">if </span><span class="s1">self.connector == AND:</span>
+            <span class="s1">full_needed</span><span class="s2">, </span><span class="s1">empty_needed = len(self.children)</span><span class="s2">, </span><span class="s5">1</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">full_needed</span><span class="s2">, </span><span class="s1">empty_needed = </span><span class="s5">1</span><span class="s2">, </span><span class="s1">len(self.children)</span>
+
+        <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">self.children:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">sql</span><span class="s2">, </span><span class="s1">params = compiler.compile(child)</span>
+            <span class="s2">except </span><span class="s1">EmptyResultSet:</span>
+                <span class="s1">empty_needed -= </span><span class="s5">1</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s1">sql:</span>
+                    <span class="s1">result.append(sql)</span>
+                    <span class="s1">result_params.extend(params)</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s1">full_needed -= </span><span class="s5">1</span>
+            <span class="s3"># Check if this node matches nothing or everything.</span>
+            <span class="s3"># First check the amount of full nodes and empty nodes</span>
+            <span class="s3"># to make this node empty/full.</span>
+            <span class="s3"># Now, check if this node is full/empty using the</span>
+            <span class="s3"># counts.</span>
+            <span class="s2">if </span><span class="s1">empty_needed == </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s1">self.negated:</span>
+                    <span class="s2">return </span><span class="s4">''</span><span class="s2">, </span><span class="s1">[]</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">raise </span><span class="s1">EmptyResultSet</span>
+            <span class="s2">if </span><span class="s1">full_needed == </span><span class="s5">0</span><span class="s1">:</span>
+                <span class="s2">if </span><span class="s1">self.negated:</span>
+                    <span class="s2">raise </span><span class="s1">EmptyResultSet</span>
+                <span class="s2">else</span><span class="s1">:</span>
+                    <span class="s2">return </span><span class="s4">''</span><span class="s2">, </span><span class="s1">[]</span>
+        <span class="s1">conn = </span><span class="s4">' %s ' </span><span class="s1">% self.connector</span>
+        <span class="s1">sql_string = conn.join(result)</span>
+        <span class="s2">if </span><span class="s1">sql_string:</span>
+            <span class="s2">if </span><span class="s1">self.negated:</span>
+                <span class="s3"># Some backends (Oracle at least) need parentheses</span>
+                <span class="s3"># around the inner SQL in the negated case, even if the</span>
+                <span class="s3"># inner SQL contains just a single expression.</span>
+                <span class="s1">sql_string = </span><span class="s4">'NOT (%s)' </span><span class="s1">% sql_string</span>
+            <span class="s2">elif </span><span class="s1">len(result) &gt; </span><span class="s5">1 </span><span class="s2">or </span><span class="s1">self.resolved:</span>
+                <span class="s1">sql_string = </span><span class="s4">'(%s)' </span><span class="s1">% sql_string</span>
+        <span class="s2">return </span><span class="s1">sql_string</span><span class="s2">, </span><span class="s1">result_params</span>
+
+    <span class="s2">def </span><span class="s1">get_group_by_cols(self</span><span class="s2">, </span><span class="s1">alias=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">cols = []</span>
+        <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">self.children:</span>
+            <span class="s1">cols.extend(child.get_group_by_cols())</span>
+        <span class="s2">return </span><span class="s1">cols</span>
+
+    <span class="s2">def </span><span class="s1">get_source_expressions(self):</span>
+        <span class="s2">return </span><span class="s1">self.children[:]</span>
+
+    <span class="s2">def </span><span class="s1">set_source_expressions(self</span><span class="s2">, </span><span class="s1">children):</span>
+        <span class="s2">assert </span><span class="s1">len(children) == len(self.children)</span>
+        <span class="s1">self.children = children</span>
+
+    <span class="s2">def </span><span class="s1">relabel_aliases(self</span><span class="s2">, </span><span class="s1">change_map):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Relabel the alias values of any children. 'change_map' is a dictionary 
+        mapping old (current) alias values to the new values. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">for </span><span class="s1">pos</span><span class="s2">, </span><span class="s1">child </span><span class="s2">in </span><span class="s1">enumerate(self.children):</span>
+            <span class="s2">if </span><span class="s1">hasattr(child</span><span class="s2">, </span><span class="s4">'relabel_aliases'</span><span class="s1">):</span>
+                <span class="s3"># For example another WhereNode</span>
+                <span class="s1">child.relabel_aliases(change_map)</span>
+            <span class="s2">elif </span><span class="s1">hasattr(child</span><span class="s2">, </span><span class="s4">'relabeled_clone'</span><span class="s1">):</span>
+                <span class="s1">self.children[pos] = child.relabeled_clone(change_map)</span>
+
+    <span class="s2">def </span><span class="s1">clone(self):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Create a clone of the tree. Must only be called on root nodes (nodes 
+        with empty subtree_parents). Childs must be either (Constraint, lookup, 
+        value) tuples, or objects supporting .clone(). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">clone = self.__class__._new_instance(</span>
+            <span class="s1">children=</span><span class="s2">None, </span><span class="s1">connector=self.connector</span><span class="s2">, </span><span class="s1">negated=self.negated</span><span class="s2">,</span>
+        <span class="s1">)</span>
+        <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">self.children:</span>
+            <span class="s2">if </span><span class="s1">hasattr(child</span><span class="s2">, </span><span class="s4">'clone'</span><span class="s1">):</span>
+                <span class="s1">clone.children.append(child.clone())</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s1">clone.children.append(child)</span>
+        <span class="s2">return </span><span class="s1">clone</span>
+
+    <span class="s2">def </span><span class="s1">relabeled_clone(self</span><span class="s2">, </span><span class="s1">change_map):</span>
+        <span class="s1">clone = self.clone()</span>
+        <span class="s1">clone.relabel_aliases(change_map)</span>
+        <span class="s2">return </span><span class="s1">clone</span>
+
+    <span class="s2">def </span><span class="s1">copy(self):</span>
+        <span class="s2">return </span><span class="s1">self.clone()</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_contains_aggregate(cls</span><span class="s2">, </span><span class="s1">obj):</span>
+        <span class="s2">if </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">tree.Node):</span>
+            <span class="s2">return </span><span class="s1">any(cls._contains_aggregate(c) </span><span class="s2">for </span><span class="s1">c </span><span class="s2">in </span><span class="s1">obj.children)</span>
+        <span class="s2">return </span><span class="s1">obj.contains_aggregate</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">contains_aggregate(self):</span>
+        <span class="s2">return </span><span class="s1">self._contains_aggregate(self)</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_contains_over_clause(cls</span><span class="s2">, </span><span class="s1">obj):</span>
+        <span class="s2">if </span><span class="s1">isinstance(obj</span><span class="s2">, </span><span class="s1">tree.Node):</span>
+            <span class="s2">return </span><span class="s1">any(cls._contains_over_clause(c) </span><span class="s2">for </span><span class="s1">c </span><span class="s2">in </span><span class="s1">obj.children)</span>
+        <span class="s2">return </span><span class="s1">obj.contains_over_clause</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">contains_over_clause(self):</span>
+        <span class="s2">return </span><span class="s1">self._contains_over_clause(self)</span>
+
+    <span class="s1">@staticmethod</span>
+    <span class="s2">def </span><span class="s1">_resolve_leaf(expr</span><span class="s2">, </span><span class="s1">query</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">if </span><span class="s1">hasattr(expr</span><span class="s2">, </span><span class="s4">'resolve_expression'</span><span class="s1">):</span>
+            <span class="s1">expr = expr.resolve_expression(query</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s2">return </span><span class="s1">expr</span>
+
+    <span class="s1">@classmethod</span>
+    <span class="s2">def </span><span class="s1">_resolve_node(cls</span><span class="s2">, </span><span class="s1">node</span><span class="s2">, </span><span class="s1">query</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s2">if </span><span class="s1">hasattr(node</span><span class="s2">, </span><span class="s4">'children'</span><span class="s1">):</span>
+            <span class="s2">for </span><span class="s1">child </span><span class="s2">in </span><span class="s1">node.children:</span>
+                <span class="s1">cls._resolve_node(child</span><span class="s2">, </span><span class="s1">query</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s2">if </span><span class="s1">hasattr(node</span><span class="s2">, </span><span class="s4">'lhs'</span><span class="s1">):</span>
+            <span class="s1">node.lhs = cls._resolve_leaf(node.lhs</span><span class="s2">, </span><span class="s1">query</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s2">if </span><span class="s1">hasattr(node</span><span class="s2">, </span><span class="s4">'rhs'</span><span class="s1">):</span>
+            <span class="s1">node.rhs = cls._resolve_leaf(node.rhs</span><span class="s2">, </span><span class="s1">query</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s2">def </span><span class="s1">resolve_expression(self</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">clone = self.clone()</span>
+        <span class="s1">clone._resolve_node(clone</span><span class="s2">, </span><span class="s1">*args</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+        <span class="s1">clone.resolved = </span><span class="s2">True</span>
+        <span class="s2">return </span><span class="s1">clone</span>
+
+    <span class="s1">@cached_property</span>
+    <span class="s2">def </span><span class="s1">output_field(self):</span>
+        <span class="s2">from </span><span class="s1">django.db.models </span><span class="s2">import </span><span class="s1">BooleanField</span>
+        <span class="s2">return </span><span class="s1">BooleanField()</span>
+
+    <span class="s2">def </span><span class="s1">select_format(self</span><span class="s2">, </span><span class="s1">compiler</span><span class="s2">, </span><span class="s1">sql</span><span class="s2">, </span><span class="s1">params):</span>
+        <span class="s3"># Wrap filters with a CASE WHEN expression if a database backend</span>
+        <span class="s3"># (e.g. Oracle) doesn't support boolean expression in SELECT or GROUP</span>
+        <span class="s3"># BY list.</span>
+        <span class="s2">if not </span><span class="s1">compiler.connection.features.supports_boolean_expr_in_select_clause:</span>
+            <span class="s1">sql = </span><span class="s4">f'CASE WHEN </span><span class="s2">{</span><span class="s1">sql</span><span class="s2">} </span><span class="s4">THEN 1 ELSE 0 END'</span>
+        <span class="s2">return </span><span class="s1">sql</span><span class="s2">, </span><span class="s1">params</span>
+
+    <span class="s2">def </span><span class="s1">get_db_converters(self</span><span class="s2">, </span><span class="s1">connection):</span>
+        <span class="s2">return </span><span class="s1">self.output_field.get_db_converters(connection)</span>
+
+    <span class="s2">def </span><span class="s1">get_lookup(self</span><span class="s2">, </span><span class="s1">lookup):</span>
+        <span class="s2">return </span><span class="s1">self.output_field.get_lookup(lookup)</span>
+
+
+<span class="s2">class </span><span class="s1">NothingNode:</span>
+    <span class="s0">&quot;&quot;&quot;A node that matches nothing.&quot;&quot;&quot;</span>
+    <span class="s1">contains_aggregate = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">as_sql(self</span><span class="s2">, </span><span class="s1">compiler=</span><span class="s2">None, </span><span class="s1">connection=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s2">raise </span><span class="s1">EmptyResultSet</span>
+
+
+<span class="s2">class </span><span class="s1">ExtraWhere:</span>
+    <span class="s3"># The contents are a black box - assume no aggregates are used.</span>
+    <span class="s1">contains_aggregate = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">sqls</span><span class="s2">, </span><span class="s1">params):</span>
+        <span class="s1">self.sqls = sqls</span>
+        <span class="s1">self.params = params</span>
+
+    <span class="s2">def </span><span class="s1">as_sql(self</span><span class="s2">, </span><span class="s1">compiler=</span><span class="s2">None, </span><span class="s1">connection=</span><span class="s2">None</span><span class="s1">):</span>
+        <span class="s1">sqls = [</span><span class="s4">&quot;(%s)&quot; </span><span class="s1">% sql </span><span class="s2">for </span><span class="s1">sql </span><span class="s2">in </span><span class="s1">self.sqls]</span>
+        <span class="s2">return </span><span class="s4">&quot; AND &quot;</span><span class="s1">.join(sqls)</span><span class="s2">, </span><span class="s1">list(self.params </span><span class="s2">or </span><span class="s1">())</span>
+
+
+<span class="s2">class </span><span class="s1">SubqueryConstraint:</span>
+    <span class="s3"># Even if aggregates would be used in a subquery, the outer query isn't</span>
+    <span class="s3"># interested about those.</span>
+    <span class="s1">contains_aggregate = </span><span class="s2">False</span>
+
+    <span class="s2">def </span><span class="s1">__init__(self</span><span class="s2">, </span><span class="s1">alias</span><span class="s2">, </span><span class="s1">columns</span><span class="s2">, </span><span class="s1">targets</span><span class="s2">, </span><span class="s1">query_object):</span>
+        <span class="s1">self.alias = alias</span>
+        <span class="s1">self.columns = columns</span>
+        <span class="s1">self.targets = targets</span>
+        <span class="s1">query_object.clear_ordering(clear_default=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.query_object = query_object</span>
+
+    <span class="s2">def </span><span class="s1">as_sql(self</span><span class="s2">, </span><span class="s1">compiler</span><span class="s2">, </span><span class="s1">connection):</span>
+        <span class="s1">query = self.query_object</span>
+        <span class="s1">query.set_values(self.targets)</span>
+        <span class="s1">query_compiler = query.get_compiler(connection=connection)</span>
+        <span class="s2">return </span><span class="s1">query_compiler.as_subquery_condition(self.alias</span><span class="s2">, </span><span class="s1">self.columns</span><span class="s2">, </span><span class="s1">compiler)</span>
+</pre>
+</body>
+</html>

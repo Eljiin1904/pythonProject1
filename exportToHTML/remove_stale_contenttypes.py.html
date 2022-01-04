@@ -1,0 +1,116 @@
+<html>
+<head>
+<title>remove_stale_contenttypes.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #6a8759;}
+.s3 { color: #808080;}
+.s4 { color: #6897bb;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+remove_stale_contenttypes.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">itertools</span>
+
+<span class="s0">from </span><span class="s1">django.apps </span><span class="s0">import </span><span class="s1">apps</span>
+<span class="s0">from </span><span class="s1">django.contrib.contenttypes.models </span><span class="s0">import </span><span class="s1">ContentType</span>
+<span class="s0">from </span><span class="s1">django.core.management </span><span class="s0">import </span><span class="s1">BaseCommand</span>
+<span class="s0">from </span><span class="s1">django.db </span><span class="s0">import </span><span class="s1">DEFAULT_DB_ALIAS</span><span class="s0">, </span><span class="s1">router</span>
+<span class="s0">from </span><span class="s1">django.db.models.deletion </span><span class="s0">import </span><span class="s1">Collector</span>
+
+
+<span class="s0">class </span><span class="s1">Command(BaseCommand):</span>
+
+    <span class="s0">def </span><span class="s1">add_arguments(self</span><span class="s0">, </span><span class="s1">parser):</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--noinput'</span><span class="s0">, </span><span class="s2">'--no-input'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_false'</span><span class="s0">, </span><span class="s1">dest=</span><span class="s2">'interactive'</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Tells Django to NOT prompt the user for input of any kind.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--database'</span><span class="s0">, </span><span class="s1">default=DEFAULT_DB_ALIAS</span><span class="s0">,</span>
+            <span class="s1">help=</span><span class="s2">'Nominates the database to use. Defaults to the &quot;default&quot; database.'</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s1">parser.add_argument(</span>
+            <span class="s2">'--include-stale-apps'</span><span class="s0">, </span><span class="s1">action=</span><span class="s2">'store_true'</span><span class="s0">, </span><span class="s1">default=</span><span class="s0">False,</span>
+            <span class="s1">help=(</span>
+                <span class="s2">&quot;Deletes stale content types including ones from previously &quot;</span>
+                <span class="s2">&quot;installed apps that have been removed from INSTALLED_APPS.&quot;</span>
+            <span class="s1">)</span><span class="s0">,</span>
+        <span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">handle(self</span><span class="s0">, </span><span class="s1">**options):</span>
+        <span class="s1">db = options[</span><span class="s2">'database'</span><span class="s1">]</span>
+        <span class="s1">include_stale_apps = options[</span><span class="s2">'include_stale_apps'</span><span class="s1">]</span>
+        <span class="s1">interactive = options[</span><span class="s2">'interactive'</span><span class="s1">]</span>
+        <span class="s1">verbosity = options[</span><span class="s2">'verbosity'</span><span class="s1">]</span>
+
+        <span class="s0">if not </span><span class="s1">router.allow_migrate_model(db</span><span class="s0">, </span><span class="s1">ContentType):</span>
+            <span class="s0">return</span>
+        <span class="s1">ContentType.objects.clear_cache()</span>
+
+        <span class="s1">apps_content_types = itertools.groupby(</span>
+            <span class="s1">ContentType.objects.using(db).order_by(</span><span class="s2">'app_label'</span><span class="s0">, </span><span class="s2">'model'</span><span class="s1">)</span><span class="s0">,</span>
+            <span class="s0">lambda </span><span class="s1">obj: obj.app_label</span><span class="s0">,</span>
+        <span class="s1">)</span>
+        <span class="s0">for </span><span class="s1">app_label</span><span class="s0">, </span><span class="s1">content_types </span><span class="s0">in </span><span class="s1">apps_content_types:</span>
+            <span class="s0">if not </span><span class="s1">include_stale_apps </span><span class="s0">and </span><span class="s1">app_label </span><span class="s0">not in </span><span class="s1">apps.app_configs:</span>
+                <span class="s0">continue</span>
+            <span class="s1">to_remove = [ct </span><span class="s0">for </span><span class="s1">ct </span><span class="s0">in </span><span class="s1">content_types </span><span class="s0">if </span><span class="s1">ct.model_class() </span><span class="s0">is None</span><span class="s1">]</span>
+            <span class="s3"># Confirm that the content type is stale before deletion.</span>
+            <span class="s1">using = router.db_for_write(ContentType)</span>
+            <span class="s0">if </span><span class="s1">to_remove:</span>
+                <span class="s0">if </span><span class="s1">interactive:</span>
+                    <span class="s1">ct_info = []</span>
+                    <span class="s0">for </span><span class="s1">ct </span><span class="s0">in </span><span class="s1">to_remove:</span>
+                        <span class="s1">ct_info.append(</span><span class="s2">'    - Content type for %s.%s' </span><span class="s1">% (ct.app_label</span><span class="s0">, </span><span class="s1">ct.model))</span>
+                        <span class="s1">collector = NoFastDeleteCollector(using=using)</span>
+                        <span class="s1">collector.collect([ct])</span>
+
+                        <span class="s0">for </span><span class="s1">obj_type</span><span class="s0">, </span><span class="s1">objs </span><span class="s0">in </span><span class="s1">collector.data.items():</span>
+                            <span class="s0">if </span><span class="s1">objs != {ct}:</span>
+                                <span class="s1">ct_info.append(</span><span class="s2">'    - %s %s object(s)' </span><span class="s1">% (</span>
+                                    <span class="s1">len(objs)</span><span class="s0">,</span>
+                                    <span class="s1">obj_type._meta.label</span><span class="s0">,</span>
+                                <span class="s1">))</span>
+                    <span class="s1">content_type_display = </span><span class="s2">'</span><span class="s0">\n</span><span class="s2">'</span><span class="s1">.join(ct_info)</span>
+                    <span class="s1">self.stdout.write(</span><span class="s2">&quot;&quot;&quot;Some content types in your database are stale and can be deleted. 
+Any objects that depend on these content types will also be deleted. 
+The content types and dependent objects that would be deleted are: 
+ 
+%s 
+ 
+This list doesn't include any cascade deletions to data outside of Django's 
+models (uncommon). 
+ 
+Are you sure you want to delete these content types? 
+If you're unsure, answer 'no'.&quot;&quot;&quot; </span><span class="s1">% content_type_display)</span>
+                    <span class="s1">ok_to_delete = input(</span><span class="s2">&quot;Type 'yes' to continue, or 'no' to cancel: &quot;</span><span class="s1">)</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s1">ok_to_delete = </span><span class="s2">'yes'</span>
+
+                <span class="s0">if </span><span class="s1">ok_to_delete == </span><span class="s2">'yes'</span><span class="s1">:</span>
+                    <span class="s0">for </span><span class="s1">ct </span><span class="s0">in </span><span class="s1">to_remove:</span>
+                        <span class="s0">if </span><span class="s1">verbosity &gt;= </span><span class="s4">2</span><span class="s1">:</span>
+                            <span class="s1">self.stdout.write(</span><span class="s2">&quot;Deleting stale content type '%s | %s'&quot; </span><span class="s1">% (ct.app_label</span><span class="s0">, </span><span class="s1">ct.model))</span>
+                        <span class="s1">ct.delete()</span>
+                <span class="s0">else</span><span class="s1">:</span>
+                    <span class="s0">if </span><span class="s1">verbosity &gt;= </span><span class="s4">2</span><span class="s1">:</span>
+                        <span class="s1">self.stdout.write(</span><span class="s2">&quot;Stale content types remain.&quot;</span><span class="s1">)</span>
+
+
+<span class="s0">class </span><span class="s1">NoFastDeleteCollector(Collector):</span>
+    <span class="s0">def </span><span class="s1">can_fast_delete(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s5">&quot;&quot;&quot; 
+        Always load related objects to display them when showing confirmation. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return False</span>
+</pre>
+</body>
+</html>

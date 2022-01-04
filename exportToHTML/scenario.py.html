@@ -1,0 +1,360 @@
+<html>
+<head>
+<title>scenario.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #629755; font-style: italic;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #cc7832;}
+.s3 { color: #6a8759;}
+.s4 { color: #808080;}
+.s5 { color: #6897bb;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+scenario.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Scenario implementation. 
+ 
+The pytest will collect the test case and the steps will be executed 
+line by line. 
+ 
+Example: 
+ 
+test_publish_article = scenario( 
+    feature_name=&quot;publish_article.feature&quot;, 
+    scenario_name=&quot;Publishing the article&quot;, 
+) 
+&quot;&quot;&quot;</span>
+<span class="s2">import </span><span class="s1">collections</span>
+<span class="s2">import </span><span class="s1">os</span>
+<span class="s2">import </span><span class="s1">re</span>
+<span class="s2">import </span><span class="s1">typing</span>
+
+<span class="s2">import </span><span class="s1">pytest</span>
+<span class="s2">from </span><span class="s1">_pytest.fixtures </span><span class="s2">import </span><span class="s1">FixtureLookupError</span>
+
+<span class="s2">from </span><span class="s1">. </span><span class="s2">import </span><span class="s1">exceptions</span>
+<span class="s2">from </span><span class="s1">.feature </span><span class="s2">import </span><span class="s1">get_feature</span><span class="s2">, </span><span class="s1">get_features</span>
+<span class="s2">from </span><span class="s1">.steps </span><span class="s2">import </span><span class="s1">get_step_fixture_name</span><span class="s2">, </span><span class="s1">inject_fixture</span>
+<span class="s2">from </span><span class="s1">.utils </span><span class="s2">import </span><span class="s1">CONFIG_STACK</span><span class="s2">, </span><span class="s1">get_args</span><span class="s2">, </span><span class="s1">get_caller_module_locals</span><span class="s2">, </span><span class="s1">get_caller_module_path</span>
+
+<span class="s2">if </span><span class="s1">typing.TYPE_CHECKING:</span>
+    <span class="s2">from </span><span class="s1">_pytest.mark.structures </span><span class="s2">import </span><span class="s1">ParameterSet</span>
+
+    <span class="s2">from </span><span class="s1">.parser </span><span class="s2">import </span><span class="s1">Feature</span><span class="s2">, </span><span class="s1">Scenario</span><span class="s2">, </span><span class="s1">ScenarioTemplate</span>
+
+<span class="s1">PYTHON_REPLACE_REGEX = re.compile(</span><span class="s3">r&quot;\W&quot;</span><span class="s1">)</span>
+<span class="s1">ALPHA_REGEX = re.compile(</span><span class="s3">r&quot;^\d+_*&quot;</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">find_argumented_step_fixture_name(name</span><span class="s2">, </span><span class="s1">type_</span><span class="s2">, </span><span class="s1">fixturemanager</span><span class="s2">, </span><span class="s1">request=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s0">&quot;&quot;&quot;Find argumented step fixture name.&quot;&quot;&quot;</span>
+    <span class="s4"># happens to be that _arg2fixturedefs is changed during the iteration so we use a copy</span>
+    <span class="s2">for </span><span class="s1">fixturename</span><span class="s2">, </span><span class="s1">fixturedefs </span><span class="s2">in </span><span class="s1">list(fixturemanager._arg2fixturedefs.items()):</span>
+        <span class="s2">for </span><span class="s1">fixturedef </span><span class="s2">in </span><span class="s1">fixturedefs:</span>
+            <span class="s1">parser = getattr(fixturedef.func</span><span class="s2">, </span><span class="s3">&quot;parser&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+            <span class="s2">if </span><span class="s1">parser </span><span class="s2">is None</span><span class="s1">:</span>
+                <span class="s2">continue</span>
+            <span class="s1">match = parser.is_matching(name)</span>
+            <span class="s2">if not </span><span class="s1">match:</span>
+                <span class="s2">continue</span>
+
+            <span class="s4"># TODO: maybe `converters` should be part of the SterParser.__init__(),</span>
+            <span class="s4">#  and used by StepParser.parse_arguments() method</span>
+            <span class="s1">converters = getattr(fixturedef.func</span><span class="s2">, </span><span class="s3">&quot;converters&quot;</span><span class="s2">, </span><span class="s1">{})</span>
+            <span class="s2">for </span><span class="s1">arg</span><span class="s2">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">parser.parse_arguments(name).items():</span>
+                <span class="s2">if </span><span class="s1">arg </span><span class="s2">in </span><span class="s1">converters:</span>
+                    <span class="s1">value = converters[arg](value)</span>
+                <span class="s2">if </span><span class="s1">request:</span>
+                    <span class="s1">inject_fixture(request</span><span class="s2">, </span><span class="s1">arg</span><span class="s2">, </span><span class="s1">value)</span>
+            <span class="s1">parser_name = get_step_fixture_name(parser.name</span><span class="s2">, </span><span class="s1">type_)</span>
+            <span class="s2">if </span><span class="s1">request:</span>
+                <span class="s2">try</span><span class="s1">:</span>
+                    <span class="s1">request.getfixturevalue(parser_name)</span>
+                <span class="s2">except </span><span class="s1">FixtureLookupError:</span>
+                    <span class="s2">continue</span>
+            <span class="s2">return </span><span class="s1">parser_name</span>
+
+
+<span class="s2">def </span><span class="s1">_find_step_function(request</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">scenario):</span>
+    <span class="s0">&quot;&quot;&quot;Match the step defined by the regular expression pattern. 
+ 
+    :param request: PyTest request object. 
+    :param step: Step. 
+    :param scenario: Scenario. 
+ 
+    :return: Function of the step. 
+    :rtype: function 
+    &quot;&quot;&quot;</span>
+    <span class="s1">name = step.name</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s4"># Simple case where no parser is used for the step</span>
+        <span class="s2">return </span><span class="s1">request.getfixturevalue(get_step_fixture_name(name</span><span class="s2">, </span><span class="s1">step.type))</span>
+    <span class="s2">except </span><span class="s1">FixtureLookupError:</span>
+        <span class="s2">try</span><span class="s1">:</span>
+            <span class="s4"># Could not find a fixture with the same name, let's see if there is a parser involved</span>
+            <span class="s1">name = find_argumented_step_fixture_name(name</span><span class="s2">, </span><span class="s1">step.type</span><span class="s2">, </span><span class="s1">request._fixturemanager</span><span class="s2">, </span><span class="s1">request)</span>
+            <span class="s2">if </span><span class="s1">name:</span>
+                <span class="s2">return </span><span class="s1">request.getfixturevalue(name)</span>
+            <span class="s2">raise</span>
+        <span class="s2">except </span><span class="s1">FixtureLookupError:</span>
+            <span class="s2">raise </span><span class="s1">exceptions.StepDefinitionNotFoundError(</span>
+                <span class="s3">f&quot;Step definition is not found: </span><span class="s2">{</span><span class="s1">step</span><span class="s2">}</span><span class="s3">. &quot;</span>
+                <span class="s3">f'Line </span><span class="s2">{</span><span class="s1">step.line_number</span><span class="s2">} </span><span class="s3">in scenario &quot;</span><span class="s2">{</span><span class="s1">scenario.name</span><span class="s2">}</span><span class="s3">&quot; in the feature &quot;</span><span class="s2">{</span><span class="s1">scenario.feature.filename</span><span class="s2">}</span><span class="s3">&quot;'</span>
+            <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">_execute_step_function(request</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">step_func):</span>
+    <span class="s0">&quot;&quot;&quot;Execute step function. 
+ 
+    :param request: PyTest request. 
+    :param scenario: Scenario. 
+    :param step: Step. 
+    :param function step_func: Step function. 
+    :param example: Example table. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">kw = dict(request=request</span><span class="s2">, </span><span class="s1">feature=scenario.feature</span><span class="s2">, </span><span class="s1">scenario=scenario</span><span class="s2">, </span><span class="s1">step=step</span><span class="s2">, </span><span class="s1">step_func=step_func)</span>
+
+    <span class="s1">request.config.hook.pytest_bdd_before_step(**kw)</span>
+
+    <span class="s1">kw[</span><span class="s3">&quot;step_func_args&quot;</span><span class="s1">] = {}</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s4"># Get the step argument values.</span>
+        <span class="s1">kwargs = {arg: request.getfixturevalue(arg) </span><span class="s2">for </span><span class="s1">arg </span><span class="s2">in </span><span class="s1">get_args(step_func)}</span>
+        <span class="s1">kw[</span><span class="s3">&quot;step_func_args&quot;</span><span class="s1">] = kwargs</span>
+
+        <span class="s1">request.config.hook.pytest_bdd_before_step_call(**kw)</span>
+        <span class="s1">target_fixture = getattr(step_func</span><span class="s2">, </span><span class="s3">&quot;target_fixture&quot;</span><span class="s2">, None</span><span class="s1">)</span>
+        <span class="s4"># Execute the step.</span>
+        <span class="s1">return_value = step_func(**kwargs)</span>
+        <span class="s2">if </span><span class="s1">target_fixture:</span>
+            <span class="s1">inject_fixture(request</span><span class="s2">, </span><span class="s1">target_fixture</span><span class="s2">, </span><span class="s1">return_value)</span>
+
+        <span class="s1">request.config.hook.pytest_bdd_after_step(**kw)</span>
+    <span class="s2">except </span><span class="s1">Exception </span><span class="s2">as </span><span class="s1">exception:</span>
+        <span class="s1">request.config.hook.pytest_bdd_step_error(exception=exception</span><span class="s2">, </span><span class="s1">**kw)</span>
+        <span class="s2">raise</span>
+
+
+<span class="s2">def </span><span class="s1">_execute_scenario(feature: </span><span class="s3">&quot;Feature&quot;</span><span class="s2">, </span><span class="s1">scenario: </span><span class="s3">&quot;Scenario&quot;</span><span class="s2">, </span><span class="s1">request):</span>
+    <span class="s0">&quot;&quot;&quot;Execute the scenario. 
+ 
+    :param feature: Feature. 
+    :param scenario: Scenario. 
+    :param request: request. 
+    :param encoding: Encoding. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">request.config.hook.pytest_bdd_before_scenario(request=request</span><span class="s2">, </span><span class="s1">feature=feature</span><span class="s2">, </span><span class="s1">scenario=scenario)</span>
+
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s4"># Execute scenario steps</span>
+        <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">scenario.steps:</span>
+            <span class="s2">try</span><span class="s1">:</span>
+                <span class="s1">step_func = _find_step_function(request</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">scenario)</span>
+            <span class="s2">except </span><span class="s1">exceptions.StepDefinitionNotFoundError </span><span class="s2">as </span><span class="s1">exception:</span>
+                <span class="s1">request.config.hook.pytest_bdd_step_func_lookup_error(</span>
+                    <span class="s1">request=request</span><span class="s2">, </span><span class="s1">feature=feature</span><span class="s2">, </span><span class="s1">scenario=scenario</span><span class="s2">, </span><span class="s1">step=step</span><span class="s2">, </span><span class="s1">exception=exception</span>
+                <span class="s1">)</span>
+                <span class="s2">raise</span>
+            <span class="s1">_execute_step_function(request</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">step</span><span class="s2">, </span><span class="s1">step_func)</span>
+    <span class="s2">finally</span><span class="s1">:</span>
+        <span class="s1">request.config.hook.pytest_bdd_after_scenario(request=request</span><span class="s2">, </span><span class="s1">feature=feature</span><span class="s2">, </span><span class="s1">scenario=scenario)</span>
+
+
+<span class="s1">FakeRequest = collections.namedtuple(</span><span class="s3">&quot;FakeRequest&quot;</span><span class="s2">, </span><span class="s1">[</span><span class="s3">&quot;module&quot;</span><span class="s1">])</span>
+
+
+<span class="s2">def </span><span class="s1">_get_scenario_decorator(</span>
+    <span class="s1">feature: </span><span class="s3">&quot;Feature&quot;</span><span class="s2">, </span><span class="s1">feature_name: str</span><span class="s2">, </span><span class="s1">templated_scenario: </span><span class="s3">&quot;ScenarioTemplate&quot;</span><span class="s2">, </span><span class="s1">scenario_name: str</span>
+<span class="s1">):</span>
+    <span class="s4"># HACK: Ideally we would use `def decorator(fn)`, but we want to return a custom exception</span>
+    <span class="s4"># when the decorator is misused.</span>
+    <span class="s4"># Pytest inspect the signature to determine the required fixtures, and in that case it would look</span>
+    <span class="s4"># for a fixture called &quot;fn&quot; that doesn't exist (if it exists then it's even worse).</span>
+    <span class="s4"># It will error with a &quot;fixture 'fn' not found&quot; message instead.</span>
+    <span class="s4"># We can avoid this hack by using a pytest hook and check for misuse instead.</span>
+    <span class="s2">def </span><span class="s1">decorator(*args):</span>
+        <span class="s2">if not </span><span class="s1">args:</span>
+            <span class="s2">raise </span><span class="s1">exceptions.ScenarioIsDecoratorOnly(</span>
+                <span class="s3">&quot;scenario function can only be used as a decorator. Refer to the documentation.&quot;</span>
+            <span class="s1">)</span>
+        <span class="s1">[fn] = args</span>
+        <span class="s1">args = get_args(fn)</span>
+
+        <span class="s4"># We need to tell pytest that the original function requires its fixtures,</span>
+        <span class="s4"># otherwise indirect fixtures would not work.</span>
+        <span class="s1">@pytest.mark.usefixtures(*args)</span>
+        <span class="s2">def </span><span class="s1">scenario_wrapper(request</span><span class="s2">, </span><span class="s1">_pytest_bdd_example):</span>
+            <span class="s1">scenario = templated_scenario.render(_pytest_bdd_example)</span>
+            <span class="s1">_execute_scenario(feature</span><span class="s2">, </span><span class="s1">scenario</span><span class="s2">, </span><span class="s1">request)</span>
+            <span class="s1">fixture_values = [request.getfixturevalue(arg) </span><span class="s2">for </span><span class="s1">arg </span><span class="s2">in </span><span class="s1">args]</span>
+            <span class="s2">return </span><span class="s1">fn(*fixture_values)</span>
+
+        <span class="s1">example_parametrizations = collect_example_parametrizations(templated_scenario)</span>
+        <span class="s2">if </span><span class="s1">example_parametrizations </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s4"># Parametrize the scenario outlines</span>
+            <span class="s1">scenario_wrapper = pytest.mark.parametrize(</span>
+                <span class="s3">&quot;_pytest_bdd_example&quot;</span><span class="s2">,</span>
+                <span class="s1">example_parametrizations</span><span class="s2">,</span>
+            <span class="s1">)(scenario_wrapper)</span>
+
+        <span class="s2">for </span><span class="s1">tag </span><span class="s2">in </span><span class="s1">templated_scenario.tags.union(feature.tags):</span>
+            <span class="s1">config = CONFIG_STACK[-</span><span class="s5">1</span><span class="s1">]</span>
+            <span class="s1">config.hook.pytest_bdd_apply_tag(tag=tag</span><span class="s2">, </span><span class="s1">function=scenario_wrapper)</span>
+
+        <span class="s1">scenario_wrapper.__doc__ = </span><span class="s3">f&quot;</span><span class="s2">{</span><span class="s1">feature_name</span><span class="s2">}</span><span class="s3">: </span><span class="s2">{</span><span class="s1">scenario_name</span><span class="s2">}</span><span class="s3">&quot;</span>
+        <span class="s1">scenario_wrapper.__scenario__ = templated_scenario</span>
+        <span class="s2">return </span><span class="s1">scenario_wrapper</span>
+
+    <span class="s2">return </span><span class="s1">decorator</span>
+
+
+<span class="s2">def </span><span class="s1">collect_example_parametrizations(</span>
+    <span class="s1">templated_scenario: </span><span class="s3">&quot;ScenarioTemplate&quot;</span><span class="s2">,</span>
+<span class="s1">) -&gt; </span><span class="s3">&quot;typing.Optional[typing.List[ParameterSet]]&quot;</span><span class="s1">:</span>
+    <span class="s4"># We need to evaluate these iterators and store them as lists, otherwise</span>
+    <span class="s4"># we won't be able to do the cartesian product later (the second iterator will be consumed)</span>
+    <span class="s1">feature_contexts = list(templated_scenario.feature.examples.as_contexts())</span>
+    <span class="s1">scenario_contexts = list(templated_scenario.examples.as_contexts())</span>
+
+    <span class="s1">contexts = [</span>
+        <span class="s1">{**feature_context</span><span class="s2">, </span><span class="s1">**scenario_context}</span>
+        <span class="s4"># We must make sure that we always have at least one element in each list, otherwise</span>
+        <span class="s4"># the cartesian product will result in an empty list too, even if one of the 2 sets</span>
+        <span class="s4"># is non empty.</span>
+        <span class="s2">for </span><span class="s1">feature_context </span><span class="s2">in </span><span class="s1">feature_contexts </span><span class="s2">or </span><span class="s1">[{}]</span>
+        <span class="s2">for </span><span class="s1">scenario_context </span><span class="s2">in </span><span class="s1">scenario_contexts </span><span class="s2">or </span><span class="s1">[{}]</span>
+    <span class="s1">]</span>
+    <span class="s2">if </span><span class="s1">contexts == [{}]:</span>
+        <span class="s2">return None</span>
+    <span class="s2">return </span><span class="s1">[pytest.param(context</span><span class="s2">, </span><span class="s1">id=</span><span class="s3">&quot;-&quot;</span><span class="s1">.join(context.values())) </span><span class="s2">for </span><span class="s1">context </span><span class="s2">in </span><span class="s1">contexts]</span>
+
+
+<span class="s2">def </span><span class="s1">scenario(feature_name: str</span><span class="s2">, </span><span class="s1">scenario_name: str</span><span class="s2">, </span><span class="s1">encoding: str = </span><span class="s3">&quot;utf-8&quot;</span><span class="s2">, </span><span class="s1">features_base_dir=</span><span class="s2">None</span><span class="s1">):</span>
+    <span class="s0">&quot;&quot;&quot;Scenario decorator. 
+ 
+    :param str feature_name: Feature file name. Absolute or relative to the configured feature base path. 
+    :param str scenario_name: Scenario name. 
+    :param str encoding: Feature file encoding. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">scenario_name = str(scenario_name)</span>
+    <span class="s1">caller_module_path = get_caller_module_path()</span>
+
+    <span class="s4"># Get the feature</span>
+    <span class="s2">if </span><span class="s1">features_base_dir </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">features_base_dir = get_features_base_dir(caller_module_path)</span>
+    <span class="s1">feature = get_feature(features_base_dir</span><span class="s2">, </span><span class="s1">feature_name</span><span class="s2">, </span><span class="s1">encoding=encoding)</span>
+
+    <span class="s4"># Get the scenario</span>
+    <span class="s2">try</span><span class="s1">:</span>
+        <span class="s1">scenario = feature.scenarios[scenario_name]</span>
+    <span class="s2">except </span><span class="s1">KeyError:</span>
+        <span class="s1">feature_name = feature.name </span><span class="s2">or </span><span class="s3">&quot;[Empty]&quot;</span>
+        <span class="s2">raise </span><span class="s1">exceptions.ScenarioNotFound(</span>
+            <span class="s3">f'Scenario &quot;</span><span class="s2">{</span><span class="s1">scenario_name</span><span class="s2">}</span><span class="s3">&quot; in feature &quot;</span><span class="s2">{</span><span class="s1">feature_name</span><span class="s2">}</span><span class="s3">&quot; in </span><span class="s2">{</span><span class="s1">feature.filename</span><span class="s2">} </span><span class="s3">is not found.'</span>
+        <span class="s1">)</span>
+
+    <span class="s4"># Validate the scenario</span>
+    <span class="s1">scenario.validate()</span>
+
+    <span class="s2">return </span><span class="s1">_get_scenario_decorator(</span>
+        <span class="s1">feature=feature</span><span class="s2">, </span><span class="s1">feature_name=feature_name</span><span class="s2">, </span><span class="s1">templated_scenario=scenario</span><span class="s2">, </span><span class="s1">scenario_name=scenario_name</span>
+    <span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">get_features_base_dir(caller_module_path):</span>
+    <span class="s1">default_base_dir = os.path.dirname(caller_module_path)</span>
+    <span class="s2">return </span><span class="s1">get_from_ini(</span><span class="s3">&quot;bdd_features_base_dir&quot;</span><span class="s2">, </span><span class="s1">default_base_dir)</span>
+
+
+<span class="s2">def </span><span class="s1">get_from_ini(key</span><span class="s2">, </span><span class="s1">default):</span>
+    <span class="s0">&quot;&quot;&quot;Get value from ini config. Return default if value has not been set. 
+ 
+    Use if the default value is dynamic. Otherwise set default on addini call. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">config = CONFIG_STACK[-</span><span class="s5">1</span><span class="s1">]</span>
+    <span class="s1">value = config.getini(key)</span>
+    <span class="s2">return </span><span class="s1">value </span><span class="s2">if </span><span class="s1">value != </span><span class="s3">&quot;&quot; </span><span class="s2">else </span><span class="s1">default</span>
+
+
+<span class="s2">def </span><span class="s1">make_python_name(string):</span>
+    <span class="s0">&quot;&quot;&quot;Make python attribute name out of a given string.&quot;&quot;&quot;</span>
+    <span class="s1">string = re.sub(PYTHON_REPLACE_REGEX</span><span class="s2">, </span><span class="s3">&quot;&quot;</span><span class="s2">, </span><span class="s1">string.replace(</span><span class="s3">&quot; &quot;</span><span class="s2">, </span><span class="s3">&quot;_&quot;</span><span class="s1">))</span>
+    <span class="s2">return </span><span class="s1">re.sub(ALPHA_REGEX</span><span class="s2">, </span><span class="s3">&quot;&quot;</span><span class="s2">, </span><span class="s1">string).lower()</span>
+
+
+<span class="s2">def </span><span class="s1">make_python_docstring(string):</span>
+    <span class="s0">&quot;&quot;&quot;Make a python docstring literal out of a given string.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s3">'&quot;&quot;&quot;{}.&quot;&quot;&quot;'</span><span class="s1">.format(string.replace(</span><span class="s3">'&quot;&quot;&quot;'</span><span class="s2">, </span><span class="s3">'</span><span class="s2">\\</span><span class="s3">&quot;</span><span class="s2">\\</span><span class="s3">&quot;</span><span class="s2">\\</span><span class="s3">&quot;'</span><span class="s1">))</span>
+
+
+<span class="s2">def </span><span class="s1">make_string_literal(string):</span>
+    <span class="s0">&quot;&quot;&quot;Make python string literal out of a given string.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s3">&quot;'{}'&quot;</span><span class="s1">.format(string.replace(</span><span class="s3">&quot;'&quot;</span><span class="s2">, </span><span class="s3">&quot;</span><span class="s2">\\</span><span class="s3">'&quot;</span><span class="s1">))</span>
+
+
+<span class="s2">def </span><span class="s1">get_python_name_generator(name):</span>
+    <span class="s0">&quot;&quot;&quot;Generate a sequence of suitable python names out of given arbitrary string name.&quot;&quot;&quot;</span>
+    <span class="s1">python_name = make_python_name(name)</span>
+    <span class="s1">suffix = </span><span class="s3">&quot;&quot;</span>
+    <span class="s1">index = </span><span class="s5">0</span>
+
+    <span class="s2">def </span><span class="s1">get_name():</span>
+        <span class="s2">return </span><span class="s3">f&quot;test_</span><span class="s2">{</span><span class="s1">python_name</span><span class="s2">}{</span><span class="s1">suffix</span><span class="s2">}</span><span class="s3">&quot;</span>
+
+    <span class="s2">while True</span><span class="s1">:</span>
+        <span class="s2">yield </span><span class="s1">get_name()</span>
+        <span class="s1">index += </span><span class="s5">1</span>
+        <span class="s1">suffix = </span><span class="s3">f&quot;_</span><span class="s2">{</span><span class="s1">index</span><span class="s2">}</span><span class="s3">&quot;</span>
+
+
+<span class="s2">def </span><span class="s1">scenarios(*feature_paths</span><span class="s2">, </span><span class="s1">**kwargs):</span>
+    <span class="s0">&quot;&quot;&quot;Parse features from the paths and put all found scenarios in the caller module. 
+ 
+    :param *feature_paths: feature file paths to use for scenarios 
+    &quot;&quot;&quot;</span>
+    <span class="s1">caller_locals = get_caller_module_locals()</span>
+    <span class="s1">caller_path = get_caller_module_path()</span>
+
+    <span class="s1">features_base_dir = kwargs.get(</span><span class="s3">&quot;features_base_dir&quot;</span><span class="s1">)</span>
+    <span class="s2">if </span><span class="s1">features_base_dir </span><span class="s2">is None</span><span class="s1">:</span>
+        <span class="s1">features_base_dir = get_features_base_dir(caller_path)</span>
+
+    <span class="s1">abs_feature_paths = []</span>
+    <span class="s2">for </span><span class="s1">path </span><span class="s2">in </span><span class="s1">feature_paths:</span>
+        <span class="s2">if not </span><span class="s1">os.path.isabs(path):</span>
+            <span class="s1">path = os.path.abspath(os.path.join(features_base_dir</span><span class="s2">, </span><span class="s1">path))</span>
+        <span class="s1">abs_feature_paths.append(path)</span>
+    <span class="s1">found = </span><span class="s2">False</span>
+
+    <span class="s1">module_scenarios = frozenset(</span>
+        <span class="s1">(attr.__scenario__.feature.filename</span><span class="s2">, </span><span class="s1">attr.__scenario__.name)</span>
+        <span class="s2">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">attr </span><span class="s2">in </span><span class="s1">caller_locals.items()</span>
+        <span class="s2">if </span><span class="s1">hasattr(attr</span><span class="s2">, </span><span class="s3">&quot;__scenario__&quot;</span><span class="s1">)</span>
+    <span class="s1">)</span>
+
+    <span class="s2">for </span><span class="s1">feature </span><span class="s2">in </span><span class="s1">get_features(abs_feature_paths):</span>
+        <span class="s2">for </span><span class="s1">scenario_name</span><span class="s2">, </span><span class="s1">scenario_object </span><span class="s2">in </span><span class="s1">feature.scenarios.items():</span>
+            <span class="s4"># skip already bound scenarios</span>
+            <span class="s2">if </span><span class="s1">(scenario_object.feature.filename</span><span class="s2">, </span><span class="s1">scenario_name) </span><span class="s2">not in </span><span class="s1">module_scenarios:</span>
+
+                <span class="s1">@scenario(feature.filename</span><span class="s2">, </span><span class="s1">scenario_name</span><span class="s2">, </span><span class="s1">**kwargs)</span>
+                <span class="s2">def </span><span class="s1">_scenario():</span>
+                    <span class="s2">pass  </span><span class="s4"># pragma: no cover</span>
+
+                <span class="s2">for </span><span class="s1">test_name </span><span class="s2">in </span><span class="s1">get_python_name_generator(scenario_name):</span>
+                    <span class="s2">if </span><span class="s1">test_name </span><span class="s2">not in </span><span class="s1">caller_locals:</span>
+                        <span class="s4"># found an unique test name</span>
+                        <span class="s1">caller_locals[test_name] = _scenario</span>
+                        <span class="s2">break</span>
+            <span class="s1">found = </span><span class="s2">True</span>
+    <span class="s2">if not </span><span class="s1">found:</span>
+        <span class="s2">raise </span><span class="s1">exceptions.NoScenariosFound(abs_feature_paths)</span>
+</pre>
+</body>
+</html>

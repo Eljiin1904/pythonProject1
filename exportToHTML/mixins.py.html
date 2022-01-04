@@ -1,0 +1,70 @@
+<html>
+<head>
+<title>mixins.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #6897bb;}
+.s4 { color: #6a8759;}
+.s5 { color: #629755; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+mixins.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">django.db.models </span><span class="s0">import </span><span class="s1">F</span><span class="s0">, </span><span class="s1">OrderBy</span>
+
+
+<span class="s0">class </span><span class="s1">OrderableAggMixin:</span>
+
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">*expressions</span><span class="s0">, </span><span class="s1">ordering=()</span><span class="s0">, </span><span class="s1">**extra):</span>
+        <span class="s0">if not </span><span class="s1">isinstance(ordering</span><span class="s0">, </span><span class="s1">(list</span><span class="s0">, </span><span class="s1">tuple)):</span>
+            <span class="s1">ordering = [ordering]</span>
+        <span class="s1">ordering = ordering </span><span class="s0">or </span><span class="s1">[]</span>
+        <span class="s2"># Transform minus sign prefixed strings into an OrderBy() expression.</span>
+        <span class="s1">ordering = (</span>
+            <span class="s1">(OrderBy(F(o[</span><span class="s3">1</span><span class="s1">:])</span><span class="s0">, </span><span class="s1">descending=</span><span class="s0">True</span><span class="s1">) </span><span class="s0">if </span><span class="s1">isinstance(o</span><span class="s0">, </span><span class="s1">str) </span><span class="s0">and </span><span class="s1">o[</span><span class="s3">0</span><span class="s1">] == </span><span class="s4">'-' </span><span class="s0">else </span><span class="s1">o)</span>
+            <span class="s0">for </span><span class="s1">o </span><span class="s0">in </span><span class="s1">ordering</span>
+        <span class="s1">)</span>
+        <span class="s1">super().__init__(*expressions</span><span class="s0">, </span><span class="s1">**extra)</span>
+        <span class="s1">self.ordering = self._parse_expressions(*ordering)</span>
+
+    <span class="s0">def </span><span class="s1">resolve_expression(self</span><span class="s0">, </span><span class="s1">*args</span><span class="s0">, </span><span class="s1">**kwargs):</span>
+        <span class="s1">self.ordering = [expr.resolve_expression(*args</span><span class="s0">, </span><span class="s1">**kwargs) </span><span class="s0">for </span><span class="s1">expr </span><span class="s0">in </span><span class="s1">self.ordering]</span>
+        <span class="s0">return </span><span class="s1">super().resolve_expression(*args</span><span class="s0">, </span><span class="s1">**kwargs)</span>
+
+    <span class="s0">def </span><span class="s1">as_sql(self</span><span class="s0">, </span><span class="s1">compiler</span><span class="s0">, </span><span class="s1">connection):</span>
+        <span class="s0">if </span><span class="s1">self.ordering:</span>
+            <span class="s1">ordering_params = []</span>
+            <span class="s1">ordering_expr_sql = []</span>
+            <span class="s0">for </span><span class="s1">expr </span><span class="s0">in </span><span class="s1">self.ordering:</span>
+                <span class="s1">expr_sql</span><span class="s0">, </span><span class="s1">expr_params = compiler.compile(expr)</span>
+                <span class="s1">ordering_expr_sql.append(expr_sql)</span>
+                <span class="s1">ordering_params.extend(expr_params)</span>
+            <span class="s1">sql</span><span class="s0">, </span><span class="s1">sql_params = super().as_sql(compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">ordering=(</span>
+                <span class="s4">'ORDER BY ' </span><span class="s1">+ </span><span class="s4">', '</span><span class="s1">.join(ordering_expr_sql)</span>
+            <span class="s1">))</span>
+            <span class="s0">return </span><span class="s1">sql</span><span class="s0">, </span><span class="s1">sql_params + ordering_params</span>
+        <span class="s0">return </span><span class="s1">super().as_sql(compiler</span><span class="s0">, </span><span class="s1">connection</span><span class="s0">, </span><span class="s1">ordering=</span><span class="s4">''</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">set_source_expressions(self</span><span class="s0">, </span><span class="s1">exprs):</span>
+        <span class="s2"># Extract the ordering expressions because ORDER BY clause is handled</span>
+        <span class="s2"># in a custom way.</span>
+        <span class="s1">self.ordering = exprs[self._get_ordering_expressions_index():]</span>
+        <span class="s0">return </span><span class="s1">super().set_source_expressions(exprs[:self._get_ordering_expressions_index()])</span>
+
+    <span class="s0">def </span><span class="s1">get_source_expressions(self):</span>
+        <span class="s0">return </span><span class="s1">super().get_source_expressions() + self.ordering</span>
+
+    <span class="s0">def </span><span class="s1">_get_ordering_expressions_index(self):</span>
+        <span class="s5">&quot;&quot;&quot;Return the index at which the ordering expressions start.&quot;&quot;&quot;</span>
+        <span class="s1">source_expressions = self.get_source_expressions()</span>
+        <span class="s0">return </span><span class="s1">len(source_expressions) - len(self.ordering)</span>
+</pre>
+</body>
+</html>
