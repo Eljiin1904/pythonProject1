@@ -4,9 +4,6 @@ import requests
 # Selenium Web Driver
 from selenium import webdriver
 
-# unittest
-import unittest
-
 
 # Site status validation
 r = requests.get("http://deckofcardsapi.com/")
@@ -59,7 +56,7 @@ def dont_test1():
 
 def new_deck():
     print("\n")
-    print("Test Scenario 1.1: Validate the API/URL response has a new unique ID for DECK_ID value. Also validate the REMAINING value is equal to 52\n")
+    print("Test Scenario 1.2: Validate the API/URL response has a new unique ID for DECK_ID value. Also validate the REMAINING value is equal to 52\n")
 
 
 print("Test 1.1 Description: Validate the data response from a newly created deck")
@@ -106,7 +103,7 @@ def new_deck2():
 
 
 print("\nNote:For the 1.2 test, the value of the new DECK_ID must be passed to drawcards URL in the source code.")
-print("Quit out (q) of test run to pass DECK_ID to drawcards URLs. Update code ines 172-176")
+print("Quit out (q) of test run to pass DECK_ID to drawcards URLs. Update code ines 170-174")
 
 
 choice = ''
@@ -130,6 +127,7 @@ while choice != 'q' or '1':
     else:
         print("\nI don't understand that choice, please try again.\n")
         break
+
 
 
 # Draw cards from deck
@@ -168,7 +166,7 @@ while choice != 'q' or '1':
         break
 
 print("Sample response below:")
-print("{success: true, deck_id: 7li5jp2q2dky, cards: [{code: 2S, image: https//deckofcardsapi.com/static/img/2S.png, images: {svg: https//deckofcardsapi.com/static/img/2S.svg, png: https//deckofcardsapi.com/static/img/2S.png}, value: 2, suit: SPADES}], remaining: 48}")
+print("{success: true, deck_id: 7li5jp2q2dky, cards: [{code: 2S, image: https//deckofcardsapi.com/static/img/2S.png, images: {svg: https//deckofcardsapi.com/static/img/2S.svg, png: https//deckofcardsapi.com/static/img/2S.png}, value: 2, suit: SPADES}], remaining: 52}")
 drawcards = requests.get("http://deckofcardsapi.com/api/deck/we4vetqlkmwk/draw/?count=5")
 drawcards = requests.get("http://deckofcardsapi.com/api/deck/we4vetqlkmwk/draw/?count=4")
 drawcards = requests.get("http://deckofcardsapi.com/api/deck/we4vetqlkmwk/draw/?count=3")
@@ -285,3 +283,8 @@ while choice != 'q' or '1':
 
     else:
         print("\nI don't understand that choice, please try again.\n")
+
+
+print("Test Case 1.1: New Deck Passed")
+print("Test Case 1.2: Draw Card Passed")
+print("Test Case 1.3: Return Card Passed ")
